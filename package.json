@@ -74,6 +74,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
     "@types/bun": "^1.3.14",
+    "@xmldom/xmldom": "0.9.10",
+    "fast-xml-parser": "5.10.1",
     "typescript": "^7.0.2"
   }
 }
