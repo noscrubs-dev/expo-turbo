@@ -1,0 +1,36 @@
+{
+  "name": "expo-turbo-example",
+  "main": "expo-router/entry",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "expo": "~57.0.6",
+    "expo-constants": "~57.0.5",
+    "expo-linking": "~57.0.3",
+    "expo-router": "~57.0.6",
+    "expo-status-bar": "~57.0.1",
+    "expo-turbo": "file:../..",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2",
+    "react-native-web": "~0.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~57.0.0",
+    "eslint-import-resolver-typescript": "^3.10.1",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run lint && bun run typecheck && expo export --platform web"
+  }
+}
