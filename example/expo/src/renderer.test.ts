@@ -15,6 +15,7 @@ import {
   applyFrameResponse,
   attributeValue,
   dispatchTurboStreamFragment,
+  DocumentFormControls,
   DocumentRequestLoader,
   DocumentStateScopes,
   DocumentStateStore,
@@ -33,6 +34,7 @@ import {
   createComponentActionRegistry,
   createComponentActionRunner,
   createRegistry,
+  booleanCodec,
   defineComponentAction,
   defineComponentActionModule,
   defineComponent,
@@ -43,7 +45,9 @@ import {
 import {
   createComponentStyleHook,
   type ExpoTurboDocumentBoundaryProps,
+  type ExpoTurboFormBinding,
   type ExpoTurboFrameBoundaryProps,
+  ExpoTurboFormScope,
   ExpoTurboProvider,
   type ExpoTurboProviderProps,
   type ExpoTurboRenderError,
@@ -53,6 +57,8 @@ import {
   useDocumentState,
   useExpoTurboDocument,
   useExpoTurboDocumentLink,
+  useExpoTurboForm,
+  useExpoTurboFormControl,
   useExpoTurboFrame,
   useNodeDisposal,
   useScopedState,
@@ -119,6 +125,7 @@ function render(
     documentController?: ExpoTurboProviderProps["documentController"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
+    forms?: ExpoTurboProviderProps["forms"]
     navigation?: NavigationAdapter
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -439,7 +446,10 @@ describe("React protocol renderer", () => {
     })
     expect(state.get("recorded")).toBe("from-xml")
     expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBe("from-xml")
-    act(() => activeRenderer.unmount())
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
     expect(state.isDisposed).toBe(true)
   })
 
@@ -557,10 +567,343 @@ describe("React protocol renderer", () => {
     })
     expect(replacementScope.state.get("recorded")).toBe("replacement")
 
-    act(() => activeRenderer.unmount())
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
     expect(replacementScope.state.isDisposed).toBe(true)
     expect(frameScope.state.isDisposed).toBe(true)
     expect(documentState.isDisposed).toBe(true)
+  })
+
+  test("binds live native controls to the nearest exact form through StrictMode replay", async () => {
+    const bindings = new Map<string, ExpoTurboFormBinding>()
+    const entriesAtPassiveMount = new Map<
+      string,
+      ReturnType<ExpoTurboFormBinding["successfulEntries"]>
+    >()
+    function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function CaptureForm({ slot }: { slot: string }): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        bindings.set(slot, binding)
+        entriesAtPassiveMount.set(slot, binding.successfulEntries())
+        return () => {
+          if (bindings.get(slot) === binding) bindings.delete(slot)
+          entriesAtPassiveMount.delete(slot)
+        }
+      }, [binding, slot])
+      return createElement("capture", { slot })
+    }
+    function NativeValue({
+      disabled,
+      name,
+      value,
+    }: {
+      disabled?: boolean
+      name?: string
+      value: string
+    }): ReactNode {
+      const binding = useExpoTurboFormControl({
+        ...(disabled !== undefined ? { disabled } : {}),
+        kind: "value",
+        ...(name !== undefined ? { name } : {}),
+        value,
+      })
+      return createElement("native-value", { nodeKey: binding.nodeKey, value })
+    }
+    function NativeCheckable({
+      checked,
+      name,
+      value,
+    }: {
+      checked: boolean
+      name: string
+      value?: string
+    }): ReactNode {
+      useExpoTurboFormControl({
+        checked,
+        kind: "checkable",
+        name,
+        ...(value !== undefined ? { value } : {}),
+      })
+      return createElement("native-checkable", { checked })
+    }
+    function NativeMultiple({ name, values }: { name: string; values: string }): ReactNode {
+      useExpoTurboFormControl({ kind: "multiple", name, values: values.split("|") })
+      return createElement("native-multiple", { values })
+    }
+    function NativeSubmitter({
+      disabled,
+      name,
+      value,
+    }: {
+      disabled?: boolean
+      name?: string
+      value?: string
+    }): ReactNode {
+      useExpoTurboFormControl({
+        ...(disabled !== undefined ? { disabled } : {}),
+        kind: "submitter",
+        ...(name !== undefined ? { name } : {}),
+        ...(value !== undefined ? { value } : {}),
+      })
+      return createElement("native-submitter", { value })
+    }
+
+    const form = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: NativeForm,
+      schema: z.object({}),
+      tag: "NativeForm",
+    })
+    const capture = defineComponent({
+      attributes: { slot: { codec: stringCodec, prop: "slot" } },
+      children: "none",
+      component: CaptureForm,
+      schema: z.object({ slot: z.string() }),
+      tag: "CaptureForm",
+    })
+    const value = defineComponent({
+      attributes: {
+        disabled: { codec: booleanCodec, prop: "disabled" },
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeValue,
+      schema: z.object({
+        disabled: z.boolean().optional(),
+        name: z.string().optional(),
+        value: z.string(),
+      }),
+      tag: "NativeValue",
+    })
+    const checkable = defineComponent({
+      attributes: {
+        checked: { codec: booleanCodec, prop: "checked" },
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeCheckable,
+      schema: z.object({
+        checked: z.boolean(),
+        name: z.string(),
+        value: z.string().optional(),
+      }),
+      tag: "NativeCheckable",
+    })
+    const multiple = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        values: { codec: stringCodec, prop: "values" },
+      },
+      children: "none",
+      component: NativeMultiple,
+      schema: z.object({ name: z.string(), values: z.string() }),
+      tag: "NativeMultiple",
+    })
+    const submitter = defineComponent({
+      attributes: {
+        disabled: { codec: booleanCodec, prop: "disabled" },
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeSubmitter,
+      schema: z.object({
+        disabled: z.boolean().optional(),
+        name: z.string().optional(),
+        value: z.string().optional(),
+      }),
+      tag: "NativeSubmitter",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, value, checkable, multiple, submitter],
+        name: "native-form-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(`<Gallery>
+        <NativeForm id="form">
+          <CaptureForm slot="primary" />
+          <NativeValue id="first" name="item" value="" />
+          <NativeCheckable id="checked" checked="true" name="agree" />
+          <NativeMultiple id="multiple" name="choices[]" values="one||one" />
+          <NativeValue id="disabled" disabled="true" name="ignored" value="secret" />
+          <NativeValue id="unnamed" value="ignored" />
+          <NativeSubmitter id="submit" name="commit" value="save" />
+          <NativeSubmitter id="alternate" name="commit" value="ignored" />
+        </NativeForm>
+        <NativeForm id="outer-form">
+          <CaptureForm slot="outer" />
+          <NativeValue id="outer-value" name="outer" value="parent" />
+          <NativeForm id="other-form">
+            <CaptureForm slot="other" />
+            <NativeValue id="other-value" name="other" value="isolated" />
+          </NativeForm>
+        </NativeForm>
+      </Gallery>`),
+    )
+    const forms = new DocumentFormControls(session)
+    const scopes = new DocumentStateScopes(session)
+    const state = new DocumentStateStore()
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            { forms, registry: componentRegistry, scopes, session, state },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const activeRenderer = renderer
+    const primary = bindings.get("primary")
+    const outer = bindings.get("outer")
+    const other = bindings.get("other")
+    if (!primary || !outer || !other) throw new Error("form bindings were not captured")
+    expect(scopes.isDisposed).toBe(false)
+    expect(state.isDisposed).toBe(false)
+    const activeForm = session.tree.getElementById("form")
+    if (!activeForm) throw new Error("active form fixture is missing")
+    const activeFormState = scopes.scopeFor(activeForm.key, "form").state
+    activeFormState.set("strict-mode", "active")
+    expect(activeFormState.get("strict-mode")).toBe("active")
+
+    expect(primary.successfulEntries({ submitterNodeKey: "id:submit" })).toEqual([
+      { name: "item", value: "" },
+      { name: "agree", value: "on" },
+      { name: "choices[]", value: "one" },
+      { name: "choices[]", value: "" },
+      { name: "choices[]", value: "one" },
+      { name: "commit", value: "save" },
+    ])
+    expect(entriesAtPassiveMount.get("primary")).toEqual(primary.successfulEntries())
+    expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
+    expect(other.successfulEntries()).toEqual([{ name: "other", value: "isolated" }])
+
+    act(() => session.setAttribute("id:first", "value", "updated"))
+    expect(primary.successfulEntries()[0]).toEqual({ name: "item", value: "updated" })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="form"><template><CaptureForm slot="updated"/><NativeValue id="next" name="next" value="child-update"/></template></turbo-stream>',
+      )
+    })
+    const updated = bindings.get("updated")
+    expect(updated).toBe(primary)
+    expect(updated?.successfulEntries()).toEqual([{ name: "next", value: "child-update" }])
+    expect(entriesAtPassiveMount.get("updated")).toEqual([
+      { name: "next", value: "child-update" },
+    ])
+    expect(() => primary.successfulEntries({ submitterNodeKey: "id:submit" })).toThrow(
+      TargetError,
+    )
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><NativeForm id="form"><CaptureForm slot="replacement"/><NativeValue id="replacement-value" name="fresh" value="replacement"/></NativeForm></template></turbo-stream>',
+      )
+    })
+    const replacement = bindings.get("replacement")
+    if (!replacement) throw new Error("replacement form binding was not captured")
+    expect(replacement).not.toBe(primary)
+    expect(replacement.successfulEntries()).toEqual([{ name: "fresh", value: "replacement" }])
+    expect(() => primary.successfulEntries()).toThrow(/disposed/)
+    expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
+    expect(other.successfulEntries()).toEqual([{ name: "other", value: "isolated" }])
+
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
+    expect(scopes.isDisposed).toBe(true)
+    expect(state.isDisposed).toBe(true)
+    expect(forms.isDisposed).toBe(false)
+    expect(replacement.successfulEntries()).toEqual([])
+    expect(outer.successfulEntries()).toEqual([])
+    expect(other.successfulEntries()).toEqual([])
+    forms.dispose()
+    expect(() => replacement.successfulEntries()).toThrow(/disposed/)
+  })
+
+  test("reports a form control rendered outside an explicit form scope", () => {
+    function OrphanControl(): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: "orphan", value: "value" })
+      return createElement("orphan")
+    }
+    const orphan = defineComponent({
+      attributes: {},
+      children: "none",
+      component: OrphanControl,
+      schema: z.object({}),
+      tag: "OrphanControl",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [orphan],
+        name: "orphan-form-control",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><OrphanControl id=\"orphan\"/></Gallery>"),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors[0]?.error.message).toContain("require a form scope")
+    expect(JSON.stringify(renderer.toJSON())).toContain("require a form scope")
+  })
+
+  test("reports an explicit form scope without provider form controls", () => {
+    function UnconfiguredForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    const form = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: UnconfiguredForm,
+      schema: z.object({}),
+      tag: "UnconfiguredForm",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form],
+        name: "unconfigured-form-scope",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><UnconfiguredForm id="form"/></Gallery>'),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors[0]?.error.message).toContain("provider form controls")
+    expect(JSON.stringify(renderer.toJSON())).toContain("provider form controls")
   })
 
   test("runs registered component disposal before a Stream removes its logical node", () => {

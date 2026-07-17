@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import {
   dispatchTurboStreamFragment,
+  DocumentFormControls,
   DocumentSession,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
@@ -103,6 +104,7 @@ export default function HomeScreen() {
     () => createDemoDocumentController(session),
     [session],
   );
+  const forms = useMemo(() => new DocumentFormControls(session), [session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
   const navigation = useMemo<NavigationAdapter>(
     () => ({
@@ -172,6 +174,7 @@ export default function HomeScreen() {
         documentController={documentController}
         frameComponent={DemoFrameBoundary}
         frames={frames}
+        forms={forms}
         navigation={navigation}
         registry={DEMO_REGISTRY}
         renderError={({ error }) => (
