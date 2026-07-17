@@ -103,7 +103,6 @@ export default function HomeScreen() {
     () => createDemoDocumentController(session),
     [session],
   );
-  const frames = useMemo(() => createDemoFrameControllers(session), [session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
   const navigation = useMemo<NavigationAdapter>(
     () => ({
@@ -121,6 +120,10 @@ export default function HomeScreen() {
       },
     }),
     [router],
+  );
+  const frames = useMemo(
+    () => createDemoFrameControllers(session, navigation),
+    [navigation, session],
   );
   useEffect(() => () => documentController.cancel(), [documentController]);
 

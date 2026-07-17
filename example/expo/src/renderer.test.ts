@@ -143,19 +143,23 @@ function renderDocumentLinks(
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
   url = "https://example.test/gallery",
   navigation?: NavigationAdapter,
+  frameFetch?: (request: TurboRequest) => Promise<TurboResponse>,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
   let renders = 0
-  function DocumentLink({ href }: { href: string }): ReactNode {
+  function DocumentLink({ href }: { href: string; target?: string }): ReactNode {
     renders += 1
     activations.set(href, useExpoTurboDocumentLink(href))
     return createElement("link", { href })
   }
   const link = defineComponent({
-    attributes: { href: { codec: stringCodec, prop: "href" } },
+    attributes: {
+      href: { codec: stringCodec, prop: "href" },
+      target: { codec: stringCodec, prop: "target" },
+    },
     children: "none",
     component: DocumentLink,
-    schema: z.object({ href: z.string().trim().min(1) }),
+    schema: z.object({ href: z.string().trim().min(1), target: z.string().optional() }),
     tag: "DocumentLink",
   })
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
@@ -167,6 +171,17 @@ function renderDocumentLinks(
       setTimeout: () => Object.freeze({}),
     },
   )
+  let frameRequestId = 0
+  const frames = frameFetch
+    ? new FrameControllerRegistry(
+        session,
+        new FrameRequestLoader(session, { fetch: frameFetch }, {
+          next: () => `request-frame-link-${++frameRequestId}`,
+        }),
+        undefined,
+        navigation,
+      )
+    : undefined
   const renderer = render(
     session,
     registryWithCounters().use(
@@ -176,7 +191,7 @@ function renderDocumentLinks(
         version: "0.1.0",
       }),
     ),
-    { documentController: controller, navigation },
+    { documentController: controller, frames, navigation },
   )
   return {
     activation(href: string) {
@@ -185,6 +200,7 @@ function renderDocumentLinks(
       return activation
     },
     controller,
+    frames,
     renderCount: () => renders,
     renderer,
     session,
@@ -1036,6 +1052,376 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("captures current, default, explicit, and top-level named Frame links", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/top-named" data-turbo-frame="named" />
+        <DocumentLink href="/top-underscore" data-turbo-frame="_sidebar" />
+        <DocumentLink href="/top-self" data-turbo-frame="_self" />
+        <DocumentLink href="/top-parent" data-turbo-frame="_parent" />
+        <turbo-frame id="named" />
+        <turbo-frame id="_sidebar" />
+        <turbo-frame id="_self" />
+        <turbo-frame id="parent"><turbo-frame id="_parent" /></turbo-frame>
+        <turbo-frame id="outer" target="named">
+          <DocumentLink href="/default" />
+          <DocumentLink href="/self" data-turbo-frame="_self" />
+          <turbo-frame id="inner"><DocumentLink href="/nearest" /></turbo-frame>
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("document fetch must not run")
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        const frameId = request.headers["Turbo-Frame"]
+        if (!frameId) throw new Error("Frame link request is missing its target header")
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => `<turbo-frame id="${frameId}" />`,
+          url: request.url,
+        }
+      },
+    )
+    const documentState = harness.controller.state
+
+    let nearest: unknown
+    let inherited: unknown
+    let topLevelNamed: unknown
+    let topLevelUnderscore: unknown
+    let topLevelSelf: unknown
+    let topLevelParent: unknown
+    let self: unknown
+    await act(async () => {
+      nearest = await harness.activation("/nearest")()
+    })
+    await act(async () => {
+      inherited = await harness.activation("/default")()
+    })
+    await act(async () => {
+      topLevelNamed = await harness.activation("/top-named")()
+    })
+    await act(async () => {
+      topLevelUnderscore = await harness.activation("/top-underscore")()
+    })
+    await act(async () => {
+      topLevelSelf = await harness.activation("/top-self")()
+    })
+    await act(async () => {
+      topLevelParent = await harness.activation("/top-parent")()
+    })
+    await act(async () => {
+      self = await harness.activation("/self")()
+    })
+
+    expect(nearest).toMatchObject({ frameId: "inner", kind: "frame" })
+    expect(inherited).toMatchObject({
+      frameId: "named",
+      kind: "frame",
+      target: { requestedTarget: "named" },
+    })
+    expect(topLevelNamed).toMatchObject({
+      frameId: "named",
+      kind: "frame",
+      target: { requestedTarget: "named" },
+    })
+    expect(topLevelUnderscore).toMatchObject({
+      frameId: "_sidebar",
+      kind: "frame",
+      target: { requestedTarget: "_sidebar" },
+    })
+    expect(topLevelSelf).toMatchObject({
+      frameId: "_self",
+      kind: "frame",
+      target: { requestedTarget: "_self" },
+    })
+    expect(topLevelParent).toMatchObject({
+      frameId: "parent",
+      kind: "frame",
+      target: { requestedTarget: "_parent" },
+    })
+    expect(self).toMatchObject({
+      frameId: "outer",
+      kind: "frame",
+      target: { requestedTarget: "_self" },
+    })
+    expect(frameRequests.map((request) => request.headers["Turbo-Frame"])).toEqual([
+      "inner",
+      "named",
+      "named",
+      "_sidebar",
+      "_self",
+      "parent",
+      "outer",
+    ])
+    expect(frameRequests.map((request) => request.url)).toEqual([
+      "https://example.test/nearest",
+      "https://example.test/default",
+      "https://example.test/top-named",
+      "https://example.test/top-underscore",
+      "https://example.test/top-self",
+      "https://example.test/top-parent",
+      "https://example.test/self",
+    ])
+    expect(documentRequests).toHaveLength(0)
+    expect(harness.controller.state).toBe(documentState)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps a top-level _top target document-scoped despite an ID collision", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="_top" />
+        <DocumentLink href="/top" data-turbo-frame="_top" />
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("Frame fetch must not run")
+      },
+    )
+
+    await act(async () => {
+      expect(await harness.activation("/top")()).toMatchObject({
+        status: "committed",
+        url: "https://example.test/top",
+      })
+    })
+    expect(documentRequests).toHaveLength(1)
+    expect(documentRequests[0]?.headers).not.toHaveProperty("Turbo-Frame")
+    expect(frameRequests).toHaveLength(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("routes _top, _parent, and Frame opt-out through their shared owners", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const navigation: { action: string; url: string }[] = []
+    const adapter: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit: (url, action) => {
+        navigation.push({ action, url })
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="outer">
+          <turbo-frame id="inner">
+            <DocumentLink href="/top" data-turbo-frame="_top" />
+            <Gallery data-turbo="false">
+              <DocumentLink href="/opted-out" />
+              <Gallery data-turbo="true">
+                <DocumentLink href="/parent" data-turbo-frame="_parent" />
+              </Gallery>
+            </Gallery>
+          </turbo-frame>
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("document fetch must not run")
+      },
+      "https://example.test/gallery",
+      adapter,
+      async (request) => {
+        frameRequests.push(request)
+        const frameId = request.headers["Turbo-Frame"]
+        if (!frameId) throw new Error("Frame link request is missing its target header")
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => `<turbo-frame id="${frameId}" />`,
+          url: request.url,
+        }
+      },
+    )
+
+    let top: unknown
+    let optedOut: unknown
+    let parent: unknown
+    await act(async () => {
+      top = await harness.activation("/top")()
+    })
+    await act(async () => {
+      optedOut = await harness.activation("/opted-out")()
+    })
+    await act(async () => {
+      parent = await harness.activation("/parent")()
+    })
+
+    expect(top).toMatchObject({
+      action: "advance",
+      kind: "top",
+      target: { requestedTarget: "_top" },
+    })
+    expect(optedOut).toEqual({
+      action: "advance",
+      kind: "navigation",
+      reason: "opt-out",
+      status: "delegated",
+      url: "https://example.test/opted-out",
+    })
+    expect(parent).toMatchObject({
+      frameId: "outer",
+      kind: "frame",
+      target: { requestedTarget: "_parent" },
+    })
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/top" },
+      { action: "advance", url: "https://example.test/opted-out" },
+    ])
+    expect(frameRequests.map((request) => request.headers["Turbo-Frame"])).toEqual(["outer"])
+    expect(documentRequests).toHaveLength(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps Frame and document request ownership isolated across captured links", async () => {
+    const documents: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const frames: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/document-pending" />
+        <turbo-frame id="frame">
+          <DocumentLink href="/first" />
+          <DocumentLink href="/second" />
+        </turbo-frame>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => documents.push({ request, resolve })),
+      "https://example.test/gallery",
+      undefined,
+      (request) => new Promise<TurboResponse>((resolve) => frames.push({ request, resolve })),
+    )
+
+    let documentVisit: Promise<unknown> | undefined
+    let first: Promise<unknown> | undefined
+    let second: Promise<unknown> | undefined
+    act(() => {
+      documentVisit = harness.activation("/document-pending")()
+    })
+    const documentState = harness.controller.state
+    act(() => {
+      first = harness.activation("/first")()
+    })
+    act(() => {
+      second = harness.activation("/second")()
+    })
+
+    expect(documents).toHaveLength(1)
+    expect(documents[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(documentState)
+    expect(frames).toHaveLength(2)
+    expect(frames[0]?.request.signal?.aborted).toBe(true)
+    expect(frames[1]?.request.signal?.aborted).toBe(false)
+
+    await act(async () => {
+      frames[1]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<turbo-frame id="frame" />',
+        url: "https://example.test/second",
+      })
+      await second
+    })
+    await act(async () => {
+      frames[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<turbo-frame id="frame"><DocumentLink href="/late" /></turbo-frame>',
+        url: "https://example.test/first",
+      })
+      await first
+    })
+    const activeFrame = harness.session.tree.getElementById("frame")
+    if (!activeFrame) throw new Error("fixture Frame is missing")
+    expect(attributeValue(activeFrame, "src")).toBe("https://example.test/second")
+    expect(activeFrame.children).toHaveLength(0)
+    expect(harness.controller.state).toBe(documentState)
+
+    act(() => harness.controller.cancel())
+    documents[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DocumentLink href="/late-document" /></Gallery>',
+      url: "https://example.test/document-pending",
+    })
+    await documentVisit
+    act(() => harness.renderer.unmount())
+  })
+
+  test("falls back to document loading for unavailable top-level Frame targets", async () => {
+    for (const fixture of [
+      { frame: "", target: "missing" },
+      { frame: '<turbo-frame id="disabled" disabled="" />', target: "disabled" },
+    ]) {
+      const documentRequests: TurboRequest[] = []
+      const frameRequests: TurboRequest[] = []
+      const harness = renderDocumentLinks(
+        `<Gallery>
+          ${fixture.frame}
+          <DocumentLink href="/fallback" data-turbo-frame="${fixture.target}" />
+        </Gallery>`,
+        async (request) => {
+          documentRequests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => '<Gallery><DocumentLink href="/after" /></Gallery>',
+            url: request.url,
+          }
+        },
+        "https://example.test/gallery",
+        undefined,
+        async (request) => {
+          frameRequests.push(request)
+          throw new Error("Frame fetch must not run")
+        },
+      )
+
+      await act(async () => {
+        expect(await harness.activation("/fallback")()).toMatchObject({
+          status: "committed",
+          url: "https://example.test/fallback",
+        })
+      })
+      expect(documentRequests).toHaveLength(1)
+      expect(documentRequests[0]?.headers).not.toHaveProperty("Turbo-Frame")
+      expect(frameRequests).toHaveLength(0)
+      act(() => harness.renderer.unmount())
+    }
+  })
+
   test("turns host navigation failures into rejected activation promises", async () => {
     const failure = new Error("Host navigation failed")
     const pending: {
@@ -1151,7 +1537,7 @@ describe("React protocol renderer", () => {
         <DocumentLink href="/empty-fragment#" />
         <DocumentLink href="/method" data-turbo-method="get" />
         <DocumentLink href="/stream" data-turbo-stream="" />
-        <DocumentLink href="/target" data-turbo-frame="frame" />
+        <DocumentLink href="/target" target="_blank" />
         <DocumentLink href="/action" data-turbo-action="replace" />
         <DocumentLink href="/confirm" data-turbo-confirm="Continue?" />
         <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
@@ -1192,7 +1578,7 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("rejects stale and Frame-scoped document link activations before fetching", async () => {
+  test("rejects stale and unconfigured Frame-scoped link activations before fetching", async () => {
     const pending: {
       request: TurboRequest
       resolve: (response: TurboResponse) => void
