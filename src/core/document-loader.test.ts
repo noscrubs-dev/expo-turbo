@@ -534,6 +534,53 @@ describe("Document request loader", () => {
     expect(session.tree.getElementById("old")?.tagName).toBe("Old")
   })
 
+  test("preserves newer work started reentrantly by explicit cancellation", async () => {
+    const pending: Array<{
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }> = []
+    const session = documentSession()
+    const owner = Object.freeze({})
+    let requestId = 0
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `request-${++requestId}` },
+    )
+    const older = loader.load("/older", owner)
+    let newer: Promise<unknown> | undefined
+    pending[0]?.request.signal?.addEventListener(
+      "abort",
+      () => {
+        newer = loader.load("/newer", owner)
+      },
+      { once: true },
+    )
+
+    loader.cancel(owner)
+    expect(pending).toHaveLength(2)
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    pending[0]?.resolve(
+      response('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(session.tree.getElementById("newer")).toBeDefined()
+    expect(session.tree.getElementById("older")).toBeUndefined()
+  })
+
   test("rejects transport, policy, MIME, and parse failures without changing the document", async () => {
     const fixtures: ReadonlyArray<{
       error: typeof ContentTypeError | typeof ParseError | typeof RequestError | typeof TargetError

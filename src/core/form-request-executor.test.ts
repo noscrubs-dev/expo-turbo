@@ -372,6 +372,44 @@ describe("FormRequestExecutor", () => {
     expect(await first).toMatchObject({ requestId: "request-first", status: "canceled" })
   })
 
+  test("keeps reentrant newer work authoritative during supersession and explicit cancel", async () => {
+    for (const trigger of ["supersede", "cancel"] as const) {
+      const pending: Array<{
+        request: TurboRequest
+        response: ReturnType<typeof deferred<TurboResponse>>
+      }> = []
+      const executor = new FormRequestExecutor({
+        fetch(request) {
+          const next = deferred<TurboResponse>()
+          pending.push({ request, response: next })
+          return next.promise
+        },
+      })
+      const first = executor.execute(planFactory(`${trigger}-first`))
+      let nested: Promise<unknown> | undefined
+      pending[0]?.request.signal?.addEventListener(
+        "abort",
+        () => {
+          nested = executor.execute(planFactory(`${trigger}-nested`))
+        },
+        { once: true },
+      )
+
+      const outer =
+        trigger === "supersede" ? executor.execute(planFactory("supersede-outer")) : undefined
+      if (trigger === "cancel") executor.cancel()
+
+      expect(pending).toHaveLength(2)
+      expect(pending[1]?.request.headers["X-Turbo-Request-Id"]).toBe(`${trigger}-nested`)
+      expect(pending[1]?.request.signal?.aborted).toBe(false)
+      if (outer) expect(await outer).toMatchObject({ status: "canceled" })
+      pending[1]?.response.resolve(response("<Nested />"))
+      expect(await nested).toMatchObject({ requestId: `${trigger}-nested`, status: "xml" })
+      pending[0]?.response.resolve(response("<First />"))
+      expect(await first).toMatchObject({ requestId: `${trigger}-first`, status: "canceled" })
+    }
+  })
+
   test("cancellation during body buffering suppresses a late body resolve or rejection", async () => {
     for (const rejectBody of [false, true]) {
       const body = deferred<string>()

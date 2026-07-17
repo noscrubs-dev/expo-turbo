@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add destination-aware form transport coordination with session-scoped document/exact-Frame lanes shared across GET and form requests, pre-admission non-cancellation, exact-form destination-change supersession, reentrant/stale-owner safety, and frozen destination-bearing unapplied candidates.
 - Change active-form `requestPlan` metadata to reject caller-supplied `frameId`; Frame-targeted callers must use `submissionProposal` so destination and `Turbo-Frame` metadata are derived together.
 - Add atomic active-form submission proposals with exact Turbo Frame target precedence, internally derived `Turbo-Frame` metadata, browser-target rejection, React exposure, and hidden form/submitter/destination/tree-generation admission identity without fetching or changing request ownership.
 - Add caller-scoped form request execution with exact-plan forwarding, lane-local cancellation/supersession, same-origin final-URL and MIME admission, single-read buffering, and classified immutable response candidates without tree mutation.

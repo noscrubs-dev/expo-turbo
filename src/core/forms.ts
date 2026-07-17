@@ -392,6 +392,7 @@ export class FormControlRegistry {
     }
     const proposal = Object.freeze({ destination, plan }) as FormSubmissionProposal
     return admitFormSubmissionProposal(proposal, {
+      destination,
       ...(destination.kind === "frame"
         ? {
             destinationFrame: destinationFrame as ProtocolElement,
