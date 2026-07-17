@@ -12,6 +12,10 @@ import type {
   FormResponseClassification,
 } from "./form-request-transport"
 import { admitFormRequestPlan, executeAdmittedFormRequest } from "./form-request-transport"
+import type {
+  FormSubmissionActivityLease,
+  FormSubmissionDuplicateBehavior,
+} from "./form-submission-activity"
 import {
   assertActiveFormSubmissionProposal,
   type FormSubmissionProposal,
@@ -130,6 +134,23 @@ export interface FormSubmissionControllerOptions extends StreamActionDispatchOpt
   readonly limits?: Partial<ParseLimits>
 }
 
+export interface FormSubmissionControllerSubmitOptions {
+  readonly duplicateBehavior?: FormSubmissionDuplicateBehavior
+}
+
+function duplicateBehavior(
+  options: FormSubmissionControllerSubmitOptions,
+): FormSubmissionDuplicateBehavior {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new RequestError("Form submission controller options must be an object")
+  }
+  const behavior = options.duplicateBehavior ?? "prevent"
+  if (behavior !== "prevent" && behavior !== "supersede") {
+    throw new RequestError("Form submission duplicate behavior is unsupported")
+  }
+  return behavior
+}
+
 function responseMetadata(candidate: FormResponseCandidate): FormSubmissionResponseMetadata {
   return {
     classification: candidate.classification,
@@ -179,10 +200,14 @@ export class FormSubmissionController {
     this.ownership = destinationRequestOwnership(session)
   }
 
-  async submit(createProposal: FormSubmissionProposalFactory): Promise<FormSubmissionReport> {
+  async submit(
+    createProposal: FormSubmissionProposalFactory,
+    options: FormSubmissionControllerSubmitOptions = {},
+  ): Promise<FormSubmissionReport> {
     if (typeof createProposal !== "function") {
       throw new RequestError("Form submission controller requires a proposal factory")
     }
+    const behavior = duplicateBehavior(options)
 
     const controller = new AbortController()
     let proposal: FormSubmissionProposal
@@ -198,6 +223,21 @@ export class FormSubmissionController {
       if (error instanceof ExpoTurboError) throw error
       throw new RequestError("Form submission planning failed")
     }
+
+    let activityLease: FormSubmissionActivityLease | undefined
+    try {
+      activityLease = identity.submissionActivity.admit(
+        controller,
+        plan.request.headers["X-Turbo-Request-Id"] as string,
+        identity.submitter,
+        behavior,
+      )
+    } catch (error) {
+      controller.abort()
+      if (error instanceof ExpoTurboError) throw error
+      throw new RequestError("Form submission activity admission failed")
+    }
+    if (!activityLease) return this.canceledPlan(plan, proposal.destination)
 
     let lease: DestinationRequestLease | undefined
     let originCheckpoint: FrameRequestCheckpoint | undefined
@@ -226,18 +266,32 @@ export class FormSubmissionController {
     } catch (error) {
       if (lease) this.ownership.cancel(lease)
       else controller.abort()
+      identity.submissionActivity.finish(activityLease)
       if (error instanceof ExpoTurboError) throw error
       throw new RequestError("Form submission ownership admission failed")
     }
     if (!lease) throw new RequestError("Form submission ownership admission failed")
     let activeLease = lease
 
-    const response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
-      controller,
-      owns: () => this.ownership.owns(activeLease),
-      release: () => this.ownership.release(activeLease),
-      retainCandidate: true,
-    })
+    if (!identity.submissionActivity.start(activityLease) || !this.ownership.owns(activeLease)) {
+      this.ownership.cancel(activeLease)
+      identity.submissionActivity.finish(activityLease)
+      return this.canceledPlan(plan, proposal.destination)
+    }
+
+    let response: FormRequestExecutionReport
+    try {
+      response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
+        controller,
+        owns: () => this.ownership.owns(activeLease),
+        release: () => this.ownership.release(activeLease),
+        retainCandidate: true,
+      })
+    } finally {
+      // Turbo clears form/submitter presentation before applying the response.
+      // Exact activity ownership keeps an older finalizer from clearing newer work.
+      identity.submissionActivity.finish(activityLease)
+    }
     if (response.status === "canceled") {
       return this.canceled(response, proposal.destination)
     }
@@ -482,6 +536,20 @@ export class FormSubmissionController {
       requestedUrl: candidate.requestedUrl,
       sourceMethod: candidate.sourceMethod,
       destination,
+      status: "canceled",
+    })
+  }
+
+  private canceledPlan(
+    plan: FormRequestPlan,
+    destination: FormSubmissionDestination,
+  ): FormSubmissionReport {
+    return Object.freeze({
+      destination,
+      effectiveMethod: plan.effectiveMethod,
+      requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+      requestedUrl: plan.request.url,
+      sourceMethod: plan.sourceMethod,
       status: "canceled",
     })
   }

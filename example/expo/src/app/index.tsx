@@ -21,6 +21,7 @@ import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
 import { createDemoDocumentController } from "../demo-document-controller";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
+import { createDemoFormController } from "../demo-form-controller";
 import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
@@ -104,7 +105,14 @@ export default function HomeScreen() {
     () => createDemoDocumentController(session),
     [session],
   );
-  const forms = useMemo(() => new DocumentFormControls(session), [session]);
+  const formController = useMemo(
+    () => createDemoFormController(session),
+    [session],
+  );
+  const forms = useMemo(
+    () => new DocumentFormControls(session, { submissionController: formController }),
+    [formController, session],
+  );
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
   const navigation = useMemo<NavigationAdapter>(
     () => ({

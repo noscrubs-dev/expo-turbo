@@ -7,7 +7,7 @@ import { DocumentRequestLoader } from "./document-loader"
 import { FrameMissingError, ParseError, RequestError, StateError } from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
-import { FormControlRegistry } from "./forms"
+import { DocumentFormControls, FormControlRegistry } from "./forms"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
@@ -60,7 +60,8 @@ function fixture(): DocumentSession {
   return new DocumentSession(
     parseExpoTurboDocument(
       `<Gallery>
-        <DemoForm id="document-form" action="/submit-document"><DemoInput id="document-field" /></DemoForm>
+        <DemoForm id="document-form" action="/submit-document"><DemoInput id="document-field" /><DemoButton id="document-submitter" data-turbo-submits-with="Submitting…" /></DemoForm>
+        <Status id="status" />
         <DemoForm id="moving-form" action="/submit-moving" data-turbo-frame="frame-a" />
         <turbo-frame id="frame-a" src="/frame-a">
           <DemoForm id="form-a" action="/submit-a"><DemoInput id="field-a" /></DemoForm>
@@ -247,7 +248,9 @@ describe("FormSubmissionController", () => {
     const requestA1 = transport.pending[0]
     const submissionB = secondController.submit(proposal(formB, "b-1"))
     const requestB = transport.pending[1]
-    const secondA = secondController.submit(proposal(formA, "a-2"))
+    const secondA = secondController.submit(proposal(formA, "a-2"), {
+      duplicateBehavior: "supersede",
+    })
     const requestA2 = transport.pending[2]
     if (!requestA1 || !requestB || !requestA2) throw new Error("form requests were not captured")
 
@@ -266,6 +269,138 @@ describe("FormSubmissionController", () => {
     expect(await submissionB).toMatchObject({ requestId: "b-1", status: "applied" })
   })
 
+  test("prevents an exact-form duplicate before destination ownership or fetch", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const transport = pendingFetch()
+    const firstController = new FormSubmissionController(session, transport.adapter)
+    const secondController = new FormSubmissionController(session, transport.adapter)
+    const formControls = new DocumentFormControls(session, {
+      submissionController: firstController,
+    }).controlsFor("id:document-form")
+    const duplicateControls = registry(session, "document-form")
+    const firstSubmitter = formControls.register("id:document-submitter", {
+      kind: "submitter",
+      name: "commit",
+      value: "original",
+    })
+    const duplicateSubmitter = duplicateControls.register("id:document-submitter", {
+      kind: "submitter",
+      name: "commit",
+      value: "original",
+    })
+
+    const first = formControls.submit({
+      protocol: { requestId: "first" },
+      submitter: firstSubmitter.selection,
+    })
+    const request = transport.pending[0]
+    if (!request) throw new Error("first form request was not captured")
+    expect(formControls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "first",
+      status: "submitting",
+    })
+    expect(formControls.controlSubmissionState("id:document-submitter")).toMatchObject({
+      pending: true,
+      submitsWith: "Submitting…",
+    })
+    expect(request.request.body?.value).toBe("commit=original")
+
+    const duplicate = secondController.submit((signal) =>
+      duplicateControls.submissionProposal({
+        protocol: { requestId: "duplicate" },
+        signal,
+        submitter: duplicateSubmitter.selection,
+      }),
+    )
+    expect(transport.pending).toHaveLength(1)
+    expect(await duplicate).toMatchObject({ requestId: "duplicate", status: "canceled" })
+    expect(request.request.signal?.aborted).toBe(false)
+    expect(formControls.submissionState.requestId).toBe("first")
+
+    request.response.resolve(response(request.request, "", { status: 204 }))
+    expect(await first).toMatchObject({ application: "empty", status: "empty" })
+    expect(formControls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(formControls.controlSubmissionState("id:document-submitter").pending).toBe(false)
+  })
+
+  test("clears form activity before applying a response", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const transport = pendingFetch()
+    const controls = registry(session, "document-form")
+    const controller = new FormSubmissionController(session, transport.adapter)
+    const submitting = controller.submit(proposal(controls, "cleanup-before-apply"))
+    const request = transport.pending[0]
+    if (!request) throw new Error("form request was not captured")
+    expect(controls.submissionState.busy).toBe(true)
+
+    const observations: boolean[] = []
+    session.subscribe("id:status", () => observations.push(controls.submissionState.busy))
+    request.response.resolve(
+      response(
+        request.request,
+        '<turbo-stream action="update" target="status"><template><Done /></template></turbo-stream>',
+        { headers: { "Content-Type": TURBO_STREAM_MIME_TYPE } },
+      ),
+    )
+    expect(await submitting).toMatchObject({ application: "stream", status: "applied" })
+    expect(observations).toEqual([false])
+    expect(controls.submissionState.busy).toBe(false)
+  })
+
+  test("cancels the exact active form and restores its activity state", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const controller = new FormSubmissionController(session, transport.adapter)
+    const controls = new FormControlRegistry(session, "id:document-form", {
+      submissionController: controller,
+    })
+
+    const submitting = controls.submit({ protocol: { requestId: "explicit-cancel" } })
+    const request = transport.pending[0]
+    if (!request) throw new Error("form request was not captured")
+    expect(controls.submissionState).toMatchObject({ busy: true, status: "submitting" })
+
+    controls.cancelSubmission()
+    expect(request.request.signal?.aborted).toBe(true)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(await submitting).toMatchObject({
+      requestId: "explicit-cancel",
+      status: "canceled",
+    })
+  })
+
+  test("clears exact form activity after a current transport failure", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const submitter = controls.register("id:document-submitter", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    const controller = new FormSubmissionController(session, {
+      async fetch() {
+        throw new Error("offline fixture")
+      },
+    })
+
+    const submitting = controller.submit((signal) =>
+      controls.submissionProposal({
+        protocol: { requestId: "transport-failure" },
+        signal,
+        submitter: submitter.selection,
+      }),
+    )
+    expect(controls.submissionState).toMatchObject({ busy: true, status: "submitting" })
+    expect(controls.controlSubmissionState("id:document-submitter").pending).toBe(true)
+
+    await expect(submitting).rejects.toBeInstanceOf(RequestError)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.controlSubmissionState("id:document-submitter").pending).toBe(false)
+  })
+
   test("uses exact form identity to cancel its old request after moving destinations", async () => {
     const session = fixture()
     const transport = pendingFetch()
@@ -278,7 +413,9 @@ describe("FormSubmissionController", () => {
     expect(requestA.request.headers["Turbo-Frame"]).toBe("frame-a")
 
     session.setAttribute("id:moving-form", "data-turbo-frame", "frame-b")
-    const second = controller.submit(proposal(moving, "moving-b"))
+    const second = controller.submit(proposal(moving, "moving-b"), {
+      duplicateBehavior: "supersede",
+    })
     const requestB = transport.pending[1]
     if (!requestB) throw new Error("second moving form request was not captured")
     expect(requestA.request.signal?.aborted).toBe(true)
@@ -296,6 +433,42 @@ describe("FormSubmissionController", () => {
     })
   })
 
+  test("keeps a reentrant third exact-form supersede authoritative before ownership", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const controller = new FormSubmissionController(session, transport.adapter)
+    const controls = registry(session, "document-form")
+
+    const first = controller.submit(proposal(controls, "first"))
+    const firstRequest = transport.pending[0]
+    if (!firstRequest?.request.signal) throw new Error("first form signal was not captured")
+
+    let third: ReturnType<FormSubmissionController["submit"]> | undefined
+    firstRequest.request.signal.addEventListener(
+      "abort",
+      () => {
+        third = controller.submit(proposal(controls, "third"), {
+          duplicateBehavior: "supersede",
+        })
+      },
+      { once: true },
+    )
+    const second = controller.submit(proposal(controls, "second"), {
+      duplicateBehavior: "supersede",
+    })
+
+    expect(await first).toMatchObject({ requestId: "first", status: "canceled" })
+    expect(await second).toMatchObject({ requestId: "second", status: "canceled" })
+    expect(transport.pending).toHaveLength(2)
+    const thirdRequest = transport.pending[1]
+    if (!thirdRequest || !third) throw new Error("reentrant third request was not captured")
+    expect(thirdRequest.request.headers["X-Turbo-Request-Id"]).toBe("third")
+    expect(thirdRequest.request.signal?.aborted).toBe(false)
+
+    thirdRequest.response.resolve(response(thirdRequest.request, "<Newest />"))
+    expect(await third).toMatchObject({ requestId: "third", status: "applied" })
+  })
+
   test("lets reentrant abort work supersede an outer claimant before fetch", async () => {
     const session = fixture()
     const transport = pendingFetch()
@@ -310,7 +483,9 @@ describe("FormSubmissionController", () => {
     getRequest.request.signal.addEventListener(
       "abort",
       () => {
-        nested = controller.submit(proposal(controls, "nested-wins"))
+        nested = controller.submit(proposal(controls, "nested-wins"), {
+          duplicateBehavior: "supersede",
+        })
       },
       { once: true },
     )
@@ -1219,6 +1394,7 @@ describe("FormSubmissionController", () => {
   test("keeps parse failures mutation-free, releases ownership, and remains reusable", async () => {
     const session = fixture()
     let attempt = 0
+    const controls = registry(session, "document-form")
     const controller = new FormSubmissionController(session, {
       async fetch(request) {
         attempt += 1
@@ -1229,13 +1405,15 @@ describe("FormSubmissionController", () => {
       },
     })
     const revision = session.revision
-    await expect(
-      controller.submit(proposal(registry(session, "document-form"), "malformed")),
-    ).rejects.toBeInstanceOf(ParseError)
+    await expect(controller.submit(proposal(controls, "malformed"))).rejects.toBeInstanceOf(
+      ParseError,
+    )
     expect(session.revision).toBe(revision)
-    expect(
-      await controller.submit(proposal(registry(session, "document-form"), "retry")),
-    ).toMatchObject({ application: "document", status: "applied" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(await controller.submit(proposal(controls, "retry"))).toMatchObject({
+      application: "document",
+      status: "applied",
+    })
     expect(session.tree.getElementById("recovered")).toBeDefined()
   })
 

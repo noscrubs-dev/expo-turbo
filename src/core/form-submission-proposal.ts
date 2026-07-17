@@ -1,5 +1,6 @@
 import { StateError } from "./errors"
 import type { FormRequestPlan } from "./form-request"
+import type { ExactFormSubmissionActivity } from "./form-submission-activity"
 import type { FormSubmissionDestination } from "./frames"
 import type { DocumentSession } from "./session"
 import type { ProtocolElement } from "./tree"
@@ -20,6 +21,7 @@ export interface FormSubmissionProposalIdentity {
   readonly originFrame?: ProtocolElement
   readonly originFrameId?: string
   readonly session: DocumentSession
+  readonly submissionActivity: ExactFormSubmissionActivity
   readonly submitter?: ProtocolElement
   readonly treeGeneration: number
 }

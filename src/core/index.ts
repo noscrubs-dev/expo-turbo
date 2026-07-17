@@ -5,6 +5,12 @@ export * from "./errors"
 export * from "./events"
 export * from "./form-request"
 export * from "./form-request-executor"
+export type {
+  FormSubmissionActivitySnapshot,
+  FormSubmissionActivityStatus,
+  FormSubmissionDuplicateBehavior,
+  FormSubmitterActivitySnapshot,
+} from "./form-submission-activity"
 export * from "./form-submission-controller"
 export type { FormSubmissionProposal } from "./form-submission-proposal"
 export * from "./forms"
