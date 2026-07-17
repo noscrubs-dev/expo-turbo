@@ -3,6 +3,7 @@ import { EXPO_TURBO_STATUS } from "expo-turbo";
 import { ScrollView, Text, View } from "react-native";
 
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
+import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
 
 export default function HomeScreen() {
   return (
@@ -39,6 +40,9 @@ export default function HomeScreen() {
         </Text>
         <Text selectable style={{ color: "#435160", fontSize: 13 }}>
           Parser/tree/selector probe: {PROTOCOL_SMOKE}
+        </Text>
+        <Text selectable style={{ color: "#435160", fontSize: 13 }}>
+          Registry capability: {REGISTRY_CAPABILITY_SMOKE}
         </Text>
       </View>
     </ScrollView>
