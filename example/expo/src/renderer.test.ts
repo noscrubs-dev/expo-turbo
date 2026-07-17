@@ -8,6 +8,8 @@ import { z } from "zod"
 import {
   defineStyleAdapter,
   type FormConfirmationAdapter,
+  type FormSubmissionAnnouncementAdapter,
+  type FormSubmissionAnnouncementEvent,
   type NavigationAdapter,
   type TurboRequest,
   type TurboResponse,
@@ -155,6 +157,7 @@ function render(
 function formScopeUnmountFixture(
   autoSubmitRequestId?: string,
   confirmation?: FormConfirmationAdapter,
+  providedSession?: DocumentSession,
 ) {
   const bindings = new Set<ExpoTurboFormBinding>()
   const pending: {
@@ -216,12 +219,14 @@ function formScopeUnmountFixture(
       version: "0.1.0",
     }),
   )
-  const session = new DocumentSession(
-    parseExpoTurboDocument(
-      '<Gallery><UnmountForm id="form" action="/submit" method="post" data-turbo-stream=""><CaptureUnmountForm /></UnmountForm><DemoText id="status">Before</DemoText></Gallery>',
-      { url: "https://example.test/current" },
-    ),
-  )
+  const session =
+    providedSession ??
+    new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><UnmountForm id="form" action="/submit" method="post" data-turbo-stream=""><CaptureUnmountForm /></UnmountForm><DemoText id="status">Before</DemoText></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
   const controller = new FormSubmissionController(
     session,
     {
@@ -230,10 +235,16 @@ function formScopeUnmountFixture(
     },
     { ...(confirmation ? { confirmation } : {}) },
   )
-  const provider = (forms: DocumentFormControls) =>
+  const provider = (
+    forms: DocumentFormControls,
+    options: Readonly<{
+      formAnnouncements?: FormSubmissionAnnouncementAdapter
+      onError?: (event: ExpoTurboRenderError) => void
+    }> = {},
+  ) =>
     createElement(
       ExpoTurboProvider,
-      { forms, registry, session },
+      { forms, registry, session, ...options },
       createElement(ExpoTurboRoot),
     )
 
@@ -252,7 +263,14 @@ function formScopeUnmountFixture(
   }
 }
 
-function formTerminalFixture(method: "get" | "post") {
+function formTerminalFixture(
+  method: "get" | "post",
+  options: Readonly<{
+    formAnnouncements?: FormSubmissionAnnouncementAdapter
+    onError?: (event: ExpoTurboRenderError) => void
+    strict?: boolean
+  }> = {},
+) {
   const bindings = new Map<string, ExpoTurboFormBinding>()
   let boundary: ExpoTurboFormBoundaryProps | undefined
   let childMounts = 0
@@ -393,13 +411,22 @@ function formTerminalFixture(method: "get" | "post") {
   const forms = new DocumentFormControls(session, { submissionController: controller })
   let renderer: ReactTestRenderer | undefined
   act(() => {
-    renderer = create(
+    const provider =
       createElement(
         ExpoTurboProvider,
-        { formComponent: FormBoundary, forms, registry, session },
+        {
+          formComponent: FormBoundary,
+          forms,
+          registry,
+          session,
+          ...(options.formAnnouncements
+            ? { formAnnouncements: options.formAnnouncements }
+            : {}),
+          ...(options.onError ? { onError: options.onError } : {}),
+        },
         createElement(ExpoTurboRoot),
-      ),
-    )
+      )
+    renderer = create(options.strict ? createElement(StrictMode, null, provider) : provider)
   })
   if (!renderer) throw new Error("terminal form renderer was not created")
   const activeRenderer = renderer
@@ -1382,7 +1409,17 @@ describe("React protocol renderer", () => {
   })
 
   test("publishes and dismisses terminal state through the form boundary without remounting children", async () => {
-    const fixture = formTerminalFixture("get")
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    let fixture: ReturnType<typeof formTerminalFixture>
+    fixture = formTerminalFixture("get", {
+      formAnnouncements: {
+        announce(event) {
+          expect(fixture.boundary().state.busy).toBe(false)
+          announcements.push(event)
+        },
+      },
+    })
+    expect(announcements).toEqual([])
     const submitter = fixture.hostNode("terminal-submitter").props.selection()
     let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
 
@@ -1423,6 +1460,9 @@ describe("React protocol renderer", () => {
     })
     expect(fixture.childMounts()).toBe(1)
     expect(fixture.childUnmounts()).toBe(0)
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "failed",
+    ])
 
     act(() => fixture.boundary().dismissTerminal())
 
@@ -1433,13 +1473,20 @@ describe("React protocol renderer", () => {
     expect(fixture.hostNode("form-boundary").props.terminalStatus).toBe("none")
     expect(fixture.childMounts()).toBe(1)
     expect(fixture.childUnmounts()).toBe(0)
+    expect(announcements).toHaveLength(1)
 
     act(() => fixture.renderer.unmount())
     expect(fixture.childUnmounts()).toBe(1)
   })
 
   test("retries a safe failure once with a fresh request and current exact-form controls", async () => {
-    const fixture = formTerminalFixture("get")
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formTerminalFixture("get", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+      strict: true,
+    })
     const submitter = fixture.hostNode("terminal-submitter").props.selection()
     let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
 
@@ -1522,6 +1569,10 @@ describe("React protocol renderer", () => {
       requestId: "retry-get",
       status: "empty",
     })
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "failed",
+      "empty",
+    ])
     act(() => fixture.renderer.unmount())
   })
 
@@ -1571,7 +1622,12 @@ describe("React protocol renderer", () => {
   })
 
   test("refuses to replay a submission whose response already committed", async () => {
-    const fixture = formTerminalFixture("post")
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formTerminalFixture("post", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
     fixture.session.subscribe("id:status", () => {
       throw new Error("committed observer secret")
     })
@@ -1613,16 +1669,84 @@ describe("React protocol renderer", () => {
     ).rejects.toThrow(/not safely retryable/)
     expect(fixture.pending).toHaveLength(1)
     expect(JSON.stringify(fixture.boundary().terminalState)).not.toContain("secret")
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "committed-error",
+    ])
     act(() => fixture.renderer.unmount())
+  })
+
+  test("announces applied and explicitly canceled terminal results", async () => {
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const appliedFixture = formTerminalFixture("post", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
+    let appliedSubmission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      appliedSubmission = appliedFixture.binding().submit({
+        protocol: { requestId: "announced-applied" },
+      })
+      await Promise.resolve()
+    })
+    const appliedRequest = appliedFixture.pending[0]
+    if (!appliedRequest || !appliedSubmission) {
+      throw new Error("applied announcement request was not captured")
+    }
+    await act(async () => {
+      appliedRequest.resolve({
+        headers: { "Content-Type": "text/vnd.turbo-stream.html" },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<turbo-stream action="update" target="status"><template>Applied</template></turbo-stream>',
+        url: appliedRequest.request.url,
+      })
+      await expect(appliedSubmission).resolves.toMatchObject({ status: "applied" })
+      await Promise.resolve()
+    })
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "applied",
+    ])
+    act(() => appliedFixture.renderer.unmount())
+
+    const canceledFixture = formTerminalFixture("get", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
+    let canceledSubmission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      canceledSubmission = canceledFixture.binding().submit({
+        protocol: { requestId: "announced-canceled" },
+      })
+      await Promise.resolve()
+      canceledFixture.binding().cancelSubmission()
+      await Promise.resolve()
+    })
+    if (!canceledSubmission) throw new Error("canceled announcement request was not captured")
+    await expect(canceledSubmission).resolves.toMatchObject({ status: "canceled" })
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "applied",
+      "canceled",
+    ])
+    act(() => canceledFixture.renderer.unmount())
   })
 
   test("cancels the active form after its last mounted scope unmounts", async () => {
     const fixture = formScopeUnmountFixture()
     const forms = fixture.forms()
     const controls = forms.controlsFor("id:form")
+    const announcements: FormSubmissionAnnouncementEvent[] = []
     let renderer: ReactTestRenderer | undefined
     act(() => {
-      renderer = create(fixture.provider(forms))
+      renderer = create(
+        fixture.provider(forms, {
+          formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+        }),
+      )
     })
     if (!renderer) throw new Error("renderer was not created")
 
@@ -1650,6 +1774,37 @@ describe("React protocol renderer", () => {
     expect(controls.isDisposed).toBe(false)
     expect(forms.isDisposed).toBe(false)
     expect(fixture.session.tree.getElementById("form")).toBeDefined()
+    expect(announcements).toEqual([])
+  })
+
+  test("does not announce a denied pre-start confirmation", async () => {
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formScopeUnmountFixture(undefined, {
+      confirm: () => false,
+    })
+    fixture.session.setAttribute("id:form", "data-turbo-confirm", "Continue?")
+    const forms = fixture.forms()
+    const controls = forms.controlsFor("id:form")
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        fixture.provider(forms, {
+          formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+        }),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    await expect(
+      fixture.binding().submit({ protocol: { requestId: "confirm-denied" } }),
+    ).resolves.toMatchObject({ requestId: "confirm-denied", status: "canceled" })
+
+    expect(fixture.pending).toEqual([])
+    expect(controls.submissionTerminalState.status).toBe("none")
+    expect(announcements).toEqual([])
+    act(() => renderer?.unmount())
   })
 
   test("cancels pending confirmation when its final mounted scope unmounts", async () => {
@@ -1767,12 +1922,321 @@ describe("React protocol renderer", () => {
     expect(formsB.isDisposed).toBe(false)
   })
 
+  test("deduplicates terminal announcements across StrictMode and providers and isolates adapter failure", async () => {
+    const fixture = formScopeUnmountFixture()
+    const formsA = fixture.forms()
+    const formsB = fixture.forms()
+    const errors: ExpoTurboRenderError[] = []
+    const statuses: string[] = []
+    const announcements: FormSubmissionAnnouncementAdapter = {
+      announce({ terminalState }) {
+        statuses.push(terminalState.status)
+        if (statuses.length === 1) throw new Error("native announcement unavailable")
+        if (statuses.length === 2) {
+          return Promise.reject(new Error("async announcement unavailable"))
+        }
+      },
+    }
+    let rendererA: ReactTestRenderer | undefined
+    let rendererB: ReactTestRenderer | undefined
+    act(() => {
+      rendererA = create(
+        createElement(
+          StrictMode,
+          null,
+          fixture.provider(formsA, { formAnnouncements: announcements, onError: (e) => errors.push(e) }),
+        ),
+      )
+      rendererB = create(
+        createElement(
+          StrictMode,
+          null,
+          fixture.provider(formsB, { formAnnouncements: announcements, onError: (e) => errors.push(e) }),
+        ),
+      )
+    })
+    if (!rendererA || !rendererB) throw new Error("announcement renderers were not created")
+    expect(statuses).toEqual([])
+
+    for (const requestId of [
+      "sync-failed-announcement",
+      "async-failed-announcement",
+      "later-announcement",
+    ]) {
+      let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+      await act(async () => {
+        submission = fixture.binding().submit({ protocol: { requestId } })
+        await Promise.resolve()
+      })
+      const request = fixture.pending.at(-1)
+      if (!request || !submission) throw new Error("announcement request was not captured")
+      await act(async () => {
+        request.resolve({
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.request.url,
+        })
+        await expect(submission).resolves.toMatchObject({ requestId, status: "empty" })
+        await Promise.resolve()
+      })
+    }
+
+    expect(statuses).toEqual(["empty", "empty", "empty"])
+    expect(errors.map(({ error }) => error.message)).toEqual([
+      "native announcement unavailable",
+      "async announcement unavailable",
+    ])
+    act(() => {
+      formsA.controlsFor("id:form").dismissSubmissionTerminal()
+    })
+    expect(statuses).toHaveLength(3)
+    act(() => {
+      rendererA?.unmount()
+      rendererB?.unmount()
+    })
+  })
+
+  test("does not announce a terminal result that predates provider mount", async () => {
+    const fixture = formScopeUnmountFixture()
+    const forms = fixture.forms()
+    const controls = forms.controlsFor("id:form")
+    const submission = controls.submit({ protocol: { requestId: "headless-result" } })
+    await Promise.resolve()
+    const request = fixture.pending[0]
+    if (!request) throw new Error("headless form request was not captured")
+    request.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 204,
+      text: async () => "",
+      url: request.request.url,
+    })
+    await expect(submission).resolves.toMatchObject({
+      requestId: "headless-result",
+      status: "empty",
+    })
+    expect(controls.submissionTerminalState).toMatchObject({
+      requestId: "headless-result",
+      status: "empty",
+    })
+
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        fixture.provider(forms, {
+          formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+        }),
+      )
+      await Promise.resolve()
+    })
+
+    expect(announcements).toEqual([])
+    act(() => renderer?.unmount())
+  })
+
+  test("deduplicates terminal revisions independently for sessions sharing one tree", async () => {
+    const tree = parseExpoTurboDocument(
+      '<Gallery><UnmountForm id="form" action="/submit" method="post" data-turbo-stream=""><CaptureUnmountForm /></UnmountForm><DemoText id="status">Before</DemoText></Gallery>',
+      { url: "https://example.test/current" },
+    )
+    const first = formScopeUnmountFixture(undefined, undefined, new DocumentSession(tree))
+    const second = formScopeUnmountFixture(undefined, undefined, new DocumentSession(tree))
+    const firstForms = first.forms()
+    const secondForms = second.forms()
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const adapter: FormSubmissionAnnouncementAdapter = {
+      announce: (event) => {
+          announcements.push(event)
+        },
+    }
+    let firstRenderer: ReactTestRenderer | undefined
+    let secondRenderer: ReactTestRenderer | undefined
+    act(() => {
+      firstRenderer = create(
+        first.provider(firstForms, { formAnnouncements: adapter }),
+      )
+      secondRenderer = create(
+        second.provider(secondForms, { formAnnouncements: adapter }),
+      )
+    })
+
+    for (const [fixture, requestId] of [
+      [first, "shared-tree-first"],
+      [second, "shared-tree-second"],
+    ] as const) {
+      let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+      await act(async () => {
+        submission = fixture.binding().submit({ protocol: { requestId } })
+        await Promise.resolve()
+      })
+      const request = fixture.pending[0]
+      if (!request || !submission) throw new Error("shared-tree request was not captured")
+      await act(async () => {
+        request.resolve({
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.request.url,
+        })
+        await expect(submission).resolves.toMatchObject({ requestId, status: "empty" })
+        await Promise.resolve()
+      })
+    }
+
+    expect(announcements.map(({ terminalState }) => terminalState.requestId)).toEqual([
+      "shared-tree-first",
+      "shared-tree-second",
+    ])
+    act(() => {
+      firstRenderer?.unmount()
+      secondRenderer?.unmount()
+    })
+  })
+
+  test("announces only the newest terminal result after same-form supersession", async () => {
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formTerminalFixture("get", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
+    let first: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    let second: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      first = fixture.binding().submit({ protocol: { requestId: "stale-first" } })
+      await Promise.resolve()
+      second = fixture.binding().submit(
+        { protocol: { requestId: "current-second" } },
+        { duplicateBehavior: "supersede" },
+      )
+      await Promise.resolve()
+    })
+    const firstRequest = fixture.pending[0]
+    const secondRequest = fixture.pending[1]
+    if (!first || !second || !firstRequest || !secondRequest) {
+      throw new Error("superseded announcement requests were not captured")
+    }
+    await expect(first).resolves.toMatchObject({ requestId: "stale-first", status: "canceled" })
+    expect(announcements).toEqual([])
+
+    await act(async () => {
+      firstRequest.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: firstRequest.request.url,
+      })
+      secondRequest.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: secondRequest.request.url,
+      })
+      await expect(second).resolves.toMatchObject({ requestId: "current-second", status: "empty" })
+      await Promise.resolve()
+    })
+
+    expect(announcements.map(({ terminalState }) => terminalState.requestId)).toEqual([
+      "current-second",
+    ])
+    act(() => fixture.renderer.unmount())
+  })
+
+  test("does not announce cancellation into a same-key replacement mounted in flight", async () => {
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formTerminalFixture("get", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "replace-in-flight" } })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("in-flight replacement was not captured")
+
+    await act(async () => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="replace" target="form"><template><TerminalForm id="form" action="/replacement" method="get"><CaptureTerminalForm slot="replacement" /></TerminalForm></template></turbo-stream>',
+      )
+      await Promise.resolve()
+    })
+
+    expect(request.request.signal?.aborted).toBe(true)
+    await expect(submission).resolves.toMatchObject({
+      requestId: "replace-in-flight",
+      status: "canceled",
+    })
+    expect(fixture.binding("replacement").terminalState.status).toBe("none")
+    expect(announcements).toEqual([])
+    act(() => fixture.renderer.unmount())
+  })
+
+  test("does not replay terminal announcements into a same-key form replacement", async () => {
+    const announcements: FormSubmissionAnnouncementEvent[] = []
+    const fixture = formTerminalFixture("get", {
+      formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+    })
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "before-replacement" } })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("replacement announcement request was not captured")
+    await act(async () => {
+      request.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: request.request.url,
+      })
+      await expect(submission).rejects.toThrow()
+      await Promise.resolve()
+    })
+    expect(announcements.map(({ terminalState }) => terminalState.status)).toEqual([
+      "failed",
+    ])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="replace" target="form"><template><TerminalForm id="form" action="/replacement" method="get"><CaptureTerminalForm slot="replacement" /></TerminalForm></template></turbo-stream>',
+      )
+    })
+
+    expect(fixture.binding("replacement").terminalState.status).toBe("none")
+    expect(announcements).toHaveLength(1)
+    act(() => fixture.renderer.unmount())
+  })
+
   test("lets a self-removing form response apply its later Stream actions", async () => {
     const fixture = formScopeUnmountFixture()
     const forms = fixture.forms()
+    const announcements: FormSubmissionAnnouncementEvent[] = []
     let renderer: ReactTestRenderer | undefined
     act(() => {
-      renderer = create(fixture.provider(forms))
+      renderer = create(
+        fixture.provider(forms, {
+          formAnnouncements: { announce: (event) => {
+          announcements.push(event)
+        } },
+        }),
+      )
     })
     if (!renderer) throw new Error("renderer was not created")
 
@@ -1812,6 +2276,7 @@ describe("React protocol renderer", () => {
     expect(fixture.session.tree.getElementById("form")).toBeUndefined()
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
     expect(forms.isDisposed).toBe(false)
+    expect(announcements).toEqual([])
   })
 
   test("reports a form control rendered outside an explicit form scope", () => {

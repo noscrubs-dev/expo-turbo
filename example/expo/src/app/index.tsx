@@ -16,13 +16,18 @@ import {
 } from "expo-turbo/react";
 import { type Href, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef } from "react";
-import { Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
 import { createDemoDocumentController } from "../demo-document-controller";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { createDemoFormController } from "../demo-form-controller";
+import { DEMO_FORM_ANNOUNCEMENTS } from "../demo-form-announcement-runtime";
+import {
+  demoFormAnnouncement,
+  demoFormLiveRegion,
+} from "../demo-form-announcements";
 import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
@@ -106,14 +111,16 @@ function DemoFormBoundary({
   const retryable =
     terminalState.status === "failed" &&
     terminalState.retryDisposition === "safe";
+  const announcement =
+    terminalState.status === "none"
+      ? undefined
+      : demoFormAnnouncement(terminalState);
+  const liveRegion = demoFormLiveRegion(Platform.OS, state.busy, terminalState);
   const label = state.busy
     ? "Submitting current form"
     : terminalState.status === "none"
       ? "No terminal submission result"
-      : terminalState.status === "failed" ||
-          terminalState.status === "committed-error"
-        ? `${terminalState.error.name}: ${terminalState.error.message}`
-        : `Last submission: ${terminalState.status}`;
+      : announcement?.message;
 
   return (
     <View style={{ gap: 10 }}>
@@ -163,6 +170,24 @@ function DemoFormBoundary({
           </Pressable>
         ) : null}
       </View>
+      {Platform.OS === "web" ? (
+        <View
+          style={{
+            height: 1,
+            left: -10000,
+            overflow: "hidden",
+            position: "absolute",
+            width: 1,
+          }}
+        >
+          <View aria-live="polite">
+            <Text>{liveRegion === "polite" ? announcement?.message : ""}</Text>
+          </View>
+          <View aria-live="assertive">
+            <Text>{liveRegion === "assertive" ? announcement?.message : ""}</Text>
+          </View>
+        </View>
+      ) : null}
       {children}
     </View>
   );
@@ -260,6 +285,7 @@ export default function HomeScreen() {
         documentController={documentController}
         frameComponent={DemoFrameBoundary}
         formComponent={DemoFormBoundary}
+        formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
         frames={frames}
         forms={forms}
         navigation={navigation}
