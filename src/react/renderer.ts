@@ -26,12 +26,15 @@ import type {
   DocumentVisitResult,
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
-import { RegistryError, TargetError } from "../core/errors"
+import { RegistryError, StateError, TargetError } from "../core/errors"
+import type { FormRequestPlan } from "../core/form-request"
 import type {
+  ActiveFormRequestPlanOptions,
   DocumentFormControls,
   FormControlDescriptor,
   FormControlRegistration,
   FormControlRegistry,
+  FormControlSelection,
   SuccessfulFormEntriesOptions,
   SuccessfulFormEntry,
 } from "../core/forms"
@@ -99,6 +102,7 @@ export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
 
 export interface ExpoTurboFormBinding {
   readonly formNodeKey: string
+  readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
   readonly successfulEntries: (
     options?: SuccessfulFormEntriesOptions,
   ) => readonly SuccessfulFormEntry[]
@@ -106,6 +110,7 @@ export interface ExpoTurboFormBinding {
 
 export interface ExpoTurboFormControlBinding {
   readonly nodeKey: string
+  selection(): FormControlSelection
 }
 
 interface ExpoTurboFormContextValue {
@@ -377,6 +382,7 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
     () =>
       Object.freeze({
         formNodeKey: nodeKey,
+        requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
       }),
@@ -422,7 +428,18 @@ export function useExpoTurboFormControl(
     }
   }, [context.registry, nodeKey])
 
-  return useMemo(() => Object.freeze({ nodeKey }), [nodeKey])
+  return useMemo(
+    () =>
+      Object.freeze({
+        nodeKey,
+        selection: () => {
+          const current = registration.current
+          if (!current) throw new StateError("Form control registration is not active")
+          return current.selection
+        },
+      }),
+    [nodeKey],
+  )
 }
 
 export function useNodeDisposal(dispose: () => void): void {

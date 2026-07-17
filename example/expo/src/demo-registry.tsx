@@ -224,10 +224,13 @@ function DemoFormComponent({ children }: { children?: ReactNode }) {
 }
 
 const form = defineComponent({
-  attributes: {},
+  attributes: {
+    action: { codec: stringCodec, prop: "action" },
+    method: { codec: stringCodec, prop: "method" },
+  },
   children: "nodes",
   component: DemoFormComponent,
-  schema: z.object({}),
+  schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
   tag: "DemoForm",
 });
 
@@ -275,29 +278,36 @@ const formInput = defineComponent({
   tag: "DemoFormInput",
 });
 
-function DemoFormSubmitterComponent({
-  label,
-  name,
-  value,
-}: {
+function DemoFormSubmitterComponent(props: {
+  formaction?: string;
+  formmethod?: string;
   label: string;
   name: string;
   value: string;
 }) {
+  const { label, name, value } = props;
   const formBinding = useExpoTurboForm();
   const control = useExpoTurboFormControl({ kind: "submitter", name, value });
-  const [entries, setEntries] = useState("No entries collected yet");
+  const [preview, setPreview] = useState("No request plan built yet");
   return (
     <View style={{ gap: 8 }}>
       <Pressable
         accessibilityRole="button"
-        onPress={() =>
-          setEntries(
-            JSON.stringify(
-              formBinding.successfulEntries({ submitterNodeKey: control.nodeKey }),
-            ),
-          )
-        }
+        onPress={() => {
+          const plan = formBinding.requestPlan({
+            protocol: { requestId: "demo-form-preview" },
+            submitter: control.selection(),
+          });
+          setPreview(
+            JSON.stringify({
+              body: plan.request.body?.value,
+              effectiveMethod: plan.effectiveMethod,
+              entries: plan.entries,
+              method: plan.request.method,
+              url: plan.request.url,
+            }),
+          );
+        }}
         style={({ pressed }) => ({
           alignItems: "center",
           backgroundColor: pressed ? "#19375a" : "#285589",
@@ -308,7 +318,7 @@ function DemoFormSubmitterComponent({
         <Text style={{ color: "white", fontWeight: "600" }}>{label}</Text>
       </Pressable>
       <Text selectable style={{ color: "#435160", fontSize: 12 }}>
-        {entries}
+        {preview}
       </Text>
     </View>
   );
@@ -316,13 +326,21 @@ function DemoFormSubmitterComponent({
 
 const formSubmitter = defineComponent({
   attributes: {
+    formaction: { codec: stringCodec, prop: "formaction" },
+    formmethod: { codec: stringCodec, prop: "formmethod" },
     label: { codec: stringCodec, prop: "label" },
     name: { codec: stringCodec, prop: "name" },
     value: { codec: stringCodec, prop: "value" },
   },
   children: "none",
   component: DemoFormSubmitterComponent,
-  schema: z.object({ label: z.string(), name: z.string(), value: z.string() }),
+  schema: z.object({
+    formaction: z.string().optional(),
+    formmethod: z.string().optional(),
+    label: z.string(),
+    name: z.string(),
+    value: z.string(),
+  }),
   tag: "DemoFormSubmitter",
 });
 
@@ -349,11 +367,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
-    <DemoText>Edit either native value, then collect the frozen successful-entry list with the activated submitter appended last.</DemoText>
-    <DemoForm id="native-form">
+    <DemoText>Edit either native value, then build one frozen request plan from the exact form, selected submitter, live entries, and raw XML request attributes. This preview does not fetch.</DemoText>
+    <DemoForm id="native-form" action="/demo/profile" method="post">
       <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
-      <DemoFormSubmitter id="collect-form" label="Collect native entries" name="commit" value="preview" />
+      <DemoFormSubmitter id="collect-form" formaction="/demo/profile/preview" formmethod="patch" label="Preview immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>
   <DemoDocumentLink href="/demo/linked">

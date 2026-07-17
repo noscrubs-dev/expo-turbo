@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add registration-bound submitter selection and immutable active-form request planning to the core and React APIs, composing current form/submitter attributes and live XML-ordered values into a caller-owned request plan without fetching.
 - Unify registry and React text handling around inherited `xml:space`, explicit default reset, CDATA preservation, XML-whitespace collapse, and deterministic diagnostic serialization.
 - Add a shared programmatic Frame visit API that resolves current, named, parent, and top-level targets through the existing controller loader and navigation adapter.
 - Add bounded recursive Frame extraction through same-origin intermediary sources with token matching, independent request IDs, redirected-base resolution, and loop/depth protection.

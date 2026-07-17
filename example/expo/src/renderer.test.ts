@@ -28,6 +28,7 @@ import {
   FrameMissingError,
   FrameRequestLoader,
   parseExpoTurboDocument,
+  StateError,
   TargetError,
 } from "expo-turbo/core"
 import {
@@ -582,7 +583,15 @@ describe("React protocol renderer", () => {
       string,
       ReturnType<ExpoTurboFormBinding["successfulEntries"]>
     >()
-    function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+    function NativeForm(
+      props: Readonly<{
+        action?: string
+        children?: ReactNode
+        enctype?: string
+        method?: string
+        stream?: string
+      }>,
+    ): ReactNode {
       return createElement(ExpoTurboFormScope, null, props.children)
     }
     function CaptureForm({ slot }: { slot: string }): ReactNode {
@@ -614,6 +623,15 @@ describe("React protocol renderer", () => {
       })
       return createElement("native-value", { nodeKey: binding.nodeKey, value })
     }
+    function NativeLiveValue({ name, value }: { name: string; value: string }): ReactNode {
+      const [current, setCurrent] = useState(value)
+      const binding = useExpoTurboFormControl({ kind: "value", name, value: current })
+      return createElement("native-live-value", {
+        nodeKey: binding.nodeKey,
+        onChange: setCurrent,
+        value: current,
+      })
+    }
     function NativeCheckable({
       checked,
       name,
@@ -635,29 +653,44 @@ describe("React protocol renderer", () => {
       useExpoTurboFormControl({ kind: "multiple", name, values: values.split("|") })
       return createElement("native-multiple", { values })
     }
-    function NativeSubmitter({
-      disabled,
-      name,
-      value,
-    }: {
+    function NativeSubmitter(props: {
       disabled?: boolean
+      formaction?: string
+      formenctype?: string
+      formmethod?: string
       name?: string
+      stream?: string
       value?: string
     }): ReactNode {
-      useExpoTurboFormControl({
+      const { disabled, name, value } = props
+      const binding = useExpoTurboFormControl({
         ...(disabled !== undefined ? { disabled } : {}),
         kind: "submitter",
         ...(name !== undefined ? { name } : {}),
         ...(value !== undefined ? { value } : {}),
       })
-      return createElement("native-submitter", { value })
+      return createElement("native-submitter", {
+        nodeKey: binding.nodeKey,
+        selection: binding.selection,
+        value,
+      })
     }
 
     const form = defineComponent({
-      attributes: {},
+      attributes: {
+        action: { codec: stringCodec, prop: "action" },
+        "data-turbo-stream": { codec: stringCodec, prop: "stream" },
+        enctype: { codec: stringCodec, prop: "enctype" },
+        method: { codec: stringCodec, prop: "method" },
+      },
       children: "nodes",
       component: NativeForm,
-      schema: z.object({}),
+      schema: z.object({
+        action: z.string().optional(),
+        enctype: z.string().optional(),
+        method: z.string().optional(),
+        stream: z.string().optional(),
+      }),
       tag: "NativeForm",
     })
     const capture = defineComponent({
@@ -681,6 +714,16 @@ describe("React protocol renderer", () => {
         value: z.string(),
       }),
       tag: "NativeValue",
+    })
+    const liveValue = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeLiveValue,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "NativeLiveValue",
     })
     const checkable = defineComponent({
       attributes: {
@@ -709,7 +752,11 @@ describe("React protocol renderer", () => {
     })
     const submitter = defineComponent({
       attributes: {
+        "data-turbo-stream": { codec: stringCodec, prop: "stream" },
         disabled: { codec: booleanCodec, prop: "disabled" },
+        formaction: { codec: stringCodec, prop: "formaction" },
+        formenctype: { codec: stringCodec, prop: "formenctype" },
+        formmethod: { codec: stringCodec, prop: "formmethod" },
         name: { codec: stringCodec, prop: "name" },
         value: { codec: stringCodec, prop: "value" },
       },
@@ -717,28 +764,33 @@ describe("React protocol renderer", () => {
       component: NativeSubmitter,
       schema: z.object({
         disabled: z.boolean().optional(),
+        formaction: z.string().optional(),
+        formenctype: z.string().optional(),
+        formmethod: z.string().optional(),
         name: z.string().optional(),
+        stream: z.string().optional(),
         value: z.string().optional(),
       }),
       tag: "NativeSubmitter",
     })
     const componentRegistry = registryWithCounters().use(
       defineComponentModule({
-        components: [form, capture, value, checkable, multiple, submitter],
+        components: [form, capture, value, liveValue, checkable, multiple, submitter],
         name: "native-form-components",
         version: "0.1.0",
       }),
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(`<Gallery>
-        <NativeForm id="form">
+        <NativeForm id="form" action="/profile" method="post">
           <CaptureForm slot="primary" />
           <NativeValue id="first" name="item" value="" />
+          <NativeLiveValue id="local" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
           <NativeValue id="disabled" disabled="true" name="ignored" value="secret" />
           <NativeValue id="unnamed" value="ignored" />
-          <NativeSubmitter id="submit" name="commit" value="save" />
+          <NativeSubmitter id="submit" name="commit" value="save" formaction="/profile/save" formmethod="patch" data-turbo-stream="" />
           <NativeSubmitter id="alternate" name="commit" value="ignored" />
         </NativeForm>
         <NativeForm id="outer-form">
@@ -749,7 +801,7 @@ describe("React protocol renderer", () => {
             <NativeValue id="other-value" name="other" value="isolated" />
           </NativeForm>
         </NativeForm>
-      </Gallery>`),
+      </Gallery>`, { url: "https://example.test/forms/current" }),
     )
     const forms = new DocumentFormControls(session)
     const scopes = new DocumentStateScopes(session)
@@ -783,20 +835,104 @@ describe("React protocol renderer", () => {
     activeFormState.set("strict-mode", "active")
     expect(activeFormState.get("strict-mode")).toBe("active")
 
-    expect(primary.successfulEntries({ submitterNodeKey: "id:submit" })).toEqual([
+    const submitterControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:submit")
+    if (!submitterControl) throw new Error("submitter control was not rendered")
+    const submitterSelection = submitterControl.props.selection
+    const selectedSubmitter = submitterSelection()
+    expect(primary.successfulEntries({ submitter: selectedSubmitter })).toEqual([
       { name: "item", value: "" },
+      { name: "local", value: "before" },
       { name: "agree", value: "on" },
       { name: "choices[]", value: "one" },
       { name: "choices[]", value: "" },
       { name: "choices[]", value: "one" },
       { name: "commit", value: "save" },
     ])
+    expect(
+      primary.requestPlan({
+        protocol: { frameId: "profile-frame", requestId: "react-request" },
+        submitter: selectedSubmitter,
+      }),
+    ).toMatchObject({
+      effectiveMethod: "PATCH",
+      entries: [
+        { name: "item", value: "" },
+        { name: "local", value: "before" },
+        { name: "agree", value: "on" },
+        { name: "choices[]", value: "one" },
+        { name: "choices[]", value: "" },
+        { name: "choices[]", value: "one" },
+        { name: "commit", value: "save" },
+        { name: "_method", value: "patch" },
+      ],
+      request: {
+        headers: {
+          Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
+          "Turbo-Frame": "profile-frame",
+          "X-Turbo-Request-Id": "react-request",
+        },
+        method: "POST",
+        url: "https://example.test/profile/save",
+      },
+      sourceMethod: "PATCH",
+    })
     expect(entriesAtPassiveMount.get("primary")).toEqual(primary.successfulEntries())
     expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
     expect(other.successfulEntries()).toEqual([{ name: "other", value: "isolated" }])
 
+    const liveControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-live-value")
+      .find((control) => control.props.nodeKey === "id:local")
+    if (!liveControl) throw new Error("live form control was not rendered")
+    act(() => liveControl.props.onChange("component-local"))
+    expect(primary.successfulEntries()[1]).toEqual({
+      name: "local",
+      value: "component-local",
+    })
+    expect(
+      primary.requestPlan({ protocol: { requestId: "component-local-request" } }).entries[1],
+    ).toEqual({ name: "local", value: "component-local" })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="submit"><template><NativeSubmitter id="submit" name="commit" value="replacement" formaction="/profile/replacement" formmethod="post" /></template></turbo-stream>',
+      )
+    })
+    expect(() => submitterSelection()).toThrow(StateError)
+    expect(() => primary.successfulEntries({ submitter: selectedSubmitter })).toThrow(TargetError)
+    const replacementSubmitterControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:submit")
+    if (!replacementSubmitterControl) throw new Error("replacement submitter was not rendered")
+    const replacementSubmitterSelection = replacementSubmitterControl.props.selection
+    const selectedReplacementSubmitter = replacementSubmitterSelection()
+    expect(
+      primary.requestPlan({
+        protocol: { requestId: "replacement-submitter" },
+        submitter: selectedReplacementSubmitter,
+      }),
+    ).toMatchObject({
+      entries: [
+        { name: "item", value: "" },
+        { name: "local", value: "component-local" },
+        { name: "agree", value: "on" },
+        { name: "choices[]", value: "one" },
+        { name: "choices[]", value: "" },
+        { name: "choices[]", value: "one" },
+        { name: "commit", value: "replacement" },
+      ],
+      request: { method: "POST", url: "https://example.test/profile/replacement" },
+      sourceMethod: "POST",
+    })
+
     act(() => session.setAttribute("id:first", "value", "updated"))
     expect(primary.successfulEntries()[0]).toEqual({ name: "item", value: "updated" })
+    expect(
+      primary.requestPlan({ protocol: { requestId: "updated-request" } }).entries[0],
+    ).toEqual({ name: "item", value: "updated" })
 
     act(() => {
       dispatchTurboStreamFragment(
@@ -810,9 +946,16 @@ describe("React protocol renderer", () => {
     expect(entriesAtPassiveMount.get("updated")).toEqual([
       { name: "next", value: "child-update" },
     ])
-    expect(() => primary.successfulEntries({ submitterNodeKey: "id:submit" })).toThrow(
-      TargetError,
-    )
+    expect(() => replacementSubmitterSelection()).toThrow(StateError)
+    expect(() =>
+      primary.successfulEntries({ submitter: selectedReplacementSubmitter }),
+    ).toThrow(TargetError)
+    expect(() =>
+      primary.requestPlan({
+        protocol: { requestId: "removed-submitter" },
+        submitter: selectedReplacementSubmitter,
+      }),
+    ).toThrow(TargetError)
 
     act(() => {
       dispatchTurboStreamFragment(
