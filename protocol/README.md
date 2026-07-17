@@ -27,3 +27,11 @@ Stable XML IDs provide addressability; they do not make two different tree nodes
 Built-in compound Stream actions validate every payload ID, including repeated IDs within one template, before removing collision nodes. A rejected action therefore leaves the active tree, revision, snapshots, scopes, and disposal registrations unchanged while later sibling Stream actions may continue. This preflight guarantee applies to the built-in dispatcher; arbitrary host mutations and custom Stream handlers must not mutate and then throw as though they were transactional.
 
 Registered component cleanup runs on logical subtree removal/replacement and on ordinary React/provider unmount. Cleanup is identity-bound and once-only, so a logical mutation followed by React reconciliation cannot dispose the same resource twice.
+
+## Frame loading and native accessibility
+
+A connected Frame exposes its immutable controller snapshot through a host-defined `frameComponent` boundary and `useExpoTurboFrame()`. The hook resolves the nearest connected Frame, so nested Frames receive independent bindings and components outside a Frame receive `undefined`. The default boundary remains a Fragment.
+
+`busy` becomes true immediately while a Frame GET owns the controller and false on every terminal path. `complete` means only that the Frame is not currently loading; it is true after success, an empty `204`, failure, or cancellation. Hosts must inspect `status` and `hasBeenLoaded` when the terminal result matters. This slice covers Frame GET activity only. Document visits, targeted form submissions, delayed visual progress, submitter state, and live announcements remain separate contracts.
+
+The binding includes a frozen `{ busy }` accessibility state for a host to pass to an actual native boundary. The package does not import React Native, infer that a disabled Frame makes all descendants inaccessible, announce server-authored status, or mutate `busy`, `complete`, or `aria-busy` into the logical XML tree. Controller-state changes preserve the boundary and current children; only boundary or nearest-Frame consumers rerender until a protocol mutation actually replaces children. Host boundary failures use the same registered Frame error surface as other protocol nodes.

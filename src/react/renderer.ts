@@ -51,8 +51,23 @@ export interface ExpoTurboRenderError {
   readonly nodeKey: string
 }
 
+export interface ExpoTurboFrameAccessibilityState {
+  readonly busy: boolean
+}
+
+export interface ExpoTurboFrameBinding {
+  readonly accessibilityState: ExpoTurboFrameAccessibilityState
+  readonly controller: FrameController
+  readonly state: FrameControllerSnapshot
+}
+
+export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
+  readonly children?: ReactNode
+}
+
 interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
+  readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly registry: RenderRegistry
@@ -64,6 +79,7 @@ interface RendererContextValue {
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
+const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
@@ -71,6 +87,7 @@ const StateScopeContext = createContext<DocumentStateStore | undefined>(undefine
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
   readonly children?: ReactNode
+  readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly frames?: FrameControllerCollection
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly registry: RenderRegistry
@@ -87,6 +104,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
+      frameComponent: props.frameComponent,
       frames: props.frames,
       onError: props.onError,
       registry: props.registry,
@@ -98,6 +116,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     }),
     [
       props.actions,
+      props.frameComponent,
       props.frames,
       props.onError,
       props.registry,
@@ -272,6 +291,10 @@ export function useFrameControllerState(controller: FrameController): FrameContr
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
+export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
+  return useContext(FrameContext)
+}
+
 interface ErrorBoundaryProps {
   readonly children?: ReactNode
   readonly nodeKey: string
@@ -282,23 +305,25 @@ interface ErrorBoundaryProps {
 
 interface ErrorBoundaryState {
   readonly error: Error | null
+  readonly revision: number
 }
 
 class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { error: null }
+  state: ErrorBoundaryState = { error: null, revision: this.props.revision }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromProps(
+    props: ErrorBoundaryProps,
+    state: ErrorBoundaryState,
+  ): ErrorBoundaryState | null {
+    return state.revision === props.revision ? null : { error: null, revision: props.revision }
+  }
+
+  static getDerivedStateFromError(error: Error): Pick<ErrorBoundaryState, "error"> {
     return { error }
   }
 
   componentDidCatch(error: Error): void {
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
-  }
-
-  componentDidUpdate(previous: ErrorBoundaryProps): void {
-    if (this.state.error && previous.revision !== this.props.revision) {
-      this.setState({ error: null })
-    }
   }
 
   render(): ReactNode {
@@ -340,19 +365,29 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
 }
 
 interface ConnectedFrameProps {
+  readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frameId: string
   readonly frames: FrameControllerCollection
   readonly node: ProtocolElement
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
 }
 
 function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   const controller = props.frames.get(props.frameId)
-  useFrameControllerState(controller)
+  const state = useFrameControllerState(controller)
+  const accessibilityState = useMemo<ExpoTurboFrameAccessibilityState>(
+    () => Object.freeze({ busy: state.busy }),
+    [state.busy],
+  )
+  const binding = useMemo<ExpoTurboFrameBinding>(
+    () => Object.freeze({ accessibilityState, controller, state }),
+    [accessibilityState, controller, state],
+  )
   useEffect(() => {
     void controller.connect().catch(() => undefined)
-    return () => props.frames.delete(props.frameId, controller)
-  }, [controller, props.frameId, props.frames])
+    return () => controller.disconnect()
+  }, [controller])
   useEffect(
     () =>
       controller.subscribeErrors((error) => {
@@ -360,7 +395,23 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
       }),
     [controller, props.node.key, props.onError],
   )
-  return createElement(Fragment, null, renderChildren(props.node.children))
+  const children = useMemo(
+    () => createElement(Fragment, null, renderChildren(props.node.children)),
+    [props.node.children],
+  )
+  const rendered = props.frameComponent
+    ? createElement(
+        NodeErrorBoundary,
+        {
+          nodeKey: props.node.key,
+          onError: props.onError,
+          renderError: props.renderError,
+          revision: state.revision,
+        },
+        createElement(props.frameComponent, binding, children),
+      )
+    : children
+  return createElement(FrameContext.Provider, { value: binding }, rendered)
 }
 
 function ProtocolElementView(
@@ -379,19 +430,34 @@ function ProtocolElementView(
     const rendered =
       context.frames && frameId
         ? createElement(ConnectedFrame, {
+            frameComponent: context.frameComponent,
             frameId,
             frames: context.frames,
             node: props.node,
             onError: context.onError,
+            renderError: context.renderError,
           })
-        : createElement(Fragment, null, renderChildren(props.node.children))
+        : createElement(
+            FrameContext.Provider,
+            { value: undefined },
+            createElement(Fragment, null, renderChildren(props.node.children)),
+          )
     return createElement(
-      StateScopeBoundary,
+      NodeErrorBoundary,
       {
-        kind: "frame",
         nodeKey: props.node.key,
+        onError: context.onError,
+        renderError: context.renderError,
+        revision: props.revision,
       },
-      rendered,
+      createElement(
+        StateScopeBoundary,
+        {
+          kind: "frame",
+          nodeKey: props.node.key,
+        },
+        rendered,
+      ),
     )
   }
 

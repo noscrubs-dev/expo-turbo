@@ -76,6 +76,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Frame target resolution for submitter/element/default precedence, named Frames, `_self`, `_parent`, and `_top`, including page promotion when the selected Frame is unavailable or disabled.
 - [x] Identity-bound observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation/rebinding on disable, source removal, same-ID wrapper replacement, or disconnect.
 - [x] Opt-in React Frame lifecycle wiring that connects mounted controllers, subscribes to lifecycle state, eagerly loads sources, and cancels/disposes requests when a Frame subtree unmounts.
+- [x] Host-rendered Frame GET lifecycle and accessibility binding with a stable boundary, nearest-Frame hook, frozen native busy state, nested scoping, error containment, same-ID replacement rebinding, and no synthetic XML attributes.
 - [x] Injected lazy-Frame visibility lifecycle that observes while mounted, loads on first visibility, stops observing when the request starts, and reports automatic-load failures.
 - [x] Bounded Frame `recurse` extraction with whitespace-token matching, same-origin intermediary GETs, independent request IDs, redirected-base resolution, URL-loop/depth rejection, and canonical source ownership.
 - [x] Shared programmatic Frame visit API for current, named, `_self`, `_parent`, and `_top` targets, with same-source reload plus explicit top-level/external navigation delegation.
@@ -84,7 +85,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ### In progress / not yet supported
 
-- [ ] Public document/Frame/form loading and accessibility surfaces.
+- [ ] Document-visit and form-submission loading/accessibility surfaces, delayed visit progress, pending submitter behavior, and physical accessibility evidence.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
 - [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
@@ -96,7 +97,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ## TypeScript API boundaries
 
-The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, deterministic diagnostic serializer, typed logical events and state-reference resolution, addressable tree/session/state with subtree disposal, selectors, structural and custom Stream dispatch, Frame target/request/recurse/controller/visit APIs, semantic style adapters, typed component/component-action/custom-Stream-action registries, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, typed component-action/document/scoped-state/style/disposal hooks, explicit form state boundaries, automatic Frame state inheritance, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
+The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, deterministic diagnostic serializer, typed logical events and state-reference resolution, addressable tree/session/state with subtree disposal, selectors, structural and custom Stream dispatch, Frame target/request/recurse/controller/visit APIs, semantic style adapters, typed component/component-action/custom-Stream-action registries, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, typed component-action/document/scoped-state/style/disposal hooks, explicit form state boundaries, automatic Frame state inheritance, host-defined Frame boundaries, the nearest-Frame binding hook, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
 
 The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 

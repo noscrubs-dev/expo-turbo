@@ -5,7 +5,11 @@ import {
   DocumentSession,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
-import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
+import {
+  type ExpoTurboFrameBoundaryProps,
+  ExpoTurboProvider,
+  ExpoTurboRoot,
+} from "expo-turbo/react";
 import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
@@ -15,6 +19,37 @@ import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
+
+function DemoFrameBoundary({
+  accessibilityState,
+  children,
+  state,
+}: ExpoTurboFrameBoundaryProps) {
+  return (
+    <View style={{ gap: 8 }}>
+      <View
+        accessibilityLabel={`Frame ${state.frameId}: ${state.status}`}
+        accessibilityState={accessibilityState}
+        accessible
+        style={{
+          backgroundColor: "#f6f8fa",
+          borderCurve: "continuous",
+          borderRadius: 10,
+          gap: 2,
+          padding: 10,
+        }}
+      >
+        <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+          Frame {state.frameId}
+        </Text>
+        <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+          {state.busy ? "Loading" : `Status: ${state.status}`}
+        </Text>
+      </View>
+      {children}
+    </View>
+  );
+}
 
 export default function HomeScreen() {
   const session = useMemo(
@@ -70,6 +105,7 @@ export default function HomeScreen() {
       </View>
       <ExpoTurboProvider
         actions={actionRuntime.actions}
+        frameComponent={DemoFrameBoundary}
         frames={frames}
         registry={DEMO_REGISTRY}
         renderError={({ error }) => (
