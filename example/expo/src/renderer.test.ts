@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
 import { describe, expect, test } from "bun:test"
-import { createElement, type ReactNode, useEffect, useState } from "react"
+import { createElement, type ReactNode, StrictMode, useEffect, useState } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
@@ -12,11 +12,13 @@ import {
 } from "expo-turbo/adapters"
 import {
   applyFrameResponse,
+  attributeValue,
   dispatchTurboStreamFragment,
   DocumentStateScopes,
   DocumentStateStore,
   DocumentSession,
   EXPO_TURBO_MIME_TYPE,
+  type FrameController,
   type FrameControllerCollection,
   FrameControllerRegistry,
   FrameMissingError,
@@ -36,6 +38,7 @@ import {
 } from "expo-turbo/registry"
 import {
   createComponentStyleHook,
+  type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   type ExpoTurboProviderProps,
   type ExpoTurboRenderError,
@@ -43,6 +46,7 @@ import {
   ExpoTurboStateScope,
   useComponentAction,
   useDocumentState,
+  useExpoTurboFrame,
   useNodeDisposal,
   useScopedState,
 } from "expo-turbo/react"
@@ -104,6 +108,7 @@ function render(
   session: DocumentSession,
   registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
+    frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -620,6 +625,321 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1, 2, 3, 4])
   })
 
+  test("provides the nearest connected Frame binding to boundaries and descendants", () => {
+    function FrameProbe({ label }: { label: string }): ReactNode {
+      const frame = useExpoTurboFrame()
+      return createElement("section", {
+        busy: frame?.state.busy,
+        frameId: frame?.state.frameId,
+        label,
+      })
+    }
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      const frame = useExpoTurboFrame()
+      return createElement(
+        "div",
+        {
+          busy: props.accessibilityState.busy,
+          contextFrameId: frame?.state.frameId,
+          frameId: props.state.frameId,
+        },
+        props.children,
+      )
+    }
+    const probe = defineComponent({
+      attributes: { label: { codec: stringCodec, prop: "label" } },
+      children: "none",
+      component: FrameProbe,
+      schema: z.object({ label: z.string() }),
+      tag: "FrameProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [probe],
+        name: "frame-binding-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(`<Gallery>
+        <FrameProbe label="outside" />
+        <turbo-frame id="outer">
+          <FrameProbe label="outer" />
+          <turbo-frame id="inner"><FrameProbe label="inner" /></turbo-frame>
+        </turbo-frame>
+      </Gallery>`),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("fixture Frame must not fetch")) },
+        { next: () => "request-1" },
+      ),
+    )
+    const renderer = render(session, componentRegistry, {
+      frameComponent: FrameBoundary,
+      frames,
+    })
+
+    expect(
+      renderer.root.findAllByType("section").map(({ props }) => ({
+        busy: props.busy,
+        frameId: props.frameId,
+        label: props.label,
+      })),
+    ).toEqual([
+      { busy: undefined, frameId: undefined, label: "outside" },
+      { busy: false, frameId: "outer", label: "outer" },
+      { busy: false, frameId: "inner", label: "inner" },
+    ])
+    expect(
+      renderer.root.findAllByType("div").map(({ props }) => ({
+        busy: props.busy,
+        contextFrameId: props.contextFrameId,
+        frameId: props.frameId,
+      })),
+    ).toEqual([
+      { busy: false, contextFrameId: "outer", frameId: "outer" },
+      { busy: false, contextFrameId: "inner", frameId: "inner" },
+    ])
+
+    act(() => renderer.unmount())
+  })
+
+  test("exposes Frame GET busy accessibility without remounting stable native boundaries", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    let nextBoundary = 0
+    let nextProbe = 0
+    let stableRenders = 0
+    const boundaryUnmounts: number[] = []
+    const probeUnmounts: number[] = []
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      const [instance] = useState(() => ++nextBoundary)
+      useEffect(
+        () => () => {
+          boundaryUnmounts.push(instance)
+        },
+        [instance],
+      )
+      return createElement(
+        "div",
+        {
+          accessibilityState: props.accessibilityState,
+          busy: props.state.busy,
+          complete: props.state.complete,
+          instance,
+          status: props.state.status,
+        },
+        props.children,
+      )
+    }
+    function FrameProbe(): ReactNode {
+      const frame = useExpoTurboFrame()
+      const [instance] = useState(() => ++nextProbe)
+      useEffect(
+        () => () => {
+          probeUnmounts.push(instance)
+        },
+        [instance],
+      )
+      return createElement("section", {
+        busy: frame?.state.busy,
+        instance,
+        status: frame?.state.status,
+      })
+    }
+    function StableProbe(): ReactNode {
+      stableRenders += 1
+      return createElement("article")
+    }
+    const probe = defineComponent({
+      attributes: {},
+      children: "none",
+      component: FrameProbe,
+      schema: z.object({}),
+      tag: "FrameProbe",
+    })
+    const stable = defineComponent({
+      attributes: {},
+      children: "none",
+      component: StableProbe,
+      schema: z.object({}),
+      tag: "StableProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [probe, stable],
+        name: "frame-loading-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><FrameProbe /><StableProbe /></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${pending.length + 1}` },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, componentRegistry, {
+      frameComponent: FrameBoundary,
+      frames,
+      onError: (event) => errors.push(event),
+    })
+    const controller = frames.get("frame")
+    const boundary = () => renderer.root.findByType("div").props
+    const renderedProbe = () => renderer.root.findByType("section").props
+    const response = (
+      status: number,
+      xml = "",
+      contentType: string = EXPO_TURBO_MIME_TYPE,
+    ): TurboResponse => ({
+      headers: { "Content-Type": contentType },
+      redirected: false,
+      status,
+      text: async () => xml,
+      url: "https://example.test/frame",
+    })
+
+    expect(pending).toHaveLength(1)
+    expect(boundary()).toMatchObject({ busy: true, complete: false, instance: 1, status: "loading" })
+    expect(boundary().accessibilityState).toEqual({ busy: true })
+    expect(Object.isFrozen(boundary().accessibilityState)).toBe(true)
+    expect(renderedProbe()).toMatchObject({ busy: true, instance: 1, status: "loading" })
+    expect(stableRenders).toBe(1)
+    const frame = session.tree.getElementById("frame")
+    if (!frame) throw new Error("fixture Frame is missing")
+    expect(attributeValue(frame, "busy")).toBeUndefined()
+    expect(attributeValue(frame, "complete")).toBeUndefined()
+    expect(attributeValue(frame, "aria-busy")).toBeUndefined()
+
+    await act(async () => {
+      pending[0]?.resolve(response(204))
+      await controller.loaded
+    })
+    expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "empty" })
+    expect(boundary().accessibilityState).toEqual({ busy: false })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "empty" })
+    expect(stableRenders).toBe(1)
+
+    let failed: Promise<unknown> | undefined
+    act(() => {
+      failed = controller.reload()
+    })
+    expect(boundary()).toMatchObject({ busy: true, instance: 1, status: "loading" })
+    await act(async () => {
+      pending[1]?.resolve(response(200, "{}", "application/json"))
+      await failed?.catch(() => undefined)
+    })
+    expect(errors).toHaveLength(1)
+    expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "error" })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "error" })
+    expect(stableRenders).toBe(1)
+
+    let canceled: Promise<unknown> | undefined
+    act(() => {
+      canceled = controller.reload()
+    })
+    act(() => controller.cancel())
+    expect(boundary()).toMatchObject({ busy: false, instance: 1, status: "canceled" })
+    pending[2]?.resolve(response(200, '<turbo-frame id="frame"><FrameProbe /></turbo-frame>'))
+    await act(async () => {
+      await canceled
+    })
+    expect(boundary()).toMatchObject({ busy: false, instance: 1, status: "canceled" })
+    expect(renderedProbe()).toMatchObject({ instance: 1, status: "canceled" })
+    expect(stableRenders).toBe(1)
+
+    let completed: Promise<unknown> | undefined
+    act(() => {
+      completed = controller.reload()
+    })
+    pending[3]?.resolve(
+      response(200, '<turbo-frame id="frame"><FrameProbe /><StableProbe /></turbo-frame>'),
+    )
+    await act(async () => {
+      await completed
+    })
+    expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "completed" })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 2, status: "completed" })
+    expect(stableRenders).toBe(2)
+    expect(boundaryUnmounts).toEqual([])
+    expect(probeUnmounts).toEqual([1])
+
+    act(() => renderer.unmount())
+    expect(boundaryUnmounts).toEqual([1])
+    expect(probeUnmounts).toEqual([1, 2])
+  })
+
+  test("keeps one Frame controller owner through StrictMode effect replay", () => {
+    const requests: TurboRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) => {
+            requests.push(request)
+            return new Promise<TurboResponse>(() => undefined)
+          },
+        },
+        { next: () => `request-${requests.length + 1}` },
+      ),
+    )
+    let renderedController: FrameController | undefined
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      renderedController = props.controller
+      return createElement("frame-boundary", null, props.children)
+    }
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              frameComponent: FrameBoundary,
+              frames,
+              registry: registryWithCounters(),
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    expect(renderedController).toBe(frames.get("frame"))
+    expect(requests.filter((request) => !request.signal?.aborted)).toHaveLength(1)
+    expect(renderedController?.state).toMatchObject({ busy: true, connected: true })
+
+    act(() => renderer?.unmount())
+    expect(requests.every((request) => request.signal?.aborted)).toBe(true)
+  })
+
   test("renders a matching Frame response without replacing its mounted wrapper", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -665,8 +985,21 @@ describe("React protocol renderer", () => {
         { next: () => `request-${++requestId}` },
       ),
     )
+    const boundaryUnmounts: FrameController[] = []
+    let renderedController: FrameController | undefined
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      renderedController = props.controller
+      useEffect(
+        () => () => {
+          boundaryUnmounts.push(props.controller)
+        },
+        [props.controller],
+      )
+      return createElement("frame-boundary", null, props.children)
+    }
     const errors: ExpoTurboRenderError[] = []
     const renderer = render(session, registryWithCounters(), {
+      frameComponent: FrameBoundary,
       frames,
       onError: (event) => errors.push(event),
     })
@@ -684,6 +1017,7 @@ describe("React protocol renderer", () => {
 
     expect(pending).toHaveLength(1)
     expect(controller.state).toMatchObject({ busy: true, connected: true })
+    expect(renderedController).toBe(controller)
     await act(async () => {
       pending[0]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Loaded</DemoText></turbo-frame>'))
       await controller.loaded
@@ -717,6 +1051,8 @@ describe("React protocol renderer", () => {
     expect(controller.state).toMatchObject({ connected: false, status: "canceled" })
     const replacementController = frames.get("frame")
     expect(replacementController).not.toBe(controller)
+    expect(boundaryUnmounts).toEqual([controller])
+    expect(renderedController).toBe(replacementController)
     expect(pending).toHaveLength(4)
     expect(pending[3]?.request.url).toBe("https://example.test/replacement")
     pending[2]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>'))
@@ -731,6 +1067,7 @@ describe("React protocol renderer", () => {
     })
     expect(pending[3]?.request.signal?.aborted).toBe(true)
     expect(replacementController.state).toMatchObject({ connected: false, status: "canceled" })
+    expect(boundaryUnmounts).toEqual([controller, replacementController])
     expect(() => frames.get("frame")).toThrow(FrameMissingError)
     pending[3]?.resolve(
       turboResponse('<turbo-frame id="frame"><DemoText>Late replacement</DemoText></turbo-frame>'),
@@ -739,6 +1076,55 @@ describe("React protocol renderer", () => {
       await replacementController.loaded
     })
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Late replacement")
+  })
+
+  test("contains transient host Frame boundary errors and retries on controller state", () => {
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      if (props.state.status === "loading") throw new Error("Broken loading boundary")
+      return createElement("div", { status: props.state.status }, props.children)
+    }
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const requests: TurboRequest[] = []
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) => {
+            requests.push(request)
+            return new Promise<TurboResponse>(() => undefined)
+          },
+        },
+        { next: () => "request-1" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registryWithCounters(), {
+      frameComponent: FrameBoundary,
+      frames,
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ nodeKey: "id:frame" })
+    expect(JSON.stringify(renderer.toJSON())).toContain("Broken loading boundary")
+    expect(requests).toHaveLength(1)
+    const documentRevision = session.revision
+
+    act(() => frames.get("frame").cancel())
+
+    expect(session.revision).toBe(documentRevision)
+    expect(requests[0]?.signal?.aborted).toBe(true)
+    expect(renderer.root.findByType("div").props.status).toBe("canceled")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Broken loading boundary")
+    expect(JSON.stringify(renderer.toJSON())).toContain("Before")
+    act(() => renderer.unmount())
   })
 
   test("resubscribes Frame errors without reconnecting when the provider callback changes", async () => {
