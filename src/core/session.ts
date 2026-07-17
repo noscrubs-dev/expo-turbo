@@ -54,6 +54,10 @@ export class DocumentSession {
     this.commit([key])
   }
 
+  mutate(mutator: (tree: DocumentTree) => readonly string[]): void {
+    this.commit(mutator(this.currentTree))
+  }
+
   subscribe(key: string, listener: SessionListener): () => void {
     let listeners = this.listeners.get(key)
     if (!listeners) {

@@ -46,6 +46,7 @@ interface LocatedXmlNode extends XmlNode {
 }
 
 interface ConversionState {
+  readonly allowDuplicateIds: boolean
   readonly ids: Map<string, SourceLocation | undefined>
   readonly limits: ParseLimits
   nodes: number
@@ -241,7 +242,7 @@ function convertNode(
       throw new ParseError("Element ids must not be blank", location ? { location } : {})
     }
     const existingLocation = id !== undefined ? state.ids.get(id) : undefined
-    if (id !== undefined && state.ids.has(id)) {
+    if (id !== undefined && state.ids.has(id) && !state.allowDuplicateIds) {
       const duplicateLocation = location ?? existingLocation
       throw new ParseError(`Duplicate id ${JSON.stringify(id)}`, {
         target: id,
@@ -334,6 +335,7 @@ function parse(xml: string, options: ParseOptions, fragment: boolean): DocumentT
   const source = fragment ? `<expo-turbo-fragment>${xml}</expo-turbo-fragment>` : xml
   const parsed = strictDocument(source)
   const state: ConversionState = {
+    allowDuplicateIds: fragment,
     ids: new Map(),
     limits,
     nodes: 1,
@@ -357,7 +359,7 @@ function parse(xml: string, options: ParseOptions, fragment: boolean): DocumentT
   if (fragment && roots.some((node) => node.kind !== "stream")) {
     throw parseError("Turbo Stream fragments may contain only turbo-stream root elements")
   }
-  return new DocumentTree(document)
+  return new DocumentTree(document, { allowDuplicateIds: fragment })
 }
 
 function isProtocolElement(node: ProtocolNode): node is ProtocolElement {

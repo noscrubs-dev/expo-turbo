@@ -60,6 +60,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Case-sensitive XML selector queries for lists, tags, IDs, classes, attributes, combinators, and structural pseudo-selectors without stale-result caching.
 - [x] Typed component/module registry composition, Zod prop admission, explicit attribute codecs, child policies, aliases/deprecations, duplicate ownership errors, and deterministic capabilities.
 - [x] Static React protocol renderer with stable `useSyncExternalStore` node snapshots, isolated subtree updates, registered error surfaces, mixed children, and non-rendering protocol nodes.
+- [x] Ordered Turbo Stream fragment dispatch for `append`, `prepend`, `replace`, `update`, `remove`, `before`, and `after`, including target/selector precedence, ID collision rules, payload cloning, no-ops, and isolated action errors.
 - [x] Route-free Rails Engine, distinct Expo Turbo XML MIME type, confined host-owned `.xml.erb` rendering, and exact `turbo-rails` 2.0.10/2.0.23 test matrix.
 - [x] Independently installed Expo and Rails examples in public CI, including a native component tree rendered from XML in the Expo gallery.
 
@@ -71,7 +72,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
 - [ ] Turbo Frames, targeting, eager/lazy/recurse loading, focus, visibility, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
-- [ ] Ordered Turbo Stream mutations (`append`, `prepend`, `replace`, `update`, `remove`, `before`, `after`, and `refresh`).
+- [ ] Refresh Stream actions, morph mode, lifecycle hooks, and renderer flush timing.
 - [ ] Native morphing and state/permanent-node preservation.
 - [ ] Action Cable transport, protected subscriptions, reconnect, and canonical refresh reconciliation.
 - [ ] Complete standalone compatibility gallery, differential conformance suite, and physical iOS/Android evidence.
@@ -79,7 +80,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ## TypeScript API boundaries
 
-The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, addressable tree/session, selectors, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, static root renderer, node subscription hook, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
+The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, addressable tree/session, selectors, structural Stream dispatcher, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, static root renderer, node subscription hook, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
 
 The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 
