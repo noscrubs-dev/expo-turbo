@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import {
+  applyFrameResponse,
   dispatchTurboStreamFragment,
   DocumentSession,
   parseExpoTurboDocument,
@@ -86,6 +87,27 @@ export default function HomeScreen() {
       >
         <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
           Apply Stream update
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          applyFrameResponse(
+            session,
+            "preview-frame",
+            '<turbo-frame id="preview-frame"><DemoCard title="Loaded Frame response"><DemoText>The mounted Frame wrapper stayed in place while its children changed.</DemoText></DemoCard></turbo-frame>',
+            { finalUrl: "https://example.test/demo/frame" },
+          )
+        }
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#3c4350" : "#59636e",
+          borderRadius: 12,
+          padding: 14,
+        })}
+      >
+        <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+          Apply Frame response
         </Text>
       </Pressable>
     </ScrollView>

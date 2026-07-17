@@ -32,9 +32,11 @@ export interface StreamActionReport {
   readonly status: StreamActionStatus
 }
 
-export interface StreamDispatchOptions extends ParseOptions {
+export interface StreamActionDispatchOptions {
   readonly onActionError?: (report: StreamActionReport) => void
 }
+
+export interface StreamDispatchOptions extends ParseOptions, StreamActionDispatchOptions {}
 
 export interface StreamDispatchReport {
   readonly actions: readonly StreamActionReport[]
@@ -255,6 +257,14 @@ export function dispatchTurboStreamFragment(
   const streams = fragment.document.children.filter(
     (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
   )
+  return dispatchTurboStreamElements(session, streams, options)
+}
+
+export function dispatchTurboStreamElements(
+  session: DocumentSession,
+  streams: readonly ProtocolElement[],
+  options: StreamActionDispatchOptions = {},
+): StreamDispatchReport {
   const actions = streams.map((stream, index) => dispatchAction(session, stream, index))
   for (const report of actions) {
     if (report.status === "error") options.onActionError?.(report)

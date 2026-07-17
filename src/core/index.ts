@@ -1,4 +1,5 @@
 export * from "./errors"
+export * from "./frames"
 export * from "./inspector"
 export * from "./parser"
 export * from "./selectors"
