@@ -22,6 +22,9 @@ import {
   DocumentSession,
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
+  type FormRequestPlan,
+  type FormRequestProtocolOptions,
+  type FormSubmissionProposal,
   type FrameController,
   type FrameControllerCollection,
   FrameControllerRegistry,
@@ -588,6 +591,7 @@ describe("React protocol renderer", () => {
         action?: string
         children?: ReactNode
         enctype?: string
+        frameTarget?: string
         method?: string
         stream?: string
       }>,
@@ -657,6 +661,7 @@ describe("React protocol renderer", () => {
       disabled?: boolean
       formaction?: string
       formenctype?: string
+      frameTarget?: string
       formmethod?: string
       name?: string
       stream?: string
@@ -679,6 +684,7 @@ describe("React protocol renderer", () => {
     const form = defineComponent({
       attributes: {
         action: { codec: stringCodec, prop: "action" },
+        "data-turbo-frame": { codec: stringCodec, prop: "frameTarget" },
         "data-turbo-stream": { codec: stringCodec, prop: "stream" },
         enctype: { codec: stringCodec, prop: "enctype" },
         method: { codec: stringCodec, prop: "method" },
@@ -688,6 +694,7 @@ describe("React protocol renderer", () => {
       schema: z.object({
         action: z.string().optional(),
         enctype: z.string().optional(),
+        frameTarget: z.string().optional(),
         method: z.string().optional(),
         stream: z.string().optional(),
       }),
@@ -752,6 +759,7 @@ describe("React protocol renderer", () => {
     })
     const submitter = defineComponent({
       attributes: {
+        "data-turbo-frame": { codec: stringCodec, prop: "frameTarget" },
         "data-turbo-stream": { codec: stringCodec, prop: "stream" },
         disabled: { codec: booleanCodec, prop: "disabled" },
         formaction: { codec: stringCodec, prop: "formaction" },
@@ -766,6 +774,7 @@ describe("React protocol renderer", () => {
         disabled: z.boolean().optional(),
         formaction: z.string().optional(),
         formenctype: z.string().optional(),
+        frameTarget: z.string().optional(),
         formmethod: z.string().optional(),
         name: z.string().optional(),
         stream: z.string().optional(),
@@ -782,7 +791,7 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(`<Gallery>
-        <NativeForm id="form" action="/profile" method="post">
+        <NativeForm id="form" action="/profile" method="post" data-turbo-frame="profile-frame">
           <CaptureForm slot="primary" />
           <NativeValue id="first" name="item" value="" />
           <NativeLiveValue id="local" name="local" value="before" />
@@ -793,6 +802,7 @@ describe("React protocol renderer", () => {
           <NativeSubmitter id="submit" name="commit" value="save" formaction="/profile/save" formmethod="patch" data-turbo-stream="" />
           <NativeSubmitter id="alternate" name="commit" value="ignored" />
         </NativeForm>
+        <turbo-frame id="profile-frame" />
         <NativeForm id="outer-form">
           <CaptureForm slot="outer" />
           <NativeValue id="outer-value" name="outer" value="parent" />
@@ -851,32 +861,39 @@ describe("React protocol renderer", () => {
       { name: "commit", value: "save" },
     ])
     expect(
-      primary.requestPlan({
-        protocol: { frameId: "profile-frame", requestId: "react-request" },
+      primary.submissionProposal({
+        protocol: { requestId: "react-request" },
         submitter: selectedSubmitter,
       }),
     ).toMatchObject({
-      effectiveMethod: "PATCH",
-      entries: [
-        { name: "item", value: "" },
-        { name: "local", value: "before" },
-        { name: "agree", value: "on" },
-        { name: "choices[]", value: "one" },
-        { name: "choices[]", value: "" },
-        { name: "choices[]", value: "one" },
-        { name: "commit", value: "save" },
-        { name: "_method", value: "patch" },
-      ],
-      request: {
-        headers: {
-          Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
-          "Turbo-Frame": "profile-frame",
-          "X-Turbo-Request-Id": "react-request",
-        },
-        method: "POST",
-        url: "https://example.test/profile/save",
+      destination: {
+        frameId: "profile-frame",
+        kind: "frame",
+        requestedTarget: "profile-frame",
       },
-      sourceMethod: "PATCH",
+      plan: {
+        effectiveMethod: "PATCH",
+        entries: [
+          { name: "item", value: "" },
+          { name: "local", value: "before" },
+          { name: "agree", value: "on" },
+          { name: "choices[]", value: "one" },
+          { name: "choices[]", value: "" },
+          { name: "choices[]", value: "one" },
+          { name: "commit", value: "save" },
+          { name: "_method", value: "patch" },
+        ],
+        request: {
+          headers: {
+            Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
+            "Turbo-Frame": "profile-frame",
+            "X-Turbo-Request-Id": "react-request",
+          },
+          method: "POST",
+          url: "https://example.test/profile/save",
+        },
+        sourceMethod: "PATCH",
+      },
     })
     expect(entriesAtPassiveMount.get("primary")).toEqual(primary.successfulEntries())
     expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
@@ -2889,3 +2906,17 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("RegistryError")
   })
 })
+
+// Compile-time package-surface coverage for destination-aware form proposals.
+function assertPublicFormProposalTypes(
+  binding: ExpoTurboFormBinding,
+  plan: FormRequestPlan,
+  frameProtocol: FormRequestProtocolOptions,
+): void {
+  // @ts-expect-error Active forms derive Frame metadata from their exact destination.
+  binding.requestPlan({ protocol: frameProtocol })
+  // @ts-expect-error Submission proposals are opaque package-issued identities.
+  const forged: FormSubmissionProposal = { destination: { kind: "document" }, plan }
+  void forged
+}
+void assertPublicFormProposalTypes

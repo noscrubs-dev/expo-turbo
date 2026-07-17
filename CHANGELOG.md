@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Change active-form `requestPlan` metadata to reject caller-supplied `frameId`; Frame-targeted callers must use `submissionProposal` so destination and `Turbo-Frame` metadata are derived together.
+- Add atomic active-form submission proposals with exact Turbo Frame target precedence, internally derived `Turbo-Frame` metadata, browser-target rejection, React exposure, and hidden form/submitter/destination/tree-generation admission identity without fetching or changing request ownership.
 - Add caller-scoped form request execution with exact-plan forwarding, lane-local cancellation/supersession, same-origin final-URL and MIME admission, single-read buffering, and classified immutable response candidates without tree mutation.
 - Make the standalone Expo example install reproducibly with Bun's isolated linker, disabled peer auto-install, and a refreshed local-package dependency graph.
 - Add registration-bound submitter selection and immutable active-form request planning to the core and React APIs, composing current form/submitter attributes and live XML-ordered values into a caller-owned request plan without fetching.

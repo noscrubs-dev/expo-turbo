@@ -28,8 +28,10 @@ import type {
 } from "../core/document-visit-controller"
 import { RegistryError, StateError, TargetError } from "../core/errors"
 import type { FormRequestPlan } from "../core/form-request"
+import type { FormSubmissionProposal } from "../core/form-submission-proposal"
 import type {
   ActiveFormRequestPlanOptions,
+  ActiveFormSubmissionProposalOptions,
   DocumentFormControls,
   FormControlDescriptor,
   FormControlRegistration,
@@ -103,6 +105,9 @@ export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
 export interface ExpoTurboFormBinding {
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
+  readonly submissionProposal: (
+    options: ActiveFormSubmissionProposalOptions,
+  ) => FormSubmissionProposal
   readonly successfulEntries: (
     options?: SuccessfulFormEntriesOptions,
   ) => readonly SuccessfulFormEntry[]
@@ -383,6 +388,8 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
       Object.freeze({
         formNodeKey: nodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
+          registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
       }),
