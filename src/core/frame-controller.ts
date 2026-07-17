@@ -106,6 +106,14 @@ export class FrameController {
     return this.loadSourceIfNeeded(true)
   }
 
+  visit(source: string): Promise<FrameLoadReport | undefined> {
+    if (!this.connected) {
+      this.connected = true
+      this.publish()
+    }
+    return source === this.source ? this.reload() : this.setSource(source)
+  }
+
   reload(): Promise<FrameLoadReport | undefined> {
     this.needsLoad = this.source !== undefined
     return this.loadSourceIfNeeded(true)
