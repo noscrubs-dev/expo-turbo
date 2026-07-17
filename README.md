@@ -3,7 +3,7 @@
 Turbo-compatible XML, Frames, Streams, and Action Cable adapters for Expo React Native and Rails.
 
 > [!IMPORTANT]
-> This repository is currently a buildable scaffold. It does not yet implement or claim Turbo compatibility, and no published package should be used in an application.
+> This repository currently exposes foundational contracts only. It does not yet implement or claim Turbo compatibility, and no published package should be used in an application.
 
 ## Repository layout
 
@@ -35,6 +35,12 @@ gem build expo_turbo-rails.gemspec
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) before proposing changes.
+
+## TypeScript API boundaries
+
+The root package and explicit `expo-turbo/core` and `expo-turbo/adapters` subpaths expose the current version, error, inspector, and host-adapter contracts. `expo-turbo/react`, `expo-turbo/registry`, and `expo-turbo/testing` are reserved module boundaries and intentionally export no runtime APIs yet. Deep source imports are unsupported.
+
+The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 
 ## Status and compatibility
 
