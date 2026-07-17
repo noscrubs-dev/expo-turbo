@@ -1,0 +1,5 @@
+[install]
+# Prevent the ancestor file dependency from recursively hoisting this consumer into itself.
+linker = "isolated"
+# Keep Expo native peers on one installation for Expo Doctor and device bundles.
+peer = false
