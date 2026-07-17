@@ -6,6 +6,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
 import {
+  applyFrameResponse,
   dispatchTurboStreamFragment,
   DocumentSession,
   parseExpoTurboDocument,
@@ -143,6 +144,28 @@ describe("React protocol renderer", () => {
       )
     })
 
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Before")
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+  })
+
+  test("renders a matching Frame response without replacing its mounted wrapper", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+      ),
+    )
+    const frame = session.tree.getElementById("frame")
+    const renderer = render(session, registryWithCounters())
+
+    act(() => {
+      applyFrameResponse(
+        session,
+        "frame",
+        '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
+      )
+    })
+
+    expect(session.tree.getElementById("frame")).toBe(frame)
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Before")
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
   })
