@@ -116,4 +116,142 @@ describe("Frame request loader", () => {
       "Newer",
     )
   })
+
+  test("loads a matching frame through a recurse intermediary", async () => {
+    const requests: TurboRequest[] = []
+    const session = documentSession()
+    let requestId = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        async fetch(request) {
+          requests.push(request)
+          if (requests.length === 1) {
+            return response(
+              '<Page><turbo-frame id="bridge" src="nested" recurse="other  details\ttarget" /></Page>',
+              { status: 422, url: "https://example.test/redirected/index" },
+            )
+          }
+          return response('<Page><turbo-frame id="details"><Recursive /></turbo-frame></Page>', {
+            url: "https://example.test/redirected/nested",
+          })
+        },
+      },
+      { next: () => `request-${++requestId}` },
+    )
+
+    const report = await loader.load("details", "/initial")
+    const frame = session.tree.getElementById("details")
+    if (!frame) throw new Error("fixture lost its active frame")
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/initial",
+      "https://example.test/redirected/nested",
+    ])
+    expect(requests.map((request) => request.headers["Turbo-Frame"])).toEqual(["details", "bridge"])
+    expect(report).toMatchObject({
+      requestId: "request-1",
+      requestIds: ["request-1", "request-2"],
+      responseStatus: 422,
+      status: "completed",
+      url: "https://example.test/redirected/index",
+    })
+    expect(attributeValue(frame, "src")).toBe("https://example.test/redirected/index")
+    expect(frame.children.filter(isElement)[0]?.tagName).toBe("Recursive")
+  })
+
+  test("rejects recurse URL loops and depth overflow without changing the active frame", async () => {
+    const loopSession = documentSession()
+    const loopFrame = loopSession.tree.getElementById("details")
+    const loopChildren = loopFrame?.children
+    const loopLoader = new FrameRequestLoader(
+      loopSession,
+      {
+        fetch: async () =>
+          response('<Page><turbo-frame id="loop" src="/frame" recurse="details" /></Page>'),
+      },
+      { next: () => "loop-request" },
+    )
+
+    await expect(loopLoader.load("details", "/frame")).rejects.toThrow("recurse URL loop")
+    expect(loopFrame?.children).toBe(loopChildren)
+
+    const depthSession = documentSession()
+    const depthFrame = depthSession.tree.getElementById("details")
+    const depthChildren = depthFrame?.children
+    let request = 0
+    const depthLoader = new FrameRequestLoader(
+      depthSession,
+      {
+        fetch: async () => {
+          request += 1
+          return response(
+            `<Page><turbo-frame id="bridge-${request}" src="/depth-${request}" recurse="details" /></Page>`,
+            { url: `https://example.test/depth-response-${request}` },
+          )
+        },
+      },
+      { next: () => `depth-request-${request}` },
+      { maxRecurseDepth: 1 },
+    )
+
+    await expect(depthLoader.load("details", "/depth-start")).rejects.toThrow("recurse depth 1")
+    expect(request).toBe(2)
+    expect(depthFrame?.children).toBe(depthChildren)
+  })
+
+  test("rejects a cross-origin redirect before parsing its frame", async () => {
+    const loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async () =>
+          response('<turbo-frame id="details"><Unsafe /></turbo-frame>', {
+            url: "https://invalid.test/frame",
+          }),
+      },
+      { next: () => "request-1" },
+    )
+
+    await expect(loader.load("details", "/frame")).rejects.toBeInstanceOf(TargetError)
+  })
+
+  test("supersedes an in-flight recurse request without committing its late match", async () => {
+    const pending: Array<{
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }> = []
+    const session = documentSession()
+    let requestId = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `request-${++requestId}` },
+    )
+
+    const older = loader.load("details", "/older")
+    pending[0]?.resolve(
+      response('<Page><turbo-frame id="bridge" src="/older-nested" recurse="details" /></Page>'),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(pending).toHaveLength(2)
+
+    const newer = loader.load("details", "/newer")
+    expect(pending[1]?.request.signal?.aborted).toBe(true)
+    pending[2]?.resolve(response('<turbo-frame id="details"><Newer /></turbo-frame>'))
+    expect(await newer).toMatchObject({ status: "completed" })
+    pending[1]?.resolve(response('<turbo-frame id="details"><Older /></turbo-frame>'))
+    expect(await older).toMatchObject({
+      requestIds: ["request-1", "request-2"],
+      status: "canceled",
+    })
+    expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
+      "Newer",
+    )
+  })
 })
