@@ -34,6 +34,7 @@ import {
   ExpoTurboRoot,
   useComponentAction,
   useDocumentState,
+  useNodeDisposal,
 } from "expo-turbo/react"
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -231,6 +232,57 @@ describe("React protocol renderer", () => {
     expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBe("from-xml")
     act(() => activeRenderer.unmount())
     expect(state.isDisposed).toBe(true)
+  })
+
+  test("runs registered component disposal before a Stream removes its logical node", () => {
+    const disposed: string[] = []
+    function Disposable({ label }: { label: string }): ReactNode {
+      useNodeDisposal(() => disposed.push(label))
+      return createElement("section", null, label)
+    }
+    const disposable = defineComponent({
+      attributes: { label: { codec: stringCodec, prop: "label" } },
+      children: "none",
+      component: Disposable,
+      schema: z.object({ label: z.string() }),
+      tag: "Disposable",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [disposable],
+        name: "disposal-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Disposable id="resource" label="old"/></Gallery>'),
+    )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          ExpoTurboProvider,
+          { registry: componentRegistry, session },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="resource"><template><Disposable id="resource" label="new"/></template></turbo-stream>',
+      )
+    })
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="resource"/>',
+      )
+    })
+
+    expect(disposed).toEqual(["old", "new"])
   })
 
   test("renders a matching Frame response without replacing its mounted wrapper", () => {
