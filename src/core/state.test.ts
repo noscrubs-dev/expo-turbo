@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 
 import { StateError } from "./errors"
-import { DocumentStateStore, type StateSnapshot } from "./state"
+import { parseExpoTurboDocument } from "./parser"
+import { DocumentSession } from "./session"
+import { DocumentStateScopes, DocumentStateStore, type StateSnapshot } from "./state"
 
 describe("document state store", () => {
   test("keeps snapshots stable and notifies only the changed key", () => {
@@ -60,5 +62,70 @@ describe("document state store", () => {
     const state = new DocumentStateStore()
     expect(() => state.get(" ")).toThrow(StateError)
     expect(() => state.getSnapshot("")).toThrow(StateError)
+  })
+})
+
+describe("node state scopes", () => {
+  test("preserves a Frame scope across child updates and disposes it on replacement", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+      ),
+    )
+    const scopes = new DocumentStateScopes(session)
+    const frame = session.tree.getElementById("frame")
+    if (!frame) throw new Error("frame fixture is missing")
+    const scope = scopes.scopeFor(frame.key, "frame", { draft: "kept" })
+
+    const response = parseExpoTurboDocument(
+      '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
+    ).getElementById("frame")
+    if (!response) throw new Error("response fixture is missing")
+    session.mutate((tree) => tree.replaceChildrenWithClones(frame, response.children))
+
+    expect(scopes.scopeFor(frame.key, "frame")).toBe(scope)
+    expect(scope.state.get("draft")).toBe("kept")
+    expect(scope.state.isDisposed).toBe(false)
+
+    session.mutate((tree) => tree.replaceNodeWithClones(frame, [response]))
+    expect(scope.state.isDisposed).toBe(true)
+
+    const replacement = session.tree.getElementById("frame")
+    if (!replacement) throw new Error("replacement fixture is missing")
+    const replacementScope = scopes.scopeFor(replacement.key, "frame")
+    expect(replacementScope).not.toBe(scope)
+    expect(replacementScope.state.get("draft")).toBeUndefined()
+  })
+
+  test("supports form scopes, explicit disposal, and registry disposal", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form"/><DemoForm id="other"/></Gallery>'),
+    )
+    const scopes = new DocumentStateScopes(session)
+    const form = session.tree.getElementById("form")
+    const other = session.tree.getElementById("other")
+    if (!form || !other) throw new Error("form fixtures are missing")
+
+    const formScope = scopes.scopeFor(form.key, "form", { dirty: true })
+    expect(() => scopes.scopeFor(form.key, "frame")).toThrow(StateError)
+    session.mutate((tree) => tree.removeNode(form))
+    expect(formScope.state.isDisposed).toBe(true)
+
+    const otherScope = scopes.scopeFor(other.key, "form")
+    scopes.disposeScope(other.key)
+    expect(otherScope.state.isDisposed).toBe(true)
+    const recreated = scopes.scopeFor(other.key, "form")
+    scopes.dispose()
+    scopes.dispose()
+    expect(recreated.state.isDisposed).toBe(true)
+    expect(scopes.isDisposed).toBe(true)
+    expect(() => scopes.scopeFor(other.key, "form")).toThrow(StateError)
+  })
+
+  test("fails closed for nodes outside the active document", () => {
+    const session = new DocumentSession(parseExpoTurboDocument("<Gallery/>"))
+    const scopes = new DocumentStateScopes(session)
+    expect(() => scopes.scopeFor("missing", "form")).toThrow(StateError)
+    expect(() => scopes.disposeScope("missing")).toThrow(StateError)
   })
 })

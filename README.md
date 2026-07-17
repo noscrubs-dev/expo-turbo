@@ -62,6 +62,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Typed component/module registry composition, Zod prop admission, explicit attribute codecs, child policies, aliases/deprecations, duplicate ownership errors, and deterministic capabilities.
 - [x] Typed component-action definitions/modules with Zod params, injected state, provider-backed React invocation, serialized execution, and ordered `onSuccess`/`onError`/`onEnd` lifecycle.
 - [x] Document-scoped external state store with stable per-key snapshots, fine-grained subscriptions, no-op suppression, component-action sharing, React bindings, and provider-unmount disposal.
+- [x] Core identity-bound Frame/form state-scope registry with child-update preservation, replacement/removal cleanup, explicit disposal, and stable-ID reuse isolation.
 - [x] Deterministic descendant-first subtree disposal hooks with identity-safe replacement handling, explicit unregister, typed cleanup errors, and registered-component React wiring.
 - [x] Typed logical event bus with serial dispatch, cancellable notifications, nested pause/resume, stable listener snapshots, unsubscribe, and post-failure queue recovery.
 - [x] Static React protocol renderer with stable `useSyncExternalStore` node snapshots, isolated subtree updates, registered error surfaces, mixed children, and non-rendering protocol nodes.
@@ -80,7 +81,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ### In progress / not yet supported
 
-- [ ] Frame/form state scopes, typed state-reference decoding, style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
+- [ ] React Frame/form scope inheritance, scoped component actions, typed state-reference decoding, style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
 - [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
