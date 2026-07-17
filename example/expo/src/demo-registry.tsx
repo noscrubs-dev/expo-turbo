@@ -66,7 +66,7 @@ export const DEMO_DOCUMENT = `<Gallery>
   <DemoCard id="static-renderer" title="Rendered from XML">
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
   </DemoCard>
-  <turbo-frame id="preview-frame" src="/demo/frame">
+  <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
     <DemoCard title="Frame boundary">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>
     </DemoCard>

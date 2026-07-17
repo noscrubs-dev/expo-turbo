@@ -1,3 +1,4 @@
+import type { VisibilityAdapter } from "expo-turbo/adapters";
 import type { DocumentSession } from "expo-turbo/core";
 import {
   EXPO_TURBO_MIME_TYPE,
@@ -9,6 +10,10 @@ export function createDemoFrameControllers(
   session: DocumentSession,
 ): FrameControllerRegistry {
   let requestId = 0;
+  const visibility: VisibilityAdapter = {
+    isVisible: () => true,
+    subscribe: () => () => {},
+  };
   return new FrameControllerRegistry(
     session,
     new FrameRequestLoader(
@@ -29,5 +34,6 @@ export function createDemoFrameControllers(
       },
       { next: () => `demo-frame-${++requestId}` },
     ),
+    visibility,
   );
 }

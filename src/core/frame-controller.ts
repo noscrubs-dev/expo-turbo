@@ -1,3 +1,4 @@
+import type { Unsubscribe, VisibilityAdapter } from "../adapters"
 import { FrameMissingError } from "./errors"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
 import type { DocumentSession } from "./session"
@@ -27,12 +28,14 @@ export interface FrameControllerSnapshot {
 }
 
 export type FrameControllerListener = () => void
+export type FrameControllerErrorListener = (error: Error) => void
 
 function loadingStyle(frame: ProtocolElement): FrameLoadingStyle {
   return attributeValue(frame, "loading")?.toLowerCase() === "lazy" ? "lazy" : "eager"
 }
 
 export class FrameController {
+  private readonly errorListeners = new Set<FrameControllerErrorListener>()
   private readonly listeners = new Set<FrameControllerListener>()
   private connected = false
   private hasBeenLoaded = false
@@ -42,11 +45,13 @@ export class FrameController {
   private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
+  private visibilityUnsubscribe: Unsubscribe | undefined
 
   constructor(
     private readonly session: DocumentSession,
     readonly frameId: string,
     private readonly loader: FrameRequestLoader,
+    private readonly visibility?: VisibilityAdapter,
   ) {
     this.needsLoad = this.source !== undefined
     this.snapshot = this.createSnapshot()
@@ -75,13 +80,14 @@ export class FrameController {
     }
     return loadingStyle(this.frame) === "eager"
       ? this.loadSourceIfNeeded(false)
-      : Promise.resolve(undefined)
+      : this.loadLazySourceIfVisible()
   }
 
   disconnect(): void {
     if (!this.connected) return
     const wasLoading = this.status === "loading"
     this.connected = false
+    this.stopVisibilityObserver()
     this.cancel()
     if (!wasLoading) this.publish()
   }
@@ -108,6 +114,7 @@ export class FrameController {
   setDisabled(disabled: boolean): Promise<FrameLoadReport | undefined> {
     if (disabled) {
       this.session.setAttribute(this.frame.key, "disabled", "")
+      this.stopVisibilityObserver()
       this.cancel()
       this.publish()
       return Promise.resolve(undefined)
@@ -117,13 +124,17 @@ export class FrameController {
     this.publish()
     return loadingStyle(this.frame) === "eager"
       ? this.loadSourceIfNeeded(false)
-      : Promise.resolve(undefined)
+      : this.loadLazySourceIfVisible()
   }
 
   setLoading(style: FrameLoadingStyle): Promise<FrameLoadReport | undefined> {
     this.session.setAttribute(this.frame.key, "loading", style)
     this.publish()
-    return style === "eager" ? this.loadSourceIfNeeded(false) : Promise.resolve(undefined)
+    if (style === "eager") {
+      this.stopVisibilityObserver()
+      return this.loadSourceIfNeeded(false)
+    }
+    return this.loadLazySourceIfVisible()
   }
 
   setSource(source?: string | null): Promise<FrameLoadReport | undefined> {
@@ -132,7 +143,10 @@ export class FrameController {
 
     this.cancel()
     if (nextSource) this.session.setAttribute(this.frame.key, "src", nextSource)
-    else this.session.removeAttribute(this.frame.key, "src")
+    else {
+      this.session.removeAttribute(this.frame.key, "src")
+      this.stopVisibilityObserver()
+    }
     this.needsLoad = nextSource !== undefined
     this.status = "idle"
     this.publish()
@@ -140,12 +154,17 @@ export class FrameController {
     if (loadingStyle(this.frame) === "eager" || this.hasBeenLoaded) {
       return this.loadSourceIfNeeded(false)
     }
-    return Promise.resolve(undefined)
+    return this.loadLazySourceIfVisible()
   }
 
   subscribe(listener: FrameControllerListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  subscribeErrors(listener: FrameControllerErrorListener): () => void {
+    this.errorListeners.add(listener)
+    return () => this.errorListeners.delete(listener)
   }
 
   private get frame(): ProtocolElement {
@@ -167,6 +186,7 @@ export class FrameController {
     }
 
     const epoch = ++this.loadEpoch
+    this.stopVisibilityObserver()
     this.needsLoad = false
     this.status = "loading"
     this.publish()
@@ -184,16 +204,48 @@ export class FrameController {
         return report
       },
       (error: unknown) => {
+        const reported = error instanceof Error ? error : new Error("Frame source load failed")
         if (epoch === this.loadEpoch) {
           this.needsLoad = true
           this.status = "error"
           this.publish()
+          for (const listener of this.errorListeners) listener(reported)
         }
-        throw error
+        throw reported
       },
     )
     this.loadedPromise = loaded
     return loaded
+  }
+
+  private loadLazySourceIfVisible(): Promise<FrameLoadReport | undefined> {
+    const frame = this.frame
+    if (
+      !this.connected ||
+      !this.visibility ||
+      attributeValue(frame, "disabled") !== undefined ||
+      !attributeValue(frame, "src") ||
+      !this.needsLoad
+    ) {
+      return Promise.resolve(undefined)
+    }
+
+    if (!this.visibilityUnsubscribe) {
+      const unsubscribe = this.visibility.subscribe(this.frameId, (visible) => {
+        if (!visible) return
+        void this.loadSourceIfNeeded(false).catch(() => undefined)
+      })
+      this.visibilityUnsubscribe = unsubscribe
+      if (!this.needsLoad) this.stopVisibilityObserver()
+    }
+    return this.visibility.isVisible(this.frameId)
+      ? this.loadSourceIfNeeded(false)
+      : Promise.resolve(undefined)
+  }
+
+  private stopVisibilityObserver(): void {
+    this.visibilityUnsubscribe?.()
+    this.visibilityUnsubscribe = undefined
   }
 
   private createSnapshot(): FrameControllerSnapshot {

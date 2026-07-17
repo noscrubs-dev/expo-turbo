@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { TurboRequest, TurboResponse } from "../adapters"
+import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
 import { FrameController } from "./frame-controller"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
@@ -23,7 +23,7 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
   }
 }
 
-function harness(attributes = 'src="/frame"') {
+function harness(attributes = 'src="/frame"', visibility?: VisibilityAdapter) {
   const pending: PendingRequest[] = []
   const session = new DocumentSession(
     parseExpoTurboDocument(
@@ -42,7 +42,11 @@ function harness(attributes = 'src="/frame"') {
     },
     { next: () => `request-${++requestId}` },
   )
-  return { controller: new FrameController(session, "details", loader), pending, session }
+  return {
+    controller: new FrameController(session, "details", loader, visibility),
+    pending,
+    session,
+  }
 }
 
 describe("Frame controller", () => {
@@ -125,5 +129,33 @@ describe("Frame controller", () => {
     const frame = session.tree.getElementById("details")
     if (!frame) throw new Error("fixture lost its active frame")
     expect(attributeValue(frame, "src")).toBeUndefined()
+  })
+
+  test("loads a lazy source on first visibility and releases the observer", async () => {
+    let listener: ((visible: boolean) => void) | undefined
+    let visible = false
+    let unsubscribed = 0
+    const visibility: VisibilityAdapter = {
+      isVisible: () => visible,
+      subscribe(frameId, next) {
+        expect(frameId).toBe("details")
+        listener = next
+        return () => {
+          listener = undefined
+          unsubscribed += 1
+        }
+      },
+    }
+    const { controller, pending } = harness('src="/frame" loading="lazy"', visibility)
+
+    expect(await controller.connect()).toBeUndefined()
+    expect(pending).toHaveLength(0)
+    visible = true
+    listener?.(true)
+    expect(pending).toHaveLength(1)
+    expect(unsubscribed).toBe(1)
+    pending[0]?.resolve(response('<turbo-frame id="details"><Visible /></turbo-frame>'))
+    expect(await controller.loaded).toMatchObject({ status: "completed" })
+    expect(controller.state).toMatchObject({ hasBeenLoaded: true, status: "completed" })
   })
 })
