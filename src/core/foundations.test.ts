@@ -109,7 +109,12 @@ describe("adapter boundary", () => {
         get: async () => undefined,
         set: async () => {},
       },
-      styles: { resolve: (tokens) => Object.fromEntries(tokens.map((token) => [token, token])) },
+      styles: {
+        compose: (styles) => Object.assign({}, ...styles),
+        maxTokens: 1,
+        resolve: (tokens) => Object.fromEntries(tokens.map((token) => [token, token])),
+        tokens: ["tone:info"],
+      },
       visibility: {
         isVisible: () => true,
         subscribe: () => () => {},

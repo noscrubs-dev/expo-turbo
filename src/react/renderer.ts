@@ -12,6 +12,11 @@ import {
   useSyncExternalStore,
 } from "react"
 
+import {
+  type ComponentStyleLayers,
+  resolveComponentStyle,
+  type StyleAdapter,
+} from "../adapters/styles"
 import { RegistryError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
@@ -24,6 +29,7 @@ import type {
 } from "../core/state"
 import {
   attributeValue,
+  isElement,
   type ProtocolElement,
   type ProtocolNode,
   renderedTextValue,
@@ -53,10 +59,12 @@ interface RendererContextValue {
   readonly session: DocumentSession
   readonly scopes: DocumentStateScopes | undefined
   readonly state: DocumentStateStore | undefined
+  readonly styles: StyleAdapter | undefined
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
+const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 
 export interface ExpoTurboProviderProps {
@@ -69,6 +77,7 @@ export interface ExpoTurboProviderProps {
   readonly scopes?: DocumentStateScopes
   readonly session: DocumentSession
   readonly state?: DocumentStateStore
+  readonly styles?: StyleAdapter
 }
 
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
@@ -84,6 +93,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       scopes: props.scopes,
       session: props.session,
       state: props.state,
+      styles: props.styles,
     }),
     [
       props.actions,
@@ -94,6 +104,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.scopes,
       props.session,
       props.state,
+      props.styles,
     ],
   )
   return createElement(RendererContext.Provider, { value }, props.children)
@@ -113,6 +124,28 @@ export function useProtocolNode(key: string): NodeSnapshot | undefined {
   )
   const snapshot = useCallback(() => session.getNodeSnapshot(key), [key, session])
   return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function createComponentStyleHook<TStyle, Token extends string>(
+  adapter: StyleAdapter<TStyle, Token>,
+): (layers: ComponentStyleLayers<TStyle>) => TStyle {
+  return function useBoundComponentStyle(layers: ComponentStyleLayers<TStyle>): TStyle {
+    const { session, styles } = useRenderer()
+    const nodeKey = useContext(ProtocolNodeContext)
+    const component = useContext(ComponentTagContext)
+    if (!styles) throw new RegistryError("Expo Turbo component styles require a provider adapter")
+    if (styles !== adapter) {
+      throw new RegistryError("Expo Turbo component styles require the matching provider adapter")
+    }
+    if (!nodeKey || !component) {
+      throw new RegistryError("Expo Turbo component styles require a component node")
+    }
+    const node = session.getNodeSnapshot(nodeKey)?.node
+    if (!node || !isElement(node)) {
+      throw new RegistryError("Expo Turbo component styles require an active component element")
+    }
+    return resolveComponentStyle(adapter, layers, { component })
+  }
 }
 
 export function useComponentAction<Definition extends RegistryComponentAction>(
@@ -284,7 +317,11 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
     children === undefined
       ? createElement(component, componentProps)
       : createElement(component, componentProps, children)
-  return createElement(ProtocolNodeContext.Provider, { value: props.node.key }, rendered)
+  return createElement(
+    ProtocolNodeContext.Provider,
+    { value: props.node.key },
+    createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+  )
 }
 
 interface ConnectedFrameProps {

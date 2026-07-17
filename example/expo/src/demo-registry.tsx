@@ -2,15 +2,27 @@ import {
   createRegistry,
   defineComponent,
   defineComponentModule,
+  enumCodec,
   stringCodec,
+  tokenListCodec,
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 
-import { useComponentAction, useDocumentState } from "expo-turbo/react";
+import {
+  useComponentAction,
+  useDocumentState,
+} from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
+import { useDemoComponentStyle } from "./demo-style-runtime";
+import {
+  DEMO_CARD_BASE_STYLE,
+  DEMO_CARD_TONE_STYLES,
+  DEMO_STYLE_TOKENS,
+  type DemoStyleToken,
+} from "./demo-styles";
 
 const gallery = defineComponent({
   attributes: {},
@@ -22,27 +34,55 @@ const gallery = defineComponent({
   tag: "Gallery",
 });
 
-const card = defineComponent({
-  attributes: { title: { codec: stringCodec, prop: "title" } },
-  children: "nodes",
-  component: ({ children, title }) => (
+function DemoCardComponent({
+  children,
+  styleTokens,
+  title,
+  tone,
+}: {
+  children?: ReactNode;
+  styleTokens: readonly DemoStyleToken[];
+  title: string;
+  tone?: keyof typeof DEMO_CARD_TONE_STYLES;
+}) {
+  const resolvedStyle = useDemoComponentStyle({
+    component: DEMO_CARD_BASE_STYLE,
+    ...(tone ? { props: DEMO_CARD_TONE_STYLES[tone] } : {}),
+    tokens: styleTokens,
+  });
+  return (
     <View
-      style={{
-        backgroundColor: "#fff8e7",
-        borderColor: "#f1cf78",
-        borderRadius: 16,
-        borderWidth: 1,
-        gap: 6,
-        padding: 16,
-      }}
+      style={resolvedStyle}
     >
       <Text selectable style={{ fontSize: 17, fontWeight: "600" }}>
         {title}
       </Text>
       {children}
     </View>
-  ),
-  schema: z.object({ title: z.string() }),
+  );
+}
+
+const card = defineComponent({
+  attributes: {
+    "style-tokens": {
+      codec: tokenListCodec("demo-style", DEMO_STYLE_TOKENS, {
+        maxTokens: 5,
+      }),
+      prop: "styleTokens",
+    },
+    title: { codec: stringCodec, prop: "title" },
+    tone: {
+      codec: enumCodec(["positive", "warning"]),
+      prop: "tone",
+    },
+  },
+  children: "nodes",
+  component: DemoCardComponent,
+  schema: z.object({
+    styleTokens: z.array(z.enum(DEMO_STYLE_TOKENS)).readonly().default([]),
+    title: z.string(),
+    tone: z.enum(["positive", "warning"]).optional(),
+  }),
   tag: "DemoCard",
 });
 
@@ -115,12 +155,12 @@ export const DEMO_REGISTRY = createRegistry(
 );
 
 export const DEMO_DOCUMENT = `<Gallery>
-  <DemoCard id="static-renderer" title="Rendered from XML">
+  <DemoCard id="static-renderer" title="Rendered from XML" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
-    <DemoCard title="Frame boundary">
+    <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>
     </DemoCard>
   </turbo-frame>

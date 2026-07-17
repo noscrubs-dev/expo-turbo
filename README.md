@@ -65,6 +65,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Core identity-bound Frame/form state-scope registry with child-update preservation, replacement/removal cleanup, explicit disposal, and stable-ID reuse isolation.
 - [x] React Frame/form state inheritance with automatic Frame boundaries, explicit form boundaries, nearest-scope bindings/actions, update preservation, and replacement cleanup.
 - [x] Bounded typed state-reference decoding with exact `{"$state":"key"}` values, `{{state:key}}` scalar interpolation, recursive arrays/objects, nearest-scope action admission, and typed failures.
+- [x] Bounded semantic style adapters with schema-owned `style-tokens`, frozen capability manifests, token/group/component limits, deterministic precedence, explicit React resolution, and an example-owned native corpus.
 - [x] Deterministic descendant-first subtree disposal hooks with identity-safe replacement handling, explicit unregister, typed cleanup errors, and registered-component React wiring.
 - [x] Typed logical event bus with serial dispatch, cancellable notifications, nested pause/resume, stable listener snapshots, unsubscribe, and post-failure queue recovery.
 - [x] Static React protocol renderer with stable `useSyncExternalStore` node snapshots, isolated subtree updates, registered error surfaces, mixed children, and non-rendering protocol nodes.
@@ -83,7 +84,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ### In progress / not yet supported
 
-- [ ] Style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
+- [ ] Public loading/accessibility surfaces and non-Frame mutation cleanup.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
 - [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
@@ -95,7 +96,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ## TypeScript API boundaries
 
-The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, deterministic diagnostic serializer, typed logical events and state-reference resolution, addressable tree/session/state with subtree disposal, selectors, structural and custom Stream dispatch, Frame target/request/recurse/controller/visit APIs, typed component/component-action/custom-Stream-action registries, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, typed component-action/document/scoped-state/disposal hooks, explicit form state boundaries, automatic Frame state inheritance, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
+The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, deterministic diagnostic serializer, typed logical events and state-reference resolution, addressable tree/session/state with subtree disposal, selectors, structural and custom Stream dispatch, Frame target/request/recurse/controller/visit APIs, semantic style adapters, typed component/component-action/custom-Stream-action registries, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, typed component-action/document/scoped-state/style/disposal hooks, explicit form state boundaries, automatic Frame state inheritance, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
 
 The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 

@@ -5,7 +5,11 @@ import { createElement, type ReactNode } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
-import type { TurboRequest, TurboResponse } from "expo-turbo/adapters"
+import {
+  defineStyleAdapter,
+  type TurboRequest,
+  type TurboResponse,
+} from "expo-turbo/adapters"
 import {
   applyFrameResponse,
   dispatchTurboStreamFragment,
@@ -28,8 +32,10 @@ import {
   defineComponent,
   defineComponentModule,
   stringCodec,
+  tokenListCodec,
 } from "expo-turbo/registry"
 import {
+  createComponentStyleHook,
   ExpoTurboProvider,
   type ExpoTurboRenderError,
   ExpoTurboRoot,
@@ -131,6 +137,120 @@ describe("React protocol renderer", () => {
     expect(output).toContain("Frame text")
     expect(output).not.toContain("Template text")
     expect(output).not.toContain("DemoChannel")
+  })
+
+  test("resolves explicit semantic tokens without treating structural class as native style", () => {
+    type TestStyle = Readonly<Record<string, string>>
+    const resolved: Readonly<{ component: string; tokens: readonly string[] }>[] = []
+    const styles = defineStyleAdapter<"tone:info", TestStyle>({
+      compose: (layers) => Object.freeze(Object.assign({}, ...layers)),
+      maxTokens: 1,
+      tokens: {
+        "tone:info": {
+          components: ["DemoStyled"],
+          group: "tone",
+          style: { color: "blue" },
+        },
+      },
+    })
+    const originalResolve = styles.resolve
+    const recordingStyles: typeof styles = Object.freeze({
+      ...styles,
+      resolve(tokens: readonly string[], context: Readonly<{ component: string }>) {
+        resolved.push({ component: context.component, tokens: [...tokens] })
+        return originalResolve(tokens, context)
+      },
+    })
+    const useTestComponentStyle = createComponentStyleHook(recordingStyles)
+    type TestStyleLayers = Parameters<typeof useTestComponentStyle>[0]
+    const typedLayers: TestStyleLayers = { component: { color: "black" }, tokens: [] }
+    // @ts-expect-error The bound hook rejects layers from another style contract.
+    const invalidLayers: TestStyleLayers = { component: ["black"], tokens: [] }
+    expect(typedLayers.component).toEqual({ color: "black" })
+    void invalidLayers
+
+    function Styled({ styleTokens }: { styleTokens: string[] }): ReactNode {
+      const style = useTestComponentStyle({
+        component: { color: "black" },
+        tokens: styleTokens,
+      })
+      return createElement("div", { style })
+    }
+    const styled = defineComponent({
+      aliases: ["LegacyStyled"],
+      attributes: {
+        "style-tokens": {
+          codec: tokenListCodec("renderer-style", ["tone:info"] as const, { maxTokens: 1 }),
+          prop: "styleTokens",
+        },
+      },
+      children: "none",
+      component: Styled,
+      schema: z.object({ styleTokens: z.array(z.literal("tone:info")).default([]) }),
+      tag: "DemoStyled",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [styled],
+        name: "renderer-style-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><LegacyStyled class="tone:critical" style-tokens="tone:info"/></Gallery>',
+      ),
+    )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          ExpoTurboProvider,
+          { registry: componentRegistry, session, styles: recordingStyles },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const activeRenderer = renderer
+
+    expect(activeRenderer.root.findByType("div").props.style).toEqual({ color: "blue" })
+    expect(resolved).toEqual([{ component: "DemoStyled", tokens: ["tone:info"] }])
+
+    const mismatchedAdapterErrors: ExpoTurboRenderError[] = []
+    act(() => {
+      create(
+        createElement(
+          ExpoTurboProvider,
+          {
+            onError: (event) => mismatchedAdapterErrors.push(event),
+            registry: componentRegistry,
+            renderError: () => createElement("style-error"),
+            session,
+            styles,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    expect(mismatchedAdapterErrors[0]?.error.message).toContain("matching provider adapter")
+
+    const missingAdapterErrors: ExpoTurboRenderError[] = []
+    act(() => {
+      create(
+        createElement(
+          ExpoTurboProvider,
+          {
+            onError: (event) => missingAdapterErrors.push(event),
+            registry: componentRegistry,
+            renderError: () => createElement("style-error"),
+            session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    expect(missingAdapterErrors[0]?.error.message).toContain("provider adapter")
   })
 
   test("keeps node snapshots stable and rerenders only the changed registered subtree", () => {
