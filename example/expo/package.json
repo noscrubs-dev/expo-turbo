@@ -3,6 +3,7 @@
   "main": "expo-router/entry",
   "version": "0.0.0",
   "private": true,
+  "packageManager": "npm@10.9.3",
   "dependencies": {
     "expo": "~57.0.6",
     "expo-constants": "~57.0.5",
@@ -21,16 +22,16 @@
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~57.0.0",
+    "eslint-import-resolver-typescript": "^3.10.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "postinstall": "bun run --cwd ../.. build",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "check": "bun run lint && bun run typecheck && expo export --platform web"
+    "check": "npm run lint && npm run typecheck && expo export --platform web"
   }
 }
