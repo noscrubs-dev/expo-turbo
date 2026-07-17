@@ -36,7 +36,9 @@ function loadingStyle(frame: ProtocolElement): FrameLoadingStyle {
 
 export class FrameController {
   private readonly errorListeners = new Set<FrameControllerErrorListener>()
+  private readonly frameNode: ProtocolElement
   private readonly listeners = new Set<FrameControllerListener>()
+  private readonly requestOwner = Object.freeze({})
   private connected = false
   private hasBeenLoaded = false
   private loadEpoch = 0
@@ -52,7 +54,19 @@ export class FrameController {
     readonly frameId: string,
     private readonly loader: FrameRequestLoader,
     private readonly visibility?: VisibilityAdapter,
+    frameNode?: ProtocolElement,
   ) {
+    const activeFrame = frameNode ?? this.session.tree.getElementById(this.frameId)
+    if (
+      activeFrame?.kind !== "frame" ||
+      attributeValue(activeFrame, "id") !== this.frameId ||
+      !this.session.tree.contains(activeFrame)
+    ) {
+      throw new FrameMissingError(`Active frame ${JSON.stringify(this.frameId)} is missing`, {
+        frameId: this.frameId,
+      })
+    }
+    this.frameNode = activeFrame
     this.needsLoad = this.source !== undefined
     this.snapshot = this.createSnapshot()
   }
@@ -94,7 +108,7 @@ export class FrameController {
 
   cancel(): void {
     this.loadEpoch += 1
-    this.loader.cancel(this.frameId)
+    this.loader.cancel(this.frameId, this.requestOwner)
     if (this.status === "loading") {
       this.needsLoad = true
       this.status = "canceled"
@@ -176,13 +190,15 @@ export class FrameController {
   }
 
   private get frame(): ProtocolElement {
-    const frame = this.session.tree.getElementById(this.frameId)
-    if (frame?.kind !== "frame") {
+    if (
+      !this.session.tree.contains(this.frameNode) ||
+      this.session.tree.getElementById(this.frameId) !== this.frameNode
+    ) {
       throw new FrameMissingError(`Active frame ${JSON.stringify(this.frameId)} is missing`, {
         frameId: this.frameId,
       })
     }
-    return frame
+    return this.frameNode
   }
 
   private loadSourceIfNeeded(force: boolean): Promise<FrameLoadReport | undefined> {
@@ -198,7 +214,7 @@ export class FrameController {
     this.needsLoad = false
     this.status = "loading"
     this.publish()
-    const loaded = this.loader.load(this.frameId, source).then(
+    const loaded = this.loader.load(this.frameId, source, this.requestOwner).then(
       (report) => {
         if (epoch !== this.loadEpoch) return report
         this.status = report.status
@@ -257,8 +273,8 @@ export class FrameController {
   }
 
   private createSnapshot(): FrameControllerSnapshot {
-    const frame = this.session.tree.getElementById(this.frameId)
-    if (frame?.kind !== "frame") {
+    const frame = this.session.tree.contains(this.frameNode) ? this.frameNode : undefined
+    if (!frame || frame !== this.session.tree.getElementById(this.frameId)) {
       if (!this.snapshot) {
         throw new FrameMissingError(`Active frame ${JSON.stringify(this.frameId)} is missing`, {
           frameId: this.frameId,

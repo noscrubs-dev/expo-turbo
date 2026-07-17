@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
 import { describe, expect, test } from "bun:test"
-import { createElement, type ReactNode } from "react"
+import { createElement, type ReactNode, useEffect, useState } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
@@ -37,6 +37,7 @@ import {
 import {
   createComponentStyleHook,
   ExpoTurboProvider,
+  type ExpoTurboProviderProps,
   type ExpoTurboRenderError,
   ExpoTurboRoot,
   ExpoTurboStateScope,
@@ -101,7 +102,7 @@ function registryWithCounters(counters = { left: 0, right: 0 }) {
 
 function render(
   session: DocumentSession,
-  registry: ReturnType<typeof registryWithCounters>,
+  registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
     frames?: FrameControllerCollection
     onError?: (event: ExpoTurboRenderError) => void
@@ -466,6 +467,10 @@ describe("React protocol renderer", () => {
     const replacementScope = scopes.scopeFor(replacement.key, "form")
     expect(replacementScope).not.toBe(formScope)
     expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBeUndefined()
+    await act(async () => {
+      await activeRenderer.root.findByType("button").props.onClick()
+    })
+    expect(replacementScope.state.get("recorded")).toBe("replacement")
 
     act(() => activeRenderer.unmount())
     expect(replacementScope.state.isDisposed).toBe(true)
@@ -522,6 +527,97 @@ describe("React protocol renderer", () => {
     })
 
     expect(disposed).toEqual(["old", "new"])
+  })
+
+  test("preserves update identity and remounts same-id replacements exactly once", () => {
+    let nextInstance = 0
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    function Stateful(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      const [instance] = useState(() => ++nextInstance)
+      useEffect(
+        () => () => {
+          unmounted.push(instance)
+        },
+        [instance],
+      )
+      useNodeDisposal(() => disposed.push(instance))
+      return createElement("section", { instance }, props.children)
+    }
+    const stateful = defineComponent({
+      attributes: {},
+      children: "text",
+      component: Stateful,
+      schema: z.object({}),
+      tag: "Stateful",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [stateful],
+        name: "identity-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Stateful id="same">Initial</Stateful></Gallery>',
+      ),
+    )
+    const renderer = render(session, componentRegistry)
+    const instance = () => renderer.root.findByType("section").props.instance
+
+    expect(instance()).toBe(1)
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="same"><template>Updated</template></turbo-stream>',
+      )
+    })
+    expect(instance()).toBe(1)
+    expect(disposed).toEqual([])
+    expect(unmounted).toEqual([])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="same"><template><Stateful id="same">Replaced</Stateful></template></turbo-stream>',
+      )
+    })
+    expect(instance()).toBe(2)
+    expect(disposed).toEqual([1])
+    expect(unmounted).toEqual([1])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="gallery"><template><Stateful id="same">Collision</Stateful></template></turbo-stream>',
+      )
+    })
+    expect(instance()).toBe(3)
+    expect(disposed).toEqual([1, 2])
+    expect(unmounted).toEqual([1, 2])
+
+    const replacementSession = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Stateful id="same">New document</Stateful></Gallery>',
+      ),
+    )
+    act(() => {
+      renderer.update(
+        createElement(
+          ExpoTurboProvider,
+          { registry: componentRegistry, session: replacementSession },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    expect(instance()).toBe(4)
+    expect(disposed).toEqual([1, 2, 3])
+    expect(unmounted).toEqual([1, 2, 3])
+
+    act(() => renderer.unmount())
+    expect(disposed).toEqual([1, 2, 3, 4])
+    expect(unmounted).toEqual([1, 2, 3, 4])
   })
 
   test("renders a matching Frame response without replacing its mounted wrapper", () => {
@@ -614,17 +710,90 @@ describe("React protocol renderer", () => {
     act(() => {
       dispatchTurboStreamFragment(
         session,
-        '<turbo-stream action="remove" target="frame"></turbo-stream>',
+        '<turbo-stream action="replace" target="frame"><template><turbo-frame id="frame" src="/replacement"><DemoText>Replacement</DemoText></turbo-frame></template></turbo-stream>',
       )
     })
     expect(pending[2]?.request.signal?.aborted).toBe(true)
     expect(controller.state).toMatchObject({ connected: false, status: "canceled" })
-    expect(() => frames.get("frame")).toThrow(FrameMissingError)
+    const replacementController = frames.get("frame")
+    expect(replacementController).not.toBe(controller)
+    expect(pending).toHaveLength(4)
+    expect(pending[3]?.request.url).toBe("https://example.test/replacement")
     pending[2]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>'))
     await act(async () => {
       await changed
     })
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Late")
+    expect(JSON.stringify(renderer.toJSON())).toContain("Replacement")
+
+    act(() => {
+      dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="frame"/>')
+    })
+    expect(pending[3]?.request.signal?.aborted).toBe(true)
+    expect(replacementController.state).toMatchObject({ connected: false, status: "canceled" })
+    expect(() => frames.get("frame")).toThrow(FrameMissingError)
+    pending[3]?.resolve(
+      turboResponse('<turbo-frame id="frame"><DemoText>Late replacement</DemoText></turbo-frame>'),
+    )
+    await act(async () => {
+      await replacementController.loaded
+    })
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Late replacement")
+  })
+
+  test("resubscribes Frame errors without reconnecting when the provider callback changes", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => "request-1" },
+      ),
+    )
+    const componentRegistry = registryWithCounters()
+    const provider = (onError: (event: ExpoTurboRenderError) => void) =>
+      createElement(
+        ExpoTurboProvider,
+        { frames, onError, registry: componentRegistry, session },
+        createElement(ExpoTurboRoot),
+      )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(provider(() => undefined))
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const activeRenderer = renderer
+    const controller = frames.get("frame")
+
+    expect(pending).toHaveLength(1)
+    act(() => activeRenderer.update(provider(() => undefined)))
+    expect(frames.get("frame")).toBe(controller)
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+
+    act(() => activeRenderer.unmount())
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>',
+      url: "https://example.test/frame",
+    })
+    expect(await controller.loaded).toMatchObject({ status: "canceled" })
   })
 
   test("contains unknown components behind an actionable retryable error surface", () => {

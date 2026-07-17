@@ -26,7 +26,8 @@ export interface FrameRequestLoaderOptions {
 
 interface ActiveFrameRequest {
   readonly controller: AbortController
-  readonly epoch: number
+  readonly frame: ProtocolElement
+  readonly owner?: object
 }
 
 function header(response: TurboResponse, name: string): string | undefined {
@@ -48,7 +49,6 @@ function recurseFrame(
 
 export class FrameRequestLoader {
   private readonly active = new Map<string, ActiveFrameRequest>()
-  private epoch = 0
   private readonly maxRecurseDepth: number
 
   constructor(
@@ -63,18 +63,25 @@ export class FrameRequestLoader {
     }
   }
 
-  cancel(frameId: string): void {
-    this.active.get(frameId)?.controller.abort()
+  cancel(frameId: string, owner?: object): void {
+    const active = this.active.get(frameId)
+    if (!active || (owner && active.owner !== owner)) return
+    active.controller.abort()
     this.active.delete(frameId)
   }
 
-  async load(frameId: string, source: string): Promise<FrameLoadReport> {
+  async load(frameId: string, source: string, owner?: object): Promise<FrameLoadReport> {
     const url = this.resolveSameOrigin(source)
+    const frame = this.session.tree.getElementById(frameId)
+    if (frame?.kind !== "frame") {
+      throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
+    }
     this.cancel(frameId)
     const requestIds: string[] = []
     const active: ActiveFrameRequest = {
       controller: new AbortController(),
-      epoch: this.epoch++,
+      frame,
+      ...(owner ? { owner } : {}),
     }
     this.active.set(frameId, active)
 
@@ -101,7 +108,9 @@ export class FrameRequestLoader {
           signal: active.controller.signal,
           url: requestUrl,
         })
-        if (!this.owns(frameId, active)) return this.canceled(frameId, requestIds, responseUrl)
+        if (!this.owns(frameId, active)) {
+          return this.canceled(frameId, requestIds, responseUrl, active)
+        }
 
         const finalUrl = this.resolveSameOrigin(response.url, requestUrl)
         visited.add(finalUrl)
@@ -135,7 +144,9 @@ export class FrameRequestLoader {
           })
         }
         const xml = await response.text()
-        if (!this.owns(frameId, active)) return this.canceled(frameId, requestIds, responseUrl)
+        if (!this.owns(frameId, active)) {
+          return this.canceled(frameId, requestIds, responseUrl, active)
+        }
         const document = parseExpoTurboDocument(xml, { url: finalUrl })
         const matchingFrame = document
           .getFrames()
@@ -187,14 +198,20 @@ export class FrameRequestLoader {
       }
     } catch (error) {
       if (active.controller.signal.aborted || !this.owns(frameId, active)) {
-        return this.canceled(frameId, requestIds, url)
+        return this.canceled(frameId, requestIds, url, active)
       }
       this.active.delete(frameId)
       throw error
     }
   }
 
-  private canceled(frameId: string, requestIds: readonly string[], url: string): FrameLoadReport {
+  private canceled(
+    frameId: string,
+    requestIds: readonly string[],
+    url: string,
+    request: ActiveFrameRequest,
+  ): FrameLoadReport {
+    if (this.active.get(frameId) === request) this.active.delete(frameId)
     return Object.freeze({
       frameId,
       requestId: requestIds[0] ?? "canceled",
@@ -205,7 +222,10 @@ export class FrameRequestLoader {
   }
 
   private owns(frameId: string, request: ActiveFrameRequest): boolean {
-    return this.active.get(frameId)?.epoch === request.epoch
+    return (
+      this.active.get(frameId) === request &&
+      this.session.tree.getElementById(frameId) === request.frame
+    )
   }
 
   private resolveSameOrigin(source: string, baseUrl?: string): string {

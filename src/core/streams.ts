@@ -179,7 +179,16 @@ function assertIdsAvailable(
   removals: readonly ProtocolNode[],
   action: string,
 ): void {
+  const seen = new Set<string>()
   for (const id of allIds(payload)) {
+    if (seen.has(id)) {
+      throw actionError(
+        `Turbo Stream payload id ${JSON.stringify(id)} is declared more than once`,
+        action,
+        id,
+      )
+    }
+    seen.add(id)
     const existing = tree.getElementById(id)
     if (!existing || removals.some((root) => isWithin(existing, root))) continue
     throw actionError(`Turbo Stream payload id ${JSON.stringify(id)} already exists`, action, id)
