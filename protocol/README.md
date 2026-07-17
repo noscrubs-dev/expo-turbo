@@ -50,6 +50,14 @@ React hosts inject the controller through `documentController`, may supply a `do
 
 This slice does not claim `advance`/`replace`/`restore` navigation, redirect history replacement, cache previews/restoration, lifecycle-event parity, form submission ownership, live announcements, browser progress-bar animation, or physical-device accessibility evidence.
 
+## Top-level document-link activation
+
+`useExpoTurboDocumentLink(href)` lets an app-owned registered component expose a plain top-level native link without adding React Native or a host router to the package. The hook requires the host-injected `DocumentVisitController` and returns a stable activation callback without subscribing the component to visit-state ticks. Activation delegates the unchanged `href` to that shared controller, so relative URL resolution, credential-free same-origin HTTP(S) admission, request headers, cancellation, response classification, and latest-visit ownership use the document GET contracts above.
+
+The activation callback is bound to the exact registered protocol node that created it. It rechecks node identity at press time and fails closed after replacement/removal even if a deterministic key is reused. Frame ancestry, fragment-bearing URLs, the closest `data-turbo="false"` opt-out, and disabled/target/action/method/Stream/confirmation metadata also reject instead of being silently reinterpreted as a document GET. Every hook-level rejection occurs before a fetch and does not cancel a valid visit already owned by the controller. The example registry supplies the actual `Pressable`, link accessibility role, pending state, styling, and visible failure handling; those remain host responsibilities.
+
+This is only top-level in-session document replacement. Frame capture and named targets, `_top`, external or explicit opt-out delegation, root-location restrictions, fragment/anchor navigation and scrolling, router/history actions, disabled/method/Stream/confirmation metadata, click/visit lifecycle events, snapshot restoration, and preload/prefetch remain unsupported. In Turbo 8.0.23, method and Stream links enter the form-submission path, so this hook does not silently reinterpret them as ordinary document GETs.
+
 ## Frame loading and native accessibility
 
 A connected Frame exposes its immutable controller snapshot through a host-defined `frameComponent` boundary and `useExpoTurboFrame()`. The hook resolves the nearest connected Frame, so nested Frames receive independent bindings and components outside a Frame receive `undefined`. The default boundary remains a Fragment.

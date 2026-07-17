@@ -18,11 +18,12 @@ import {
   resolveComponentStyle,
   type StyleAdapter,
 } from "../adapters/styles"
+import type { DocumentLoadReport } from "../core/document-loader"
 import type {
   DocumentVisitController,
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
-import { RegistryError } from "../core/errors"
+import { RegistryError, TargetError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
@@ -104,6 +105,19 @@ const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
+const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
+  "action",
+  "confirm",
+  "data-turbo-action",
+  "data-turbo-confirm",
+  "data-turbo-frame",
+  "data-turbo-method",
+  "data-turbo-stream",
+  "disabled",
+  "method",
+  "stream",
+  "target",
+] as const
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
@@ -331,6 +345,74 @@ export function useDocumentVisitControllerState(
 
 export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
   return useContext(DocumentContext)
+}
+
+export type ExpoTurboDocumentLinkActivation = () => Promise<DocumentLoadReport>
+
+export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
+  const { documentController, session } = useRenderer()
+  const nodeKey = useContext(ProtocolNodeContext)
+  const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
+  const activate = useCallback(() => {
+    if (!documentController || !nodeKey || !node || !isElement(node)) {
+      return Promise.reject(new TargetError("Document link is outside the active document"))
+    }
+    if (session.tree.getNodeByKey(nodeKey) !== node) {
+      return Promise.reject(new TargetError("Document link is outside the active document"))
+    }
+    for (const name of UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES) {
+      if (attributeValue(node, name) !== undefined) {
+        return Promise.reject(
+          new TargetError("Document link metadata requires unsupported navigation behavior"),
+        )
+      }
+    }
+    let current: ProtocolNode | null = node
+    let foundTurboSetting = false
+    while (current && current.kind !== "document") {
+      if (current.kind === "frame") {
+        const frameId = attributeValue(current, "id")
+        return Promise.reject(
+          new TargetError("Frame-scoped document links require Frame navigation", {
+            ...(frameId ? { frameId } : {}),
+          }),
+        )
+      }
+      if (!foundTurboSetting && isElement(current)) {
+        const setting = attributeValue(current, "data-turbo")
+        if (setting !== undefined) {
+          foundTurboSetting = true
+          if (setting === "false") {
+            return Promise.reject(
+              new TargetError("Opted-out document links require host navigation"),
+            )
+          }
+        }
+      }
+      current = current.parent
+    }
+    const documentUrl = session.tree.document.url
+    if (documentUrl) {
+      try {
+        if (new URL(href, documentUrl).href.includes("#")) {
+          return Promise.reject(
+            new TargetError("Document link fragments require navigation support"),
+          )
+        }
+      } catch {
+        // The document controller owns typed URL admission and redaction.
+      }
+    }
+    return documentController.visit(href)
+  }, [documentController, href, node, nodeKey, session])
+  if (!documentController) {
+    throw new RegistryError("Expo Turbo document links require a provider visit controller")
+  }
+  if (!nodeKey) throw new RegistryError("Expo Turbo document links require a component node")
+  if (!node || !isElement(node)) {
+    throw new RegistryError("Expo Turbo document links require an active component element")
+  }
+  return activate
 }
 
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {

@@ -26,6 +26,7 @@ import {
   FrameMissingError,
   FrameRequestLoader,
   parseExpoTurboDocument,
+  TargetError,
 } from "expo-turbo/core"
 import {
   createComponentActionRegistry,
@@ -50,6 +51,7 @@ import {
   useComponentAction,
   useDocumentState,
   useExpoTurboDocument,
+  useExpoTurboDocumentLink,
   useExpoTurboFrame,
   useNodeDisposal,
   useScopedState,
@@ -132,6 +134,58 @@ function render(
   })
   if (!renderer) throw new Error("renderer was not created")
   return renderer
+}
+
+function renderDocumentLinks(
+  xml: string,
+  fetch: (request: TurboRequest) => Promise<TurboResponse>,
+  url = "https://example.test/gallery",
+) {
+  const activations = new Map<string, () => Promise<unknown>>()
+  let renders = 0
+  function DocumentLink({ href }: { href: string }): ReactNode {
+    renders += 1
+    activations.set(href, useExpoTurboDocumentLink(href))
+    return createElement("link", { href })
+  }
+  const link = defineComponent({
+    attributes: { href: { codec: stringCodec, prop: "href" } },
+    children: "none",
+    component: DocumentLink,
+    schema: z.object({ href: z.string().trim().min(1) }),
+    tag: "DocumentLink",
+  })
+  const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
+  const controller = new DocumentVisitController(
+    new DocumentRequestLoader(session, { fetch }, { next: () => "request-link" }),
+    {
+      clearTimeout: () => undefined,
+      now: () => 0,
+      setTimeout: () => Object.freeze({}),
+    },
+  )
+  const renderer = render(
+    session,
+    registryWithCounters().use(
+      defineComponentModule({
+        components: [link],
+        name: "document-link-component",
+        version: "0.1.0",
+      }),
+    ),
+    { documentController: controller },
+  )
+  return {
+    activation(href: string) {
+      const activation = activations.get(href)
+      if (!activation) throw new Error(`Document link ${href} did not render`)
+      return activation
+    },
+    controller,
+    renderCount: () => renders,
+    renderer,
+    session,
+  }
 }
 
 describe("React protocol renderer", () => {
@@ -811,6 +865,154 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
     expect(boundaryUnmounts).toEqual([1])
     expect(probeUnmounts).toEqual([1, 2])
+  })
+
+  test("activates an active top-level document link without subscribing it to visit ticks", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="../next?tab=details" /><DemoText>Before</DemoText></Gallery>',
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/current/gallery",
+    )
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness.activation("../next?tab=details")()
+    })
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request).toMatchObject({
+      method: "GET",
+      url: "https://example.test/next?tab=details",
+    })
+    expect(pending[0]?.request.headers.Accept).toBe(EXPO_TURBO_MIME_TYPE)
+    expect(pending[0]?.request.headers).not.toHaveProperty("Turbo-Frame")
+    expect(harness.controller.state).toMatchObject({ busy: true, status: "started" })
+    expect(harness.renderCount()).toBe(1)
+
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery><DocumentLink id="link" href="/later" /><DemoText>After</DemoText></Gallery>',
+        url: "https://example.test/next?tab=details",
+      })
+      await visit
+    })
+    expect(harness.controller.state).toMatchObject({ busy: false, status: "completed" })
+    expect(harness.session.tree.document.url).toBe("https://example.test/next?tab=details")
+    expect(JSON.stringify(harness.renderer.toJSON())).toContain("After")
+    expect(harness.renderCount()).toBe(2)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects an unsafe document link without disturbing the current visit owner", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/pending" />
+        <DocumentLink href="https://outside.test/path" />
+        <DocumentLink href="/fragment#section" />
+        <DocumentLink href="#" />
+        <DocumentLink href="/empty-fragment#" />
+        <DocumentLink href="/method" data-turbo-method="get" />
+        <DocumentLink href="/stream" data-turbo-stream="" />
+        <DocumentLink href="/target" data-turbo-frame="frame" />
+        <DocumentLink href="/action" data-turbo-action="replace" />
+        <DocumentLink href="/confirm" data-turbo-confirm="Continue?" />
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+    )
+
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/pending")()
+    })
+    const started = harness.controller.state
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+
+    await expect(harness.activation("https://outside.test/path")()).rejects.toBeInstanceOf(
+      TargetError,
+    )
+    for (const href of ["/fragment#section", "#", "/empty-fragment#"]) {
+      await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
+    }
+    for (const href of ["/method", "/stream", "/target", "/action", "/confirm", "/opted-out"]) {
+      await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
+    }
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.controller.cancel())
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DocumentLink href="/late" /></Gallery>',
+      url: "https://example.test/pending",
+    })
+    await current
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects stale and Frame-scoped document link activations before fetching", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/pending" />
+        <DocumentLink id="top-link" href="/stale" />
+        <turbo-frame id="frame"><DocumentLink href="/inside-frame" /></turbo-frame>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+    )
+    const stale = harness.activation("/stale")
+    const insideFrame = harness.activation("/inside-frame")
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/pending")()
+    })
+    const started = harness.controller.state
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        harness.session,
+        '<turbo-stream action="replace" target="top-link"><template><DocumentLink id="top-link" href="/replacement" /></template></turbo-stream>',
+      )
+    })
+    await expect(stale()).rejects.toBeInstanceOf(TargetError)
+    await expect(insideFrame()).rejects.toMatchObject({
+      code: "target",
+      context: { frameId: "frame" },
+    })
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.controller.cancel())
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DocumentLink href="/late" /></Gallery>',
+      url: "https://example.test/pending",
+    })
+    await current
+
+    act(() => harness.renderer.unmount())
   })
 
   test("keeps the injected document controller host-owned across React unmount", async () => {
