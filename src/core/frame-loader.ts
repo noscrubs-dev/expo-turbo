@@ -1,12 +1,17 @@
-import type { FetchAdapter, RequestIdAdapter, TurboResponse } from "../adapters"
+import type { FetchAdapter, RequestIdAdapter } from "../adapters"
 import { ContentTypeError, FrameMissingError, TargetError } from "./errors"
 import { applyFrameResponse, type FrameResponseReport } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
+import {
+  EXPO_TURBO_MIME_TYPE,
+  protocolRequestHeaders,
+  resolveSameOriginProtocolUrl,
+  responseContentType,
+} from "./protocol-request"
 import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
-import { EXPO_TURBO_PROTOCOL_VERSION, EXPO_TURBO_RUNTIME_VERSION } from "./versions"
 
-export const EXPO_TURBO_MIME_TYPE = "application/vnd.expo-turbo+xml" as const
+export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 
 export type FrameLoadStatus = "canceled" | "completed" | "empty"
 
@@ -21,6 +26,7 @@ export interface FrameLoadReport {
 }
 
 export interface FrameRequestLoaderOptions {
+  readonly capabilityHash?: string
   readonly maxRecurseDepth?: number
 }
 
@@ -28,11 +34,6 @@ interface ActiveFrameRequest {
   readonly controller: AbortController
   readonly frame: ProtocolElement
   readonly owner?: object
-}
-
-function header(response: TurboResponse, name: string): string | undefined {
-  const expected = name.toLowerCase()
-  return Object.entries(response.headers).find(([key]) => key.toLowerCase() === expected)?.[1]
 }
 
 function recurseFrame(
@@ -49,6 +50,7 @@ function recurseFrame(
 
 export class FrameRequestLoader {
   private readonly active = new Map<string, ActiveFrameRequest>()
+  private readonly capabilityHash: string | undefined
   private readonly maxRecurseDepth: number
 
   constructor(
@@ -57,6 +59,7 @@ export class FrameRequestLoader {
     private readonly requestIds: RequestIdAdapter,
     options: FrameRequestLoaderOptions = {},
   ) {
+    this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")
@@ -71,7 +74,7 @@ export class FrameRequestLoader {
   }
 
   async load(frameId: string, source: string, owner?: object): Promise<FrameLoadReport> {
-    const url = this.resolveSameOrigin(source)
+    const url = this.resolveSameOrigin(source, undefined, frameId)
     const frame = this.session.tree.getElementById(frameId)
     if (frame?.kind !== "frame") {
       throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
@@ -97,13 +100,11 @@ export class FrameRequestLoader {
         const requestId = this.requestIds.next()
         requestIds.push(requestId)
         const response = await this.fetchAdapter.fetch({
-          headers: {
-            Accept: EXPO_TURBO_MIME_TYPE,
-            "Turbo-Frame": requestFrameId,
-            "X-Expo-Turbo-Protocol": EXPO_TURBO_PROTOCOL_VERSION,
-            "X-Expo-Turbo-Runtime": EXPO_TURBO_RUNTIME_VERSION,
-            "X-Turbo-Request-Id": requestId,
-          },
+          headers: protocolRequestHeaders({
+            ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
+            frameId: requestFrameId,
+            requestId,
+          }),
           method: "GET",
           signal: active.controller.signal,
           url: requestUrl,
@@ -112,7 +113,7 @@ export class FrameRequestLoader {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
 
-        const finalUrl = this.resolveSameOrigin(response.url, requestUrl)
+        const finalUrl = this.resolveSameOrigin(response.url, requestUrl, frameId)
         visited.add(finalUrl)
         if (recurseDepth === 0) {
           responseStatus = response.status
@@ -136,7 +137,7 @@ export class FrameRequestLoader {
           })
         }
 
-        const contentType = header(response, "content-type")?.split(";", 1)[0]?.trim().toLowerCase()
+        const contentType = responseContentType(response)
         if (contentType !== EXPO_TURBO_MIME_TYPE) {
           throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
             contentType: contentType ?? "missing",
@@ -185,7 +186,7 @@ export class FrameRequestLoader {
             frameId,
           })
         }
-        const nextUrl = this.resolveSameOrigin(intermediarySource, finalUrl)
+        const nextUrl = this.resolveSameOrigin(intermediarySource, finalUrl, frameId)
         if (visited.has(nextUrl)) {
           throw new FrameMissingError(`Frame ${JSON.stringify(frameId)} has a recurse URL loop`, {
             frameId,
@@ -228,14 +229,9 @@ export class FrameRequestLoader {
     )
   }
 
-  private resolveSameOrigin(source: string, baseUrl?: string): string {
+  private resolveSameOrigin(source: string, baseUrl: string | undefined, frameId: string): string {
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new TargetError("Frame requests require an active document URL")
-    const document = new URL(documentUrl)
-    const resolved = new URL(source, baseUrl ?? document)
-    if (resolved.origin !== document.origin) {
-      throw new TargetError("Frame source must be same-origin", { frameId: resolved.pathname })
-    }
-    return resolved.toString()
+    return resolveSameOriginProtocolUrl(source, documentUrl, baseUrl ?? documentUrl, { frameId })
   }
 }

@@ -7,6 +7,7 @@ export type ExpoTurboErrorCode =
   | "parse"
   | "props"
   | "registry"
+  | "request"
   | "state"
   | "subscription"
   | "target"
@@ -18,7 +19,9 @@ export interface ExpoTurboErrorContext {
   readonly documentId?: string
   readonly frameId?: string
   readonly location?: Readonly<{ column?: number; line?: number; offset?: number }>
+  readonly method?: string
   readonly payloadHash?: string
+  readonly responseStatus?: number
   readonly runtimeVersion?: string
   readonly target?: string
 }
@@ -53,6 +56,12 @@ export class ParseError extends ExpoTurboError {
 export class ContentTypeError extends ExpoTurboError {
   constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
     super("content_type", message, context, options)
+  }
+}
+
+export class RequestError extends ExpoTurboError {
+  constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
+    super("request", message, context, options)
   }
 }
 

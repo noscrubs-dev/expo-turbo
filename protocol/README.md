@@ -28,6 +28,18 @@ Built-in compound Stream actions validate every payload ID, including repeated I
 
 Registered component cleanup runs on logical subtree removal/replacement and on ordinary React/provider unmount. Cleanup is identity-bound and once-only, so a logical mutation followed by React reconciliation cannot dispose the same resource twice.
 
+## Document GET transport
+
+`DocumentRequestLoader` is a host-neutral transport and tree-replacement primitive for a mounted `DocumentSession`; it is not a navigation, history, cache, accessibility, or progress controller. It resolves relative sources against the active document URL and permits only credential-free, same-origin HTTP(S) request and final-response URLs. Document GETs advertise the Expo Turbo MIME type and send protocol, runtime, request-ID, and optional capability headers without a `Turbo-Frame` header.
+
+After the fetch adapter follows redirects, the response's final URL becomes the parsed document URL. Valid XML responses are classified as `success` (`2xx`), `client-error` (`4xx`), or `server-error` (`5xx`) and replace the active tree only after MIME validation and a complete parse. A valid `4xx` or `5xx` XML document still commits as authoritative server output while retaining its distinct classification for a future visit controller.
+
+A `204` response and a blank `201` response are deliberate native empty outcomes that preserve the current tree and URL; they are not a claim of exact browser Drive GET behavior. Raw `3xx` responses, missing or cross-origin final URLs, wrong MIME types, malformed XML, and transport failures reject with typed errors without replacing the current tree.
+
+Explicit cancellation, supersession by a newer loader request, or any intervening session-tree replacement prevents the stale response from committing and produces a canceled outcome. Tree ownership uses a monotonic generation, so restoring an earlier tree object does not revive an earlier request. `cancel(owner)` affects only a request started with that exact owner, while `cancel()` cancels the loader's current request. Disposal failures raised after tree replacement remain visible even though the new tree already owns the session.
+
+This primitive does not yet implement navigation actions, root-scoped visitability, lifecycle events, delayed progress, snapshot/history restoration, preload/prefetch, form submission, or native accessibility surfaces.
+
 ## Frame loading and native accessibility
 
 A connected Frame exposes its immutable controller snapshot through a host-defined `frameComponent` boundary and `useExpoTurboFrame()`. The hook resolves the nearest connected Frame, so nested Frames receive independent bindings and components outside a Frame receive `undefined`. The default boundary remains a Fragment.
