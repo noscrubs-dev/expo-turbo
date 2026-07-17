@@ -92,6 +92,18 @@ describe("typed component registry", () => {
     )
   })
 
+  test("decodes text children through the shared whitespace contract", () => {
+    const registry = createRegistry(primitives)
+
+    expect(registry.decode(element("<DemoText>one\n  two</DemoText>")).text).toBe("one two")
+    expect(
+      registry.decode(element('<DemoText xml:space="preserve">one\n  two</DemoText>')).text,
+    ).toBe("one\n  two")
+    expect(registry.decode(element("<DemoText><![CDATA[one\n  two]]></DemoText>")).text).toBe(
+      "one\n  two",
+    )
+  })
+
   test("rejects reserved and duplicate ownership with both module names", () => {
     expect(() =>
       defineComponent({

@@ -69,6 +69,37 @@ export function nodeTextContent(node: ProtocolNode): string {
   return node.children.map(nodeTextContent).join("")
 }
 
+function rendersTextBoundary(node: ProtocolNode): boolean {
+  if (node.kind === "comment") return false
+  if (node.kind !== "text") return true
+  return node.cdata || /[^\t\n\r ]/.test(node.value)
+}
+
+export function renderedTextValue(node: ProtocolText): string {
+  if (node.cdata) return node.value
+  let ancestor = node.parent
+  while (ancestor && ancestor.kind !== "document") {
+    const xmlSpace = attributeValue(ancestor, "xml:space")
+    if (xmlSpace === "preserve") return node.value
+    if (xmlSpace === "default") break
+    ancestor = ancestor.parent
+  }
+  if (!/[^\t\n\r ]/.test(node.value)) return ""
+
+  let value = node.value.replace(/[\t\n\r ]+/g, " ")
+  const siblings = node.parent?.children ?? []
+  const index = siblings.indexOf(node)
+  if (!siblings.slice(0, index).some(rendersTextBoundary)) value = value.replace(/^ +/, "")
+  if (!siblings.slice(index + 1).some(rendersTextBoundary)) value = value.replace(/ +$/, "")
+  return value
+}
+
+export function renderedNodeTextContent(node: ProtocolNode): string {
+  if (node.kind === "text") return renderedTextValue(node)
+  if (node.kind === "comment") return ""
+  return node.children.map(renderedNodeTextContent).join("")
+}
+
 function walk(node: ProtocolNode, visit: (node: ProtocolNode) => void): void {
   visit(node)
   if (node.kind === "document" || isElement(node)) {

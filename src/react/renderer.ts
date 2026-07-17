@@ -16,7 +16,12 @@ import { RegistryError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
-import { attributeValue, type ProtocolElement, type ProtocolNode } from "../core/tree"
+import {
+  attributeValue,
+  type ProtocolElement,
+  type ProtocolNode,
+  renderedTextValue,
+} from "../core/tree"
 import type { ComponentRegistry, DecodedComponent, RegistryComponent } from "../registry/registry"
 
 type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode">
@@ -121,16 +126,6 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
   }
 }
 
-function normalizedText(node: ProtocolNode): string {
-  if (node.kind !== "text") return ""
-  let ancestor = node.parent
-  while (ancestor && ancestor.kind !== "document") {
-    if (attributeValue(ancestor, "xml:space") === "preserve") return node.value
-    ancestor = ancestor.parent
-  }
-  return node.value.trim() === "" ? "" : node.value.replace(/\s+/g, " ")
-}
-
 function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
   return nodes.map((node) =>
     createElement(ProtocolNodeView, {
@@ -218,7 +213,7 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   if (!snapshot) return null
   const node = snapshot.node
   if (node.kind === "comment") return null
-  if (node.kind === "text") return normalizedText(node) || null
+  if (node.kind === "text") return renderedTextValue(node) || null
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
   return createElement(ProtocolElementView, { node, revision: snapshot.revision })
 }
