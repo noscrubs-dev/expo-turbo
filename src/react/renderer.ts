@@ -166,14 +166,12 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   const controller = useMemo(() => props.frames.get(props.frameId), [props.frameId, props.frames])
   useFrameControllerState(controller)
   useEffect(() => {
-    let disposed = false
-    controller.connect().catch((cause: unknown) => {
-      if (disposed) return
-      const error = cause instanceof Error ? cause : new Error("Frame source load failed")
+    const unsubscribeErrors = controller.subscribeErrors((error) => {
       props.onError?.({ error, nodeKey: props.node.key })
     })
+    void controller.connect().catch(() => undefined)
     return () => {
-      disposed = true
+      unsubscribeErrors()
       props.frames.delete(props.frameId, controller)
     }
   }, [controller, props.frameId, props.frames, props.node.key, props.onError])

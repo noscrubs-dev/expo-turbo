@@ -1,3 +1,4 @@
+import type { VisibilityAdapter } from "../adapters"
 import { FrameController } from "./frame-controller"
 import type { FrameRequestLoader } from "./frame-loader"
 import type { DocumentSession } from "./session"
@@ -13,12 +14,13 @@ export class FrameControllerRegistry implements FrameControllerCollection {
   constructor(
     private readonly session: DocumentSession,
     private readonly loader: FrameRequestLoader,
+    private readonly visibility?: VisibilityAdapter,
   ) {}
 
   get(frameId: string): FrameController {
     let controller = this.controllers.get(frameId)
     if (!controller) {
-      controller = new FrameController(this.session, frameId, this.loader)
+      controller = new FrameController(this.session, frameId, this.loader, this.visibility)
       this.controllers.set(frameId, controller)
     }
     return controller

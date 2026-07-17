@@ -200,10 +200,17 @@ describe("React protocol renderer", () => {
         { next: () => `request-${++requestId}` },
       ),
     )
-    const renderer = render(session, registryWithCounters(), { frames })
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registryWithCounters(), {
+      frames,
+      onError: (event) => errors.push(event),
+    })
     const controller = frames.get("frame")
-    const turboResponse = (xml: string): TurboResponse => ({
-      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+    const turboResponse = (
+      xml: string,
+      contentType: string = EXPO_TURBO_MIME_TYPE,
+    ): TurboResponse => ({
+      headers: { "Content-Type": contentType },
       redirected: false,
       status: 200,
       text: async () => xml,
@@ -218,21 +225,33 @@ describe("React protocol renderer", () => {
     })
     expect(JSON.stringify(renderer.toJSON())).toContain("Loaded")
 
+    let broken: Promise<unknown> | undefined
+    act(() => {
+      broken = controller.setSource("/broken")
+    })
+    expect(pending).toHaveLength(2)
+    pending[1]?.resolve(turboResponse("{}", "application/json"))
+    await act(async () => {
+      await broken?.catch(() => undefined)
+    })
+    expect(errors[0]).toMatchObject({ nodeKey: "id:frame" })
+    expect(controller.state.status).toBe("error")
+
     let changed: Promise<unknown> | undefined
     act(() => {
       changed = controller.setSource("/slow")
     })
-    expect(pending).toHaveLength(2)
+    expect(pending).toHaveLength(3)
     act(() => {
       dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="remove" target="frame"></turbo-stream>',
       )
     })
-    expect(pending[1]?.request.signal?.aborted).toBe(true)
+    expect(pending[2]?.request.signal?.aborted).toBe(true)
     expect(controller.state).toMatchObject({ connected: false, status: "canceled" })
     expect(() => frames.get("frame")).toThrow(FrameMissingError)
-    pending[1]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>'))
+    pending[2]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>'))
     await act(async () => {
       await changed
     })

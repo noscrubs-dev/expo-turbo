@@ -66,6 +66,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Frame target resolution for submitter/element/default precedence, named Frames, `_self`, `_parent`, and `_top`, including page promotion when the selected Frame is unavailable or disabled.
 - [x] Observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation on disable, source removal/replacement, or disconnect.
 - [x] Opt-in React Frame lifecycle wiring that connects mounted controllers, subscribes to lifecycle state, eagerly loads sources, and cancels/disposes requests when a Frame subtree unmounts.
+- [x] Injected lazy-Frame visibility lifecycle that observes while mounted, loads on first visibility, stops observing when the request starts, and reports automatic-load failures.
 - [x] Route-free Rails Engine, distinct Expo Turbo XML MIME type, confined host-owned `.xml.erb` rendering, and exact `turbo-rails` 2.0.10/2.0.23 test matrix.
 - [x] Independently installed Expo and Rails examples in public CI, including a native component tree rendered from XML in the Expo gallery.
 
@@ -75,7 +76,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [ ] Typed component-action and custom Stream-action registries.
 - [ ] Renderer-backed component state scopes, style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
-- [ ] Automatic lazy visibility, recurse extraction, promoted Frame history, autofocus, visibility registration, autoscroll, and scroll adapters.
+- [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; recurse extraction, promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
 - [ ] Refresh Stream actions, morph mode, lifecycle hooks, and renderer flush timing.
 - [ ] Native morphing and state/permanent-node preservation.
