@@ -180,6 +180,7 @@ export interface ComponentActionExecutor {
     definition: Definition,
     params: ComponentActionParams<Definition>,
     lifecycle?: ComponentActionLifecycle<ComponentActionResult<Definition>>,
+    state?: ComponentActionStateStore,
   ): Promise<ComponentActionResult<Definition>>
 }
 
@@ -218,12 +219,14 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
     definition: Definition,
     params: ComponentActionParams<Definition>,
     lifecycle?: ComponentActionLifecycle<ComponentActionResult<Definition>>,
+    state: ComponentActionStateStore = this.state,
   ): Promise<ComponentActionResult<Definition>> {
     return this.enqueue(
       definition.action,
       params,
       lifecycle as unknown as ComponentActionLifecycle<unknown> | undefined,
       definition,
+      state,
     ) as Promise<ComponentActionResult<Definition>>
   }
 
@@ -232,9 +235,10 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
     params: unknown,
     lifecycle: ComponentActionLifecycle<unknown> | undefined,
     expectedDefinition?: RegistryComponentAction,
+    state: ComponentActionStateStore = this.state,
   ): Promise<unknown> {
     const execution = this.tail.then(() =>
-      this.executeNow(action, params, lifecycle, expectedDefinition),
+      this.executeNow(action, params, lifecycle, expectedDefinition, state),
     )
     this.tail = execution.then(
       () => undefined,
@@ -248,6 +252,7 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
     params: unknown,
     lifecycle: ComponentActionLifecycle<unknown> | undefined,
     expectedDefinition: RegistryComponentAction | undefined,
+    state: ComponentActionStateStore,
   ): Promise<unknown> {
     let outcome: ComponentActionOutcome<unknown>
     try {
@@ -256,11 +261,11 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
         throw new ActionError(`Unknown component action ${JSON.stringify(action)}`, { action })
       }
       const decoded = definition.decodeParams(params)
-      const result = await definition.invoke(decoded, this.state)
+      const result = await definition.invoke(decoded, state)
       const success = Object.freeze({
         action,
         result,
-        state: this.state,
+        state,
         status: "success" as const,
       })
       await lifecycle?.onSuccess?.(success)
@@ -269,7 +274,7 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
       let failure = Object.freeze({
         action,
         error: actionError(action, `Component action ${JSON.stringify(action)} failed`, error),
-        state: this.state,
+        state,
         status: "error" as const,
       })
       try {

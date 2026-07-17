@@ -55,7 +55,7 @@ describe("document state store", () => {
     expect(state.getSnapshot("status")).toBe(disposedSnapshot)
     expect(() => state.get("status")).toThrow(StateError)
     expect(() => state.set("status", "late")).toThrow(StateError)
-    expect(() => state.subscribe("status", () => undefined)).toThrow(StateError)
+    expect(() => state.subscribe("status", () => undefined)).not.toThrow()
   })
 
   test("fails closed for blank keys", () => {

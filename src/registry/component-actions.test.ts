@@ -138,6 +138,17 @@ describe("component action registry", () => {
     expect(events).toEqual(["action:increment", "end:error"])
   })
 
+  test("executes a definition against an explicit scoped state store", async () => {
+    const documentState = memoryState()
+    const scopedState = memoryState()
+    const runner = createComponentActionRunner(registry(), documentState)
+
+    await runner.executeDefinition(increment, { by: "3", key: "count" }, undefined, scopedState)
+
+    expect(documentState.get("count")).toBeUndefined()
+    expect(scopedState.get("count")).toBe(3)
+  })
+
   test("rejects duplicate modules/actions and definitions not owned by the runner", async () => {
     const module = defineComponentActionModule({
       actions: [increment],
