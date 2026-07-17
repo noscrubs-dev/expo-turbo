@@ -5,5 +5,11 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up", to: "rails/health#show", as: :rails_health_check
 
-  # Demo routes live under /api/expo_turbo/demo after the gem host boundary is proven.
+  namespace :api do
+    namespace :expo_turbo do
+      namespace :demo do
+        resource :document, only: :show, defaults: {format: :expo_turbo}
+      end
+    end
+  end
 end

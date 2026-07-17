@@ -4,6 +4,7 @@ source "https://rubygems.org"
 
 gemspec
 
+gem "appraisal", "2.5.0"
 gem "rake"
 gem "rspec"
 gem "standard"
