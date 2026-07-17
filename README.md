@@ -67,6 +67,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation on disable, source removal/replacement, or disconnect.
 - [x] Opt-in React Frame lifecycle wiring that connects mounted controllers, subscribes to lifecycle state, eagerly loads sources, and cancels/disposes requests when a Frame subtree unmounts.
 - [x] Injected lazy-Frame visibility lifecycle that observes while mounted, loads on first visibility, stops observing when the request starts, and reports automatic-load failures.
+- [x] Bounded Frame `recurse` extraction with whitespace-token matching, same-origin intermediary GETs, independent request IDs, redirected-base resolution, URL-loop/depth rejection, and canonical source ownership.
 - [x] Route-free Rails Engine, distinct Expo Turbo XML MIME type, confined host-owned `.xml.erb` rendering, and exact `turbo-rails` 2.0.10/2.0.23 test matrix.
 - [x] Independently installed Expo and Rails examples in public CI, including a native component tree rendered from XML in the Expo gallery.
 
@@ -76,7 +77,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [ ] Typed component-action and custom Stream-action registries.
 - [ ] Renderer-backed component state scopes, style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
-- [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; recurse extraction, promoted Frame history, autofocus, autoscroll, and scroll adapters.
+- [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.
 - [ ] Refresh Stream actions, morph mode, lifecycle hooks, and renderer flush timing.
 - [ ] Native morphing and state/permanent-node preservation.
@@ -86,7 +87,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ## TypeScript API boundaries
 
-The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, addressable tree/session, selectors, structural Stream dispatcher, Frame target/request/controller APIs, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
+The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, addressable tree/session, selectors, structural Stream dispatcher, Frame target/request/recurse/controller APIs, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
 
 The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 

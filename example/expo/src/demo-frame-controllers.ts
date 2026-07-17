@@ -24,11 +24,13 @@ export function createDemoFrameControllers(
           redirected: false,
           status: 200,
           text: async () =>
-            `<turbo-frame id="preview-frame">
-              <DemoCard title="Eager Frame source loaded">
-                <DemoText>The mounted React Frame connected its controller and loaded this fixture response.</DemoText>
-              </DemoCard>
-            </turbo-frame>`,
+            request.url.endsWith("/demo/frame")
+              ? '<Gallery><turbo-frame id="demo-recurse" src="/demo/recurse" recurse="preview-frame" /></Gallery>'
+              : `<Gallery><turbo-frame id="preview-frame">
+                  <DemoCard title="Recursive Frame source loaded">
+                    <DemoText>The lazy Frame followed a bounded recurse intermediary and preserved its mounted wrapper.</DemoText>
+                  </DemoCard>
+                </turbo-frame></Gallery>`,
           url: request.url,
         }),
       },
