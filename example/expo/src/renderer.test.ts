@@ -47,6 +47,7 @@ import {
   defineComponentActionModule,
   defineComponent,
   defineComponentModule,
+  enumCodec,
   presenceCodec,
   stringCodec,
   tokenListCodec,
@@ -931,21 +932,32 @@ describe("React protocol renderer", () => {
       return createElement("capture", { slot })
     }
     function NativeValue({
+      directionName,
+      directionValue,
       disabled,
       name,
       value,
     }: {
+      directionName?: string
+      directionValue?: "ltr" | "rtl"
       disabled?: boolean
       name?: string
       value: string
     }): ReactNode {
       const binding = useExpoTurboFormControl({
         ...(disabled !== undefined ? { disabled } : {}),
+        ...(directionName !== undefined && directionValue !== undefined
+          ? { directionality: { name: directionName, value: directionValue } }
+          : {}),
         kind: "value",
         ...(name !== undefined ? { name } : {}),
         value,
       })
       return createElement("native-value", { nodeKey: binding.nodeKey, value })
+    }
+    function NativeCharset({ name }: { name: string }): ReactNode {
+      useExpoTurboFormControl({ kind: "charset", name })
+      return createElement("native-charset", { name })
     }
     function NativeLiveValue({ name, value }: { name: string; value: string }): ReactNode {
       const [current, setCurrent] = useState(value)
@@ -1033,6 +1045,8 @@ describe("React protocol renderer", () => {
     })
     const value = defineComponent({
       attributes: {
+        "direction-name": { codec: stringCodec, prop: "directionName" },
+        "direction-value": { codec: enumCodec(["ltr", "rtl"]), prop: "directionValue" },
         disabled: { codec: booleanCodec, prop: "disabled" },
         name: { codec: stringCodec, prop: "name" },
         value: { codec: stringCodec, prop: "value" },
@@ -1040,11 +1054,20 @@ describe("React protocol renderer", () => {
       children: "none",
       component: NativeValue,
       schema: z.object({
+        directionName: z.string().optional(),
+        directionValue: z.enum(["ltr", "rtl"]).optional(),
         disabled: z.boolean().optional(),
         name: z.string().optional(),
         value: z.string(),
       }),
       tag: "NativeValue",
+    })
+    const charset = defineComponent({
+      attributes: { name: { codec: stringCodec, prop: "name" } },
+      children: "none",
+      component: NativeCharset,
+      schema: z.object({ name: z.string() }),
+      tag: "NativeCharset",
     })
     const liveValue = defineComponent({
       attributes: {
@@ -1108,7 +1131,7 @@ describe("React protocol renderer", () => {
     })
     const componentRegistry = registryWithCounters().use(
       defineComponentModule({
-        components: [form, capture, value, liveValue, checkable, multiple, submitter],
+        components: [form, capture, charset, value, liveValue, checkable, multiple, submitter],
         name: "native-form-components",
         version: "0.1.0",
       }),
@@ -1118,6 +1141,8 @@ describe("React protocol renderer", () => {
         <NativeForm id="form" action="/profile" method="post" data-turbo-frame="profile-frame">
           <CaptureForm slot="primary" />
           <NativeValue id="first" name="item" value="" />
+          <NativeCharset id="charset" name="_CHARSET_" />
+          <NativeValue id="directional" name="comment" value="مرحبا" direction-name="comment.dir" direction-value="rtl" />
           <NativeLiveValue id="local" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
@@ -1186,6 +1211,9 @@ describe("React protocol renderer", () => {
     const selectedSubmitter = submitterSelection()
     expect(primary.successfulEntries({ submitter: selectedSubmitter })).toEqual([
       { name: "item", value: "" },
+      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "comment", value: "مرحبا" },
+      { name: "comment.dir", value: "rtl" },
       { name: "local", value: "before" },
       { name: "agree", value: "on" },
       { name: "choices[]", value: "one" },
@@ -1208,6 +1236,9 @@ describe("React protocol renderer", () => {
         effectiveMethod: "PATCH",
         entries: [
           { name: "item", value: "" },
+          { name: "_CHARSET_", value: "UTF-8" },
+          { name: "comment", value: "مرحبا" },
+          { name: "comment.dir", value: "rtl" },
           { name: "local", value: "before" },
           { name: "agree", value: "on" },
           { name: "choices[]", value: "one" },
@@ -1323,12 +1354,14 @@ describe("React protocol renderer", () => {
       .find((control) => control.props.nodeKey === "id:local")
     if (!liveControl) throw new Error("live form control was not rendered")
     act(() => liveControl.props.onChange("component-local"))
-    expect(primary.successfulEntries()[1]).toEqual({
+    expect(primary.successfulEntries().find((entry) => entry.name === "local")).toEqual({
       name: "local",
       value: "component-local",
     })
     expect(
-      primary.requestPlan({ protocol: { requestId: "component-local-request" } }).entries[1],
+      primary
+        .requestPlan({ protocol: { requestId: "component-local-request" } })
+        .entries.find((entry) => entry.name === "local"),
     ).toEqual({ name: "local", value: "component-local" })
 
     act(() => {
@@ -1353,6 +1386,9 @@ describe("React protocol renderer", () => {
     ).toMatchObject({
       entries: [
         { name: "item", value: "" },
+        { name: "_CHARSET_", value: "UTF-8" },
+        { name: "comment", value: "مرحبا" },
+        { name: "comment.dir", value: "rtl" },
         { name: "local", value: "component-local" },
         { name: "agree", value: "on" },
         { name: "choices[]", value: "one" },

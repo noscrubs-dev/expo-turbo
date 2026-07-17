@@ -5,6 +5,7 @@ import { assertActiveFormSubmissionProposal } from "./form-submission-proposal"
 import {
   DocumentFormControls,
   type FormControlDescriptor,
+  type FormControlDirectionality,
   type FormControlRegistration,
   FormControlRegistry,
   type FormControlSelection,
@@ -129,6 +130,143 @@ describe("native form control registry", () => {
     ])
   })
 
+  test("emits explicit UTF-8 charset and directionality entries in XML order", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const directionality: { name: string; value: "ltr" | "rtl" } = {
+      name: "comment.dir",
+      value: "rtl",
+    }
+
+    registry.register("id:first", { kind: "charset", name: "_CHARSET_" })
+    const directional = registry.register("id:second", {
+      directionality,
+      kind: "value",
+      name: "comment",
+      value: "مرحبا",
+    })
+    registry.register("id:unchecked", {
+      directionality: { name: "empty.dir", value: "ltr" },
+      kind: "value",
+      name: "empty",
+      value: "",
+    })
+    registry.register("id:checked", {
+      kind: "value",
+      name: "_charset_",
+      value: "caller-value",
+    })
+    registry.register("id:multiple", { kind: "charset", name: "_charset_" })
+
+    directionality.name = "changed.dir"
+    directionality.value = "ltr"
+    const entries = registry.successfulEntries()
+    expect(entries).toEqual([
+      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "comment", value: "مرحبا" },
+      { name: "comment.dir", value: "rtl" },
+      { name: "empty", value: "" },
+      { name: "empty.dir", value: "ltr" },
+      { name: "_charset_", value: "caller-value" },
+      { name: "_charset_", value: "UTF-8" },
+    ])
+    expect(Object.isFrozen(entries)).toBe(true)
+    expect(entries.every(Object.isFrozen)).toBe(true)
+
+    directional.update({
+      directionality: { name: "comment-direction", value: "ltr" },
+      kind: "value",
+      name: "comment",
+      value: "hello",
+    })
+    expect(registry.successfulEntries()).toEqual([
+      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "comment", value: "hello" },
+      { name: "comment-direction", value: "ltr" },
+      { name: "empty", value: "" },
+      { name: "empty.dir", value: "ltr" },
+      { name: "_charset_", value: "caller-value" },
+      { name: "_charset_", value: "UTF-8" },
+    ])
+  })
+
+  test("omits charset and directionality entries with their unsuccessful owner", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+
+    registry.register("id:first", {
+      disabled: true,
+      kind: "charset",
+      name: "_charset_",
+    })
+    registry.register("id:second", {
+      directionality: { name: "missing.dir", value: "ltr" },
+      kind: "value",
+      value: "missing",
+    })
+    registry.register("id:checked", {
+      directionality: { name: "empty.dir", value: "rtl" },
+      kind: "value",
+      name: "",
+      value: "empty",
+    })
+    registry.register("id:multiple", {
+      directionality: { name: "disabled.dir", value: "ltr" },
+      disabled: true,
+      kind: "value",
+      name: "disabled",
+      value: "disabled",
+    })
+
+    expect(registry.successfulEntries()).toEqual([])
+  })
+
+  test("rejects malformed charset and directionality descriptors", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const malformed: unknown[] = [
+      { kind: "charset" },
+      { kind: "charset", name: "" },
+      { kind: "charset", name: 7 },
+      { kind: "charset", name: "charset" },
+      { kind: "charset", name: "_charset_x" },
+      { kind: "charset", name: "_CHARſET_" },
+      { directionality: null, kind: "value", name: "value", value: "value" },
+      { directionality: [], kind: "value", name: "value", value: "value" },
+      { directionality: {}, kind: "value", name: "value", value: "value" },
+      {
+        directionality: { name: 7, value: "ltr" },
+        kind: "value",
+        name: "value",
+        value: "value",
+      },
+      {
+        directionality: { name: "", value: "ltr" },
+        kind: "value",
+        name: "value",
+        value: "value",
+      },
+      {
+        directionality: { name: "value.dir", value: "auto" },
+        kind: "value",
+        name: "value",
+        value: "value",
+      },
+      {
+        directionality: { name: "value.dir", value: "RTL" },
+        kind: "value",
+        name: "value",
+        value: "value",
+      },
+    ]
+
+    for (const descriptor of malformed) {
+      expect(() => registry.register("id:second", descriptor as FormControlDescriptor)).toThrow(
+        PropsError,
+      )
+    }
+  })
+
   test("composes live entries and raw form/submitter attributes into one request plan", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -236,6 +374,48 @@ describe("native form control registry", () => {
         signal: false as never,
       }),
     ).toThrow(RequestError)
+  })
+
+  test("preserves charset and directionality entries through GET request planning", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery><DemoForm id="form" action="/search?stale=1">
+          <DemoInput id="charset" />
+          <DemoInput id="query" />
+        </DemoForm></Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    registry.register("id:charset", { kind: "charset", name: "_CHARSET_" })
+    registry.register("id:query", {
+      directionality: { name: "query.dir", value: "ltr" },
+      kind: "value",
+      name: "query",
+      value: "hello world",
+    })
+
+    const plan = registry.requestPlan({ protocol: { requestId: "charset-get" } })
+    expect(plan.entries).toEqual([
+      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "query", value: "hello world" },
+      { name: "query.dir", value: "ltr" },
+    ])
+    expect(plan.request).toMatchObject({
+      method: "GET",
+      url: "https://example.test/search?_CHARSET_=UTF-8&query=hello+world&query.dir=ltr",
+    })
+
+    session.setAttribute("id:form", "method", "post")
+    const unsafe = registry.requestPlan({ protocol: { requestId: "charset-post" } })
+    expect(unsafe.request).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "_CHARSET_=UTF-8&query=hello+world&query.dir=ltr",
+      },
+      method: "POST",
+      url: "https://example.test/search?stale=1",
+    })
   })
 
   test("atomically derives an exact Frame destination and Turbo-Frame request metadata", () => {
@@ -818,3 +998,14 @@ void updateRegistration
 // @ts-expect-error Submitter selections are opaque registration-issued handles.
 const forgedSelection: FormControlSelection = { nodeKey: "id:save" }
 void forgedSelection
+
+// @ts-expect-error Charset descriptors require an authored name.
+const unnamedCharset: FormControlDescriptor = { kind: "charset" }
+void unnamedCharset
+
+const automaticDirectionality: FormControlDirectionality = {
+  name: "field.dir",
+  // @ts-expect-error Directionality snapshots must already resolve to ltr or rtl.
+  value: "auto",
+}
+void automaticDirectionality

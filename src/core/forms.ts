@@ -30,7 +30,16 @@ interface FormControlBase {
   readonly name?: string
 }
 
+export interface FormControlDirectionality {
+  readonly name: string
+  readonly value: "ltr" | "rtl"
+}
+
 export type FormControlDescriptor =
+  | (Omit<FormControlBase, "name"> & {
+      readonly kind: "charset"
+      readonly name: string
+    })
   | (FormControlBase & {
       readonly kind: "checkable"
       readonly checked: boolean
@@ -45,6 +54,7 @@ export type FormControlDescriptor =
       readonly value?: string
     })
   | (FormControlBase & {
+      readonly directionality?: FormControlDirectionality
       readonly kind: "value"
       readonly value: string
     })
@@ -225,6 +235,13 @@ function normalizeDescriptor(
     ...(descriptor.disabled !== undefined ? { disabled: descriptor.disabled } : {}),
   }
   switch (descriptor.kind) {
+    case "charset":
+      if (descriptor.name === undefined || descriptor.name.toLowerCase() !== "_charset_") {
+        throw new PropsError("Charset form control name must be _charset_ ignoring ASCII case", {
+          target: nodeKey,
+        })
+      }
+      return Object.freeze({ ...base, kind: descriptor.kind, name: descriptor.name })
     case "checkable":
       if (typeof descriptor.checked !== "boolean") {
         throw new PropsError("Checkable form control checked must be a boolean", {
@@ -271,13 +288,48 @@ function normalizeDescriptor(
         kind: descriptor.kind,
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
-    case "value":
+    case "value": {
       if (typeof descriptor.value !== "string") {
         throw new PropsError("Value form control value must be a string", {
           target: nodeKey,
         })
       }
-      return Object.freeze({ ...base, kind: descriptor.kind, value: descriptor.value })
+      const directionality = descriptor.directionality
+      let admittedDirectionality: FormControlDirectionality | undefined
+      if (directionality !== undefined) {
+        if (
+          !directionality ||
+          typeof directionality !== "object" ||
+          Array.isArray(directionality)
+        ) {
+          throw new PropsError("Value form control directionality must be an object", {
+            target: nodeKey,
+          })
+        }
+        const name = directionality.name
+        const value = directionality.value
+        if (typeof name !== "string" || name === "") {
+          throw new PropsError(
+            "Value form control directionality name must be a non-empty string",
+            {
+              target: nodeKey,
+            },
+          )
+        }
+        if (value !== "ltr" && value !== "rtl") {
+          throw new PropsError("Value form control directionality value must be ltr or rtl", {
+            target: nodeKey,
+          })
+        }
+        admittedDirectionality = Object.freeze({ name, value })
+      }
+      return Object.freeze({
+        ...base,
+        ...(admittedDirectionality ? { directionality: admittedDirectionality } : {}),
+        kind: descriptor.kind,
+        value: descriptor.value,
+      })
+    }
     default:
       throw new PropsError("Form control kind is unsupported", { target: nodeKey })
   }
@@ -568,6 +620,9 @@ export class FormControlRegistry {
     const append = (descriptor: FormControlDescriptor) => {
       if (descriptor.disabled || descriptor.name === undefined || descriptor.name === "") return
       switch (descriptor.kind) {
+        case "charset":
+          entries.push(Object.freeze({ name: descriptor.name, value: "UTF-8" }))
+          return
         case "checkable":
           if (descriptor.checked) {
             entries.push(Object.freeze({ name: descriptor.name, value: descriptor.value ?? "on" }))
@@ -583,6 +638,14 @@ export class FormControlRegistry {
           return
         case "value":
           entries.push(Object.freeze({ name: descriptor.name, value: descriptor.value }))
+          if (descriptor.directionality) {
+            entries.push(
+              Object.freeze({
+                name: descriptor.directionality.name,
+                value: descriptor.directionality.value,
+              }),
+            )
+          }
       }
     }
 
