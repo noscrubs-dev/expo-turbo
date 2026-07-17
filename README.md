@@ -30,8 +30,8 @@ The Ruby scaffold requires Ruby 3.2 or newer:
 ```sh
 cd rails
 bundle install
-bundle exec rake
-gem build expo_turbo-rails.gemspec
+bundle exec ruby "$(bundle show rake)/exe/rake"
+bundle exec ruby "$(bundle show rake)/exe/rake" build
 ```
 
 Install each example independently, then run both checks from the repository root:

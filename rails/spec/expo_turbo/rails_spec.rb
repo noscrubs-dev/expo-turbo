@@ -13,6 +13,8 @@ RSpec.describe ExpoTurbo::Rails do
     expect(described_class::TURBO_RAILS_BASELINE_VERSION).to eq("2.0.23")
     expect(described_class::TURBO_RAILS_MINIMUM_VERSION).to eq("2.0.10")
     expect(described_class::RAILS_BASELINE_VERSION).to eq("8.1.3")
+    expect(described_class::MIME_TYPE).to eq("application/vnd.expo-turbo+xml")
+    expect(described_class::MIME_SYMBOL).to eq(:expo_turbo)
   end
 
   it "provides a non-route-owning Rails Engine" do
