@@ -1,0 +1,585 @@
+import { describe, expect, test } from "bun:test"
+
+import type { ClockAdapter, FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
+import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
+import {
+  DOCUMENT_VISIT_PROGRESS_DELAY_MS,
+  DocumentVisitController,
+} from "./document-visit-controller"
+import { ContentTypeError, ParseError, RequestError, TargetError } from "./errors"
+import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
+import { parseExpoTurboDocument } from "./parser"
+import { DocumentSession } from "./session"
+
+interface PendingRequest {
+  readonly request: TurboRequest
+  readonly resolve: (response: TurboResponse) => void
+}
+
+interface TimerRecord {
+  readonly callback: () => void
+  cleared: boolean
+  readonly delayMs: number
+  readonly handle: object
+}
+
+class ManualClock implements ClockAdapter {
+  readonly timers: TimerRecord[] = []
+
+  clearTimeout(handle: unknown): void {
+    const timer = this.timers.find((candidate) => candidate.handle === handle)
+    if (timer) timer.cleared = true
+  }
+
+  now(): number {
+    return 0
+  }
+
+  setTimeout(callback: () => void, delayMs: number): unknown {
+    const handle = Object.freeze({})
+    this.timers.push({ callback, cleared: false, delayMs, handle })
+    return handle
+  }
+
+  fire(index: number): void {
+    const timer = this.timers[index]
+    if (!timer) throw new Error(`Missing timer ${index}`)
+    timer.callback()
+  }
+}
+
+function response(xml: string, options: Partial<TurboResponse> = {}): TurboResponse {
+  return {
+    headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+    redirected: false,
+    status: 200,
+    text: async () => xml,
+    url: "https://example.test/response",
+    ...options,
+  }
+}
+
+function harness(
+  options: Readonly<{
+    fetch?: FetchAdapter["fetch"]
+    onObserverError?: (error: AggregateError) => void
+    progressDelayMs?: number
+  }> = {},
+) {
+  const pending: PendingRequest[] = []
+  const session = new DocumentSession(
+    parseExpoTurboDocument('<Gallery><Old id="old" /></Gallery>', {
+      url: "https://example.test/current",
+    }),
+  )
+  let requestId = 0
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch:
+        options.fetch ??
+        ((request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          })),
+    },
+    { next: () => `request-${++requestId}` },
+  )
+  const clock = new ManualClock()
+  const controller = new DocumentVisitController(loader, clock, {
+    ...(options.onObserverError ? { onObserverError: options.onObserverError } : {}),
+    ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
+  })
+  return { clock, controller, loader, pending, session }
+}
+
+describe("Document visit controller", () => {
+  test("publishes initialized, started, delayed-progress, and completed snapshots", async () => {
+    const { clock, controller, pending, session } = harness()
+    const revisions: number[] = []
+    controller.subscribe(() => revisions.push(controller.state.revision))
+
+    expect(controller.state).toEqual({
+      busy: false,
+      progressVisible: false,
+      revision: 0,
+      status: "initialized",
+    })
+    const initial = controller.state
+    expect(controller.state).toBe(initial)
+
+    const visit = controller.visit("/next")
+    expect(pending).toHaveLength(1)
+    expect(controller.state).toEqual({
+      busy: true,
+      progressVisible: false,
+      revision: 1,
+      status: "started",
+    })
+    expect(clock.timers[0]?.delayMs).toBe(DOCUMENT_VISIT_PROGRESS_DELAY_MS)
+
+    clock.fire(0)
+    expect(controller.state).toEqual({
+      busy: true,
+      progressVisible: true,
+      revision: 2,
+      status: "started",
+    })
+
+    pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    expect(await visit).toMatchObject({ classification: "success", status: "committed" })
+    expect(controller.state).toEqual({
+      busy: false,
+      progressVisible: false,
+      revision: 3,
+      status: "completed",
+    })
+    expect(revisions).toEqual([1, 2, 3])
+    expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+  })
+
+  test("clears fast-visit progress and ignores a manually fired stale timer", async () => {
+    const { clock, controller, pending, session } = harness()
+    const visit = controller.visit("/empty")
+    const timer = clock.timers[0]
+
+    pending[0]?.resolve(
+      response("unused", {
+        headers: {},
+        status: 204,
+        url: "https://example.test/empty",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "empty" })
+    expect(timer?.cleared).toBe(true)
+    const terminal = controller.state
+    clock.fire(0)
+    expect(controller.state).toBe(terminal)
+    expect(controller.state.status).toBe("completed")
+    expect(session.tree.getElementById("old")?.tagName).toBe("Old")
+  })
+
+  test("commits authoritative HTTP error documents before publishing failed", async () => {
+    for (const fixture of [
+      { classification: "client-error", status: 422 },
+      { classification: "server-error", status: 500 },
+    ] as const) {
+      const { controller, pending, session } = harness()
+      const errors: Error[] = []
+      controller.subscribeErrors((error) => errors.push(error))
+      const visit = controller.visit(`/error-${fixture.status}`)
+
+      pending[0]?.resolve(
+        response(`<Gallery><Error id="error-${fixture.status}" /></Gallery>`, {
+          status: fixture.status,
+          url: `https://example.test/error-${fixture.status}`,
+        }),
+      )
+
+      expect(await visit).toMatchObject({
+        classification: fixture.classification,
+        status: "committed",
+      })
+      expect(controller.state.status).toBe("failed")
+      expect(controller.state.busy).toBe(false)
+      expect(errors).toHaveLength(0)
+      expect(session.tree.getElementById(`error-${fixture.status}`)?.tagName).toBe("Error")
+    }
+  })
+
+  test("publishes typed transport failures while preserving the current document", async () => {
+    const fixtures: ReadonlyArray<{
+      error: typeof ContentTypeError | typeof ParseError | typeof RequestError
+      fetch: FetchAdapter["fetch"]
+    }> = [
+      {
+        error: RequestError,
+        fetch: async () => Promise.reject(new Error("network unavailable")),
+      },
+      {
+        error: ContentTypeError,
+        fetch: async () => response("{}", { headers: { "Content-Type": "application/json" } }),
+      },
+      {
+        error: ParseError,
+        fetch: async () => response("<Gallery>"),
+      },
+    ]
+
+    for (const fixture of fixtures) {
+      const { clock, controller, session } = harness({ fetch: fixture.fetch })
+      const tree = session.tree
+      const errors: Error[] = []
+      controller.subscribeErrors((error) => errors.push(error))
+
+      await expect(controller.visit("/failure")).rejects.toBeInstanceOf(fixture.error)
+      expect(controller.state).toMatchObject({
+        busy: false,
+        progressVisible: false,
+        status: "failed",
+      })
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toBeInstanceOf(fixture.error)
+      expect(clock.timers[0]?.cleared).toBe(true)
+      expect(session.tree).toBe(tree)
+    }
+  })
+
+  test("cancels immediately and ignores every later request and timer callback", async () => {
+    const { clock, controller, pending, session } = harness()
+    const visit = controller.visit("/pending")
+    const loading = controller.state
+
+    controller.cancel()
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    expect(controller.state.revision).toBe(loading.revision + 1)
+    const canceled = controller.state
+    controller.cancel()
+    expect(controller.state).toBe(canceled)
+
+    pending[0]?.resolve(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/pending",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "canceled" })
+    clock.fire(0)
+    expect(controller.state).toBe(canceled)
+    expect(session.tree.getElementById("late")).toBeUndefined()
+
+    const retry = controller.visit("/retry")
+    pending[1]?.resolve(
+      response('<Gallery><Retry id="retry" /></Gallery>', {
+        url: "https://example.test/retry",
+      }),
+    )
+    expect(await retry).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+  })
+
+  test("installs request ownership before a started subscriber cancels", async () => {
+    const { clock, controller, pending, session } = harness()
+    let unsubscribe: () => void = () => undefined
+    unsubscribe = controller.subscribe(() => {
+      if (controller.state.status !== "started") return
+      unsubscribe()
+      controller.cancel()
+    })
+
+    const visit = controller.visit("/canceled-by-subscriber")
+
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(clock.timers[0]?.cleared).toBe(true)
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    pending[0]?.resolve(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/canceled-by-subscriber",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(session.tree.getElementById("late")).toBeUndefined()
+  })
+
+  test("keeps a reentrant newer visit authoritative", async () => {
+    const { clock, controller, pending, session } = harness()
+    let newer: Promise<unknown> | undefined
+    let startedNewer = false
+    controller.subscribe(() => {
+      if (controller.state.status !== "started" || startedNewer) return
+      startedNewer = true
+      newer = controller.visit("/newer-from-subscriber")
+    })
+
+    const older = controller.visit("/older")
+
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.url).toBe("https://example.test/older")
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.url).toBe("https://example.test/newer-from-subscriber")
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    expect(clock.timers[0]?.cleared).toBe(true)
+    pending[0]?.resolve(
+      response('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    expect(await older).toMatchObject({ status: "canceled" })
+    pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer-from-subscriber",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(session.tree.getElementById("older")).toBeUndefined()
+    expect(session.tree.getElementById("newer")?.tagName).toBe("Newer")
+  })
+
+  test("keeps superseded request and timer settlements out of the newer visit", async () => {
+    const { clock, controller, pending, session } = harness()
+    const older = controller.visit("/older")
+    const newer = controller.visit("/newer")
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    expect(clock.timers[0]?.cleared).toBe(true)
+
+    const newerStarted = controller.state
+    clock.fire(0)
+    expect(controller.state).toBe(newerStarted)
+    pending[0]?.resolve(
+      response('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(controller.state).toBe(newerStarted)
+
+    clock.fire(1)
+    expect(controller.state.progressVisible).toBe(true)
+    pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(session.tree.getElementById("older")).toBeUndefined()
+    expect(session.tree.getElementById("newer")?.tagName).toBe("Newer")
+  })
+
+  test("keeps a superseded response body and timer out of the newer visit", async () => {
+    let releaseOlderBody: (_xml: string) => void = () => undefined
+    let resolveNewer: (_response: TurboResponse) => void = () => undefined
+    let signalOlderBodyStarted: () => void = () => undefined
+    const olderBodyStarted = new Promise<void>((resolve) => {
+      signalOlderBodyStarted = resolve
+    })
+    let fetchCount = 0
+    const { clock, controller, session } = harness({
+      fetch: () => {
+        fetchCount += 1
+        if (fetchCount === 1) {
+          return Promise.resolve(
+            response("unused", {
+              text: () => {
+                signalOlderBodyStarted()
+                return new Promise<string>((resolve) => {
+                  releaseOlderBody = resolve
+                })
+              },
+              url: "https://example.test/older",
+            }),
+          )
+        }
+        return new Promise<TurboResponse>((resolve) => {
+          resolveNewer = resolve
+        })
+      },
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const older = controller.visit("/older")
+    await olderBodyStarted
+    const newer = controller.visit("/newer")
+    const newerStarted = controller.state
+
+    expect(clock.timers[0]?.cleared).toBe(true)
+    releaseOlderBody('<Gallery><Older id="older" /></Gallery>')
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(controller.state).toBe(newerStarted)
+    clock.fire(0)
+    expect(controller.state).toBe(newerStarted)
+    clock.fire(1)
+    expect(controller.state.progressVisible).toBe(true)
+    resolveNewer(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(errors).toEqual([])
+    expect(session.tree.getElementById("older")).toBeUndefined()
+    expect(session.tree.getElementById("newer")?.tagName).toBe("Newer")
+  })
+
+  test("cancels after an external tree replacement while the response body is pending", async () => {
+    let releaseBody: (_xml: string) => void = () => undefined
+    let signalBodyStarted: () => void = () => undefined
+    const bodyStarted = new Promise<void>((resolve) => {
+      signalBodyStarted = resolve
+    })
+    const { clock, controller, session } = harness({
+      fetch: async () =>
+        response("unused", {
+          text: () => {
+            signalBodyStarted()
+            return new Promise<string>((resolve) => {
+              releaseBody = resolve
+            })
+          },
+          url: "https://example.test/pending",
+        }),
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const visit = controller.visit("/pending")
+    await bodyStarted
+    const replacement = parseExpoTurboDocument('<Gallery><External id="external" /></Gallery>', {
+      url: "https://example.test/external",
+    })
+    session.replaceTree(replacement)
+    releaseBody('<Gallery><Late id="late" /></Gallery>')
+
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(clock.timers[0]?.cleared).toBe(true)
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    const canceled = controller.state
+    clock.fire(0)
+    expect(controller.state).toBe(canceled)
+    expect(errors).toEqual([])
+    expect(session.tree).toBe(replacement)
+    expect(session.tree.getElementById("late")).toBeUndefined()
+  })
+
+  test("does not supersede an active visit when a newer source fails admission", async () => {
+    const { controller, pending } = harness()
+    const active = controller.visit("/valid")
+    const started = controller.state
+
+    await expect(controller.visit("https://outside.test/invalid")).rejects.toBeInstanceOf(
+      TargetError,
+    )
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(controller.state).toBe(started)
+
+    pending[0]?.resolve(
+      response('<Gallery><Valid id="valid" /></Gallery>', {
+        url: "https://example.test/valid",
+      }),
+    )
+    expect(await active).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+  })
+
+  test("isolates owner-aware cancellation across controllers sharing one loader", async () => {
+    const { loader, pending, session } = harness()
+    const first = new DocumentVisitController(loader, new ManualClock())
+    const second = new DocumentVisitController(loader, new ManualClock())
+    const firstVisit = first.visit("/first")
+    const secondVisit = second.visit("/second")
+
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    first.cancel()
+    expect(first.state.status).toBe("canceled")
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+
+    pending[0]?.resolve(
+      response('<Gallery><First id="first" /></Gallery>', {
+        url: "https://example.test/first",
+      }),
+    )
+    expect(await firstVisit).toMatchObject({ status: "canceled" })
+    pending[1]?.resolve(
+      response('<Gallery><Second id="second" /></Gallery>', {
+        url: "https://example.test/second",
+      }),
+    )
+    expect(await secondVisit).toMatchObject({ status: "committed" })
+    expect(second.state.status).toBe("completed")
+    expect(session.tree.getElementById("second")?.tagName).toBe("Second")
+  })
+
+  test("retains committed classification when session finalization reports an error", async () => {
+    for (const fixture of [
+      { expected: "completed", status: 200 },
+      { expected: "failed", status: 422 },
+    ] as const) {
+      const { controller, pending, session } = harness()
+      const errors: Error[] = []
+      controller.subscribeErrors((error) => errors.push(error))
+      session.registerDisposal("id:old", () => {
+        throw new Error("fixture disposal failed")
+      })
+      const visit = controller.visit(`/committed-${fixture.status}`)
+      pending[0]?.resolve(
+        response(`<Gallery><Committed id="committed-${fixture.status}" /></Gallery>`, {
+          status: fixture.status,
+          url: `https://example.test/committed-${fixture.status}`,
+        }),
+      )
+
+      await expect(visit).rejects.toBeInstanceOf(DocumentCommitError)
+      expect(controller.state.status).toBe(fixture.expected)
+      expect(controller.state.busy).toBe(false)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toBeInstanceOf(DocumentCommitError)
+      expect(session.tree.getElementById(`committed-${fixture.status}`)?.tagName).toBe("Committed")
+    }
+  })
+
+  test("isolates state and error observer failures from request outcomes", async () => {
+    const observerErrors: AggregateError[] = []
+    const { controller, pending } = harness({
+      onObserverError: (error) => observerErrors.push(error),
+    })
+    const stateEvents: string[] = []
+    const reported: Error[] = []
+    controller.subscribe(() => {
+      stateEvents.push(`throwing:${controller.state.status}`)
+      throw new Error("state observer failed")
+    })
+    controller.subscribe(() => stateEvents.push(`healthy:${controller.state.status}`))
+    controller.subscribeErrors(() => {
+      throw new Error("error observer failed")
+    })
+    controller.subscribeErrors((error) => reported.push(error))
+
+    const visit = controller.visit("/observed")
+    expect(pending).toHaveLength(1)
+    expect(stateEvents).toEqual(["throwing:started", "healthy:started"])
+    expect(reported).toEqual([])
+    expect(observerErrors).toHaveLength(1)
+    expect(observerErrors[0]?.errors[0]).toMatchObject({ message: "state observer failed" })
+
+    pending[0]?.resolve(
+      response('<Gallery><Observed id="observed" /></Gallery>', {
+        url: "https://example.test/observed",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(stateEvents).toEqual([
+      "throwing:started",
+      "healthy:started",
+      "throwing:completed",
+      "healthy:completed",
+    ])
+    expect(reported).toEqual([])
+    expect(observerErrors).toHaveLength(2)
+
+    const failed = controller.visit("/wrong-mime")
+    pending[1]?.resolve(response("{}", { headers: { "Content-Type": "application/json" } }))
+    await expect(failed).rejects.toBeInstanceOf(ContentTypeError)
+    expect(reported.at(-1)).toBeInstanceOf(ContentTypeError)
+    expect(observerErrors).toHaveLength(5)
+    expect(observerErrors.at(-1)?.errors[0]).toMatchObject({ message: "error observer failed" })
+  })
+
+  test("validates the configurable progress delay", () => {
+    const { loader } = harness()
+    expect(
+      () => new DocumentVisitController(loader, new ManualClock(), { progressDelayMs: -1 }),
+    ).toThrow(RequestError)
+    expect(
+      () => new DocumentVisitController(loader, new ManualClock(), { progressDelayMs: Infinity }),
+    ).toThrow(RequestError)
+  })
+})

@@ -12,12 +12,15 @@ import type { DocumentTree } from "./tree"
 
 export type DocumentResponseClassification = "client-error" | "server-error" | "success"
 
-interface DocumentResponseReport {
+export interface DocumentResponseOutcome {
   readonly classification: DocumentResponseClassification
   readonly redirected: boolean
+  readonly responseStatus: number
+}
+
+interface DocumentResponseReport extends DocumentResponseOutcome {
   readonly requestId: string
   readonly requestedUrl: string
-  readonly responseStatus: number
   readonly url: string
 }
 
@@ -33,6 +36,27 @@ export type DocumentLoadReport =
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
   readonly limits?: Partial<ParseLimits>
+}
+
+export interface DocumentCommittedOutcome extends DocumentResponseOutcome {
+  readonly status: "committed"
+}
+
+export class DocumentCommitError extends RequestError {
+  readonly outcome: DocumentCommittedOutcome
+
+  constructor(outcome: DocumentResponseOutcome) {
+    super("Document committed but session finalization failed", {
+      method: "GET",
+      responseStatus: outcome.responseStatus,
+    })
+    this.outcome = Object.freeze({
+      classification: outcome.classification,
+      redirected: outcome.redirected,
+      responseStatus: outcome.responseStatus,
+      status: "committed",
+    })
+  }
 }
 
 interface ActiveDocumentRequest {
@@ -70,10 +94,14 @@ export class DocumentRequestLoader {
     this.active = undefined
   }
 
-  async load(source: string, owner?: object): Promise<DocumentLoadReport> {
+  resolveSource(source: string): string {
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new RequestError("Document requests require an active document URL")
-    const requestedUrl = resolveSameOriginProtocolUrl(source, documentUrl)
+    return resolveSameOriginProtocolUrl(source, documentUrl)
+  }
+
+  async load(source: string, owner?: object): Promise<DocumentLoadReport> {
+    const requestedUrl = this.resolveSource(source)
     this.cancel()
 
     const requestId = this.requestIds.next()
@@ -168,8 +196,7 @@ export class DocumentRequestLoader {
 
     if (!commit) throw new RequestError("Document request did not produce a terminal outcome")
     this.release(active)
-    this.session.replaceTree(commit.tree)
-    return Object.freeze({
+    const report = Object.freeze({
       classification: commit.classification,
       redirected: commit.redirected,
       requestId,
@@ -178,6 +205,12 @@ export class DocumentRequestLoader {
       status: "committed",
       url: commit.finalUrl,
     })
+    try {
+      this.session.replaceTree(commit.tree)
+    } catch {
+      throw new DocumentCommitError(report)
+    }
+    return report
   }
 
   private assertContentType(response: TurboResponse): void {

@@ -67,10 +67,7 @@ export class DocumentSession {
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()
-    for (const listeners of this.listeners.values()) {
-      for (const listener of listeners) listener()
-    }
-    this.reportDisposalErrors(disposalErrors)
+    this.reportErrors(disposalErrors, this.notify([...this.listeners.keys()]))
   }
 
   registerDisposal(key: string, hook: DisposalHook): () => void {
@@ -128,13 +125,9 @@ export class DocumentSession {
   private commit(keys: readonly string[]): void {
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
-    for (const key of new Set(keys)) {
-      this.snapshots.delete(key)
-      const listeners = this.listeners.get(key)
-      if (!listeners) continue
-      for (const listener of listeners) listener()
-    }
-    this.reportDisposalErrors(disposalErrors)
+    const uniqueKeys = new Set(keys)
+    for (const key of uniqueKeys) this.snapshots.delete(key)
+    this.reportErrors(disposalErrors, this.notify(uniqueKeys))
   }
 
   private flushDisposals(): DisposalError[] {
@@ -174,12 +167,41 @@ export class DocumentSession {
     return errors
   }
 
-  private reportDisposalErrors(errors: readonly DisposalError[]): void {
-    if (errors.length === 0) return
-    if (this.options.onDisposalError) {
-      for (const error of errors) this.options.onDisposalError(error)
-      return
+  private notify(keys: Iterable<string>): unknown[] {
+    const callbacks: SessionListener[] = []
+    for (const key of keys) {
+      const listeners = this.listeners.get(key)
+      if (listeners) callbacks.push(...listeners)
     }
-    throw new AggregateError(errors, "Document subtree disposal failed")
+    const errors: unknown[] = []
+    for (const callback of callbacks) {
+      try {
+        callback()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    return errors
+  }
+
+  private reportErrors(
+    disposalErrors: readonly DisposalError[],
+    listenerErrors: readonly unknown[],
+  ): void {
+    const errors = [...listenerErrors]
+    if (this.options.onDisposalError) {
+      for (const disposalError of disposalErrors) {
+        try {
+          this.options.onDisposalError(disposalError)
+        } catch (reporterError) {
+          errors.push(disposalError, reporterError)
+        }
+      }
+    } else {
+      errors.unshift(...disposalErrors)
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Document session notification failed")
+    }
   }
 }

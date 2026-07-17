@@ -60,4 +60,106 @@ describe("document subtree disposal", () => {
     expect(document.tree.getElementById("panel")).toBeUndefined()
     expect(() => document.registerDisposal("id:panel", () => undefined)).toThrow(TargetError)
   })
+
+  test("commits before reporting every disposal and stable-snapshot listener failure", () => {
+    const document = session('<Gallery><Panel id="panel" /></Gallery>')
+    const events: string[] = []
+    document.registerDisposal("id:panel", () => {
+      events.push("dispose")
+      throw new Error("disposal failed")
+    })
+    let unsubscribeSecond: () => void = () => undefined
+    document.subscribe("id:panel", () => {
+      events.push("first")
+      unsubscribeSecond()
+      document.subscribe("id:panel", () => events.push("late"))
+      throw new Error("listener failed")
+    })
+    unsubscribeSecond = document.subscribe("id:panel", () => events.push("second"))
+    const replacement = parseExpoTurboDocument('<Gallery><Next id="next" /></Gallery>')
+
+    let reported: unknown
+    try {
+      document.replaceTree(replacement)
+    } catch (error) {
+      reported = error
+    }
+
+    expect(reported).toBeInstanceOf(AggregateError)
+    expect((reported as AggregateError).errors).toHaveLength(2)
+    expect(events).toEqual(["dispose", "first", "second"])
+    expect(document.tree).toBe(replacement)
+    expect(document.revision).toBe(1)
+    expect(document.treeGeneration).toBe(1)
+  })
+
+  test("uses one callback snapshot across every key in a tree replacement", () => {
+    const document = session('<Gallery><First id="first" /><Second id="second" /></Gallery>')
+    const events: string[] = []
+    let unsubscribeSecond: () => void = () => undefined
+    document.subscribe("id:first", () => {
+      events.push("first")
+      unsubscribeSecond()
+      document.subscribe("id:second", () => events.push("late-second"))
+      document.subscribe("id:third", () => events.push("third"))
+    })
+    unsubscribeSecond = document.subscribe("id:second", () => events.push("second"))
+
+    document.replaceTree(parseExpoTurboDocument('<Gallery><Next id="next" /></Gallery>'))
+
+    expect(events).toEqual(["first", "second"])
+  })
+
+  test("reports every disposal, reporter, and listener failure after commit", () => {
+    const events: string[] = []
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Panel id="panel"><Child id="child" /></Panel></Gallery>'),
+      {
+        onDisposalError(error) {
+          events.push(`report:${error.context.target}`)
+          throw new Error(`reporter failed for ${error.context.target}`)
+        },
+      },
+    )
+    document.registerDisposal("id:child", () => {
+      events.push("dispose:child")
+      throw new Error("child failed")
+    })
+    document.registerDisposal("id:panel", () => {
+      events.push("dispose:panel")
+      throw new Error("panel failed")
+    })
+    document.subscribe("id:panel", () => {
+      events.push("listener:panel")
+      throw new Error("listener failed")
+    })
+    document.subscribe("id:child", () => events.push("listener:child"))
+
+    let reported: unknown
+    try {
+      document.replaceTree(parseExpoTurboDocument('<Gallery><Next id="next" /></Gallery>'))
+    } catch (error) {
+      reported = error
+    }
+
+    expect(reported).toBeInstanceOf(AggregateError)
+    expect((reported as AggregateError).errors).toHaveLength(5)
+    expect(
+      (reported as AggregateError).errors.filter((error) => error instanceof TargetError),
+    ).toHaveLength(0)
+    expect(
+      (reported as AggregateError).errors.filter(
+        (error) => error instanceof Error && error.name === "DisposalError",
+      ),
+    ).toHaveLength(2)
+    expect(events).toEqual([
+      "dispose:child",
+      "dispose:panel",
+      "listener:panel",
+      "listener:child",
+      "report:id:child",
+      "report:id:panel",
+    ])
+    expect(document.tree.getElementById("next")?.tagName).toBe("Next")
+  })
 })

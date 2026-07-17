@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
-import { DocumentRequestLoader } from "./document-loader"
+import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
 import { ContentTypeError, ParseError, RequestError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
@@ -629,25 +629,48 @@ describe("Document request loader", () => {
     expect(session.revision).toBe(0)
   })
 
-  test("propagates disposal failure after the new document has committed", async () => {
-    const session = documentSession()
-    session.registerDisposal("id:old", () => {
-      throw new Error("fixture disposal failed")
-    })
-    const loader = new DocumentRequestLoader(
-      session,
-      {
-        fetch: async () =>
-          response('<Gallery><Committed id="committed" /></Gallery>', {
-            url: "https://example.test/committed",
-          }),
-      },
-      { next: () => "request-1" },
-    )
+  test("reports a safe committed outcome when session finalization fails", async () => {
+    const fixtures = [
+      { classification: "success", status: 200 },
+      { classification: "client-error", status: 422 },
+    ] as const
 
-    await expect(loader.load("/committed")).rejects.toBeInstanceOf(AggregateError)
-    expect(session.tree.getElementById("old")).toBeUndefined()
-    expect(session.tree.getElementById("committed")?.tagName).toBe("Committed")
-    expect(session.tree.document.url).toBe("https://example.test/committed")
+    for (const fixture of fixtures) {
+      const session = documentSession()
+      session.registerDisposal("id:old", () => {
+        throw new Error("fixture disposal failed with secret-token")
+      })
+      const loader = new DocumentRequestLoader(
+        session,
+        {
+          fetch: async () =>
+            response('<Gallery><Committed id="committed" /></Gallery>', {
+              status: fixture.status,
+              url: `https://example.test/committed/${fixture.status}`,
+            }),
+        },
+        { next: () => "request-1" },
+      )
+
+      try {
+        await loader.load("/committed")
+        throw new Error("expected session finalization to fail")
+      } catch (error) {
+        expect(error).toBeInstanceOf(DocumentCommitError)
+        if (!(error instanceof DocumentCommitError)) throw error
+        expect(error.context).toEqual({ method: "GET", responseStatus: fixture.status })
+        expect(error.outcome).toEqual({
+          classification: fixture.classification,
+          redirected: true,
+          responseStatus: fixture.status,
+          status: "committed",
+        })
+        expect(error.cause).toBeUndefined()
+        expect(String(error)).not.toContain("secret-token")
+      }
+      expect(session.tree.getElementById("old")).toBeUndefined()
+      expect(session.tree.getElementById("committed")?.tagName).toBe("Committed")
+      expect(session.tree.document.url).toBe(`https://example.test/committed/${fixture.status}`)
+    }
   })
 })

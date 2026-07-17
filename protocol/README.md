@@ -30,15 +30,25 @@ Registered component cleanup runs on logical subtree removal/replacement and on 
 
 ## Document GET transport
 
-`DocumentRequestLoader` is a host-neutral transport and tree-replacement primitive for a mounted `DocumentSession`; it is not a navigation, history, cache, accessibility, or progress controller. It resolves relative sources against the active document URL and permits only credential-free, same-origin HTTP(S) request and final-response URLs. Document GETs advertise the Expo Turbo MIME type and send protocol, runtime, request-ID, and optional capability headers without a `Turbo-Frame` header.
+`DocumentRequestLoader` is a host-neutral transport and tree-replacement primitive for a mounted `DocumentSession`; the observable lifecycle controller is layered on it below. It is not a navigation, history, or cache controller. It resolves relative sources against the active document URL and permits only credential-free, same-origin HTTP(S) request and final-response URLs. Document GETs advertise the Expo Turbo MIME type and send protocol, runtime, request-ID, and optional capability headers without a `Turbo-Frame` header.
 
-After the fetch adapter follows redirects, the response's final URL becomes the parsed document URL. Valid XML responses are classified as `success` (`2xx`), `client-error` (`4xx`), or `server-error` (`5xx`) and replace the active tree only after MIME validation and a complete parse. A valid `4xx` or `5xx` XML document still commits as authoritative server output while retaining its distinct classification for a future visit controller.
+After the fetch adapter follows redirects, the response's final URL becomes the parsed document URL. Valid XML responses are classified as `success` (`2xx`), `client-error` (`4xx`), or `server-error` (`5xx`) and replace the active tree only after MIME validation and a complete parse. A valid `4xx` or `5xx` XML document still commits as authoritative server output while retaining its distinct classification for the visit controller.
 
 A `204` response and a blank `201` response are deliberate native empty outcomes that preserve the current tree and URL; they are not a claim of exact browser Drive GET behavior. Raw `3xx` responses, missing or cross-origin final URLs, wrong MIME types, malformed XML, and transport failures reject with typed errors without replacing the current tree.
 
 Explicit cancellation, supersession by a newer loader request, or any intervening session-tree replacement prevents the stale response from committing and produces a canceled outcome. Tree ownership uses a monotonic generation, so restoring an earlier tree object does not revive an earlier request. `cancel(owner)` affects only a request started with that exact owner, while `cancel()` cancels the loader's current request. Disposal failures raised after tree replacement remain visible even though the new tree already owns the session.
 
-This primitive does not yet implement navigation actions, root-scoped visitability, lifecycle events, delayed progress, snapshot/history restoration, preload/prefetch, form submission, or native accessibility surfaces.
+This primitive does not implement navigation actions, root-scoped visitability, lifecycle events, snapshot/history restoration, preload/prefetch, or form submission. The separate visit controller below owns the currently supported loading and accessibility state.
+
+## Document visit lifecycle and native accessibility
+
+`DocumentVisitController` gives one mounted document session an identity-safe observable GET lifecycle. Its immutable snapshot moves from `initialized` to `started`, then to exactly one of `completed`, `failed`, or `canceled`. `busy` becomes true immediately at `started`. `progressVisible` becomes true only after the injected clock reaches `DOCUMENT_VISIT_PROGRESS_DELAY_MS` (500 ms) and is cleared on every terminal path.
+
+A committed success document, `204`, or empty `201` completes the visit. A valid `4xx` or `5xx` XML error document commits first and then fails the visit. Network, MIME, parse, and pre-commit policy errors fail while preserving the prior tree. Explicit cancellation and supersession are `canceled`, never request errors. Epoch, request-owner, and session-generation checks prevent stale requests or cleared timers from publishing into a newer visit. A session finalization error after a successful commit remains observable while the lifecycle records `completed`; the equivalent error after an authoritative `4xx`/`5xx` commit records `failed`.
+
+React hosts inject the controller through `documentController`, may supply a `documentComponent` boundary, and can read the nearest binding with `useExpoTurboDocument()`. The binding exposes the frozen controller snapshot plus a frozen `{ busy }` accessibility state for an actual native boundary. Controller ticks preserve the boundary and do not remount unchanged registered children. The controller remains host-owned across React unmount and Strict Mode effect replay; React subscribes and reports errors but never silently cancels it. State and error observers are snapshotted and isolated; hosts can provide `onObserverError` to surface observer failures without changing the visit's request result, and an unhandled observer failure is rethrown on a microtask.
+
+This slice does not claim `advance`/`replace`/`restore` navigation, redirect history replacement, cache previews/restoration, lifecycle-event parity, form submission ownership, live announcements, browser progress-bar animation, or physical-device accessibility evidence.
 
 ## Frame loading and native accessibility
 
