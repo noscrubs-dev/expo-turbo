@@ -69,15 +69,47 @@ describe("Turbo Stream dispatcher", () => {
       '<turbo-stream action="update" target="panel"><template><New id="child"/></template></turbo-stream>',
     )
     expect(document.tree.getElementById("panel")).toBe(original)
-    expect(document.getNodeSnapshot("id:panel")).not.toBe(originalSnapshot)
+    const updatedSnapshot = document.getNodeSnapshot("id:panel")
+    expect(updatedSnapshot).not.toBe(originalSnapshot)
+    expect(updatedSnapshot?.identity).toBe(originalSnapshot?.identity)
 
     dispatchTurboStreamFragment(
       document,
       '<turbo-stream action="replace" target="panel"><template><Panel id="panel"><Final /></Panel></template></turbo-stream>',
     )
     expect(document.tree.getElementById("panel")).not.toBe(original)
+    expect(document.getNodeSnapshot("id:panel")?.identity).not.toBe(originalSnapshot?.identity)
     expect(document.tree.getElementById("old")).toBeUndefined()
     expect(notifications).toBe(2)
+  })
+
+  test("rejects duplicate payload ids before compound collision mutations", () => {
+    for (const action of ["append", "prepend", "before", "after"] as const) {
+      const isChildAction = action === "append" || action === "prepend"
+      const document = session(
+        isChildAction
+          ? '<Gallery><List id="list"><Item id="same"/></List><Later id="later"/></Gallery>'
+          : '<Gallery><Item id="same"/><Marker id="marker"/><Later id="later"/></Gallery>',
+      )
+      const original = document.tree.getElementById("same")
+      const snapshot = document.getNodeSnapshot("id:same")
+      const disposed: string[] = []
+      document.registerDisposal("id:same", () => disposed.push(action))
+      const target = isChildAction ? "list" : "marker"
+
+      const reports = dispatchTurboStreamFragment(
+        document,
+        `<turbo-stream action="${action}" target="${target}"><template><Item id="same"/><Item id="same"/></template></turbo-stream>
+         <turbo-stream action="remove" target="later"/>`,
+      ).actions
+
+      expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+      expect(reports[0]?.error?.message).toContain("declared more than once")
+      expect(document.tree.getElementById("same")).toBe(original)
+      expect(document.getNodeSnapshot("id:same")).toBe(snapshot)
+      expect(document.revision).toBe(1)
+      expect(disposed).toEqual([])
+    }
   })
 
   test("clones selector payload independently and gives target precedence over targets", () => {

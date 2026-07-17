@@ -5,6 +5,7 @@ import { FrameController } from "./frame-controller"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
+import { dispatchTurboStreamFragment } from "./streams"
 import { attributeValue, isElement } from "./tree"
 
 interface PendingRequest {
@@ -44,6 +45,7 @@ function harness(attributes = 'src="/frame"', visibility?: VisibilityAdapter) {
   )
   return {
     controller: new FrameController(session, "details", loader, visibility),
+    loader,
     pending,
     session,
   }
@@ -157,5 +159,31 @@ describe("Frame controller", () => {
     pending[0]?.resolve(response('<turbo-frame id="details"><Visible /></turbo-frame>'))
     expect(await controller.loaded).toMatchObject({ status: "completed" })
     expect(controller.state).toMatchObject({ hasBeenLoaded: true, status: "completed" })
+  })
+
+  test("prevents a stale direct controller from owning a same-id replacement", async () => {
+    const { controller, loader, pending, session } = harness()
+    const originalLoad = controller.connect()
+
+    dispatchTurboStreamFragment(
+      session,
+      '<turbo-stream action="replace" target="details"><template><turbo-frame id="details" src="/replacement"><Replacement/></turbo-frame></template></turbo-stream>',
+    )
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    pending[0]?.resolve(response('<turbo-frame id="details"><Late/></turbo-frame>'))
+    expect(await originalLoad).toMatchObject({ status: "canceled" })
+    expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
+      "Replacement",
+    )
+
+    const replacement = new FrameController(session, "details", loader)
+    const replacementLoad = replacement.connect()
+    expect(pending).toHaveLength(2)
+    controller.cancel()
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    replacement.cancel()
+    expect(pending[1]?.request.signal?.aborted).toBe(true)
+    pending[1]?.resolve(response('<turbo-frame id="details"><AlsoLate/></turbo-frame>'))
+    expect(await replacementLoad).toMatchObject({ status: "canceled" })
   })
 })

@@ -66,15 +66,15 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] React Frame/form state inheritance with automatic Frame boundaries, explicit form boundaries, nearest-scope bindings/actions, update preservation, and replacement cleanup.
 - [x] Bounded typed state-reference decoding with exact `{"$state":"key"}` values, `{{state:key}}` scalar interpolation, recursive arrays/objects, nearest-scope action admission, and typed failures.
 - [x] Bounded semantic style adapters with schema-owned `style-tokens`, frozen capability manifests, token/group/component limits, deterministic precedence, explicit React resolution, and an example-owned native corpus.
-- [x] Deterministic descendant-first subtree disposal hooks with identity-safe replacement handling, explicit unregister, typed cleanup errors, and registered-component React wiring.
+- [x] Deterministic descendant-first subtree disposal hooks with identity-safe replacement handling, explicit unregister, typed cleanup errors, and once-only registered-component cleanup on logical or React unmount.
 - [x] Typed logical event bus with serial dispatch, cancellable notifications, nested pause/resume, stable listener snapshots, unsubscribe, and post-failure queue recovery.
-- [x] Static React protocol renderer with stable `useSyncExternalStore` node snapshots, isolated subtree updates, registered error surfaces, mixed children, and non-rendering protocol nodes.
-- [x] Ordered Turbo Stream fragment dispatch for `append`, `prepend`, `replace`, `update`, `remove`, `before`, and `after`, including target/selector precedence, ID collision rules, payload cloning, no-ops, and isolated action errors.
+- [x] Static React protocol renderer with stable `useSyncExternalStore` node snapshots, update-preserving component identity, same-ID replacement remounts, isolated subtree updates, registered error surfaces, mixed children, and non-rendering protocol nodes.
+- [x] Ordered Turbo Stream fragment dispatch for `append`, `prepend`, `replace`, `update`, `remove`, `before`, and `after`, including target/selector precedence, transactional ID-collision preflight, payload cloning, no-ops, and isolated action errors.
 - [x] Typed custom Stream-action registry with reserved/duplicate ownership checks, Zod-validated `data-*` parameters, shared target/template resolution, synchronous app-installed handlers, and isolated failures.
 - [x] Exact Turbo Frame response extraction with mounted-wrapper preservation, redirected `src`, child replacement, embedded Stream execution/consumption, and typed missing-frame failures.
 - [x] Same-origin Frame GET loader with Expo Turbo headers/MIME enforcement, `204` handling, redirected URL ownership, explicit cancellation, and per-frame late-response suppression.
 - [x] Frame target resolution for submitter/element/default precedence, named Frames, `_self`, `_parent`, and `_top`, including page promotion when the selected Frame is unavailable or disabled.
-- [x] Observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation on disable, source removal/replacement, or disconnect.
+- [x] Identity-bound observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation/rebinding on disable, source removal, same-ID wrapper replacement, or disconnect.
 - [x] Opt-in React Frame lifecycle wiring that connects mounted controllers, subscribes to lifecycle state, eagerly loads sources, and cancels/disposes requests when a Frame subtree unmounts.
 - [x] Injected lazy-Frame visibility lifecycle that observes while mounted, loads on first visibility, stops observing when the request starts, and reports automatic-load failures.
 - [x] Bounded Frame `recurse` extraction with whitespace-token matching, same-origin intermediary GETs, independent request IDs, redirected-base resolution, URL-loop/depth rejection, and canonical source ownership.
@@ -84,7 +84,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ### In progress / not yet supported
 
-- [ ] Public loading/accessibility surfaces and non-Frame mutation cleanup.
+- [ ] Public document/Frame/form loading and accessibility surfaces.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
 - [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
 - [ ] Native forms, successful-control serialization, uploads, validation, redirects, and `422` rendering.

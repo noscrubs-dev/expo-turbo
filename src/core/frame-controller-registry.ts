@@ -1,5 +1,5 @@
 import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters"
-import { TargetError } from "./errors"
+import { FrameMissingError, TargetError } from "./errors"
 import { FrameController } from "./frame-controller"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
 import {
@@ -8,6 +8,7 @@ import {
   resolveFrameTarget,
 } from "./frames"
 import type { DocumentSession } from "./session"
+import type { ProtocolElement } from "./tree"
 
 export interface FrameControllerCollection {
   delete(frameId: string, controller?: FrameController): void
@@ -39,8 +40,14 @@ export type FrameVisitResult =
       url: string
     }>
 
+interface FrameControllerRecord {
+  readonly controller: FrameController
+  readonly node: ProtocolElement
+  unregisterDisposal: () => void
+}
+
 export class FrameControllerRegistry implements FrameControllerCollection {
-  private readonly controllers = new Map<string, FrameController>()
+  private readonly controllers = new Map<string, FrameControllerRecord>()
 
   constructor(
     private readonly session: DocumentSession,
@@ -50,19 +57,38 @@ export class FrameControllerRegistry implements FrameControllerCollection {
   ) {}
 
   get(frameId: string): FrameController {
-    let controller = this.controllers.get(frameId)
-    if (!controller) {
-      controller = new FrameController(this.session, frameId, this.loader, this.visibility)
-      this.controllers.set(frameId, controller)
+    const frame = this.session.tree.getElementById(frameId)
+    if (frame?.kind !== "frame") {
+      throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
     }
+
+    const current = this.controllers.get(frameId)
+    if (current?.node === frame) return current.controller
+    if (current) this.release(frameId, current, true)
+
+    const controller = new FrameController(
+      this.session,
+      frameId,
+      this.loader,
+      this.visibility,
+      frame,
+    )
+    const record: FrameControllerRecord = {
+      controller,
+      node: frame,
+      unregisterDisposal: () => undefined,
+    }
+    record.unregisterDisposal = this.session.registerDisposal(frame.key, () => {
+      this.release(frameId, record, false)
+    })
+    this.controllers.set(frameId, record)
     return controller
   }
 
   delete(frameId: string, controller?: FrameController): void {
     const current = this.controllers.get(frameId)
-    if (!current || (controller && current !== controller)) return
-    current.disconnect()
-    this.controllers.delete(frameId)
+    if (!current || (controller && current.controller !== controller)) return
+    this.release(frameId, current, true)
   }
 
   async visit(url: string, options: FrameVisitOptions): Promise<FrameVisitResult> {
@@ -96,7 +122,19 @@ export class FrameControllerRegistry implements FrameControllerCollection {
   }
 
   dispose(): void {
-    for (const controller of this.controllers.values()) controller.disconnect()
-    this.controllers.clear()
+    for (const [frameId, record] of [...this.controllers]) {
+      this.release(frameId, record, true)
+    }
+  }
+
+  private release(
+    frameId: string,
+    record: FrameControllerRecord,
+    unregisterDisposal: boolean,
+  ): void {
+    if (this.controllers.get(frameId) !== record) return
+    this.controllers.delete(frameId)
+    if (unregisterDisposal) record.unregisterDisposal()
+    record.controller.disconnect()
   }
 }

@@ -9,6 +9,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useSyncExternalStore,
 } from "react"
 
@@ -244,8 +245,22 @@ export function ExpoTurboStateScope(props: ExpoTurboStateScopeProps): ReactNode 
 export function useNodeDisposal(dispose: () => void): void {
   const { session } = useRenderer()
   const nodeKey = useContext(ProtocolNodeContext)
+  const disposeRef = useRef(dispose)
+  disposeRef.current = dispose
   if (!nodeKey) throw new RegistryError("Expo Turbo node disposal requires a component node")
-  useEffect(() => session.registerDisposal(nodeKey, dispose), [dispose, nodeKey, session])
+  useEffect(() => {
+    let disposed = false
+    const disposeOnce = () => {
+      if (disposed) return
+      disposed = true
+      disposeRef.current()
+    }
+    const unregister = session.registerDisposal(nodeKey, disposeOnce)
+    return () => {
+      unregister()
+      disposeOnce()
+    }
+  }, [nodeKey, session])
 }
 
 export function useFrameControllerState(controller: FrameController): FrameControllerSnapshot {
@@ -332,18 +347,19 @@ interface ConnectedFrameProps {
 }
 
 function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
-  const controller = useMemo(() => props.frames.get(props.frameId), [props.frameId, props.frames])
+  const controller = props.frames.get(props.frameId)
   useFrameControllerState(controller)
   useEffect(() => {
-    const unsubscribeErrors = controller.subscribeErrors((error) => {
-      props.onError?.({ error, nodeKey: props.node.key })
-    })
     void controller.connect().catch(() => undefined)
-    return () => {
-      unsubscribeErrors()
-      props.frames.delete(props.frameId, controller)
-    }
-  }, [controller, props.frameId, props.frames, props.node.key, props.onError])
+    return () => props.frames.delete(props.frameId, controller)
+  }, [controller, props.frameId, props.frames])
+  useEffect(
+    () =>
+      controller.subscribeErrors((error) => {
+        props.onError?.({ error, nodeKey: props.node.key })
+      }),
+    [controller, props.node.key, props.onError],
+  )
   return createElement(Fragment, null, renderChildren(props.node.children))
 }
 
@@ -398,7 +414,11 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   if (node.kind === "comment") return null
   if (node.kind === "text") return renderedTextValue(node) || null
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
-  return createElement(ProtocolElementView, { node, revision: snapshot.revision })
+  return createElement(ProtocolElementView, {
+    key: snapshot.identity,
+    node,
+    revision: snapshot.revision,
+  })
 }
 
 export function ExpoTurboRoot(): ReactNode {

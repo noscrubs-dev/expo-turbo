@@ -9,16 +9,22 @@ export interface DocumentSessionOptions {
 }
 
 export interface NodeSnapshot {
+  readonly identity: string
   readonly node: ProtocolNode
   readonly revision: number
 }
 
+let nextSessionIdentity = 0
+
 export class DocumentSession {
   private readonly disposals = new Map<ProtocolNode, Set<DisposalHook>>()
+  private readonly identities = new WeakMap<ProtocolNode, string>()
   private readonly listeners = new Map<string, Set<SessionListener>>()
+  private readonly sessionIdentity = nextSessionIdentity++
   private readonly snapshots = new Map<string, NodeSnapshot>()
   private currentRevision = 0
   private currentTree: DocumentTree
+  private nextIdentity = 0
 
   constructor(
     tree: DocumentTree,
@@ -40,7 +46,12 @@ export class DocumentSession {
     if (cached) return cached
     const node = this.currentTree.getNodeByKey(key)
     if (!node) return undefined
-    const snapshot = Object.freeze({ node, revision: this.currentRevision })
+    let identity = this.identities.get(node)
+    if (identity === undefined) {
+      identity = `${this.sessionIdentity}:${this.nextIdentity++}`
+      this.identities.set(node, identity)
+    }
+    const snapshot = Object.freeze({ identity, node, revision: this.currentRevision })
     this.snapshots.set(key, snapshot)
     return snapshot
   }
