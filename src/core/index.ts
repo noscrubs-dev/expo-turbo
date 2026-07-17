@@ -1,3 +1,6 @@
 export * from "./errors"
 export * from "./inspector"
+export * from "./parser"
+export * from "./selectors"
+export * from "./tree"
 export * from "./versions"
