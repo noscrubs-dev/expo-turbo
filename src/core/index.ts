@@ -1,5 +1,6 @@
 export * from "./custom-stream-actions"
 export * from "./errors"
+export * from "./events"
 export * from "./frame-controller"
 export * from "./frame-controller-registry"
 export * from "./frame-loader"
