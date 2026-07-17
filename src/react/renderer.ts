@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
@@ -26,6 +27,14 @@ import type {
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
 import { RegistryError, TargetError } from "../core/errors"
+import type {
+  DocumentFormControls,
+  FormControlDescriptor,
+  FormControlRegistration,
+  FormControlRegistry,
+  SuccessfulFormEntriesOptions,
+  SuccessfulFormEntry,
+} from "../core/forms"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
 import { resolveProtocolUrl } from "../core/protocol-request"
@@ -88,12 +97,29 @@ export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
   readonly children?: ReactNode
 }
 
+export interface ExpoTurboFormBinding {
+  readonly formNodeKey: string
+  readonly successfulEntries: (
+    options?: SuccessfulFormEntriesOptions,
+  ) => readonly SuccessfulFormEntry[]
+}
+
+export interface ExpoTurboFormControlBinding {
+  readonly nodeKey: string
+}
+
+interface ExpoTurboFormContextValue {
+  readonly binding: ExpoTurboFormBinding
+  readonly registry: FormControlRegistry
+}
+
 interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frames: FrameControllerCollection | undefined
+  readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
@@ -106,10 +132,12 @@ interface RendererContextValue {
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
 const DocumentContext = createContext<ExpoTurboDocumentBinding | undefined>(undefined)
 const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
+const FormContext = createContext<ExpoTurboFormContextValue | undefined>(undefined)
 const NavigationContext = createContext<NavigationAdapter | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
+const providerDisposableOwners = new WeakMap<object, number>()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
   "confirm",
@@ -130,6 +158,7 @@ export interface ExpoTurboProviderProps {
   readonly documentController?: DocumentVisitController
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly frames?: FrameControllerCollection
+  readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly registry: RenderRegistry
@@ -140,9 +169,25 @@ export interface ExpoTurboProviderProps {
   readonly styles?: StyleAdapter
 }
 
+function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefined): void {
+  useEffect(() => {
+    if (!resource) return
+    providerDisposableOwners.set(resource, (providerDisposableOwners.get(resource) ?? 0) + 1)
+    return () => {
+      const owners = providerDisposableOwners.get(resource) ?? 0
+      providerDisposableOwners.set(resource, Math.max(0, owners - 1))
+      queueMicrotask(() => {
+        if (providerDisposableOwners.get(resource) !== 0) return
+        providerDisposableOwners.delete(resource)
+        resource.dispose()
+      })
+    }
+  }, [resource])
+}
+
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
-  useEffect(() => () => props.scopes?.dispose(), [props.scopes])
-  useEffect(() => () => props.state?.dispose(), [props.state])
+  useProviderDisposable(props.scopes)
+  useProviderDisposable(props.state)
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
@@ -150,6 +195,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentController: props.documentController,
       frameComponent: props.frameComponent,
       frames: props.frames,
+      forms: props.forms,
       onError: props.onError,
       registry: props.registry,
       renderError: props.renderError,
@@ -164,6 +210,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentController,
       props.frameComponent,
       props.frames,
+      props.forms,
       props.onError,
       props.registry,
       props.renderError,
@@ -309,6 +356,73 @@ export function ExpoTurboStateScope(props: ExpoTurboStateScopeProps): ReactNode 
     },
     props.children,
   )
+}
+
+export interface ExpoTurboFormScopeProps {
+  readonly children?: ReactNode
+}
+
+/**
+ * Declares that the current registered component owns a logical native form.
+ * The host-owned DocumentFormControls collection deliberately outlives React
+ * effect replay; exact tree replacement remains its disposal boundary.
+ */
+export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
+  const { forms } = useRenderer()
+  const nodeKey = useContext(ProtocolNodeContext)
+  if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
+  if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
+  const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
+  const binding = useMemo<ExpoTurboFormBinding>(
+    () =>
+      Object.freeze({
+        formNodeKey: nodeKey,
+        successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
+          registry.successfulEntries(options),
+      }),
+    [nodeKey, registry],
+  )
+  const value = useMemo<ExpoTurboFormContextValue>(
+    () => Object.freeze({ binding, registry }),
+    [binding, registry],
+  )
+  return createElement(
+    StateScopeBoundary,
+    { kind: "form", nodeKey },
+    createElement(FormContext.Provider, { value }, props.children),
+  )
+}
+
+export function useExpoTurboForm(): ExpoTurboFormBinding {
+  const context = useContext(FormContext)
+  if (!context) throw new RegistryError("Expo Turbo form binding requires a form scope")
+  return context.binding
+}
+
+export function useExpoTurboFormControl(
+  descriptor: FormControlDescriptor,
+): ExpoTurboFormControlBinding {
+  const context = useContext(FormContext)
+  const nodeKey = useContext(ProtocolNodeContext)
+  const descriptorRef = useRef(descriptor)
+  const registration = useRef<FormControlRegistration | undefined>(undefined)
+  if (!context) throw new RegistryError("Expo Turbo form controls require a form scope")
+  if (!nodeKey) throw new RegistryError("Expo Turbo form controls require a component node")
+
+  useLayoutEffect(() => {
+    descriptorRef.current = descriptor
+    registration.current?.update(descriptor)
+  }, [descriptor])
+  useLayoutEffect(() => {
+    const current = context.registry.register(nodeKey, descriptorRef.current)
+    registration.current = current
+    return () => {
+      if (registration.current === current) registration.current = undefined
+      current.unregister()
+    }
+  }, [context.registry, nodeKey])
+
+  return useMemo(() => Object.freeze({ nodeKey }), [nodeKey])
 }
 
 export function useNodeDisposal(dispose: () => void): void {

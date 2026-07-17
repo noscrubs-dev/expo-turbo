@@ -8,13 +8,16 @@ import {
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 import { z } from "zod";
 
 import {
   useComponentAction,
   useDocumentState,
   useExpoTurboDocumentLink,
+  ExpoTurboFormScope,
+  useExpoTurboForm,
+  useExpoTurboFormControl,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
 import { useDemoComponentStyle } from "./demo-style-runtime";
@@ -201,9 +204,140 @@ const action = defineComponent({
   tag: "DemoAction",
 });
 
+function DemoFormComponent({ children }: { children?: ReactNode }) {
+  return (
+    <ExpoTurboFormScope>
+      <View
+        style={{
+          backgroundColor: "#f6f8fa",
+          borderColor: "#c8d1dc",
+          borderRadius: 12,
+          borderWidth: 1,
+          gap: 10,
+          padding: 12,
+        }}
+      >
+        {children}
+      </View>
+    </ExpoTurboFormScope>
+  );
+}
+
+const form = defineComponent({
+  attributes: {},
+  children: "nodes",
+  component: DemoFormComponent,
+  schema: z.object({}),
+  tag: "DemoForm",
+});
+
+function DemoFormInputComponent({
+  label,
+  name,
+  value,
+}: {
+  label: string;
+  name: string;
+  value: string;
+}) {
+  const [current, setCurrent] = useState(value);
+  useExpoTurboFormControl({ kind: "value", name, value: current });
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+      <TextInput
+        accessibilityLabel={label}
+        onChangeText={setCurrent}
+        style={{
+          backgroundColor: "white",
+          borderColor: "#9eb0c3",
+          borderRadius: 10,
+          borderWidth: 1,
+          color: "#172230",
+          paddingHorizontal: 12,
+          paddingVertical: 10,
+        }}
+        value={current}
+      />
+    </View>
+  );
+}
+
+const formInput = defineComponent({
+  attributes: {
+    label: { codec: stringCodec, prop: "label" },
+    name: { codec: stringCodec, prop: "name" },
+    value: { codec: stringCodec, prop: "value" },
+  },
+  children: "none",
+  component: DemoFormInputComponent,
+  schema: z.object({ label: z.string(), name: z.string(), value: z.string() }),
+  tag: "DemoFormInput",
+});
+
+function DemoFormSubmitterComponent({
+  label,
+  name,
+  value,
+}: {
+  label: string;
+  name: string;
+  value: string;
+}) {
+  const formBinding = useExpoTurboForm();
+  const control = useExpoTurboFormControl({ kind: "submitter", name, value });
+  const [entries, setEntries] = useState("No entries collected yet");
+  return (
+    <View style={{ gap: 8 }}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          setEntries(
+            JSON.stringify(
+              formBinding.successfulEntries({ submitterNodeKey: control.nodeKey }),
+            ),
+          )
+        }
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#19375a" : "#285589",
+          borderRadius: 10,
+          padding: 12,
+        })}
+      >
+        <Text style={{ color: "white", fontWeight: "600" }}>{label}</Text>
+      </Pressable>
+      <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+        {entries}
+      </Text>
+    </View>
+  );
+}
+
+const formSubmitter = defineComponent({
+  attributes: {
+    label: { codec: stringCodec, prop: "label" },
+    name: { codec: stringCodec, prop: "name" },
+    value: { codec: stringCodec, prop: "value" },
+  },
+  children: "none",
+  component: DemoFormSubmitterComponent,
+  schema: z.object({ label: z.string(), name: z.string(), value: z.string() }),
+  tag: "DemoFormSubmitter",
+});
+
 export const DEMO_REGISTRY = createRegistry(
   defineComponentModule({
-    components: [gallery, card, text, action, documentLink],
+    components: [
+      gallery,
+      card,
+      text,
+      action,
+      documentLink,
+      form,
+      formInput,
+      formSubmitter,
+    ],
     name: "demo-primitives",
     version: "0.1.0",
   }),
@@ -214,6 +348,14 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
+  <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
+    <DemoText>Edit either native value, then collect the frozen successful-entry list with the activated submitter appended last.</DemoText>
+    <DemoForm id="native-form">
+      <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
+      <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
+      <DemoFormSubmitter id="collect-form" label="Collect native entries" name="commit" value="preview" />
+    </DemoForm>
+  </DemoCard>
   <DemoDocumentLink href="/demo/linked">
     <DemoText>Open a same-origin document through the app-owned native link.</DemoText>
   </DemoDocumentLink>

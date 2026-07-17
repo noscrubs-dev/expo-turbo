@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import { PropsError, RegistryError, StateError, TargetError } from "./errors"
 import {
+  DocumentFormControls,
   type FormControlDescriptor,
   type FormControlRegistration,
   FormControlRegistry,
@@ -265,6 +266,64 @@ describe("native form control registry", () => {
     const session = formFixture()
     expect(() => new FormControlRegistry(session, "missing")).toThrow(TargetError)
     expect(() => new FormControlRegistry(session, session.tree.document.key)).toThrow(TargetError)
+  })
+})
+
+describe("document form-control ownership", () => {
+  test("retains one registry for the exact form across child updates", () => {
+    const session = formFixture()
+    const forms = new DocumentFormControls(session)
+    const form = session.tree.getElementById("form")
+    if (!form) throw new Error("form fixture is missing")
+    const registry = forms.controlsFor(form.key)
+    registry.register("id:first", { kind: "value", name: "field", value: "before" })
+
+    expect(forms.controlsFor(form.key)).toBe(registry)
+    const updated = parseExpoTurboDocument(
+      '<DemoForm id="form"><DemoInput id="after" /></DemoForm>',
+    ).getElementById("form")
+    if (!updated) throw new Error("updated form fixture is missing")
+    session.mutate((tree) => tree.replaceChildrenWithClones(form, updated.children))
+
+    expect(forms.controlsFor(form.key)).toBe(registry)
+    expect(registry.successfulEntries()).toEqual([])
+    registry.register("id:after", { kind: "value", name: "field", value: "after" })
+    expect(registry.successfulEntries()).toEqual([{ name: "field", value: "after" }])
+  })
+
+  test("rebinds same-key replacement to a fresh registry", () => {
+    const session = formFixture()
+    const forms = new DocumentFormControls(session)
+    const form = session.tree.getElementById("form")
+    if (!form) throw new Error("form fixture is missing")
+    const original = forms.controlsFor(form.key)
+    const replacement = parseExpoTurboDocument(
+      '<DemoForm id="form"><DemoInput id="replacement" /></DemoForm>',
+    ).getElementById("form")
+    if (!replacement) throw new Error("replacement form fixture is missing")
+
+    session.mutate((tree) => tree.replaceNodeWithClones(form, [replacement]))
+
+    expect(original.isDisposed).toBe(true)
+    const rebound = forms.controlsFor("id:form")
+    expect(rebound).not.toBe(original)
+    rebound.register("id:replacement", { kind: "value", name: "field", value: "new" })
+    expect(rebound.successfulEntries()).toEqual([{ name: "field", value: "new" }])
+  })
+
+  test("disposes every owned registry and rejects later access", () => {
+    const session = formFixture()
+    const forms = new DocumentFormControls(session)
+    const form = forms.controlsFor("id:form")
+    const other = forms.controlsFor("id:other-form")
+
+    forms.dispose()
+    forms.dispose()
+
+    expect(forms.isDisposed).toBe(true)
+    expect(form.isDisposed).toBe(true)
+    expect(other.isDisposed).toBe(true)
+    expect(() => forms.controlsFor("id:form")).toThrow(StateError)
   })
 })
 

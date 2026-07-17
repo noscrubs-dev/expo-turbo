@@ -47,6 +47,12 @@ interface FormControlRecord {
   unregisterDisposal: () => void
 }
 
+interface DocumentFormControlRecord {
+  readonly node: ProtocolElement
+  readonly registry: FormControlRegistry
+  unregisterDisposal: () => void
+}
+
 function normalizeDescriptor(
   descriptor: FormControlDescriptor,
   nodeKey: string,
@@ -297,5 +303,63 @@ export class FormControlRegistry {
     if (this.records.get(record.node) !== record) return
     this.records.delete(record.node)
     if (unregisterDisposal) record.unregisterDisposal()
+  }
+}
+
+/**
+ * Document-lifetime owner for native form-control registries. A logical form
+ * keeps one registry while its exact tree node remains active; same-key
+ * replacement creates a fresh registry and disposes the old identity.
+ */
+export class DocumentFormControls {
+  private disposed = false
+  private readonly records = new Map<string, DocumentFormControlRecord>()
+
+  constructor(private readonly session: DocumentSession) {}
+
+  get isDisposed(): boolean {
+    return this.disposed
+  }
+
+  controlsFor(formNodeKey: string): FormControlRegistry {
+    this.assertActive()
+    const form = this.session.tree.getNodeByKey(formNodeKey)
+    if (!form || !isElement(form)) {
+      throw new TargetError(`No active form element has key ${JSON.stringify(formNodeKey)}`, {
+        target: formNodeKey,
+      })
+    }
+
+    const existing = this.records.get(form.key)
+    if (existing?.node === form && !existing.registry.isDisposed) return existing.registry
+    if (existing) this.release(existing, true)
+
+    const record: DocumentFormControlRecord = {
+      node: form,
+      registry: new FormControlRegistry(this.session, form.key),
+      unregisterDisposal: () => undefined,
+    }
+    record.unregisterDisposal = this.session.registerDisposal(form.key, () => {
+      this.release(record, false)
+    })
+    this.records.set(form.key, record)
+    return record.registry
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    for (const record of [...this.records.values()]) this.release(record, true)
+  }
+
+  private assertActive(): void {
+    if (this.disposed) throw new StateError("Document form controls have been disposed")
+  }
+
+  private release(record: DocumentFormControlRecord, unregisterDisposal: boolean): void {
+    if (this.records.get(record.node.key) !== record) return
+    this.records.delete(record.node.key)
+    if (unregisterDisposal) record.unregisterDisposal()
+    record.registry.dispose()
   }
 }
