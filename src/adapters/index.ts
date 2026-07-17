@@ -1,3 +1,4 @@
+import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-activity"
 import type { ProtocolInspectorAdapter } from "../core/inspector"
 import type { StyleAdapter } from "./styles"
 
@@ -32,6 +33,21 @@ export interface FetchAdapter {
 
 export interface FormConfirmationAdapter {
   confirm(message: string, signal: AbortSignal): boolean | Promise<boolean>
+}
+
+export type FormSubmissionAnnouncementTerminalSnapshot = Exclude<
+  FormSubmissionTerminalSnapshot,
+  Readonly<{ readonly revision: number; readonly status: "none" }>
+>
+
+export interface FormSubmissionAnnouncementEvent {
+  readonly formNodeKey: string
+  readonly terminalState: FormSubmissionAnnouncementTerminalSnapshot
+}
+
+/** Host-owned localized and platform-specific delivery for settled native forms. */
+export interface FormSubmissionAnnouncementAdapter {
+  announce(event: FormSubmissionAnnouncementEvent): void | Promise<void>
 }
 
 export type VisitAction = "advance" | "replace" | "restore"
@@ -113,6 +129,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly confirmation?: FormConfirmationAdapter
   readonly fetch: FetchAdapter
   readonly focus: FocusAdapter
+  readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
   readonly inspector?: ProtocolInspectorAdapter
   readonly lifecycle: LifecycleAdapter
   readonly navigation: NavigationAdapter

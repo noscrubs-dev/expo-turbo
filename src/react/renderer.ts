@@ -14,7 +14,12 @@ import {
   useSyncExternalStore,
 } from "react"
 
-import type { NavigationAdapter } from "../adapters"
+import type {
+  FormSubmissionAnnouncementAdapter,
+  FormSubmissionAnnouncementEvent,
+  FormSubmissionAnnouncementTerminalSnapshot,
+  NavigationAdapter,
+} from "../adapters"
 import {
   type ComponentStyleLayers,
   resolveComponentStyle,
@@ -169,6 +174,7 @@ interface RendererContextValue {
   readonly documentController: DocumentVisitController | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
+  readonly formAnnouncements: FormSubmissionAnnouncementAdapter | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
@@ -189,6 +195,10 @@ const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 const providerDisposableOwners = new WeakMap<object, number>()
+const announcedFormTerminalRevisions = new WeakMap<
+  DocumentSession,
+  WeakMap<ProtocolElement, number>
+>()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
   "confirm",
@@ -209,6 +219,7 @@ export interface ExpoTurboProviderProps {
   readonly documentController?: DocumentVisitController
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
+  readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
   readonly frames?: FrameControllerCollection
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
@@ -247,6 +258,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentController: props.documentController,
       frameComponent: props.frameComponent,
       formComponent: props.formComponent,
+      formAnnouncements: props.formAnnouncements,
       frames: props.frames,
       forms: props.forms,
       onError: props.onError,
@@ -263,6 +275,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentController,
       props.frameComponent,
       props.formComponent,
+      props.formAnnouncements,
       props.frames,
       props.forms,
       props.onError,
@@ -416,13 +429,56 @@ export interface ExpoTurboFormScopeProps {
   readonly children?: ReactNode
 }
 
+function reportFormAnnouncementError(
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+  nodeKey: string,
+  cause: unknown,
+): void {
+  const error =
+    cause instanceof Error
+      ? cause
+      : new RegistryError("Form submission announcement adapter failed")
+  if (!onError) {
+    queueMicrotask(() => {
+      throw error
+    })
+    return
+  }
+  try {
+    onError({ error, nodeKey })
+  } catch (reporterError) {
+    queueMicrotask(() => {
+      throw new AggregateError(
+        [error, reporterError],
+        "Form submission announcement error reporter failed",
+      )
+    })
+  }
+}
+
+function claimFormTerminalAnnouncement(
+  session: DocumentSession,
+  form: ProtocolElement,
+  revision: number,
+): boolean {
+  let formRevisions = announcedFormTerminalRevisions.get(session)
+  if (!formRevisions) {
+    formRevisions = new WeakMap()
+    announcedFormTerminalRevisions.set(session, formRevisions)
+  }
+  const announcedRevision = formRevisions.get(form) ?? -1
+  if (announcedRevision >= revision) return false
+  formRevisions.set(form, revision)
+  return true
+}
+
 /**
  * Declares that the current registered component owns a logical native form.
  * The host-owned DocumentFormControls collection deliberately outlives React
  * effect replay; exact tree replacement remains its disposal boundary.
  */
 export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
-  const { formComponent: FormComponent, forms } = useRenderer()
+  const { formAnnouncements, formComponent: FormComponent, forms, onError, session } = useRenderer()
   const nodeKey = useContext(ProtocolNodeContext)
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
@@ -443,6 +499,41 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   )
   const terminalSnapshot = useCallback(() => registry.submissionTerminalState, [registry])
   const terminalState = useSyncExternalStore(subscribeTerminal, terminalSnapshot, terminalSnapshot)
+  const formNode = session.tree.getNodeByKey(nodeKey)
+  if (!formNode || !isElement(formNode)) {
+    throw new RegistryError("Expo Turbo forms require an active component element")
+  }
+  const announcementBaseline = useRef({ node: formNode, revision: terminalState.revision })
+  useEffect(() => {
+    const baseline = announcementBaseline.current
+    announcementBaseline.current = { node: formNode, revision: terminalState.revision }
+    if (
+      baseline.node !== formNode ||
+      baseline.revision === terminalState.revision ||
+      terminalState.status === "none" ||
+      !formAnnouncements ||
+      registry.submissionState.busy ||
+      registry.submissionTerminalState !== terminalState ||
+      session.tree.getNodeByKey(nodeKey) !== formNode
+    ) {
+      return
+    }
+    if (!claimFormTerminalAnnouncement(session, formNode, terminalState.revision)) return
+    const event = Object.freeze({
+      formNodeKey: nodeKey,
+      terminalState: terminalState as FormSubmissionAnnouncementTerminalSnapshot,
+    }) satisfies FormSubmissionAnnouncementEvent
+    try {
+      const delivery = formAnnouncements.announce(event)
+      if (delivery) {
+        void Promise.resolve(delivery).catch((error: unknown) => {
+          reportFormAnnouncementError(onError, nodeKey, error)
+        })
+      }
+    } catch (error) {
+      reportFormAnnouncementError(onError, nodeKey, error)
+    }
+  }, [formAnnouncements, formNode, nodeKey, onError, registry, session, terminalState])
   const binding = useMemo<ExpoTurboFormBinding>(
     () =>
       Object.freeze({
