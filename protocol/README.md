@@ -12,6 +12,14 @@ Component-action parameters resolve state references against the action's select
 
 Missing/blank keys, malformed interpolation, ambiguous `$state` objects, cycles, unsupported object prototypes, and excessive depth are typed protocol failures. Resolution never falls through from a Frame/form scope to document or app-global state. Structured exact references must come from an explicit host codec; the package does not opportunistically `JSON.parse` arbitrary XML attributes.
 
+## Native successful form controls
+
+`FormControlRegistry` is the host-neutral bridge between app-installed native widgets and a logical form element. A registration is bound to the exact active control node under the exact active form node, not only to a reusable key or XML `id`. The host supplies current string values and updates them as native state changes. Control removal/replacement unregisters that exact control; replacing/removing the form disposes the registry. A Turbo Stream child update preserves the form registry while disposing only removed controls.
+
+The supported control descriptors deliberately cover only caller-admitted string-valued entries: one value, a checked/unchecked checkable, already-selected and enabled ordered multiple values, or a submitter. Collection omits disabled, unnamed, exact-empty-name, unchecked, and non-activated submitter controls. Other entries follow current XML order regardless of registration order; duplicate names, duplicate values, and empty values are preserved. A checkable with no explicit value emits `on`. The one activated submitter is validated against the exact registry and appended last with an empty default value, matching Turbo 8.0.23's `FormData`-then-submitter ordering. Selecting a disabled submitter fails closed as a native safety policy because ordinary native activation cannot originate from it; this intentionally does not claim browser-programmatic `requestSubmit` parity.
+
+Collection returns frozen name/value entries, not a complete HTML entry list, query string, `FormData`, or request body. Disabled-fieldset/option inheritance, external form ownership, datalist ancestry, files, image coordinates, `_charset_`, `dirname`, and form-associated custom elements remain unsupported. React field/submitter registration, GET and body encoding, Rails method normalization, submitter overrides, constraint validation/focus, request lifecycle, response classification, redirects, and authoritative `422` rendering are also separate unsupported contracts.
+
 ## Semantic styles
 
 Styling is component-schema-owned. A component may bind an explicit whitespace-separated `style-tokens` attribute with `tokenListCodec`; XML `class` remains structural selector metadata and is never forwarded as native `className`.
