@@ -22,6 +22,13 @@ import {
   type ProtocolNode,
   renderedTextValue,
 } from "../core/tree"
+import type {
+  ComponentActionExecutor,
+  ComponentActionLifecycle,
+  ComponentActionParams,
+  ComponentActionResult,
+  RegistryComponentAction,
+} from "../registry/component-actions"
 import type { ComponentRegistry, DecodedComponent, RegistryComponent } from "../registry/registry"
 
 type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode">
@@ -32,6 +39,7 @@ export interface ExpoTurboRenderError {
 }
 
 interface RendererContextValue {
+  readonly actions: ComponentActionExecutor | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly registry: RenderRegistry
@@ -42,6 +50,7 @@ interface RendererContextValue {
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
 
 export interface ExpoTurboProviderProps {
+  readonly actions?: ComponentActionExecutor
   readonly children?: ReactNode
   readonly frames?: FrameControllerCollection
   readonly onError?: (event: ExpoTurboRenderError) => void
@@ -53,13 +62,14 @@ export interface ExpoTurboProviderProps {
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const value = useMemo<RendererContextValue>(
     () => ({
+      actions: props.actions,
       frames: props.frames,
       onError: props.onError,
       registry: props.registry,
       renderError: props.renderError,
       session: props.session,
     }),
-    [props.frames, props.onError, props.registry, props.renderError, props.session],
+    [props.actions, props.frames, props.onError, props.registry, props.renderError, props.session],
   )
   return createElement(RendererContext.Provider, { value }, props.children)
 }
@@ -78,6 +88,19 @@ export function useProtocolNode(key: string): NodeSnapshot | undefined {
   )
   const snapshot = useCallback(() => session.getNodeSnapshot(key), [key, session])
   return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function useComponentAction<Definition extends RegistryComponentAction>(
+  definition: Definition,
+  lifecycle?: ComponentActionLifecycle<ComponentActionResult<Definition>>,
+): (params: ComponentActionParams<Definition>) => Promise<ComponentActionResult<Definition>> {
+  const { actions } = useRenderer()
+  if (!actions) throw new RegistryError("Expo Turbo component actions require a provider runner")
+  return useCallback(
+    (params: ComponentActionParams<Definition>) =>
+      actions.executeDefinition(definition, params, lifecycle),
+    [actions, definition, lifecycle],
+  )
 }
 
 export function useFrameControllerState(controller: FrameController): FrameControllerSnapshot {
