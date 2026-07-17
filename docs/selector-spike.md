@@ -1,6 +1,6 @@
 # Selector adapter spike
 
-Status: in progress. This is adapter evidence, not a final selector selection.
+Status: selected for implementation. Release admission still requires differential and physical-device evidence.
 
 `css-select@7.0.0` accepts a small package-owned adapter for the mutable xmldom tree. The
 comparison harness runs with `xmlMode: true`, explicit case preservation, and
@@ -8,9 +8,12 @@ comparison harness runs with `xmlMode: true`, explicit case preservation, and
 sibling combinators, structural pseudo-classes, document order, mutation visibility, invalid
 syntax, and namespaced-selector rejection.
 
-The adapter surface is feasible and does not require a browser DOM. Selection remains gated on the
-parser decision, production Hermes evidence, differential target fixtures, and an explicit reject
-list for browser-state, pseudo-element, shadow-DOM, and namespaced selector syntax.
+`css-select@7.0.0` is the runtime dependency behind the package-owned protocol-tree adapter. The
+adapter does not require a browser DOM, retains case-sensitive XML behavior, and observes every
+tree mutation because result caching is disabled. Invalid and namespaced selector syntax is
+wrapped in a typed target error; browser-state, pseudo-element, and shadow-DOM syntax remains
+unsupported.
 
-The standalone Expo bundle probe imports the exact candidate so web, iOS, and Android exports also
-exercise its ESM/Metro graph. A physical release-device run remains required before selection.
+The standalone Expo bundle probe now calls the public selector API. Web, iOS, and Android exports
+therefore exercise the exact selected ESM/Metro graph. Differential browser target fixtures and a
+physical release-device run remain conformance gates.

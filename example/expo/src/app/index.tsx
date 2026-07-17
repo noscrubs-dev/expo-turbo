@@ -1,8 +1,8 @@
-import { Stack } from "expo-router"
-import { EXPO_TURBO_STATUS } from "expo-turbo"
-import { ScrollView, Text, View } from "react-native"
+import { Stack } from "expo-router";
+import { EXPO_TURBO_STATUS } from "expo-turbo";
+import { ScrollView, Text, View } from "react-native";
 
-import { PARSER_CANDIDATE_SMOKE, SELECTOR_CANDIDATE_SMOKE } from "../parser-candidate-smoke"
+import { PROTOCOL_SMOKE } from "../protocol-smoke";
 
 export default function HomeScreen() {
   return (
@@ -15,7 +15,10 @@ export default function HomeScreen() {
         <Text selectable style={{ fontSize: 28, fontWeight: "700" }}>
           Compatibility gallery
         </Text>
-        <Text selectable style={{ color: "#59636e", fontSize: 16, lineHeight: 24 }}>
+        <Text
+          selectable
+          style={{ color: "#59636e", fontSize: 16, lineHeight: 24 }}
+        >
           The standalone device harness is ready for protocol scenarios.
         </Text>
       </View>
@@ -35,12 +38,9 @@ export default function HomeScreen() {
           {EXPO_TURBO_STATUS}
         </Text>
         <Text selectable style={{ color: "#435160", fontSize: 13 }}>
-          Parser bundle probe: {PARSER_CANDIDATE_SMOKE}
-        </Text>
-        <Text selectable style={{ color: "#435160", fontSize: 13 }}>
-          Selector bundle probe: {SELECTOR_CANDIDATE_SMOKE}
+          Parser/tree/selector probe: {PROTOCOL_SMOKE}
         </Text>
       </View>
     </ScrollView>
-  )
+  );
 }
