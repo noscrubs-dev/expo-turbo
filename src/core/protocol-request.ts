@@ -1,10 +1,12 @@
 import type { TurboResponse } from "../adapters"
-import { type ExpoTurboErrorContext, TargetError } from "./errors"
+import { type ExpoTurboErrorContext, RequestError, TargetError } from "./errors"
 import { EXPO_TURBO_PROTOCOL_VERSION, EXPO_TURBO_RUNTIME_VERSION } from "./versions"
 
 export const EXPO_TURBO_MIME_TYPE = "application/vnd.expo-turbo+xml" as const
+export const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html" as const
 
 export interface ProtocolRequestHeaderOptions {
+  readonly acceptsTurboStream?: boolean
   readonly capabilityHash?: string
   readonly frameId?: string
   readonly requestId: string
@@ -16,16 +18,42 @@ export interface ProtocolUrlResolution {
   readonly urlOrigin: string
 }
 
+function requestHeaderValue(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0)
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+    })
+  ) {
+    throw new RequestError("Protocol request header metadata is invalid")
+  }
+  return value
+}
+
 export function protocolRequestHeaders(
   options: ProtocolRequestHeaderOptions,
 ): Readonly<Record<string, string>> {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new RequestError("Protocol request header options must be an object")
+  }
+  if (options.acceptsTurboStream !== undefined && typeof options.acceptsTurboStream !== "boolean") {
+    throw new RequestError("Protocol request Stream negotiation metadata is invalid")
+  }
+  const requestId = requestHeaderValue(options.requestId)
+  const capabilityHash =
+    options.capabilityHash === undefined ? undefined : requestHeaderValue(options.capabilityHash)
+  const frameId = options.frameId === undefined ? undefined : requestHeaderValue(options.frameId)
   return Object.freeze({
-    Accept: EXPO_TURBO_MIME_TYPE,
+    Accept: options.acceptsTurboStream
+      ? `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`
+      : EXPO_TURBO_MIME_TYPE,
     "X-Expo-Turbo-Protocol": EXPO_TURBO_PROTOCOL_VERSION,
     "X-Expo-Turbo-Runtime": EXPO_TURBO_RUNTIME_VERSION,
-    "X-Turbo-Request-Id": options.requestId,
-    ...(options.capabilityHash ? { "X-Expo-Turbo-Capabilities": options.capabilityHash } : {}),
-    ...(options.frameId ? { "Turbo-Frame": options.frameId } : {}),
+    "X-Turbo-Request-Id": requestId,
+    ...(capabilityHash ? { "X-Expo-Turbo-Capabilities": capabilityHash } : {}),
+    ...(frameId ? { "Turbo-Frame": frameId } : {}),
   })
 }
 
