@@ -16,6 +16,7 @@ import { RegistryError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
+import type { DocumentStateStore, StateSnapshot } from "../core/state"
 import {
   attributeValue,
   type ProtocolElement,
@@ -45,6 +46,7 @@ interface RendererContextValue {
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
   readonly session: DocumentSession
+  readonly state: DocumentStateStore | undefined
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
@@ -57,9 +59,16 @@ export interface ExpoTurboProviderProps {
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
   readonly session: DocumentSession
+  readonly state?: DocumentStateStore
 }
 
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
+  useEffect(
+    () => () => {
+      props.state?.dispose()
+    },
+    [props.state],
+  )
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
@@ -68,8 +77,17 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       registry: props.registry,
       renderError: props.renderError,
       session: props.session,
+      state: props.state,
     }),
-    [props.actions, props.frames, props.onError, props.registry, props.renderError, props.session],
+    [
+      props.actions,
+      props.frames,
+      props.onError,
+      props.registry,
+      props.renderError,
+      props.session,
+      props.state,
+    ],
   )
   return createElement(RendererContext.Provider, { value }, props.children)
 }
@@ -100,6 +118,31 @@ export function useComponentAction<Definition extends RegistryComponentAction>(
     (params: ComponentActionParams<Definition>) =>
       actions.executeDefinition(definition, params, lifecycle),
     [actions, definition, lifecycle],
+  )
+}
+
+export interface DocumentStateBinding<Value> extends StateSnapshot<Value> {
+  remove(): void
+  set(value: Value): void
+}
+
+export function useDocumentState<Value = unknown>(key: string): DocumentStateBinding<Value> {
+  const { state } = useRenderer()
+  if (!state) throw new RegistryError("Expo Turbo document state requires a provider store")
+  const subscribe = useCallback(
+    (listener: () => void) => state.subscribe(key, listener),
+    [key, state],
+  )
+  const getSnapshot = useCallback(() => state.getSnapshot<Value>(key), [key, state])
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useMemo(
+    () =>
+      Object.freeze({
+        ...snapshot,
+        remove: () => state.delete(key),
+        set: (value: Value) => state.set(key, value),
+      }),
+    [key, snapshot, state],
   )
 }
 

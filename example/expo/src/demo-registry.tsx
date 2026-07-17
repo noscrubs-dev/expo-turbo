@@ -9,7 +9,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 
-import { useComponentAction } from "expo-turbo/react";
+import { useComponentAction, useDocumentState } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
 
 const gallery = defineComponent({
@@ -61,6 +61,7 @@ const text = defineComponent({
 function DemoActionComponent({ message }: { message: string }) {
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState("Ready");
+  const greeting = useDocumentState<string>("last-greeting");
   const execute = useComponentAction(recordGreeting, {
     onEnd: () => setPending(false),
     onError: ({ error }) => setStatus(error.message),
@@ -89,6 +90,9 @@ function DemoActionComponent({ message }: { message: string }) {
       </Pressable>
       <Text selectable style={{ color: "#435160", fontSize: 13 }}>
         {status}
+      </Text>
+      <Text selectable style={{ color: "#435160", fontSize: 13 }}>
+        Document state: {greeting.value ?? "not set"}
       </Text>
     </View>
   );

@@ -6,6 +6,7 @@ export type ExpoTurboErrorCode =
   | "parse"
   | "props"
   | "registry"
+  | "state"
   | "subscription"
   | "target"
 
@@ -81,6 +82,12 @@ export class RegistryError extends ExpoTurboError {
 export class PropsError extends ExpoTurboError {
   constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
     super("props", message, context, options)
+  }
+}
+
+export class StateError extends ExpoTurboError {
+  constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
+    super("state", message, context, options)
   }
 }
 
