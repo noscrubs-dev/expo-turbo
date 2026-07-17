@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Unify registry and React text handling around inherited `xml:space`, explicit default reset, CDATA preservation, XML-whitespace collapse, and deterministic diagnostic serialization.
 - Add a shared programmatic Frame visit API that resolves current, named, parent, and top-level targets through the existing controller loader and navigation adapter.
 - Add bounded recursive Frame extraction through same-origin intermediary sources with token matching, independent request IDs, redirected-base resolution, and loop/depth protection.
 - Add injected lazy-Frame visibility observation with first-visible loading, observer cleanup, and renderer error propagation for automatic requests.

@@ -56,6 +56,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Typed protocol errors, pinned version baselines, and an injected development inspector.
 - [x] Strict, namespace-aware XML documents and ordered multi-root Turbo Stream fragment parsing.
 - [x] Pre-parse byte/depth/DOCTYPE/processing-instruction guards plus node, attribute, text, and Stream-action limits.
+- [x] Shared text normalization with inherited `xml:space`, explicit `default` reset, preserved CDATA, collapsed XML whitespace, and deterministic fixture/diagnostic serialization.
 - [x] Addressable mixed-content tree with deterministic keys, unique ID lookup, parent links, Frame/source indexes, comments, and CDATA.
 - [x] Case-sensitive XML selector queries for lists, tags, IDs, classes, attributes, combinators, and structural pseudo-selectors without stale-result caching.
 - [x] Typed component/module registry composition, Zod prop admission, explicit attribute codecs, child policies, aliases/deprecations, duplicate ownership errors, and deterministic capabilities.
@@ -74,7 +75,6 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ### In progress / not yet supported
 
-- [ ] Whitespace normalization and canonical XML/tree serialization.
 - [ ] Typed component-action and custom Stream-action registries.
 - [ ] Renderer-backed component state scopes, style adapters, public loading/accessibility surfaces, and non-Frame mutation cleanup.
 - [ ] Visits, snapshot cache, restoration history, progress, and preload/prefetch.
@@ -88,7 +88,7 @@ A checked item is implemented and covered by the public test suite at the curren
 
 ## TypeScript API boundaries
 
-The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, addressable tree/session, selectors, structural Stream dispatcher, Frame target/request/recurse/controller/visit APIs, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
+The root package and explicit `expo-turbo/core`, `expo-turbo/adapters`, and `expo-turbo/registry` subpaths expose the current version, errors, inspector, parser, deterministic diagnostic serializer, addressable tree/session, selectors, structural Stream dispatcher, Frame target/request/recurse/controller/visit APIs, typed component registry, codecs, and host-adapter contracts. `expo-turbo/react` exposes the provider, root renderer, node and Frame lifecycle subscription hooks, and error surface. `expo-turbo/testing` remains a reserved module boundary and intentionally exports no runtime APIs yet. Deep source imports are unsupported.
 
 The adapter surface is host-neutral. Core source does not import Expo Router, an Action Cable client, an app API client, or private application hooks.
 

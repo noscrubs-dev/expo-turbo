@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { ParseError, TargetError } from "./errors"
 import { parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
-import { attributeValue, isElement, nodeTextContent } from "./tree"
+import { attributeValue, isElement, nodeTextContent, renderedNodeTextContent } from "./tree"
 
 const documentXml = `<Gallery xmlns:demo="urn:expo-turbo:demo">
   <DemoCard id="alpha" class="featured primary" data-state="ready">
@@ -30,6 +30,7 @@ describe("Expo Turbo XML tree", () => {
       "text",
     ])
     expect(text ? nodeTextContent(text) : undefined).toBe("Hello world!")
+    expect(text ? renderedNodeTextContent(text) : undefined).toBe("Hello world!")
     expect(emphasis?.namespaceUri).toBe("urn:expo-turbo:demo")
     expect(tree.getFrames().map((frame) => attributeValue(frame, "id"))).toEqual(["details"])
     expect(tree.getStreamSources()).toHaveLength(1)
@@ -54,6 +55,27 @@ describe("Expo Turbo XML tree", () => {
     expect(() => querySelectorAll(tree, "demo|DemoCard")).toThrow(TargetError)
   })
 
+  test("normalizes default text while inheriting and resetting xml:space", () => {
+    const tree = parseExpoTurboDocument(`<Gallery xml:space="preserve">
+      <DemoText id="preserved">  keep\n  this  </DemoText>
+      <DemoText id="default" xml:space="default">  collapse\n  this  </DemoText>
+      <DemoText id="empty" xml:space="default">\n    </DemoText>
+      <DemoText id="cdata" xml:space="default"><![CDATA[  raw\n  text  ]]></DemoText>
+    </Gallery>`)
+    const preserved = tree.getElementById("preserved")
+    const defaultText = tree.getElementById("default")
+    const empty = tree.getElementById("empty")
+    const cdata = tree.getElementById("cdata")
+    if (!preserved || !defaultText || !empty || !cdata) {
+      throw new Error("fixture lost a text element")
+    }
+
+    expect(renderedNodeTextContent(preserved)).toBe("  keep\n  this  ")
+    expect(renderedNodeTextContent(defaultText)).toBe("collapse this")
+    expect(renderedNodeTextContent(empty)).toBe("")
+    expect(renderedNodeTextContent(cdata)).toBe("  raw\n  text  ")
+  })
+
   test("parses ordered multi-root Turbo Stream fragments behind a private wrapper", () => {
     const tree = parseTurboStreamFragment(`
       <turbo-stream action="append" target="items"><template><DemoText id="one" /></template></turbo-stream>
@@ -71,6 +93,8 @@ describe("Expo Turbo XML tree", () => {
     ["processing instruction", "<Gallery><?target unsafe?></Gallery>"],
     ["non-UTF-8 declaration", '<?xml version="1.0" encoding="ISO-8859-1"?><Gallery />'],
     ["undeclared prefix", "<demo:Gallery />"],
+    ["invalid xml:space", '<Gallery xml:space="invalid" />'],
+    ["empty xml:space", '<Gallery xml:space="" />'],
     ["blank id", '<Gallery><DemoText id="" /></Gallery>'],
     ["duplicate id", '<Gallery><DemoText id="same"/><DemoText id="same"/></Gallery>'],
   ])("rejects %s before admitting a document", (_name, xml) => {

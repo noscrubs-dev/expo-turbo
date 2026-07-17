@@ -237,6 +237,13 @@ function convertNode(
     countNode(state, location)
     const xmlElement = node as XmlElement
     const attributes = elementAttributes(xmlElement, state)
+    const xmlSpace = attributes.find((attribute) => attribute.name === "xml:space")?.value
+    if (xmlSpace !== undefined && xmlSpace !== "default" && xmlSpace !== "preserve") {
+      throw new ParseError(
+        `Invalid xml:space value ${JSON.stringify(xmlSpace)}`,
+        location ? { location } : {},
+      )
+    }
     const id = attributes.find((attribute) => attribute.name === "id")?.value
     if (id !== undefined && id.trim() === "") {
       throw new ParseError("Element ids must not be blank", location ? { location } : {})

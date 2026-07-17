@@ -5,9 +5,10 @@ import { PropsError, RegistryError } from "../core/errors"
 import {
   attributeValue,
   isElement,
-  nodeTextContent,
   type ProtocolElement,
   type ProtocolNode,
+  renderedNodeTextContent,
+  renderedTextValue,
 } from "../core/tree"
 import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions"
 import type { AttributeCodec } from "./codecs"
@@ -228,7 +229,7 @@ function decodeChildren(
   if (definition.children === "nodes") return { children: element.children }
 
   const meaningful = element.children.filter(
-    (node) => node.kind !== "comment" && (node.kind !== "text" || node.value.trim() !== ""),
+    (node) => node.kind !== "comment" && (node.kind !== "text" || renderedTextValue(node) !== ""),
   )
   if (definition.children === "none") {
     if (meaningful.length > 0) {
@@ -250,7 +251,7 @@ function decodeChildren(
       },
     )
   }
-  return { children: element.children, text: nodeTextContent(element) }
+  return { children: element.children, text: renderedNodeTextContent(element) }
 }
 
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
