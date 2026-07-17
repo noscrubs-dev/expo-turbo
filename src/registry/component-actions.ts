@@ -1,7 +1,7 @@
 import type { z } from "zod"
 
 import { ActionError, RegistryError } from "../core/errors"
-import type { StateStore } from "../core/state"
+import { resolveStateReferences, type StateReferenceInput, type StateStore } from "../core/state"
 
 export type ComponentActionStateStore = StateStore
 
@@ -24,7 +24,9 @@ export interface DefinedComponentAction<Name extends string, Params, Result>
 }
 
 export type ComponentActionParams<Action extends RegistryComponentAction> =
-  Action extends DefinedComponentAction<string, infer Params, unknown> ? Params : never
+  Action extends DefinedComponentAction<string, infer Params, unknown>
+    ? StateReferenceInput<Params>
+    : never
 
 export type ComponentActionResult<Action extends RegistryComponentAction> =
   Action extends DefinedComponentAction<string, unknown, infer Result> ? Result : never
@@ -260,7 +262,7 @@ export class ComponentActionRunner<Action extends RegistryComponentAction>
       if (!definition || (expectedDefinition && definition !== expectedDefinition)) {
         throw new ActionError(`Unknown component action ${JSON.stringify(action)}`, { action })
       }
-      const decoded = definition.decodeParams(params)
+      const decoded = definition.decodeParams(resolveStateReferences(params, state))
       const result = await definition.invoke(decoded, state)
       const success = Object.freeze({
         action,
