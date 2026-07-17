@@ -14,9 +14,11 @@ import {
   applyFrameResponse,
   attributeValue,
   dispatchTurboStreamFragment,
+  DocumentRequestLoader,
   DocumentStateScopes,
   DocumentStateStore,
   DocumentSession,
+  DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
   type FrameController,
   type FrameControllerCollection,
@@ -38,6 +40,7 @@ import {
 } from "expo-turbo/registry"
 import {
   createComponentStyleHook,
+  type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   type ExpoTurboProviderProps,
@@ -46,6 +49,7 @@ import {
   ExpoTurboStateScope,
   useComponentAction,
   useDocumentState,
+  useExpoTurboDocument,
   useExpoTurboFrame,
   useNodeDisposal,
   useScopedState,
@@ -108,6 +112,8 @@ function render(
   session: DocumentSession,
   registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
+    documentComponent?: ExpoTurboProviderProps["documentComponent"]
+    documentController?: ExpoTurboProviderProps["documentController"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
     onError?: (event: ExpoTurboRenderError) => void
@@ -623,6 +629,236 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
     expect(disposed).toEqual([1, 2, 3, 4])
     expect(unmounted).toEqual([1, 2, 3, 4])
+  })
+
+  test("exposes document visit accessibility and progress without remounting its boundary", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const timers: {
+      callback: () => void
+      cleared: boolean
+      handle: object
+    }[] = []
+    let nextBoundary = 0
+    let nextProbe = 0
+    let stableRenders = 0
+    const boundaryUnmounts: number[] = []
+    const probeUnmounts: number[] = []
+    function DocumentBoundary(props: ExpoTurboDocumentBoundaryProps): ReactNode {
+      const [instance] = useState(() => ++nextBoundary)
+      useEffect(
+        () => () => {
+          boundaryUnmounts.push(instance)
+        },
+        [instance],
+      )
+      return createElement(
+        "div",
+        {
+          accessibilityState: props.accessibilityState,
+          busy: props.state.busy,
+          instance,
+          progressVisible: props.state.progressVisible,
+          status: props.state.status,
+        },
+        props.children,
+      )
+    }
+    function DocumentProbe(): ReactNode {
+      const document = useExpoTurboDocument()
+      const [instance] = useState(() => ++nextProbe)
+      useEffect(
+        () => () => {
+          probeUnmounts.push(instance)
+        },
+        [instance],
+      )
+      return createElement("section", {
+        busy: document?.state.busy,
+        instance,
+        progressVisible: document?.state.progressVisible,
+        status: document?.state.status,
+      })
+    }
+    function StableProbe(): ReactNode {
+      stableRenders += 1
+      return createElement("stable-probe")
+    }
+    const documentProbe = defineComponent({
+      attributes: {},
+      children: "none",
+      component: DocumentProbe,
+      schema: z.object({}),
+      tag: "DocumentProbe",
+    })
+    const stableProbe = defineComponent({
+      attributes: {},
+      children: "none",
+      component: StableProbe,
+      schema: z.object({}),
+      tag: "StableProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [documentProbe, stableProbe],
+        name: "document-loading-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DocumentProbe /><StableProbe /><DemoText>Before</DemoText></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    let requestId = 0
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${++requestId}` },
+      ),
+      {
+        clearTimeout(handle) {
+          const timer = timers.find((candidate) => candidate.handle === handle)
+          if (timer) timer.cleared = true
+        },
+        now: () => 0,
+        setTimeout(callback) {
+          const handle = Object.freeze({})
+          timers.push({ callback, cleared: false, handle })
+          return handle
+        },
+      },
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, componentRegistry, {
+      documentComponent: DocumentBoundary,
+      documentController: controller,
+      onError: (event) => errors.push(event),
+    })
+    const boundary = () => renderer.root.findByType("div").props
+    const renderedProbe = () => renderer.root.findByType("section").props
+
+    expect(boundary()).toMatchObject({ busy: false, instance: 1, status: "initialized" })
+    expect(boundary().accessibilityState).toEqual({ busy: false })
+    expect(Object.isFrozen(boundary().accessibilityState)).toBe(true)
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "initialized" })
+    expect(stableRenders).toBe(1)
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = controller.visit("/next")
+    })
+    expect(boundary()).toMatchObject({ busy: true, instance: 1, status: "started" })
+    expect(boundary().accessibilityState).toEqual({ busy: true })
+    expect(renderedProbe()).toMatchObject({ busy: true, instance: 1, status: "started" })
+    expect(stableRenders).toBe(1)
+
+    act(() => timers[0]?.callback())
+    expect(boundary()).toMatchObject({ progressVisible: true, status: "started" })
+    expect(renderedProbe()).toMatchObject({ progressVisible: true, status: "started" })
+    expect(stableRenders).toBe(1)
+
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery><DocumentProbe /><StableProbe /><DemoText>After</DemoText></Gallery>',
+        url: "https://example.test/next",
+      })
+      await visit
+    })
+    expect(boundary()).toMatchObject({
+      busy: false,
+      instance: 1,
+      progressVisible: false,
+      status: "completed",
+    })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 2, status: "completed" })
+    expect(stableRenders).toBe(2)
+    expect(boundaryUnmounts).toEqual([])
+    expect(probeUnmounts).toEqual([1])
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+    let failed: Promise<unknown> | undefined
+    act(() => {
+      failed = controller.visit("/broken")
+    })
+    await act(async () => {
+      pending[1]?.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: "https://example.test/broken",
+      })
+      await failed?.catch(() => undefined)
+    })
+    expect(boundary()).toMatchObject({ busy: false, instance: 1, status: "failed" })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 2, status: "failed" })
+    expect(stableRenders).toBe(2)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ nodeKey: "document" })
+
+    act(() => renderer.unmount())
+    expect(boundaryUnmounts).toEqual([1])
+    expect(probeUnmounts).toEqual([1, 2])
+  })
+
+  test("keeps the injected document controller host-owned across React unmount", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoText>Before</DemoText></Gallery>', {
+        url: "https://example.test/gallery",
+      }),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => "request-1" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const renderer = render(session, registryWithCounters(), {
+      documentController: controller,
+    })
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = controller.visit("/pending")
+    })
+
+    act(() => renderer.unmount())
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(controller.state.status).toBe("started")
+    controller.cancel()
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DemoText>Late</DemoText></Gallery>',
+      url: "https://example.test/pending",
+    })
+    expect(await visit).toMatchObject({ status: "canceled" })
   })
 
   test("provides the nearest connected Frame binding to boundaries and descendants", () => {

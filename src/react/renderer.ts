@@ -18,6 +18,10 @@ import {
   resolveComponentStyle,
   type StyleAdapter,
 } from "../adapters/styles"
+import type {
+  DocumentVisitController,
+  DocumentVisitSnapshot,
+} from "../core/document-visit-controller"
 import { RegistryError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
@@ -55,6 +59,20 @@ export interface ExpoTurboFrameAccessibilityState {
   readonly busy: boolean
 }
 
+export interface ExpoTurboDocumentAccessibilityState {
+  readonly busy: boolean
+}
+
+export interface ExpoTurboDocumentBinding {
+  readonly accessibilityState: ExpoTurboDocumentAccessibilityState
+  readonly controller: DocumentVisitController
+  readonly state: DocumentVisitSnapshot
+}
+
+export interface ExpoTurboDocumentBoundaryProps extends ExpoTurboDocumentBinding {
+  readonly children?: ReactNode
+}
+
 export interface ExpoTurboFrameBinding {
   readonly accessibilityState: ExpoTurboFrameAccessibilityState
   readonly controller: FrameController
@@ -67,6 +85,8 @@ export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
 
 interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
+  readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
+  readonly documentController: DocumentVisitController | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
@@ -79,6 +99,7 @@ interface RendererContextValue {
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
+const DocumentContext = createContext<ExpoTurboDocumentBinding | undefined>(undefined)
 const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
@@ -87,6 +108,8 @@ const StateScopeContext = createContext<DocumentStateStore | undefined>(undefine
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
   readonly children?: ReactNode
+  readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
+  readonly documentController?: DocumentVisitController
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly frames?: FrameControllerCollection
   readonly onError?: (event: ExpoTurboRenderError) => void
@@ -104,6 +127,8 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
+      documentComponent: props.documentComponent,
+      documentController: props.documentController,
       frameComponent: props.frameComponent,
       frames: props.frames,
       onError: props.onError,
@@ -116,6 +141,8 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     }),
     [
       props.actions,
+      props.documentComponent,
+      props.documentController,
       props.frameComponent,
       props.frames,
       props.onError,
@@ -291,6 +318,21 @@ export function useFrameControllerState(controller: FrameController): FrameContr
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
+export function useDocumentVisitControllerState(
+  controller: DocumentVisitController,
+): DocumentVisitSnapshot {
+  const subscribe = useCallback(
+    (listener: () => void) => controller.subscribe(listener),
+    [controller],
+  )
+  const snapshot = useCallback(() => controller.state, [controller])
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
+  return useContext(DocumentContext)
+}
+
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
   return useContext(FrameContext)
 }
@@ -414,6 +456,47 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   return createElement(FrameContext.Provider, { value: binding }, rendered)
 }
 
+interface ConnectedDocumentProps {
+  readonly children?: ReactNode
+  readonly controller: DocumentVisitController
+  readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
+  readonly nodeKey: string
+  readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+}
+
+function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
+  const state = useDocumentVisitControllerState(props.controller)
+  const accessibilityState = useMemo<ExpoTurboDocumentAccessibilityState>(
+    () => Object.freeze({ busy: state.busy }),
+    [state.busy],
+  )
+  const binding = useMemo<ExpoTurboDocumentBinding>(
+    () => Object.freeze({ accessibilityState, controller: props.controller, state }),
+    [accessibilityState, props.controller, state],
+  )
+  useEffect(
+    () =>
+      props.controller.subscribeErrors((error) => {
+        props.onError?.({ error, nodeKey: props.nodeKey })
+      }),
+    [props.controller, props.nodeKey, props.onError],
+  )
+  const rendered = props.documentComponent
+    ? createElement(
+        NodeErrorBoundary,
+        {
+          nodeKey: props.nodeKey,
+          onError: props.onError,
+          renderError: props.renderError,
+          revision: state.revision,
+        },
+        createElement(props.documentComponent, binding, props.children),
+      )
+    : props.children
+  return createElement(DocumentContext.Provider, { value: binding }, rendered)
+}
+
 function ProtocolElementView(
   props: Readonly<{ node: ProtocolElement; revision: number }>,
 ): ReactNode {
@@ -488,8 +571,21 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
 }
 
 export function ExpoTurboRoot(): ReactNode {
-  const { session } = useRenderer()
+  const context = useRenderer()
+  const { session } = context
   const root = useProtocolNode(session.tree.document.key)
   if (root?.node.kind !== "document") return null
-  return createElement(Fragment, null, renderChildren(root.node.children))
+  const children = createElement(Fragment, null, renderChildren(root.node.children))
+  if (!context.documentController) return children
+  return createElement(
+    ConnectedDocument,
+    {
+      controller: context.documentController,
+      documentComponent: context.documentComponent,
+      nodeKey: root.node.key,
+      onError: context.onError,
+      renderError: context.renderError,
+    },
+    children,
+  )
 }
