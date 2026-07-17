@@ -6,7 +6,7 @@ import type {
 import { ActionError, ExpoTurboError } from "./errors"
 import { type ParseOptions, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
-import type { DocumentSession } from "./session"
+import { type DocumentSession, SessionCommitError } from "./session"
 import {
   attributeValue,
   type DocumentTree,
@@ -46,6 +46,13 @@ export interface StreamDispatchOptions extends ParseOptions, StreamActionDispatc
 
 export interface StreamDispatchReport {
   readonly actions: readonly StreamActionReport[]
+  /** True when an ownership guard stopped work that had not begun. */
+  readonly interrupted: boolean
+}
+
+/** Internal staged-response guard; false stops actions that have not begun. */
+export interface StreamDispatchControl {
+  shouldContinue(): boolean
 }
 
 function actionError(message: string, action: string, target?: string): ActionError {
@@ -276,6 +283,7 @@ function dispatchAction(
   stream: ProtocolElement,
   index: number,
   options: StreamActionDispatchOptions,
+  control?: StreamDispatchControl,
 ): StreamActionReport {
   const action = attributeValue(stream, "action") ?? ""
   let matchedTargets = 0
@@ -304,6 +312,7 @@ function dispatchAction(
     }
 
     for (const target of targets) {
+      if (control && !control.shouldContinue()) break
       if (!session.tree.contains(target)) continue
       if (applyToTarget(session, action, target, payload)) appliedTargets += 1
     }
@@ -316,6 +325,7 @@ function dispatchAction(
       status: appliedTargets === 0 ? "noop" : "applied",
     })
   } catch (error) {
+    if (error instanceof SessionCommitError) throw error
     const protocolError =
       error instanceof ExpoTurboError
         ? error
@@ -348,9 +358,33 @@ export function dispatchTurboStreamElements(
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
 ): StreamDispatchReport {
-  const actions = streams.map((stream, index) => dispatchAction(session, stream, index, options))
-  for (const report of actions) {
+  return dispatchGuardedTurboStreamElements(session, streams, options)
+}
+
+/** Internal staged-response entry point; intentionally omitted from the public core barrel. */
+export function dispatchGuardedTurboStreamElements(
+  session: DocumentSession,
+  streams: readonly ProtocolElement[],
+  options: StreamActionDispatchOptions = {},
+  control?: StreamDispatchControl,
+): StreamDispatchReport {
+  const actions: StreamActionReport[] = []
+  let interrupted = false
+  for (const [index, stream] of streams.entries()) {
+    if (control && !control.shouldContinue()) {
+      interrupted = true
+      break
+    }
+    const report = dispatchAction(session, stream, index, options, control)
+    actions.push(report)
     if (report.status === "error") options.onActionError?.(report)
+    if (
+      control &&
+      !control.shouldContinue() &&
+      (report.appliedTargets < report.matchedTargets || index + 1 < streams.length)
+    ) {
+      interrupted = true
+    }
   }
-  return Object.freeze({ actions: Object.freeze(actions) })
+  return Object.freeze({ actions: Object.freeze(actions), interrupted })
 }

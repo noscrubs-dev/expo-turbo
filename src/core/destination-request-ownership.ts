@@ -11,8 +11,16 @@ export interface DestinationRequestLease {
   readonly treeGeneration: number
 }
 
+export interface FrameRequestCheckpoint {
+  readonly frame: ProtocolElement
+  readonly frameId: string
+  readonly generation: number
+  readonly treeGeneration: number
+}
+
 class DestinationRequestOwnership {
   private document: DestinationRequestLease | undefined
+  private readonly frameGenerations = new WeakMap<ProtocolElement, number>()
   private readonly frames = new Map<string, DestinationRequestLease>()
   private readonly sourceOwners = new WeakMap<object, DestinationRequestLease>()
 
@@ -81,6 +89,60 @@ class DestinationRequestOwnership {
     )
   }
 
+  /** Retains staged-application ownership after the owning response changes the tree generation. */
+  retains(lease: DestinationRequestLease): boolean {
+    if (lease.controller.signal.aborted) return false
+    const destinationRetained =
+      lease.destination === "document"
+        ? this.document === lease
+        : Boolean(lease.frameId && this.frames.get(lease.frameId) === lease)
+    return Boolean(
+      destinationRetained &&
+        (!lease.sourceOwner || this.sourceOwners.get(lease.sourceOwner) === lease),
+    )
+  }
+
+  checkpointFrame(frame: ProtocolElement): FrameRequestCheckpoint {
+    const frameId = attributeValue(frame, "id")
+    if (frame.kind !== "frame" || !frameId || this.session.tree.getElementById(frameId) !== frame) {
+      throw new StateError("Destination request checkpoint requires an exact active Frame", {
+        ...(frameId ? { frameId } : {}),
+      })
+    }
+    return Object.freeze({
+      frame,
+      frameId,
+      generation: this.frameGenerations.get(frame) ?? 0,
+      treeGeneration: this.session.treeGeneration,
+    })
+  }
+
+  transferFrame(
+    lease: DestinationRequestLease,
+    checkpoint: FrameRequestCheckpoint,
+  ): DestinationRequestLease | undefined {
+    const { frame, frameId } = checkpoint
+    if (
+      !this.owns(lease) ||
+      this.session.treeGeneration !== checkpoint.treeGeneration ||
+      this.session.tree.getElementById(frameId) !== frame ||
+      (this.frameGenerations.get(frame) ?? 0) !== checkpoint.generation
+    ) {
+      return undefined
+    }
+    this.detach(lease)
+    return this.claim(
+      Object.freeze({
+        controller: lease.controller,
+        destination: "frame",
+        frame,
+        frameId,
+        ...(lease.sourceOwner ? { sourceOwner: lease.sourceOwner } : {}),
+        treeGeneration: this.session.treeGeneration,
+      }),
+    )
+  }
+
   release(lease: DestinationRequestLease): void {
     this.detach(lease)
   }
@@ -99,7 +161,12 @@ class DestinationRequestOwnership {
 
     for (const current of displaced) this.detach(current)
     if (lease.destination === "document") this.document = lease
-    else if (lease.frameId) this.frames.set(lease.frameId, lease)
+    else if (lease.frameId) {
+      this.frames.set(lease.frameId, lease)
+      if (lease.frame) {
+        this.frameGenerations.set(lease.frame, (this.frameGenerations.get(lease.frame) ?? 0) + 1)
+      }
+    }
     if (lease.sourceOwner) this.sourceOwners.set(lease.sourceOwner, lease)
 
     // Install the new lease before aborting displaced work. Abort listeners may

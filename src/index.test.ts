@@ -10,8 +10,12 @@ describe("package status", () => {
 })
 
 function inspectSubmissionReport(report: FormSubmissionReport): string {
+  if (report.status === "applied" && report.application === "frame") {
+    return report.applicationDestination.frameId
+  }
   if (report.destination.kind === "frame") return report.destination.frameId
-  if (report.status === "xml" || report.status === "stream") return report.body
-  return report.url
+  if (report.status === "applied") return report.application
+  if (report.status === "empty") return report.responseUrl
+  return report.requestedUrl
 }
 void inspectSubmissionReport
