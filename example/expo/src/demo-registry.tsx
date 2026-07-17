@@ -220,6 +220,13 @@ export const DEMO_DOCUMENT = `<Gallery>
   <DemoDocumentLink href="https://example.com">
     <DemoText>Delegate a safe cross-origin link through the app-owned navigation adapter.</DemoText>
   </DemoDocumentLink>
+  <turbo-frame id="link-frame">
+    <DemoCard title="Frame-scoped native link" style-tokens="tone:info space:compact">
+      <DemoDocumentLink href="/demo/frame-linked">
+        <DemoText>Load this Frame through the shared Frame visit controller.</DemoText>
+      </DemoDocumentLink>
+    </DemoCard>
+  </turbo-frame>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>

@@ -26,7 +26,7 @@ import type {
 } from "../core/document-visit-controller"
 import { RegistryError, TargetError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
-import type { FrameControllerCollection } from "../core/frame-controller-registry"
+import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
 import { resolveProtocolUrl } from "../core/protocol-request"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
@@ -113,7 +113,6 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "confirm",
   "data-turbo-action",
   "data-turbo-confirm",
-  "data-turbo-frame",
   "data-turbo-method",
   "data-turbo-stream",
   "disabled",
@@ -370,12 +369,15 @@ export type ExpoTurboDocumentLinkDelegation =
       url: string
     }>
 
-export type ExpoTurboDocumentLinkResult = DocumentLoadReport | ExpoTurboDocumentLinkDelegation
+export type ExpoTurboDocumentLinkResult =
+  | DocumentLoadReport
+  | ExpoTurboDocumentLinkDelegation
+  | FrameVisitResult
 
 export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
 
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
-  const { documentController, session } = useRenderer()
+  const { documentController, frames, session } = useRenderer()
   const navigation = useContext(NavigationContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
@@ -393,13 +395,11 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     let current: ProtocolNode | null = node
     let foundTurboSetting = false
+    let nearestFrameId: string | null | undefined
     let optedOut = false
     while (current && current.kind !== "document") {
-      if (current.kind === "frame") {
-        const frameId = attributeValue(current, "id")
-        throw new TargetError("Frame-scoped document links require Frame navigation", {
-          ...(frameId ? { frameId } : {}),
-        })
+      if (current.kind === "frame" && nearestFrameId === undefined) {
+        nearestFrameId = attributeValue(current, "id") || null
       }
       if (!foundTurboSetting && isElement(current)) {
         const setting = attributeValue(current, "data-turbo")
@@ -409,6 +409,35 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         }
       }
       current = current.parent
+    }
+    const elementTarget = attributeValue(node, "data-turbo-frame")
+    if (!optedOut && nearestFrameId !== undefined) {
+      if (!nearestFrameId) {
+        throw new TargetError("Frame-scoped document links require an identified Frame")
+      }
+      if (!frames) {
+        throw new TargetError("Frame-scoped document links require provider Frame controllers", {
+          frameId: nearestFrameId,
+        })
+      }
+      return frames.visit(href, {
+        ...(elementTarget !== undefined ? { elementTarget } : {}),
+        frame: nearestFrameId,
+      })
+    }
+    if (!optedOut && elementTarget && elementTarget !== "_top") {
+      const targetFrame = session.tree.getElementById(elementTarget)
+      if (targetFrame?.kind === "frame" && attributeValue(targetFrame, "disabled") === undefined) {
+        if (!frames) {
+          throw new TargetError("Named Frame document links require provider Frame controllers", {
+            frameId: elementTarget,
+          })
+        }
+        return frames.visit(href, {
+          elementTarget,
+          frame: elementTarget,
+        })
+      }
     }
     const documentUrl = session.tree.document.url
     if (!documentUrl) throw new TargetError("Document links require an active document URL")
@@ -437,7 +466,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       })
     }
     return documentController.visit(href)
-  }, [documentController, href, navigation, node, nodeKey, session])
+  }, [documentController, frames, href, navigation, node, nodeKey, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
   }

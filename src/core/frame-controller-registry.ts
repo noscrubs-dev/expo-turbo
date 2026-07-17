@@ -14,6 +14,7 @@ import type { ProtocolElement } from "./tree"
 export interface FrameControllerCollection {
   delete(frameId: string, controller?: FrameController): void
   get(frameId: string): FrameController
+  visit(url: string, options: FrameVisitOptions): Promise<FrameVisitResult>
 }
 
 export interface FrameVisitOptions extends ResolveFrameTargetOptions {
