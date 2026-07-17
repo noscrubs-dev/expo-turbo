@@ -3,7 +3,6 @@
   "main": "expo-router/entry",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "npm@10.9.3",
   "dependencies": {
     "expo": "~57.0.6",
     "expo-constants": "~57.0.5",
@@ -32,6 +31,6 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "check": "npm run lint && npm run typecheck && expo export --platform web"
+    "check": "bun run lint && bun run typecheck && expo export --platform web"
   }
 }

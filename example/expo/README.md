@@ -11,9 +11,9 @@ cd ../..
 bun install --frozen-lockfile
 bun run build
 cd example/expo
-npm ci
-npm run check
-npm run start
+bun install --frozen-lockfile
+bun run check
+bun run start
 ```
 
 Start with Expo Go where supported. Release builds and physical iOS/Android evidence remain required before compatibility can be claimed.
