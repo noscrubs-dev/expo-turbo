@@ -5,10 +5,16 @@ import { createElement, type ReactNode } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
+import type { TurboRequest, TurboResponse } from "expo-turbo/adapters"
 import {
   applyFrameResponse,
   dispatchTurboStreamFragment,
   DocumentSession,
+  EXPO_TURBO_MIME_TYPE,
+  type FrameControllerCollection,
+  FrameControllerRegistry,
+  FrameMissingError,
+  FrameRequestLoader,
   parseExpoTurboDocument,
 } from "expo-turbo/core"
 import {
@@ -76,6 +82,7 @@ function render(
   session: DocumentSession,
   registry: ReturnType<typeof registryWithCounters>,
   options: Readonly<{
+    frames?: FrameControllerCollection
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
   }> = {},
@@ -168,6 +175,68 @@ describe("React protocol renderer", () => {
     expect(session.tree.getElementById("frame")).toBe(frame)
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Before")
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
+  })
+
+  test("connects eager Frame controllers and cancels them when a subtree unmounts", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    let requestId = 0
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${++requestId}` },
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), { frames })
+    const controller = frames.get("frame")
+    const turboResponse = (xml: string): TurboResponse => ({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => xml,
+      url: "https://example.test/frame",
+    })
+
+    expect(pending).toHaveLength(1)
+    expect(controller.state).toMatchObject({ busy: true, connected: true })
+    await act(async () => {
+      pending[0]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Loaded</DemoText></turbo-frame>'))
+      await controller.loaded
+    })
+    expect(JSON.stringify(renderer.toJSON())).toContain("Loaded")
+
+    let changed: Promise<unknown> | undefined
+    act(() => {
+      changed = controller.setSource("/slow")
+    })
+    expect(pending).toHaveLength(2)
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="frame"></turbo-stream>',
+      )
+    })
+    expect(pending[1]?.request.signal?.aborted).toBe(true)
+    expect(controller.state).toMatchObject({ connected: false, status: "canceled" })
+    expect(() => frames.get("frame")).toThrow(FrameMissingError)
+    pending[1]?.resolve(turboResponse('<turbo-frame id="frame"><DemoText>Late</DemoText></turbo-frame>'))
+    await act(async () => {
+      await changed
+    })
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Late")
   })
 
   test("contains unknown components behind an actionable retryable error surface", () => {

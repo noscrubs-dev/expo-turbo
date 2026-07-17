@@ -39,7 +39,7 @@ export class FrameController {
   private loadEpoch = 0
   private needsLoad: boolean
   private revision = 0
-  private snapshot: FrameControllerSnapshot
+  private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
 
@@ -80,9 +80,10 @@ export class FrameController {
 
   disconnect(): void {
     if (!this.connected) return
+    const wasLoading = this.status === "loading"
     this.connected = false
     this.cancel()
-    this.publish()
+    if (!wasLoading) this.publish()
   }
 
   cancel(): void {
@@ -196,7 +197,22 @@ export class FrameController {
   }
 
   private createSnapshot(): FrameControllerSnapshot {
-    const frame = this.frame
+    const frame = this.session.tree.getElementById(this.frameId)
+    if (frame?.kind !== "frame") {
+      if (!this.snapshot) {
+        throw new FrameMissingError(`Active frame ${JSON.stringify(this.frameId)} is missing`, {
+          frameId: this.frameId,
+        })
+      }
+      return Object.freeze({
+        ...this.snapshot,
+        busy: this.status === "loading",
+        complete: this.status !== "loading",
+        connected: this.connected,
+        revision: this.revision,
+        status: this.status,
+      })
+    }
     const source = attributeValue(frame, "src")
     const target = attributeValue(frame, "target")
     return Object.freeze({

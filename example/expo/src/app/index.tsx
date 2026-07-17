@@ -11,14 +11,21 @@ import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
+import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
 
 export default function HomeScreen() {
   const session = useMemo(
-    () => new DocumentSession(parseExpoTurboDocument(DEMO_DOCUMENT)),
+    () =>
+      new DocumentSession(
+        parseExpoTurboDocument(DEMO_DOCUMENT, {
+          url: "https://example.test/demo",
+        }),
+      ),
     [],
   );
+  const frames = useMemo(() => createDemoFrameControllers(session), [session]);
 
   return (
     <ScrollView
@@ -60,6 +67,7 @@ export default function HomeScreen() {
         </Text>
       </View>
       <ExpoTurboProvider
+        frames={frames}
         registry={DEMO_REGISTRY}
         renderError={({ error }) => (
           <Text selectable style={{ color: "#a62525" }}>
