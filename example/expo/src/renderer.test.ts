@@ -9,6 +9,7 @@ import type { TurboRequest, TurboResponse } from "expo-turbo/adapters"
 import {
   applyFrameResponse,
   dispatchTurboStreamFragment,
+  DocumentStateScopes,
   DocumentStateStore,
   DocumentSession,
   EXPO_TURBO_MIME_TYPE,
@@ -32,9 +33,11 @@ import {
   ExpoTurboProvider,
   type ExpoTurboRenderError,
   ExpoTurboRoot,
+  ExpoTurboStateScope,
   useComponentAction,
   useDocumentState,
   useNodeDisposal,
+  useScopedState,
 } from "expo-turbo/react"
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -232,6 +235,122 @@ describe("React protocol renderer", () => {
     expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBe("from-xml")
     act(() => activeRenderer.unmount())
     expect(state.isDisposed).toBe(true)
+  })
+
+  test("inherits the nearest Frame or form state for hooks and component actions", async () => {
+    const documentState = new DocumentStateStore()
+    const record = defineComponentAction({
+      action: "record-scoped",
+      handler: ({ params, state }) => {
+        state.set("recorded", params.value)
+        return params.value
+      },
+      schema: z.object({ value: z.string() }),
+    })
+    const actions = createComponentActionRunner(
+      createComponentActionRegistry(
+        defineComponentActionModule({
+          actions: [record],
+          name: "scoped-renderer-actions",
+          version: "0.1.0",
+        }),
+      ),
+      documentState,
+    )
+    function ScopedTrigger({ value }: { value: string }): ReactNode {
+      const execute = useComponentAction(record)
+      const recorded = useScopedState<string>("recorded")
+      return createElement("button", {
+        "data-recorded": recorded.value,
+        onClick: () => execute({ value }),
+        value,
+      })
+    }
+    function ScopedForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboStateScope, { kind: "form" }, props.children)
+    }
+    const form = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: ScopedForm,
+      schema: z.object({}),
+      tag: "DemoForm",
+    })
+    const trigger = defineComponent({
+      attributes: { value: { codec: stringCodec, prop: "value" } },
+      children: "none",
+      component: ScopedTrigger,
+      schema: z.object({ value: z.string() }),
+      tag: "ScopedTrigger",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, trigger],
+        name: "scoped-renderer-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoForm id="form"><ScopedTrigger value="first"/></DemoForm></turbo-frame></Gallery>',
+      ),
+    )
+    const scopes = new DocumentStateScopes(session)
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          ExpoTurboProvider,
+          { actions, registry: componentRegistry, scopes, session, state: documentState },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const activeRenderer = renderer
+    const frameNode = session.tree.getElementById("frame")
+    const formNode = session.tree.getElementById("form")
+    if (!frameNode || !formNode) throw new Error("scoped fixtures are missing")
+    const frameScope = scopes.scopeFor(frameNode.key, "frame")
+    const formScope = scopes.scopeFor(formNode.key, "form")
+
+    await act(async () => {
+      await activeRenderer.root.findByType("button").props.onClick()
+    })
+    expect(documentState.get("recorded")).toBeUndefined()
+    expect(frameScope.state.get("recorded")).toBeUndefined()
+    expect(formScope.state.get("recorded")).toBe("first")
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="form"><template><ScopedTrigger value="second"/></template></turbo-stream>',
+      )
+    })
+    expect(scopes.scopeFor(formNode.key, "form")).toBe(formScope)
+    expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBe("first")
+    await act(async () => {
+      await activeRenderer.root.findByType("button").props.onClick()
+    })
+    expect(formScope.state.get("recorded")).toBe("second")
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><DemoForm id="form"><ScopedTrigger value="replacement"/></DemoForm></template></turbo-stream>',
+      )
+    })
+    expect(formScope.state.isDisposed).toBe(true)
+    const replacement = session.tree.getElementById("form")
+    if (!replacement) throw new Error("replacement form is missing")
+    const replacementScope = scopes.scopeFor(replacement.key, "form")
+    expect(replacementScope).not.toBe(formScope)
+    expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBeUndefined()
+
+    act(() => activeRenderer.unmount())
+    expect(replacementScope.state.isDisposed).toBe(true)
+    expect(frameScope.state.isDisposed).toBe(true)
+    expect(documentState.isDisposed).toBe(true)
   })
 
   test("runs registered component disposal before a Stream removes its logical node", () => {

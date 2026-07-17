@@ -94,8 +94,8 @@ export class DocumentStateStore implements StateStore {
   }
 
   subscribe(key: string, listener: StateListener): () => void {
-    this.assertActive()
     this.validateKey(key)
+    if (this.disposed) return () => undefined
     let listeners = this.listeners.get(key)
     if (!listeners) {
       listeners = new Set()

@@ -16,7 +16,12 @@ import { RegistryError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
-import type { DocumentStateStore, StateSnapshot } from "../core/state"
+import type {
+  DocumentStateScopes,
+  DocumentStateStore,
+  StateScopeKind,
+  StateSnapshot,
+} from "../core/state"
 import {
   attributeValue,
   type ProtocolElement,
@@ -46,11 +51,13 @@ interface RendererContextValue {
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
   readonly session: DocumentSession
+  readonly scopes: DocumentStateScopes | undefined
   readonly state: DocumentStateStore | undefined
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
+const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
@@ -59,17 +66,14 @@ export interface ExpoTurboProviderProps {
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
+  readonly scopes?: DocumentStateScopes
   readonly session: DocumentSession
   readonly state?: DocumentStateStore
 }
 
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
-  useEffect(
-    () => () => {
-      props.state?.dispose()
-    },
-    [props.state],
-  )
+  useEffect(() => () => props.scopes?.dispose(), [props.scopes])
+  useEffect(() => () => props.state?.dispose(), [props.state])
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
@@ -77,6 +81,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       onError: props.onError,
       registry: props.registry,
       renderError: props.renderError,
+      scopes: props.scopes,
       session: props.session,
       state: props.state,
     }),
@@ -86,6 +91,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.onError,
       props.registry,
       props.renderError,
+      props.scopes,
       props.session,
       props.state,
     ],
@@ -114,11 +120,12 @@ export function useComponentAction<Definition extends RegistryComponentAction>(
   lifecycle?: ComponentActionLifecycle<ComponentActionResult<Definition>>,
 ): (params: ComponentActionParams<Definition>) => Promise<ComponentActionResult<Definition>> {
   const { actions } = useRenderer()
+  const state = useContext(StateScopeContext)
   if (!actions) throw new RegistryError("Expo Turbo component actions require a provider runner")
   return useCallback(
     (params: ComponentActionParams<Definition>) =>
-      actions.executeDefinition(definition, params, lifecycle),
-    [actions, definition, lifecycle],
+      actions.executeDefinition(definition, params, lifecycle, state),
+    [actions, definition, lifecycle, state],
   )
 }
 
@@ -127,9 +134,10 @@ export interface DocumentStateBinding<Value> extends StateSnapshot<Value> {
   set(value: Value): void
 }
 
-export function useDocumentState<Value = unknown>(key: string): DocumentStateBinding<Value> {
-  const { state } = useRenderer()
-  if (!state) throw new RegistryError("Expo Turbo document state requires a provider store")
+function useStateBinding<Value>(
+  state: DocumentStateStore,
+  key: string,
+): DocumentStateBinding<Value> {
   const subscribe = useCallback(
     (listener: () => void) => state.subscribe(key, listener),
     [key, state],
@@ -144,6 +152,59 @@ export function useDocumentState<Value = unknown>(key: string): DocumentStateBin
         set: (value: Value) => state.set(key, value),
       }),
     [key, snapshot, state],
+  )
+}
+
+export function useDocumentState<Value = unknown>(key: string): DocumentStateBinding<Value> {
+  const { state } = useRenderer()
+  if (!state) throw new RegistryError("Expo Turbo document state requires a provider store")
+  return useStateBinding<Value>(state, key)
+}
+
+export function useScopedState<Value = unknown>(key: string): DocumentStateBinding<Value> {
+  const { state: documentState } = useRenderer()
+  const scopedState = useContext(StateScopeContext)
+  const state = scopedState ?? documentState
+  if (!state) throw new RegistryError("Expo Turbo scoped state requires a provider store")
+  return useStateBinding<Value>(state, key)
+}
+
+interface StateScopeBoundaryProps {
+  readonly children?: ReactNode
+  readonly kind: StateScopeKind
+  readonly nodeKey: string
+  readonly required?: boolean
+}
+
+function StateScopeBoundary(props: StateScopeBoundaryProps): ReactNode {
+  const { scopes } = useRenderer()
+  const scope = useMemo(
+    () => scopes?.scopeFor(props.nodeKey, props.kind),
+    [props.kind, props.nodeKey, scopes],
+  )
+  if (props.required && !scopes) {
+    throw new RegistryError("Expo Turbo state scopes require a provider scope registry")
+  }
+  if (!scope) return props.children
+  return createElement(StateScopeContext.Provider, { value: scope.state }, props.children)
+}
+
+export interface ExpoTurboStateScopeProps {
+  readonly children?: ReactNode
+  readonly kind: StateScopeKind
+}
+
+export function ExpoTurboStateScope(props: ExpoTurboStateScopeProps): ReactNode {
+  const nodeKey = useContext(ProtocolNodeContext)
+  if (!nodeKey) throw new RegistryError("Expo Turbo state scopes require a component node")
+  return createElement(
+    StateScopeBoundary,
+    {
+      kind: props.kind,
+      nodeKey,
+      required: true,
+    },
+    props.children,
   )
 }
 
@@ -262,14 +323,23 @@ function ProtocolElementView(
   }
   if (props.node.kind === "frame") {
     const frameId = attributeValue(props.node, "id")
-    return context.frames && frameId
-      ? createElement(ConnectedFrame, {
-          frameId,
-          frames: context.frames,
-          node: props.node,
-          onError: context.onError,
-        })
-      : createElement(Fragment, null, renderChildren(props.node.children))
+    const rendered =
+      context.frames && frameId
+        ? createElement(ConnectedFrame, {
+            frameId,
+            frames: context.frames,
+            node: props.node,
+            onError: context.onError,
+          })
+        : createElement(Fragment, null, renderChildren(props.node.children))
+    return createElement(
+      StateScopeBoundary,
+      {
+        kind: "frame",
+        nodeKey: props.node.key,
+      },
+      rendered,
+    )
   }
 
   return createElement(
