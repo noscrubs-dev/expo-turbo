@@ -307,7 +307,7 @@ function DemoFormSubmitterComponent(props: {
         accessibilityState={control.accessibilityState}
         disabled={control.disabled}
         onPress={() => {
-          setPreview("Submission pending");
+          setPreview("Awaiting confirmation");
           void formBinding
             .submit({
               protocol: { requestId: `demo-form-${++requestId.current}` },
@@ -379,11 +379,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
-    <DemoText>Edit either native value, then submit once through the exact-form activity guard. The selected submitter becomes disabled and displays its server-authored pending text while one deterministic request is active.</DemoText>
+    <DemoText>Edit either native value, approve the host-owned native confirmation, then submit once through the exact-form activity guard. The selected submitter becomes disabled and displays its server-authored pending text only after confirmation accepts the immutable request.</DemoText>
     <DemoForm id="native-form" action="/demo/profile" method="post">
       <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
-      <DemoFormSubmitter id="collect-form" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="patch" label="Submit immutable request" name="commit" value="preview" />
+      <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="patch" label="Confirm and submit immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>
   <DemoDocumentLink href="/demo/linked">

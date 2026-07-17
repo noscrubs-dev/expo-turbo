@@ -426,6 +426,11 @@ export class FormControlRegistry {
     const submitterTarget = submitter
       ? attributeValue(submitter.node, "data-turbo-frame")
       : undefined
+    const submitterConfirmation = submitter
+      ? attributeValue(submitter.node, "data-turbo-confirm")
+      : undefined
+    const formConfirmation = attributeValue(this.form, "data-turbo-confirm")
+    const confirmationMessage = submitterConfirmation ?? formConfirmation
     const destination = resolveFormSubmissionDestination(this.session.tree, this.form, {
       ...(formTarget !== undefined ? { formTarget } : {}),
       ...(submitterTarget !== undefined ? { submitterTarget } : {}),
@@ -463,6 +468,7 @@ export class FormControlRegistry {
     }
     const proposal = Object.freeze({ destination, plan }) as FormSubmissionProposal
     return admitFormSubmissionProposal(proposal, {
+      ...(confirmationMessage !== undefined ? { confirmationMessage } : {}),
       destination,
       ...(destination.kind === "frame"
         ? {

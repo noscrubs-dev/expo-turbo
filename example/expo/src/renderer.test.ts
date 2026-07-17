@@ -7,6 +7,7 @@ import { z } from "zod"
 
 import {
   defineStyleAdapter,
+  type FormConfirmationAdapter,
   type NavigationAdapter,
   type TurboRequest,
   type TurboResponse,
@@ -150,7 +151,10 @@ function render(
   return renderer
 }
 
-function formScopeUnmountFixture(autoSubmitRequestId?: string) {
+function formScopeUnmountFixture(
+  autoSubmitRequestId?: string,
+  confirmation?: FormConfirmationAdapter,
+) {
   const bindings = new Set<ExpoTurboFormBinding>()
   const pending: {
     request: TurboRequest
@@ -217,9 +221,14 @@ function formScopeUnmountFixture(autoSubmitRequestId?: string) {
       { url: "https://example.test/current" },
     ),
   )
-  const controller = new FormSubmissionController(session, {
-    fetch: (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
-  })
+  const controller = new FormSubmissionController(
+    session,
+    {
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+    },
+    { ...(confirmation ? { confirmation } : {}) },
+  )
   const provider = (forms: DocumentFormControls) =>
     createElement(
       ExpoTurboProvider,
@@ -1224,6 +1233,45 @@ describe("React protocol renderer", () => {
     expect(controls.isDisposed).toBe(false)
     expect(forms.isDisposed).toBe(false)
     expect(fixture.session.tree.getElementById("form")).toBeDefined()
+  })
+
+  test("cancels pending confirmation when its final mounted scope unmounts", async () => {
+    let confirmationSignal: AbortSignal | undefined
+    const fixture = formScopeUnmountFixture(undefined, {
+      confirm(_message, signal) {
+        confirmationSignal = signal
+        return new Promise<boolean>(() => undefined)
+      },
+    })
+    fixture.session.setAttribute("id:form", "data-turbo-confirm", "Continue?")
+    const forms = fixture.forms()
+    const controls = forms.controlsFor("id:form")
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(fixture.provider(forms))
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "confirm-unmount" } })
+      await Promise.resolve()
+    })
+    if (!submission) throw new Error("pending confirmation was not captured")
+    expect(fixture.pending).toHaveLength(0)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(confirmationSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
+
+    expect(confirmationSignal?.aborted).toBe(true)
+    expect(await submission).toMatchObject({ requestId: "confirm-unmount", status: "canceled" })
+    expect(fixture.pending).toHaveLength(0)
+    expect(controls.isDisposed).toBe(false)
+    expect(forms.isDisposed).toBe(false)
   })
 
   test("keeps an active form through StrictMode replay and cancels its real unmount", async () => {

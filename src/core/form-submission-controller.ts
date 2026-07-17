@@ -1,4 +1,4 @@
-import type { FetchAdapter } from "../adapters"
+import type { FetchAdapter, FormConfirmationAdapter } from "../adapters"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
@@ -131,6 +131,7 @@ export class FormSubmissionCommitError extends RequestError {
 }
 
 export interface FormSubmissionControllerOptions extends StreamActionDispatchOptions {
+  readonly confirmation?: FormConfirmationAdapter
   readonly limits?: Partial<ParseLimits>
 }
 
@@ -193,6 +194,7 @@ export class FormSubmissionController {
     options: FormSubmissionControllerOptions = {},
   ) {
     this.options = Object.freeze({
+      ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
@@ -224,6 +226,18 @@ export class FormSubmissionController {
       throw new RequestError("Form submission planning failed")
     }
 
+    const confirmationMessage = identity.confirmationMessage
+    const confirmation = confirmationMessage !== undefined ? this.options.confirmation : undefined
+    if (
+      confirmationMessage !== undefined &&
+      (!confirmation || typeof confirmation.confirm !== "function")
+    ) {
+      controller.abort()
+      throw new RequestError("Form submission confirmation requires a configured adapter", {
+        target: identity.form.key,
+      })
+    }
+
     let activityLease: FormSubmissionActivityLease | undefined
     try {
       activityLease = identity.submissionActivity.admit(
@@ -231,6 +245,7 @@ export class FormSubmissionController {
         plan.request.headers["X-Turbo-Request-Id"] as string,
         identity.submitter,
         behavior,
+        confirmationMessage !== undefined,
       )
     } catch (error) {
       controller.abort()
@@ -238,6 +253,29 @@ export class FormSubmissionController {
       throw new RequestError("Form submission activity admission failed")
     }
     if (!activityLease) return this.canceledPlan(plan, proposal.destination)
+
+    if (confirmation && confirmationMessage !== undefined) {
+      try {
+        const accepted = await this.confirm(
+          confirmation,
+          confirmationMessage,
+          controller,
+          identity,
+          activityLease,
+        )
+        if (accepted !== true) {
+          controller.abort()
+          identity.submissionActivity.finish(activityLease)
+          return this.canceledPlan(plan, proposal.destination)
+        }
+        identity = assertActiveFormSubmissionProposal(this.session, proposal)
+      } catch (error) {
+        controller.abort()
+        identity.submissionActivity.finish(activityLease)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Form submission confirmation failed", { target: identity.form.key })
+      }
+    }
 
     let lease: DestinationRequestLease | undefined
     let originCheckpoint: FrameRequestCheckpoint | undefined
@@ -538,6 +576,53 @@ export class FormSubmissionController {
       destination,
       status: "canceled",
     })
+  }
+
+  private async confirm(
+    adapter: FormConfirmationAdapter,
+    message: string,
+    controller: AbortController,
+    identity: FormSubmissionProposalIdentity,
+    activityLease: FormSubmissionActivityLease,
+  ): Promise<boolean | undefined> {
+    let confirmation: boolean | Promise<boolean>
+    try {
+      confirmation = adapter.confirm(message, controller.signal)
+    } catch {
+      if (!identity.submissionActivity.owns(activityLease)) return undefined
+      throw new RequestError("Form submission confirmation failed", {
+        target: identity.form.key,
+      })
+    }
+
+    const settled = Promise.resolve(confirmation).then(
+      (value) => Object.freeze({ status: "resolved" as const, value }),
+      () => Object.freeze({ status: "rejected" as const }),
+    )
+    if (!identity.submissionActivity.owns(activityLease)) return undefined
+
+    let cancel: () => void = () => undefined
+    const canceled = new Promise<Readonly<{ status: "canceled" }>>((resolve) => {
+      cancel = () => resolve(Object.freeze({ status: "canceled" }))
+      controller.signal.addEventListener("abort", cancel, { once: true })
+      if (!identity.submissionActivity.owns(activityLease)) cancel()
+    })
+    const result = await Promise.race([settled, canceled])
+    controller.signal.removeEventListener("abort", cancel)
+    if (!identity.submissionActivity.owns(activityLease) || result.status === "canceled") {
+      return undefined
+    }
+    if (result.status === "rejected") {
+      throw new RequestError("Form submission confirmation failed", {
+        target: identity.form.key,
+      })
+    }
+    if (typeof result.value !== "boolean") {
+      throw new RequestError("Form submission confirmation must return a boolean", {
+        target: identity.form.key,
+      })
+    }
+    return result.value
   }
 
   private canceledPlan(

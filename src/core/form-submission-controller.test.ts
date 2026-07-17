@@ -16,10 +16,12 @@ import { attributeValue, isElement } from "./tree"
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 interface PendingRequest {
@@ -323,6 +325,414 @@ describe("FormSubmissionController", () => {
     expect(await first).toMatchObject({ application: "empty", status: "empty" })
     expect(formControls.submissionState).toMatchObject({ busy: false, status: "idle" })
     expect(formControls.controlSubmissionState("id:document-submitter").pending).toBe(false)
+  })
+
+  test("resolves confirmation metadata by submitter-first attribute presence", async () => {
+    const cases = [
+      { expected: "Form confirmation", form: "Form confirmation" },
+      { expected: "", form: "Form confirmation", submitter: "" },
+      {
+        expected: "  Submitter confirmation  ",
+        form: "Form confirmation",
+        submitter: "  Submitter confirmation  ",
+      },
+    ] as const
+
+    for (const scenario of cases) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-confirm", scenario.form)
+      if ("submitter" in scenario) {
+        session.setAttribute("id:document-submitter", "data-turbo-confirm", scenario.submitter)
+      }
+      const transport = pendingFetch()
+      const messages: string[] = []
+      let confirmationSignal: AbortSignal | undefined
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        confirmation: {
+          confirm(message, signal) {
+            messages.push(message)
+            confirmationSignal = signal
+            return false
+          },
+        },
+      })
+      const controls = registry(session, "document-form")
+      const submitter = controls.register("id:document-submitter", {
+        kind: "submitter",
+        name: "commit",
+        value: "save",
+      })
+
+      const result = await controller.submit((signal) =>
+        controls.submissionProposal({
+          protocol: { requestId: `confirmation-${JSON.stringify(scenario.expected)}` },
+          signal,
+          submitter: submitter.selection,
+        }),
+      )
+
+      expect(messages).toEqual([scenario.expected])
+      expect(confirmationSignal?.aborted).toBe(true)
+      expect(result).toMatchObject({ status: "canceled" })
+      expect(transport.pending).toHaveLength(0)
+      expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    }
+  })
+
+  test("captures the immutable request before async confirmation and publishes activity only after acceptance", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Send original values?")
+    const transport = pendingFetch()
+    const answer = deferred<boolean>()
+    const messages: string[] = []
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: {
+        confirm(message) {
+          messages.push(message)
+          return answer.promise
+        },
+      },
+    })
+    const controls = registry(session, "document-form")
+    const field = controls.register("id:document-field", {
+      kind: "value",
+      name: "profile[name]",
+      value: "before",
+    })
+    const submitter = controls.register("id:document-submitter", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+
+    const submitting = controller.submit((signal) =>
+      controls.submissionProposal({
+        protocol: { requestId: "confirmed-request" },
+        signal,
+        submitter: submitter.selection,
+      }),
+    )
+    expect(messages).toEqual(["Send original values?"])
+    expect(transport.pending).toHaveLength(0)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.controlSubmissionState("id:document-submitter").pending).toBe(false)
+
+    field.update({ kind: "value", name: "profile[name]", value: "after" })
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Changed message")
+    answer.resolve(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const request = transport.pending[0]
+    if (!request) throw new Error("confirmed form request was not captured")
+    expect(request.request.body?.value).toBe("profile%5Bname%5D=before&commit=save")
+    expect(controls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "confirmed-request",
+      status: "submitting",
+    })
+    expect(controls.controlSubmissionState("id:document-submitter")).toMatchObject({
+      pending: true,
+      submitsWith: "Submitting…",
+    })
+
+    request.response.resolve(response(request.request, "", { status: 204 }))
+    expect(await submitting).toMatchObject({ application: "empty", status: "empty" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+  })
+
+  test("cancels a pending confirmation promptly even when the adapter ignores abort", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+    const transport = pendingFetch()
+    const answer = deferred<boolean>()
+    let confirmationSignal: AbortSignal | undefined
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: {
+        confirm(_message, signal) {
+          confirmationSignal = signal
+          return answer.promise
+        },
+      },
+    })
+    const controls = new FormControlRegistry(session, "id:document-form", {
+      submissionController: controller,
+    })
+
+    const submitting = controls.submit({ protocol: { requestId: "cancel-confirmation" } })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    controls.cancelSubmission()
+
+    expect(await submitting).toMatchObject({
+      requestId: "cancel-confirmation",
+      status: "canceled",
+    })
+    expect(confirmationSignal?.aborted).toBe(true)
+    expect(transport.pending).toHaveLength(0)
+    answer.resolve(true)
+    await Promise.resolve()
+    expect(transport.pending).toHaveLength(0)
+  })
+
+  test("cancels pending confirmation on exact form or submitter removal and replacement", async () => {
+    const cases = [
+      { kind: "remove", name: "form removal", target: "document-form" },
+      { kind: "replace", name: "form replacement", target: "document-form" },
+      { kind: "remove", name: "submitter removal", target: "document-submitter" },
+      { kind: "replace", name: "submitter replacement", target: "document-submitter" },
+    ] as const
+
+    for (const scenario of cases) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+      const transport = pendingFetch()
+      const answer = deferred<boolean>()
+      let confirmationSignal: AbortSignal | undefined
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        confirmation: {
+          confirm(_message, signal) {
+            confirmationSignal = signal
+            return answer.promise
+          },
+        },
+      })
+      const controls = registry(session, "document-form")
+      const submitter = controls.register("id:document-submitter", {
+        kind: "submitter",
+        name: "commit",
+        value: "save",
+      })
+      const requestId = scenario.name.replaceAll(" ", "-")
+      const submitting = controller.submit((signal) =>
+        controls.submissionProposal({
+          protocol: { requestId },
+          signal,
+          submitter: submitter.selection,
+        }),
+      )
+      const target = session.tree.getElementById(scenario.target)
+      if (!target) throw new Error(`${scenario.name} target is missing`)
+
+      session.mutate((tree) => {
+        if (scenario.kind === "remove") return tree.removeNode(target)
+        const source = parseExpoTurboDocument(
+          scenario.target === "document-form"
+            ? '<DemoForm id="document-form"><DemoButton id="document-submitter" /></DemoForm>'
+            : '<DemoButton id="document-submitter" />',
+        ).getElementById(scenario.target)
+        if (!source) throw new Error(`${scenario.name} source is missing`)
+        return tree.replaceNodeWithClones(target, [source])
+      })
+
+      expect(confirmationSignal?.aborted).toBe(true)
+      expect(await submitting).toMatchObject({ requestId, status: "canceled" })
+      expect(transport.pending).toHaveLength(0)
+      if (scenario.target === "document-form") answer.resolve(true)
+      else answer.reject(new Error("late confirmation secret-token"))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(transport.pending).toHaveLength(0)
+
+      if (scenario.kind === "replace") {
+        session.removeAttribute("id:document-form", "data-turbo-confirm")
+        const replacementControls = registry(session, "document-form")
+        const replacement = controller.submit(
+          proposal(replacementControls, `${requestId}-replacement`),
+        )
+        const request = transport.pending[0]
+        if (!request) throw new Error(`${scenario.name} request was not captured`)
+        request.response.resolve(response(request.request, "", { status: 204 }))
+        expect(await replacement).toMatchObject({
+          requestId: `${requestId}-replacement`,
+          status: "empty",
+        })
+      }
+    }
+  })
+
+  test("does not claim destination ownership until confirmation accepts", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Replace visit?")
+    const transport = pendingFetch()
+    const answer = deferred<boolean>()
+    const loader = new DocumentRequestLoader(session, transport.adapter, requestIds("document"))
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: { confirm: () => answer.promise },
+    })
+    const loading = loader.load("/incumbent")
+    const incumbent = transport.pending[0]
+    if (!incumbent) throw new Error("incumbent document request was not captured")
+
+    const submitting = controller.submit(
+      proposal(registry(session, "document-form"), "confirmed-owner"),
+    )
+    expect(transport.pending).toHaveLength(1)
+    expect(incumbent.request.signal?.aborted).toBe(false)
+
+    answer.resolve(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const confirmed = transport.pending[1]
+    if (!confirmed) throw new Error("confirmed form request was not captured")
+    expect(incumbent.request.signal?.aborted).toBe(true)
+    incumbent.response.resolve(response(incumbent.request, "<Late />"))
+    expect(await loading).toMatchObject({ status: "canceled" })
+
+    confirmed.response.resolve(response(confirmed.request, "", { status: 204 }))
+    expect(await submitting).toMatchObject({ requestId: "confirmed-owner", status: "empty" })
+  })
+
+  test("keeps one pending confirmation owner and lets explicit supersede replace it", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+    const transport = pendingFetch()
+    const confirmations: Array<{
+      readonly answer: ReturnType<typeof deferred<boolean>>
+      readonly signal: AbortSignal
+    }> = []
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: {
+        confirm(_message, signal) {
+          const answer = deferred<boolean>()
+          confirmations.push({ answer, signal })
+          return answer.promise
+        },
+      },
+    })
+    const controls = registry(session, "document-form")
+
+    const first = controller.submit(proposal(controls, "first-confirmation"))
+    expect(confirmations).toHaveLength(1)
+    const duplicate = controller.submit(proposal(controls, "duplicate-confirmation"))
+    expect(await duplicate).toMatchObject({
+      requestId: "duplicate-confirmation",
+      status: "canceled",
+    })
+    expect(confirmations).toHaveLength(1)
+    expect(confirmations[0]?.signal.aborted).toBe(false)
+
+    const second = controller.submit(proposal(controls, "second-confirmation"), {
+      duplicateBehavior: "supersede",
+    })
+    expect(confirmations).toHaveLength(2)
+    expect(confirmations[0]?.signal.aborted).toBe(true)
+    expect(await first).toMatchObject({ requestId: "first-confirmation", status: "canceled" })
+    confirmations[0]?.answer.resolve(true)
+    await Promise.resolve()
+    expect(transport.pending).toHaveLength(0)
+
+    confirmations[1]?.answer.resolve(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const request = transport.pending[0]
+    if (!request) throw new Error("superseding confirmed request was not captured")
+    expect(request.request.headers["X-Turbo-Request-Id"]).toBe("second-confirmation")
+    request.response.resolve(response(request.request, "", { status: 204 }))
+    expect(await second).toMatchObject({ requestId: "second-confirmation", status: "empty" })
+  })
+
+  test("clears an explicitly superseded request while its replacement awaits confirmation", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const answer = deferred<boolean>()
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: { confirm: () => answer.promise },
+    })
+    const controls = registry(session, "document-form")
+    const first = controller.submit(proposal(controls, "active-before-confirmation"))
+    const firstRequest = transport.pending[0]
+    if (!firstRequest) throw new Error("active form request was not captured")
+    expect(controls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "active-before-confirmation",
+    })
+
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Replace request?")
+    const second = controller.submit(proposal(controls, "replacement-confirmation"), {
+      duplicateBehavior: "supersede",
+    })
+    expect(firstRequest.request.signal?.aborted).toBe(true)
+    expect(await first).toMatchObject({ status: "canceled" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(transport.pending).toHaveLength(1)
+
+    answer.resolve(false)
+    expect(await second).toMatchObject({
+      requestId: "replacement-confirmation",
+      status: "canceled",
+    })
+    expect(transport.pending).toHaveLength(1)
+  })
+
+  test("fails confirmation configuration and adapter errors without fetching", async () => {
+    {
+      const session = fixture()
+      const transport = pendingFetch()
+      const controls = registry(session, "document-form")
+      const controller = new FormSubmissionController(session, transport.adapter)
+      const incumbent = controller.submit(proposal(controls, "incumbent-before-config-error"))
+      const incumbentRequest = transport.pending[0]
+      if (!incumbentRequest) throw new Error("incumbent request was not captured")
+      session.setAttribute("id:document-form", "data-turbo-confirm", "Needs adapter")
+
+      await expect(
+        controller.submit(proposal(controls, "missing-confirmation-adapter"), {
+          duplicateBehavior: "supersede",
+        }),
+      ).rejects.toMatchObject({
+        message: "Form submission confirmation requires a configured adapter",
+      })
+      expect(incumbentRequest.request.signal?.aborted).toBe(false)
+      expect(controls.submissionState.requestId).toBe("incumbent-before-config-error")
+      incumbentRequest.response.resolve(response(incumbentRequest.request, "", { status: 204 }))
+      await incumbent
+    }
+
+    for (const scenario of [
+      {
+        confirm: () => {
+          throw new Error("sync confirmation failure with secret-token")
+        },
+      },
+      {
+        confirm: () => Promise.reject(new Error("async confirmation failure with secret-token")),
+      },
+      {
+        confirm: () => {
+          throw new RequestError(
+            "host-authored request failure with secret-token",
+            {},
+            { cause: new Error("nested secret-token") },
+          )
+        },
+      },
+      {
+        confirm: () => "yes" as never,
+        message: "Form submission confirmation must return a boolean",
+      },
+      {
+        confirm: () => Promise.resolve("yes" as never),
+        message: "Form submission confirmation must return a boolean",
+      },
+    ]) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+      const transport = pendingFetch()
+      const controls = registry(session, "document-form")
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        confirmation: { confirm: scenario.confirm },
+      })
+
+      try {
+        await controller.submit(proposal(controls, "confirmation-error"))
+        throw new Error("expected confirmation failure")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RequestError)
+        if (!(error instanceof RequestError)) throw error
+        if (scenario.message) expect(error.message).toBe(scenario.message)
+        expect(error.cause).toBeUndefined()
+        expect(String(error)).not.toContain("secret-token")
+      }
+      expect(transport.pending).toHaveLength(0)
+      expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    }
   })
 
   test("clears form activity before applying a response", async () => {
