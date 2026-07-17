@@ -206,7 +206,6 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "data-turbo-confirm",
   "data-turbo-method",
   "data-turbo-stream",
-  "disabled",
   "method",
   "stream",
   "target",
@@ -697,6 +696,10 @@ export type ExpoTurboDocumentLinkDelegation =
 export type ExpoTurboDocumentLinkResult =
   | DocumentVisitResult
   | ExpoTurboDocumentLinkDelegation
+  | Readonly<{
+      kind: "disabled"
+      status: "ignored"
+    }>
   | FrameVisitResult
 
 export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
@@ -712,6 +715,9 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     if (session.tree.getNodeByKey(nodeKey) !== node) {
       throw new TargetError("Document link is outside the active document")
+    }
+    if (attributeValue(node, "disabled") !== undefined) {
+      return Object.freeze({ kind: "disabled", status: "ignored" })
     }
     for (const name of UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES) {
       if (attributeValue(node, name) !== undefined) {
