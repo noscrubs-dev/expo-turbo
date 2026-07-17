@@ -1,3 +1,4 @@
+export * from "./custom-stream-actions"
 export * from "./errors"
 export * from "./frame-controller"
 export * from "./frame-controller-registry"

@@ -1,3 +1,8 @@
+import type {
+  CustomStreamActionRegistry,
+  CustomStreamActionResult,
+  DefinedStreamAction,
+} from "./custom-stream-actions"
 import { ActionError, ExpoTurboError } from "./errors"
 import { type ParseOptions, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
@@ -33,6 +38,7 @@ export interface StreamActionReport {
 }
 
 export interface StreamActionDispatchOptions {
+  readonly customActions?: CustomStreamActionRegistry<DefinedStreamAction>
   readonly onActionError?: (report: StreamActionReport) => void
 }
 
@@ -56,6 +62,62 @@ function templatePayload(stream: ProtocolElement, action: string): readonly Prot
     throw actionError("The first Turbo Stream child element must be template", action)
   }
   return firstElement.children
+}
+
+function customParams(stream: ProtocolElement): Readonly<Record<string, string>> {
+  return Object.freeze(
+    Object.fromEntries(
+      stream.attributes
+        .filter((attribute) => attribute.name.startsWith("data-"))
+        .map((attribute) => [attribute.name.slice(5), attribute.value]),
+    ),
+  )
+}
+
+function customResult(
+  result: CustomStreamActionResult | undefined,
+  matchedTargets: number,
+): Readonly<{ appliedTargets: number; status: "applied" | "noop" }> {
+  if (!result) return Object.freeze({ appliedTargets: matchedTargets, status: "applied" })
+  if (result.status !== "applied" && result.status !== "noop") {
+    throw new Error("Custom Stream action returned an invalid status")
+  }
+  const appliedTargets = result.appliedTargets ?? (result.status === "noop" ? 0 : matchedTargets)
+  if (!Number.isInteger(appliedTargets) || appliedTargets < 0 || appliedTargets > matchedTargets) {
+    throw new Error("Custom Stream action returned an invalid applied-target count")
+  }
+  if (result.status === "noop" && appliedTargets !== 0) {
+    throw new Error("A no-op custom Stream action cannot report applied targets")
+  }
+  return Object.freeze({ appliedTargets, status: result.status })
+}
+
+function dispatchCustomAction(
+  session: DocumentSession,
+  stream: ProtocolElement,
+  definition: DefinedStreamAction,
+): Readonly<{ appliedTargets: number; matchedTargets: number; status: "applied" | "noop" }> {
+  const action = definition.action
+  const hasTarget =
+    attributeValue(stream, "target") !== undefined ||
+    attributeValue(stream, "targets") !== undefined
+  const targets = hasTarget ? resolveTargets(session.tree, stream, action) : []
+  const params = definition.decodeParams(customParams(stream))
+  const result = definition.handler(
+    Object.freeze({
+      action,
+      params,
+      session,
+      stream,
+      targets: Object.freeze([...targets]),
+      template: Object.freeze([...templatePayload(stream, action)]),
+    }),
+  )
+  const maybePromise = result as unknown as Readonly<{ then?: unknown }> | undefined
+  if (typeof maybePromise?.then === "function") {
+    throw new Error("Custom Stream action handlers must be synchronous")
+  }
+  return Object.freeze({ ...customResult(result, targets.length), matchedTargets: targets.length })
 }
 
 function resolveTargets(
@@ -204,6 +266,7 @@ function dispatchAction(
   session: DocumentSession,
   stream: ProtocolElement,
   index: number,
+  options: StreamActionDispatchOptions,
 ): StreamActionReport {
   const action = attributeValue(stream, "action") ?? ""
   let matchedTargets = 0
@@ -211,7 +274,18 @@ function dispatchAction(
   try {
     if (!action) throw actionError("Turbo Stream action must not be blank", action)
     if (!BUILT_IN_ACTIONS.has(action)) {
-      throw actionError(`Unknown Turbo Stream action ${JSON.stringify(action)}`, action)
+      const customAction = options.customActions?.resolve(action)
+      if (!customAction) {
+        throw actionError(`Unknown Turbo Stream action ${JSON.stringify(action)}`, action)
+      }
+      const result = dispatchCustomAction(session, stream, customAction)
+      return Object.freeze({
+        action,
+        appliedTargets: result.appliedTargets,
+        index,
+        matchedTargets: result.matchedTargets,
+        status: result.status,
+      })
     }
     const targets = resolveTargets(session.tree, stream, action)
     const payload = action === "remove" ? [] : templatePayload(stream, action)
@@ -265,7 +339,7 @@ export function dispatchTurboStreamElements(
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
 ): StreamDispatchReport {
-  const actions = streams.map((stream, index) => dispatchAction(session, stream, index))
+  const actions = streams.map((stream, index) => dispatchAction(session, stream, index, options))
   for (const report of actions) {
     if (report.status === "error") options.onActionError?.(report)
   }
