@@ -65,3 +65,11 @@ A connected Frame exposes its immutable controller snapshot through a host-defin
 `busy` becomes true immediately while a Frame GET owns the controller and false on every terminal path. `complete` means only that the Frame is not currently loading; it is true after success, an empty `204`, failure, or cancellation. Hosts must inspect `status` and `hasBeenLoaded` when the terminal result matters. This slice covers Frame GET activity only. Document visits, targeted form submissions, delayed visual progress, submitter state, and live announcements remain separate contracts.
 
 The binding includes a frozen `{ busy }` accessibility state for a host to pass to an actual native boundary. The package does not import React Native, infer that a disabled Frame makes all descendants inaccessible, announce server-authored status, or mutate `busy`, `complete`, or `aria-busy` into the logical XML tree. Controller-state changes preserve the boundary and current children; only boundary or nearest-Frame consumers rerender until a protocol mutation actually replaces children. Host boundary failures use the same registered Frame error surface as other protocol nodes.
+
+## Programmatic Frame visits
+
+`FrameControllerRegistry.visit(url, { frame, ... })` resolves through the shared interaction-style Frame target rules. A credential-free, fragment-free same-origin HTTP(S) URL targeting a Frame reuses that Frame's controller and loader; visiting its current `src` reloads it. A same-origin top/promoted target delegates to `NavigationAdapter.visit`, while a credential-free cross-origin HTTP(S) URL delegates to `openExternal`.
+
+URL admission happens before target dispatch, any host-adapter call, or any Frame request/source ownership change. Invalid, non-HTTP(S), credential-bearing, fragment-bearing, or invalid-document URLs fail as redacted `TargetError`s and invoke neither navigation nor fetch, so a rejected visit cannot cancel or replace an already-loading Frame source.
+
+This host-invoked API does not wire XML link/form capture, Turbo root visitability, fragment/anchor behavior, arbitrary external schemes, router/history state, or exact browser `Turbo.visit(url, { frame })` behavior. Those remain separate contracts.

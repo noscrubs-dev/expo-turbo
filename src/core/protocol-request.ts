@@ -10,6 +10,12 @@ export interface ProtocolRequestHeaderOptions {
   readonly requestId: string
 }
 
+export interface ProtocolUrlResolution {
+  readonly documentOrigin: string
+  readonly url: string
+  readonly urlOrigin: string
+}
+
 export function protocolRequestHeaders(
   options: ProtocolRequestHeaderOptions,
 ): Readonly<Record<string, string>> {
@@ -30,12 +36,12 @@ export function responseContentType(response: TurboResponse): string | undefined
   return value?.split(";", 1)[0]?.trim().toLowerCase()
 }
 
-export function resolveSameOriginProtocolUrl(
+export function resolveProtocolUrl(
   source: string,
   originUrl: string,
   baseUrl: string = originUrl,
   context: ExpoTurboErrorContext = {},
-): string {
+): ProtocolUrlResolution {
   try {
     const origin = new URL(originUrl)
     const resolved = new URL(source, baseUrl)
@@ -44,25 +50,38 @@ export function resolveSameOriginProtocolUrl(
       origin.username !== "" ||
       origin.password !== ""
     ) {
-      throw new TargetError(
-        "Protocol request origin must use HTTP or HTTPS without credentials",
-        context,
-      )
+      throw new TargetError("Protocol origin must use HTTP or HTTPS without credentials", context)
     }
     if (
       !["http:", "https:"].includes(resolved.protocol) ||
       resolved.username !== "" ||
-      resolved.password !== "" ||
-      resolved.origin !== origin.origin
+      resolved.password !== ""
     ) {
-      throw new TargetError(
-        "Protocol request must be same-origin HTTP(S) without credentials",
-        context,
-      )
+      throw new TargetError("Protocol URL must use HTTP or HTTPS without credentials", context)
     }
-    return resolved.toString()
+    return Object.freeze({
+      documentOrigin: origin.origin,
+      url: resolved.toString(),
+      urlOrigin: resolved.origin,
+    })
   } catch (error) {
     if (error instanceof TargetError) throw error
-    throw new TargetError("Protocol request URL is invalid", context)
+    throw new TargetError("Protocol URL is invalid", context)
   }
+}
+
+export function resolveSameOriginProtocolUrl(
+  source: string,
+  originUrl: string,
+  baseUrl: string = originUrl,
+  context: ExpoTurboErrorContext = {},
+): string {
+  const resolved = resolveProtocolUrl(source, originUrl, baseUrl, context)
+  if (resolved.urlOrigin !== resolved.documentOrigin) {
+    throw new TargetError(
+      "Protocol request must be same-origin HTTP(S) without credentials",
+      context,
+    )
+  }
+  return resolved.url
 }

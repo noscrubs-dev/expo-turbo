@@ -76,13 +76,13 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] App-owned plain top-level native document links through `useExpoTurboDocumentLink`, with same-origin GET admission and latest-visit ownership delegated to the observable document controller plus fail-closed stale, Frame-scoped, fragment, opt-out, and unsupported-metadata activation.
 - [x] Exact Turbo Frame response extraction with mounted-wrapper preservation, redirected `src`, child replacement, embedded Stream execution/consumption, and typed missing-frame failures.
 - [x] Same-origin Frame GET loader with Expo Turbo headers/MIME enforcement, `204` handling, redirected URL ownership, explicit cancellation, and per-frame late-response suppression.
-- [x] Frame target resolution for submitter/element/default precedence, named Frames, `_self`, `_parent`, and `_top`, including page promotion when the selected Frame is unavailable or disabled.
+- [x] Frame target resolution for submitter/element/Frame-default/current-Frame precedence, named Frames, `_self`, `_parent`, and `_top`, with missing named targets falling back to the current Frame and `_top`, unavailable `_parent`, or disabled Frame targets promoting to the owning document.
 - [x] Identity-bound observable Frame controller with eager `src` loading, explicit lazy/manual loading, same-source reload, stable busy/complete state, and cancellation/rebinding on disable, source removal, same-ID wrapper replacement, or disconnect.
 - [x] Opt-in React Frame lifecycle wiring that connects mounted controllers, subscribes to lifecycle state, eagerly loads sources, and cancels/disposes requests when a Frame subtree unmounts.
 - [x] Host-rendered Frame GET lifecycle and accessibility binding with a stable boundary, nearest-Frame hook, frozen native busy state, nested scoping, error containment, same-ID replacement rebinding, and no synthetic XML attributes.
 - [x] Injected lazy-Frame visibility lifecycle that observes while mounted, loads on first visibility, stops observing when the request starts, and reports automatic-load failures.
 - [x] Bounded Frame `recurse` extraction with whitespace-token matching, same-origin intermediary GETs, independent request IDs, redirected-base resolution, URL-loop/depth rejection, and canonical source ownership.
-- [x] Shared programmatic Frame visit API for current, named, `_self`, `_parent`, and `_top` targets, with same-source reload plus explicit top-level/external navigation delegation.
+- [x] Shared programmatic Frame visit API for current, named, `_self`, `_parent`, and `_top` targets, with credential-free, fragment-free HTTP(S) admission, same-origin Frame loading and same-source reload, plus explicit owning-document or cross-origin host-navigation delegation.
 - [x] Route-free Rails Engine, distinct Expo Turbo XML MIME type, confined host-owned `.xml.erb` rendering, and exact `turbo-rails` 2.0.10/2.0.23 test matrix.
 - [x] Independently installed Expo and Rails examples in public CI, including a native component tree rendered from XML in the Expo gallery.
 

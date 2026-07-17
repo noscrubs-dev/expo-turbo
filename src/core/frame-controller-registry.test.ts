@@ -7,7 +7,7 @@ import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
-import { isElement } from "./tree"
+import { attributeValue, isElement } from "./tree"
 
 interface Harness {
   readonly external: string[]
@@ -17,7 +17,7 @@ interface Harness {
   readonly session: DocumentSession
 }
 
-function harness(): Harness {
+function harness(documentUrl = "https://example.test/document"): Harness {
   const external: string[] = []
   const navigation: Array<{ action: VisitAction; url: string }> = []
   const requests: TurboRequest[] = []
@@ -29,7 +29,7 @@ function harness(): Harness {
           <turbo-frame id="current" target="named" />
         </turbo-frame>
       </Gallery>`,
-      { url: "https://example.test/document" },
+      { url: documentUrl },
     ),
   )
   const navigationAdapter: NavigationAdapter = {
@@ -126,6 +126,124 @@ describe("Frame controller registry visits", () => {
     expect(navigation).toEqual([{ action: "replace", url: "https://example.test/top" }])
     expect(external).toEqual(["https://outside.test/path"])
     expect(requests).toHaveLength(0)
+  })
+
+  test("rejects unsafe, credential-bearing, malformed, and fragment visit URLs before dispatch", async () => {
+    const sources = [
+      "javascript:alert('secret-token')",
+      "data:text/plain,secret-token",
+      "file:///tmp/secret-token",
+      "blob:https://example.test/secret-token",
+      "mailto:secret-token@example.test",
+      "tel:secret-token",
+      "custom:secret-token",
+      "https://user:secret-token@example.test/private",
+      "https://user:secret-token@outside.test/private",
+      "http://[secret-token",
+      "/next#section",
+      "/next#",
+      "https://outside.test/next#section",
+    ]
+
+    for (const source of sources) {
+      const { external, navigation, registry, requests } = harness()
+      let error: unknown
+      try {
+        await registry.visit(source, { elementTarget: "_top", frame: "current" })
+      } catch (reason) {
+        error = reason
+      }
+
+      expect(error).toBeInstanceOf(TargetError)
+      if (!(error instanceof TargetError)) throw new Error("fixture did not reject the visit")
+      expect(error.cause).toBeUndefined()
+      expect(error.message).not.toContain("secret-token")
+      expect(JSON.stringify(error.context)).not.toContain("secret-token")
+      expect(external).toHaveLength(0)
+      expect(navigation).toHaveLength(0)
+      expect(requests).toHaveLength(0)
+      registry.dispose()
+    }
+  })
+
+  test("rejects invalid active document URLs before dispatch", async () => {
+    const documentUrls = [
+      "file:///tmp/secret-token",
+      "https://user:secret-token@example.test/document",
+      "not a secret-token URL",
+    ]
+
+    for (const documentUrl of documentUrls) {
+      const { external, navigation, registry, requests } = harness(documentUrl)
+      let error: unknown
+      try {
+        await registry.visit("/next", { elementTarget: "_top", frame: "current" })
+      } catch (reason) {
+        error = reason
+      }
+
+      expect(error).toBeInstanceOf(TargetError)
+      if (!(error instanceof TargetError))
+        throw new Error("fixture did not reject the document URL")
+      expect(error.cause).toBeUndefined()
+      expect(error.message).not.toContain("secret-token")
+      expect(JSON.stringify(error.context)).not.toContain("secret-token")
+      expect(external).toHaveLength(0)
+      expect(navigation).toHaveLength(0)
+      expect(requests).toHaveLength(0)
+      registry.dispose()
+    }
+  })
+
+  test("keeps an active Frame request authoritative when a newer visit URL is rejected", async () => {
+    const requests: TurboRequest[] = []
+    let resolveRequest: ((response: TurboResponse) => void) | undefined
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/valid"><Initial/></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) => {
+          requests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveRequest = resolve
+          })
+        },
+      },
+      { next: () => `request-${requests.length + 1}` },
+    )
+    const registry = new FrameControllerRegistry(session, loader)
+    const controller = registry.get("frame")
+    const activeLoad = controller.connect()
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    expect(controller.state).toMatchObject({ source: "/valid", status: "loading" })
+
+    await expect(
+      registry.visit("https://user:secret-token@example.test/private", { frame: "frame" }),
+    ).rejects.toBeInstanceOf(TargetError)
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    expect(controller.state).toMatchObject({ source: "/valid", status: "loading" })
+    const frame = session.tree.getElementById("frame")
+    if (!frame) throw new Error("fixture Frame is missing")
+    expect(attributeValue(frame, "src")).toBe("/valid")
+
+    registry.dispose()
+    resolveRequest?.({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="frame"><Late/></turbo-frame>',
+      url: "https://example.test/valid",
+    })
+    expect(await activeLoad).toMatchObject({ status: "canceled" })
   })
 
   test("fails loudly when a promoted visit has no navigation adapter", async () => {

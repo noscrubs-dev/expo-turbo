@@ -7,6 +7,7 @@ import {
   type ResolveFrameTargetOptions,
   resolveFrameTarget,
 } from "./frames"
+import { resolveProtocolUrl } from "./protocol-request"
 import type { DocumentSession } from "./session"
 import type { ProtocolElement } from "./tree"
 
@@ -94,30 +95,31 @@ export class FrameControllerRegistry implements FrameControllerCollection {
   async visit(url: string, options: FrameVisitOptions): Promise<FrameVisitResult> {
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new TargetError("Frame visits require an active document URL")
-    const document = new URL(documentUrl)
-    const resolved = new URL(url, document)
-    const resolvedUrl = resolved.toString()
+    const resolved = resolveProtocolUrl(url, documentUrl)
+    if (resolved.url.includes("#")) {
+      throw new TargetError("Frame visit fragments require navigation support")
+    }
     const target = resolveFrameTarget(this.session.tree, options.frame, options)
 
-    if (resolved.origin !== document.origin) {
+    if (resolved.urlOrigin !== resolved.documentOrigin) {
       if (!this.navigation) throw new TargetError("External Frame visits require navigation")
-      this.navigation.openExternal(resolvedUrl)
-      return Object.freeze({ kind: "external", target, url: resolvedUrl })
+      this.navigation.openExternal(resolved.url)
+      return Object.freeze({ kind: "external", target, url: resolved.url })
     }
     if (target.kind === "top") {
       if (!this.navigation) throw new TargetError("Top-level Frame visits require navigation")
       const action = options.action ?? "advance"
-      this.navigation.visit(resolvedUrl, action)
-      return Object.freeze({ action, kind: "top", target, url: resolvedUrl })
+      this.navigation.visit(resolved.url, action)
+      return Object.freeze({ action, kind: "top", target, url: resolved.url })
     }
 
-    const load = await this.get(target.frameId).visit(resolvedUrl)
+    const load = await this.get(target.frameId).visit(resolved.url)
     return Object.freeze({
       frameId: target.frameId,
       kind: "frame",
       load,
       target,
-      url: resolvedUrl,
+      url: resolved.url,
     })
   }
 
