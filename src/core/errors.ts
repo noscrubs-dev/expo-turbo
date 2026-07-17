@@ -2,6 +2,7 @@ export type ExpoTurboErrorCode =
   | "action"
   | "auth"
   | "content_type"
+  | "disposal"
   | "frame_missing"
   | "parse"
   | "props"
@@ -52,6 +53,12 @@ export class ParseError extends ExpoTurboError {
 export class ContentTypeError extends ExpoTurboError {
   constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
     super("content_type", message, context, options)
+  }
+}
+
+export class DisposalError extends ExpoTurboError {
+  constructor(message: string, context: ExpoTurboErrorContext = {}, options?: ErrorOptions) {
+    super("disposal", message, context, options)
   }
 }
 

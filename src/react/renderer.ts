@@ -50,6 +50,7 @@ interface RendererContextValue {
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
+const ProtocolNodeContext = createContext<string | undefined>(undefined)
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
@@ -146,6 +147,13 @@ export function useDocumentState<Value = unknown>(key: string): DocumentStateBin
   )
 }
 
+export function useNodeDisposal(dispose: () => void): void {
+  const { session } = useRenderer()
+  const nodeKey = useContext(ProtocolNodeContext)
+  if (!nodeKey) throw new RegistryError("Expo Turbo node disposal requires a component node")
+  useEffect(() => session.registerDisposal(nodeKey, dispose), [dispose, nodeKey, session])
+}
+
 export function useFrameControllerState(controller: FrameController): FrameControllerSnapshot {
   const subscribe = useCallback(
     (listener: () => void) => controller.subscribe(listener),
@@ -211,9 +219,11 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
     Readonly<Record<string, unknown> & { children?: ReactNode }>
   >
   const componentProps = decoded.props as Readonly<Record<string, unknown>>
-  return children === undefined
-    ? createElement(component, componentProps)
-    : createElement(component, componentProps, children)
+  const rendered =
+    children === undefined
+      ? createElement(component, componentProps)
+      : createElement(component, componentProps, children)
+  return createElement(ProtocolNodeContext.Provider, { value: props.node.key }, rendered)
 }
 
 interface ConnectedFrameProps {
