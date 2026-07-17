@@ -41,6 +41,7 @@ export class ExactFormSubmissionActivity {
   private displayed: FormSubmissionActivityLease | undefined
   private readonly listeners = new Set<FormSubmissionActivityListener>()
   private revision = 0
+  private scopeOwners = 0
   private snapshot: FormSubmissionActivitySnapshot = Object.freeze({
     busy: false,
     revision: 0,
@@ -132,6 +133,17 @@ export class ExactFormSubmissionActivity {
 
   owns(lease: FormSubmissionActivityLease): boolean {
     return this.current === lease && !lease.controller.signal.aborted
+  }
+
+  retainScope(): () => void {
+    this.scopeOwners += 1
+    let retained = true
+    return () => {
+      if (!retained) return
+      retained = false
+      this.scopeOwners -= 1
+      if (this.scopeOwners === 0) this.cancelActive()
+    }
   }
 
   subscribe(listener: FormSubmissionActivityListener): () => void {

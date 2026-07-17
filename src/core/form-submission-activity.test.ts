@@ -88,6 +88,27 @@ describe("exact form submission activity", () => {
     expect(activity.owns(first)).toBe(true)
   })
 
+  test("cancels only after the last exact-form scope releases", () => {
+    const session = fixture()
+    const { form, submitter } = nodes(session)
+    const activity = formSubmissionActivity(session, form)
+    const releaseFirst = activity.retainScope()
+    const releaseSecond = activity.retainScope()
+    const controller = new AbortController()
+    const lease = activity.admit(controller, "owned", submitter, "prevent")
+    if (!lease) throw new Error("owned activity was not admitted")
+    activity.start(lease)
+
+    releaseFirst()
+    releaseFirst()
+    expect(controller.signal.aborted).toBe(false)
+    expect(activity.state.busy).toBe(true)
+
+    releaseSecond()
+    expect(controller.signal.aborted).toBe(true)
+    expect(activity.state).toMatchObject({ busy: false, status: "idle" })
+  })
+
   test("isolates activity ownership by document session even for a shared tree", () => {
     const firstSession = fixture()
     const secondSession = new DocumentSession(firstSession.tree)

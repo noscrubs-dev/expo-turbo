@@ -411,6 +411,10 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
   const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
+  useEffect(() => {
+    const release = registry.retainSubmissionScope()
+    return () => queueMicrotask(release)
+  }, [registry])
   const subscribe = useCallback(
     (listener: () => void) => registry.subscribeSubmission(listener),
     [registry],
