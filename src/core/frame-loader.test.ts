@@ -119,6 +119,82 @@ describe("Frame request loader", () => {
     )
   })
 
+  test("preserves newer work started reentrantly by explicit cancellation", async () => {
+    const pending: Array<{
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }> = []
+    const session = documentSession()
+    const owner = Object.freeze({})
+    let requestId = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `request-${++requestId}` },
+    )
+    const older = loader.load("details", "/older", owner)
+    let newer: Promise<unknown> | undefined
+    pending[0]?.request.signal?.addEventListener(
+      "abort",
+      () => {
+        newer = loader.load("details", "/newer", owner)
+      },
+      { once: true },
+    )
+
+    loader.cancel("details", owner)
+    expect(pending).toHaveLength(2)
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    pending[1]?.resolve(response('<turbo-frame id="details"><Newer /></turbo-frame>'))
+    expect(await newer).toMatchObject({ status: "completed" })
+    pending[0]?.resolve(response('<turbo-frame id="details"><Older /></turbo-frame>'))
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
+      "Newer",
+    )
+  })
+
+  test("does not revive a Frame request when its old tree object is restored", async () => {
+    let pending:
+      | Readonly<{
+          request: TurboRequest
+          resolve: (response: TurboResponse) => void
+        }>
+      | undefined
+    const session = documentSession()
+    const originalTree = session.tree
+    const originalFrame = session.tree.getElementById("details")
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending = { request, resolve }
+          }),
+      },
+      { next: () => "request-1" },
+    )
+    const loading = loader.load("details", "/pending")
+
+    session.replaceTree(
+      parseExpoTurboDocument('<Gallery><turbo-frame id="details" /></Gallery>', {
+        url: "https://example.test/replacement",
+      }),
+    )
+    session.replaceTree(originalTree)
+    pending?.resolve(response('<turbo-frame id="details"><Late /></turbo-frame>'))
+
+    expect(await loading).toMatchObject({ status: "canceled" })
+    expect(session.tree).toBe(originalTree)
+    expect(session.tree.getElementById("details")).toBe(originalFrame)
+    expect(originalFrame?.children.filter(isElement)[0]?.tagName).toBe("Loading")
+  })
+
   test("loads a matching frame through a recurse intermediary", async () => {
     const requests: TurboRequest[] = []
     const session = documentSession()

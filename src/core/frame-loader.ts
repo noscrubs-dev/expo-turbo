@@ -1,4 +1,8 @@
 import type { FetchAdapter, RequestIdAdapter } from "../adapters"
+import {
+  type DestinationRequestLease,
+  destinationRequestOwnership,
+} from "./destination-request-ownership"
 import { ContentTypeError, FrameMissingError, TargetError } from "./errors"
 import { applyFrameResponse, type FrameResponseReport } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
@@ -33,6 +37,7 @@ export interface FrameRequestLoaderOptions {
 interface ActiveFrameRequest {
   readonly controller: AbortController
   readonly frame: ProtocolElement
+  lease?: DestinationRequestLease
   readonly owner?: object
 }
 
@@ -52,6 +57,7 @@ export class FrameRequestLoader {
   private readonly active = new Map<string, ActiveFrameRequest>()
   private readonly capabilityHash: string | undefined
   private readonly maxRecurseDepth: number
+  private readonly ownership: ReturnType<typeof destinationRequestOwnership>
 
   constructor(
     private readonly session: DocumentSession,
@@ -61,6 +67,7 @@ export class FrameRequestLoader {
   ) {
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
+    this.ownership = destinationRequestOwnership(session)
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")
     }
@@ -69,8 +76,9 @@ export class FrameRequestLoader {
   cancel(frameId: string, owner?: object): void {
     const active = this.active.get(frameId)
     if (!active || (owner && active.owner !== owner)) return
-    active.controller.abort()
-    this.active.delete(frameId)
+    if (active.lease) this.ownership.cancel(active.lease)
+    else active.controller.abort()
+    if (this.active.get(frameId) === active) this.active.delete(frameId)
   }
 
   async load(frameId: string, source: string, owner?: object): Promise<FrameLoadReport> {
@@ -79,14 +87,31 @@ export class FrameRequestLoader {
     if (frame?.kind !== "frame") {
       throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
     }
-    this.cancel(frameId)
+    const controller = new AbortController()
+    const firstRequestId = this.requestIds.next()
+    const firstHeaders = protocolRequestHeaders({
+      ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
+      frameId,
+      requestId: firstRequestId,
+    })
     const requestIds: string[] = []
     const active: ActiveFrameRequest = {
-      controller: new AbortController(),
+      controller,
       frame,
       ...(owner ? { owner } : {}),
     }
+    const previous = this.active.get(frameId)
     this.active.set(frameId, active)
+    try {
+      active.lease = this.ownership.claimFrame(frame, controller)
+    } catch (error) {
+      controller.abort()
+      if (this.active.get(frameId) === active) {
+        if (previous) this.active.set(frameId, previous)
+        else this.active.delete(frameId)
+      }
+      throw error
+    }
 
     try {
       let requestFrameId = frameId
@@ -95,16 +120,26 @@ export class FrameRequestLoader {
       let responseStatus: number | undefined
       let responseUrl = url
       const visited = new Set([url])
+      let preparedRequest:
+        | Readonly<{ headers: Readonly<Record<string, string>>; requestId: string }>
+        | undefined = Object.freeze({ headers: firstHeaders, requestId: firstRequestId })
 
       while (true) {
-        const requestId = this.requestIds.next()
-        requestIds.push(requestId)
-        const response = await this.fetchAdapter.fetch({
-          headers: protocolRequestHeaders({
+        if (!this.owns(frameId, active)) {
+          return this.canceled(frameId, requestIds, responseUrl, active)
+        }
+        const requestId = preparedRequest?.requestId ?? this.requestIds.next()
+        const headers =
+          preparedRequest?.headers ??
+          protocolRequestHeaders({
             ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
             frameId: requestFrameId,
             requestId,
-          }),
+          })
+        preparedRequest = undefined
+        requestIds.push(requestId)
+        const response = await this.fetchAdapter.fetch({
+          headers,
           method: "GET",
           signal: active.controller.signal,
           url: requestUrl,
@@ -126,7 +161,7 @@ export class FrameRequestLoader {
               { frameId },
             )
           }
-          this.active.delete(frameId)
+          this.release(frameId, active)
           return Object.freeze({
             frameId,
             requestId: requestIds[0] ?? requestId,
@@ -154,7 +189,7 @@ export class FrameRequestLoader {
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
           const frame = applyFrameResponse(this.session, frameId, xml, { finalUrl: responseUrl })
-          this.active.delete(frameId)
+          this.release(frameId, active)
           return Object.freeze({
             frame,
             frameId,
@@ -201,7 +236,7 @@ export class FrameRequestLoader {
       if (active.controller.signal.aborted || !this.owns(frameId, active)) {
         return this.canceled(frameId, requestIds, url, active)
       }
-      this.active.delete(frameId)
+      this.release(frameId, active)
       throw error
     }
   }
@@ -212,7 +247,7 @@ export class FrameRequestLoader {
     url: string,
     request: ActiveFrameRequest,
   ): FrameLoadReport {
-    if (this.active.get(frameId) === request) this.active.delete(frameId)
+    this.release(frameId, request)
     return Object.freeze({
       frameId,
       requestId: requestIds[0] ?? "canceled",
@@ -225,8 +260,14 @@ export class FrameRequestLoader {
   private owns(frameId: string, request: ActiveFrameRequest): boolean {
     return (
       this.active.get(frameId) === request &&
+      Boolean(request.lease && this.ownership.owns(request.lease)) &&
       this.session.tree.getElementById(frameId) === request.frame
     )
+  }
+
+  private release(frameId: string, request: ActiveFrameRequest): void {
+    if (request.lease) this.ownership.release(request.lease)
+    if (this.active.get(frameId) === request) this.active.delete(frameId)
   }
 
   private resolveSameOrigin(source: string, baseUrl: string | undefined, frameId: string): string {

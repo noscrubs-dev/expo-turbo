@@ -1,4 +1,8 @@
-import type { FetchAdapter, RequestIdAdapter, TurboResponse } from "../adapters"
+import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
+import {
+  type DestinationRequestLease,
+  destinationRequestOwnership,
+} from "./destination-request-ownership"
 import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import {
@@ -85,6 +89,7 @@ export class DocumentCommitError extends RequestError {
 
 interface ActiveDocumentRequest {
   readonly controller: AbortController
+  lease?: DestinationRequestLease
   readonly owner?: object
   readonly requestId: string
   readonly requestedUrl: string
@@ -103,13 +108,16 @@ function classifyResponse(status: number): DocumentResponseClassification {
 
 export class DocumentRequestLoader {
   private active: ActiveDocumentRequest | undefined
+  private readonly ownership: ReturnType<typeof destinationRequestOwnership>
 
   constructor(
     private readonly session: DocumentSession,
     private readonly fetchAdapter: FetchAdapter,
     private readonly requestIds: RequestIdAdapter,
     private readonly options: DocumentRequestLoaderOptions = {},
-  ) {}
+  ) {
+    this.ownership = destinationRequestOwnership(session)
+  }
 
   classifyTopLevelSource(source: string): TopLevelLocationDisposition {
     return classifyTopLevelLocation(this.session.tree, source)
@@ -118,8 +126,9 @@ export class DocumentRequestLoader {
   cancel(owner?: object): void {
     const active = this.active
     if (!active || (owner && active.owner !== owner)) return
-    active.controller.abort()
-    this.active = undefined
+    if (active.lease) this.ownership.cancel(active.lease)
+    else active.controller.abort()
+    if (this.active === active) this.active = undefined
   }
 
   resolveSource(source: string): string {
@@ -133,18 +142,35 @@ export class DocumentRequestLoader {
     owner?: object,
     options: DocumentLoadOptions = {},
   ): Promise<DocumentLoadReport> {
+    const treeGeneration = this.session.treeGeneration
     const requestedUrl = this.resolveSource(source)
-    this.cancel()
-
     const requestId = this.requestIds.next()
+    const controller = new AbortController()
+    const request: TurboRequest = Object.freeze({
+      headers: protocolRequestHeaders({
+        ...(this.options.capabilityHash ? { capabilityHash: this.options.capabilityHash } : {}),
+        requestId,
+      }),
+      method: "GET",
+      signal: controller.signal,
+      url: requestedUrl,
+    })
     const active: ActiveDocumentRequest = {
-      controller: new AbortController(),
+      controller,
       ...(owner ? { owner } : {}),
       requestId,
       requestedUrl,
-      treeGeneration: this.session.treeGeneration,
+      treeGeneration,
     }
+    const previous = this.active
     this.active = active
+    try {
+      active.lease = this.ownership.claimDocument(controller, treeGeneration)
+    } catch (error) {
+      controller.abort()
+      if (this.active === active) this.active = previous
+      throw error
+    }
     let responseStatus: number | undefined
     let commit:
       | Readonly<{
@@ -157,15 +183,8 @@ export class DocumentRequestLoader {
       | undefined
 
     try {
-      const response = await this.fetchAdapter.fetch({
-        headers: protocolRequestHeaders({
-          ...(this.options.capabilityHash ? { capabilityHash: this.options.capabilityHash } : {}),
-          requestId,
-        }),
-        method: "GET",
-        signal: active.controller.signal,
-        url: requestedUrl,
-      })
+      if (!this.owns(active)) return this.canceled(active)
+      const response = await this.fetchAdapter.fetch(request)
       if (!this.owns(active)) return this.canceled(active)
 
       responseStatus = response.status
@@ -312,10 +331,16 @@ export class DocumentRequestLoader {
   }
 
   private owns(active: ActiveDocumentRequest): boolean {
-    return this.active === active && this.session.treeGeneration === active.treeGeneration
+    return Boolean(
+      this.active === active &&
+        active.lease &&
+        this.ownership.owns(active.lease) &&
+        this.session.treeGeneration === active.treeGeneration,
+    )
   }
 
   private release(active: ActiveDocumentRequest): void {
+    if (active.lease) this.ownership.release(active.lease)
     if (this.active === active) this.active = undefined
   }
 }

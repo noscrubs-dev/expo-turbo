@@ -12,7 +12,8 @@ export interface FormSubmissionProposal {
   readonly plan: FormRequestPlan
 }
 
-interface FormSubmissionProposalIdentity {
+export interface FormSubmissionProposalIdentity {
+  readonly destination: FormSubmissionDestination
   readonly destinationFrame?: ProtocolElement
   readonly destinationFrameId?: string
   readonly form: ProtocolElement
@@ -27,7 +28,7 @@ export function admitFormSubmissionProposal(
   proposal: FormSubmissionProposal,
   identity: FormSubmissionProposalIdentity,
 ): FormSubmissionProposal {
-  admittedProposals.set(proposal, identity)
+  admittedProposals.set(proposal, Object.freeze({ ...identity }))
   return proposal
 }
 
@@ -35,10 +36,13 @@ export function admitFormSubmissionProposal(
 export function assertActiveFormSubmissionProposal(
   session: DocumentSession,
   proposal: FormSubmissionProposal,
-): void {
+): FormSubmissionProposalIdentity {
   const identity = admittedProposals.get(proposal)
   if (!identity || identity.session !== session) {
     throw new StateError("Form submission proposal was not issued by this document session")
+  }
+  if (proposal.destination !== identity.destination) {
+    throw new StateError("Form submission proposal destination identity is invalid")
   }
   if (
     session.treeGeneration !== identity.treeGeneration ||
@@ -66,4 +70,5 @@ export function assertActiveFormSubmissionProposal(
       })
     }
   }
+  return identity
 }
