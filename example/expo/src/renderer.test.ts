@@ -18,12 +18,22 @@ import {
   parseExpoTurboDocument,
 } from "expo-turbo/core"
 import {
+  createComponentActionRegistry,
+  createComponentActionRunner,
   createRegistry,
+  defineComponentAction,
+  defineComponentActionModule,
   defineComponent,
   defineComponentModule,
   stringCodec,
+  type ComponentActionStateStore,
 } from "expo-turbo/registry"
-import { ExpoTurboProvider, type ExpoTurboRenderError, ExpoTurboRoot } from "expo-turbo/react"
+import {
+  ExpoTurboProvider,
+  type ExpoTurboRenderError,
+  ExpoTurboRoot,
+  useComponentAction,
+} from "expo-turbo/react"
 
 const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean
@@ -153,6 +163,74 @@ describe("React protocol renderer", () => {
 
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Before")
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
+  })
+
+  test("invokes a provider-owned typed component action from a registered component", async () => {
+    const values = new Map<string, unknown>()
+    const state: ComponentActionStateStore = {
+      delete: (key) => {
+        values.delete(key)
+      },
+      get: (key) => values.get(key),
+      set: (key, value) => {
+        values.set(key, value)
+      },
+    }
+    const record = defineComponentAction({
+      action: "record",
+      handler: ({ params, state: actionState }) => {
+        actionState.set("recorded", params.value)
+        return params.value
+      },
+      schema: z.object({ value: z.string() }),
+    })
+    const actions = createComponentActionRunner(
+      createComponentActionRegistry(
+        defineComponentActionModule({
+          actions: [record],
+          name: "renderer-actions",
+          version: "0.1.0",
+        }),
+      ),
+      state,
+    )
+    function ActionTrigger({ value }: { value: string }): ReactNode {
+      const execute = useComponentAction(record)
+      return createElement("button", { onClick: () => execute({ value }) })
+    }
+    const trigger = defineComponent({
+      attributes: { value: { codec: stringCodec, prop: "value" } },
+      children: "none",
+      component: ActionTrigger,
+      schema: z.object({ value: z.string() }),
+      tag: "DemoTrigger",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [trigger],
+        name: "renderer-action-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoTrigger value="from-xml"/></Gallery>'),
+    )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          ExpoTurboProvider,
+          { actions, registry: componentRegistry, session },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const press = renderer.root.findByType("button").props.onClick
+    await act(async () => {
+      await press()
+    })
+    expect(state.get("recorded")).toBe("from-xml")
   })
 
   test("renders a matching Frame response without replacing its mounted wrapper", () => {

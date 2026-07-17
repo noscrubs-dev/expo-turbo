@@ -10,6 +10,7 @@ import { useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
+import { createDemoActionRunner } from "../demo-actions";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
@@ -25,6 +26,7 @@ export default function HomeScreen() {
     [],
   );
   const frames = useMemo(() => createDemoFrameControllers(session), [session]);
+  const actions = useMemo(() => createDemoActionRunner(), []);
 
   return (
     <ScrollView
@@ -66,6 +68,7 @@ export default function HomeScreen() {
         </Text>
       </View>
       <ExpoTurboProvider
+        actions={actions}
         frames={frames}
         registry={DEMO_REGISTRY}
         renderError={({ error }) => (
