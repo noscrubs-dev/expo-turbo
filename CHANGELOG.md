@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add the same-origin Frame request loader with protocol headers, MIME validation, empty-response handling, cancellation, and request-epoch protection.
 - Add exact Frame response extraction, wrapper-preserving child commits, redirected source tracking, embedded Stream processing, and missing-frame failures.
 - Add ordered structural Turbo Stream dispatch with target/selector resolution, payload cloning, ID collision handling, no-op semantics, and per-action failure isolation.
 - Add the static React protocol renderer, revision-cached document session, isolated node subscriptions, renderer error surfaces, and a real XML-rendered Expo gallery scenario.
