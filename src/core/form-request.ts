@@ -1,5 +1,6 @@
 import type { TurboRequest, TurboRequestBody } from "../adapters"
 import { RequestError, TargetError } from "./errors"
+import { admitFormRequestPlan } from "./form-request-plan"
 import type { SuccessfulFormEntry } from "./forms"
 import { protocolRequestHeaders, resolveSameOriginProtocolUrl } from "./protocol-request"
 
@@ -42,7 +43,10 @@ export interface BuildFormRequestOptions {
   readonly submitter?: ActivatedFormSubmitter
 }
 
+declare const FORM_REQUEST_PLAN: unique symbol
+
 export interface FormRequestPlan {
+  readonly [FORM_REQUEST_PLAN]: true
   readonly effectiveMethod: FormSubmissionMethod
   readonly encoding: FormSubmissionEncoding
   readonly entries: readonly SuccessfulFormEntry[]
@@ -339,11 +343,12 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
     })
   }
 
-  return Object.freeze({
+  const plan = Object.freeze({
     effectiveMethod: effective,
     encoding,
     entries: requestEntries,
     request,
     sourceMethod: source,
-  })
+  }) as FormRequestPlan
+  return admitFormRequestPlan(plan)
 }
