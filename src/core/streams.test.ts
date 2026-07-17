@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { z } from "zod"
 
-import { TargetError } from "./errors"
+import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
+import { RegistryError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment, type StreamActionReport } from "./streams"
@@ -172,5 +174,80 @@ describe("Turbo Stream dispatcher", () => {
     expect(errors).toHaveLength(2)
     expect(document.tree.getElementById("list")?.children).toHaveLength(0)
     expect(document.tree.getElementById("remove-me")).toBeUndefined()
+  })
+
+  test("dispatches registered custom actions with typed params, targets, and template payload", () => {
+    const document = session('<Gallery><Notice id="notice"/></Gallery>')
+    const calls: string[] = []
+    const announce = defineStreamAction({
+      action: "announce",
+      handler: ({ params, session: activeSession, targets, template }) => {
+        calls.push(`${params.message}:${params.priority}:${template.length}`)
+        for (const target of targets) {
+          activeSession.setAttribute(target.key, "data-announcement", params.message)
+        }
+      },
+      schema: z.object({ message: z.string().min(1), priority: z.coerce.number().int() }),
+    })
+    const customActions = createStreamActionRegistry(announce)
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="announce" target="notice" data-message="Ready" data-priority="2"><template><Badge/></template></turbo-stream>',
+      { customActions },
+    ).actions[0]
+
+    expect(report).toMatchObject({
+      action: "announce",
+      appliedTargets: 1,
+      matchedTargets: 1,
+      status: "applied",
+    })
+    expect(calls).toEqual(["Ready:2:1"])
+    const notice = document.tree.getElementById("notice")
+    expect(notice).toBeDefined()
+    expect(notice && attributeValue(notice, "data-announcement")).toBe("Ready")
+    expect(customActions.actions).toEqual(["announce"])
+  })
+
+  test("isolates custom action validation and handler failures from later siblings", () => {
+    const document = session('<Gallery><Notice id="notice"/><Victim id="victim"/></Gallery>')
+    const announce = defineStreamAction({
+      action: "announce",
+      handler: ({ params }) => {
+        if (params.message === "explode") throw new Error("host action failed")
+      },
+      schema: z.object({ message: z.string().min(1) }),
+    })
+    const reports = dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="announce" data-message="" />
+       <turbo-stream action="announce" data-message="ok" data-unknown="rejected" />
+       <turbo-stream action="announce" data-message="explode" />
+       <turbo-stream action="remove" target="victim" />`,
+      { customActions: createStreamActionRegistry(announce) },
+    ).actions
+
+    expect(reports.map((report) => report.status)).toEqual(["error", "error", "error", "applied"])
+    expect(reports.slice(0, 3).every((report) => report.error?.code === "action")).toBe(true)
+    expect(document.tree.getElementById("victim")).toBeUndefined()
+  })
+
+  test("rejects reserved and duplicate custom action ownership", () => {
+    expect(() =>
+      defineStreamAction({ action: "remove", handler: () => undefined, schema: z.object({}) }),
+    ).toThrow(RegistryError)
+
+    const first = defineStreamAction({
+      action: "announce",
+      handler: () => undefined,
+      schema: z.object({}),
+    })
+    const duplicate = defineStreamAction({
+      action: "announce",
+      handler: () => undefined,
+      schema: z.object({}),
+    })
+    expect(() => createStreamActionRegistry(first, duplicate)).toThrow(/Duplicate Stream action/)
   })
 })
