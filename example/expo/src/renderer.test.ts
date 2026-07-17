@@ -150,6 +150,98 @@ function render(
   return renderer
 }
 
+function formScopeUnmountFixture(autoSubmitRequestId?: string) {
+  const bindings = new Set<ExpoTurboFormBinding>()
+  const pending: {
+    request: TurboRequest
+    resolve: (response: TurboResponse) => void
+  }[] = []
+  let automaticSubmission: Promise<unknown> | undefined
+
+  function NativeForm(
+    props: Readonly<{
+      action?: string
+      children?: ReactNode
+      method?: string
+      stream?: string
+    }>,
+  ): ReactNode {
+    return createElement(ExpoTurboFormScope, null, props.children)
+  }
+  function CaptureForm(): ReactNode {
+    const binding = useExpoTurboForm()
+    useEffect(() => {
+      bindings.add(binding)
+      if (autoSubmitRequestId && !automaticSubmission) {
+        automaticSubmission = binding.submit({ protocol: { requestId: autoSubmitRequestId } })
+      }
+      return () => {
+        bindings.delete(binding)
+      }
+    }, [binding])
+    return createElement("form-capture")
+  }
+
+  const form = defineComponent({
+    attributes: {
+      action: { codec: stringCodec, prop: "action" },
+      "data-turbo-stream": { codec: stringCodec, prop: "stream" },
+      method: { codec: stringCodec, prop: "method" },
+    },
+    children: "nodes",
+    component: NativeForm,
+    schema: z.object({
+      action: z.string().optional(),
+      method: z.string().optional(),
+      stream: z.string().optional(),
+    }),
+    tag: "UnmountForm",
+  })
+  const capture = defineComponent({
+    attributes: {},
+    children: "none",
+    component: CaptureForm,
+    schema: z.object({}),
+    tag: "CaptureUnmountForm",
+  })
+  const registry = registryWithCounters().use(
+    defineComponentModule({
+      components: [form, capture],
+      name: "form-scope-unmount-components",
+      version: "0.1.0",
+    }),
+  )
+  const session = new DocumentSession(
+    parseExpoTurboDocument(
+      '<Gallery><UnmountForm id="form" action="/submit" method="post" data-turbo-stream=""><CaptureUnmountForm /></UnmountForm><DemoText id="status">Before</DemoText></Gallery>',
+      { url: "https://example.test/current" },
+    ),
+  )
+  const controller = new FormSubmissionController(session, {
+    fetch: (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+  })
+  const provider = (forms: DocumentFormControls) =>
+    createElement(
+      ExpoTurboProvider,
+      { forms, registry, session },
+      createElement(ExpoTurboRoot),
+    )
+
+  return {
+    automaticSubmission: () => automaticSubmission,
+    binding: () => {
+      const binding = bindings.values().next().value
+      if (!binding) throw new Error("form binding was not captured")
+      return binding
+    },
+    controller,
+    forms: () => new DocumentFormControls(session, { submissionController: controller }),
+    pending,
+    provider,
+    session,
+  }
+}
+
 function renderDocumentLinks(
   xml: string,
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
@@ -1100,6 +1192,160 @@ describe("React protocol renderer", () => {
     expect(other.successfulEntries()).toEqual([])
     forms.dispose()
     expect(() => replacement.successfulEntries()).toThrow(/disposed/)
+  })
+
+  test("cancels the active form after its last mounted scope unmounts", async () => {
+    const fixture = formScopeUnmountFixture()
+    const forms = fixture.forms()
+    const controls = forms.controlsFor("id:form")
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(fixture.provider(forms))
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "provider-unmount" } })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("form request was not captured")
+    expect(controls.submissionState.busy).toBe(true)
+
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
+
+    expect(request.request.signal?.aborted).toBe(true)
+    expect(await submission).toMatchObject({ requestId: "provider-unmount", status: "canceled" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.isDisposed).toBe(false)
+    expect(forms.isDisposed).toBe(false)
+    expect(fixture.session.tree.getElementById("form")).toBeDefined()
+  })
+
+  test("keeps an active form through StrictMode replay and cancels its real unmount", async () => {
+    const fixture = formScopeUnmountFixture("strict-replay")
+    const forms = fixture.forms()
+    const controls = forms.controlsFor("id:form")
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(createElement(StrictMode, null, fixture.provider(forms)))
+      await Promise.resolve()
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const request = fixture.pending[0]
+    const submission = fixture.automaticSubmission()
+    if (!request || !submission) throw new Error("automatic form request was not captured")
+
+    expect(fixture.pending).toHaveLength(1)
+    expect(request.request.signal?.aborted).toBe(false)
+    expect(controls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "strict-replay",
+      status: "submitting",
+    })
+
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
+
+    expect(request.request.signal?.aborted).toBe(true)
+    expect(await submission).toMatchObject({ requestId: "strict-replay", status: "canceled" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+  })
+
+  test("cancels only after the last provider releases an exact form activity", async () => {
+    const fixture = formScopeUnmountFixture()
+    const formsA = fixture.forms()
+    const formsB = fixture.forms()
+    const controlsA = formsA.controlsFor("id:form")
+    const controlsB = formsB.controlsFor("id:form")
+    let rendererA: ReactTestRenderer | undefined
+    let rendererB: ReactTestRenderer | undefined
+    act(() => {
+      rendererA = create(fixture.provider(formsA))
+      rendererB = create(fixture.provider(formsB))
+    })
+    if (!rendererA || !rendererB) throw new Error("renderers were not created")
+    expect(controlsA).not.toBe(controlsB)
+
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "shared-owner" } })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("shared form request was not captured")
+    expect(controlsA.submissionState).toBe(controlsB.submissionState)
+
+    await act(async () => {
+      rendererA?.unmount()
+      await Promise.resolve()
+    })
+    expect(request.request.signal?.aborted).toBe(false)
+    expect(controlsB.submissionState).toMatchObject({ busy: true, requestId: "shared-owner" })
+    expect(formsA.isDisposed).toBe(false)
+
+    await act(async () => {
+      rendererB?.unmount()
+      await Promise.resolve()
+    })
+    expect(request.request.signal?.aborted).toBe(true)
+    expect(await submission).toMatchObject({ requestId: "shared-owner", status: "canceled" })
+    expect(controlsA.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(formsA.isDisposed).toBe(false)
+    expect(formsB.isDisposed).toBe(false)
+  })
+
+  test("lets a self-removing form response apply its later Stream actions", async () => {
+    const fixture = formScopeUnmountFixture()
+    const forms = fixture.forms()
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(fixture.provider(forms))
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+    await act(async () => {
+      submission = fixture.binding().submit({ protocol: { requestId: "self-removal" } })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("self-removing form request was not captured")
+    let report: Awaited<typeof submission> | undefined
+    await act(async () => {
+      request.resolve({
+        headers: { "Content-Type": "text/vnd.turbo-stream.html" },
+        redirected: false,
+        status: 200,
+        text: async () => `<turbo-stream action="remove" target="form"></turbo-stream>
+          <turbo-stream action="update" target="status"><template>After</template></turbo-stream>`,
+        url: request.request.url,
+      })
+      report = await submission
+      await Promise.resolve()
+    })
+
+    expect(report).toMatchObject({
+      application: "stream",
+      status: "applied",
+      streams: {
+        actions: [
+          { action: "remove", status: "applied" },
+          { action: "update", status: "applied" },
+        ],
+        interrupted: false,
+      },
+    })
+    expect(request.request.signal?.aborted).toBe(false)
+    expect(fixture.session.tree.getElementById("form")).toBeUndefined()
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+    expect(forms.isDisposed).toBe(false)
   })
 
   test("reports a form control rendered outside an explicit form scope", () => {

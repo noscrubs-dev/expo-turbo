@@ -325,6 +325,11 @@ export class FormControlRegistry {
     this.submissionActivity.cancelActive()
   }
 
+  retainSubmissionScope(): () => void {
+    this.assertActive()
+    return this.submissionActivity.retainScope()
+  }
+
   controlSubmissionState(nodeKey: string): FormSubmitterActivitySnapshot {
     const node = this.activeControlOrUndefined(nodeKey)
     return node ? this.submissionActivity.stateForSubmitter(node) : INACTIVE_SUBMITTER_STATE
