@@ -1,5 +1,5 @@
 import type { NavigationAdapter, VisibilityAdapter } from "expo-turbo/adapters";
-import type { DocumentSession } from "expo-turbo/core";
+import type { DocumentSession, DocumentVisitController } from "expo-turbo/core";
 import {
   EXPO_TURBO_MIME_TYPE,
   FrameControllerRegistry,
@@ -9,6 +9,7 @@ import {
 export function createDemoFrameControllers(
   session: DocumentSession,
   navigation: NavigationAdapter,
+  documentController: DocumentVisitController,
 ): FrameControllerRegistry {
   let requestId = 0;
   const visibility: VisibilityAdapter = {
@@ -48,5 +49,6 @@ export function createDemoFrameControllers(
     ),
     visibility,
     navigation,
+    documentController,
   );
 }

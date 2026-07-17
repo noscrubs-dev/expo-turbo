@@ -122,8 +122,8 @@ export default function HomeScreen() {
     [router],
   );
   const frames = useMemo(
-    () => createDemoFrameControllers(session, navigation),
-    [navigation, session],
+    () => createDemoFrameControllers(session, navigation, documentController),
+    [documentController, navigation, session],
   );
   useEffect(() => () => documentController.cancel(), [documentController]);
 

@@ -1,10 +1,15 @@
-import type { ClockAdapter } from "../adapters"
+import type { ClockAdapter, NavigationAdapter, VisitAction } from "../adapters"
 import {
+  type DocumentCommitCandidate,
   DocumentCommitError,
   type DocumentLoadReport,
   type DocumentRequestLoader,
 } from "./document-loader"
-import { RequestError } from "./errors"
+import { RequestError, TargetError } from "./errors"
+import {
+  classifyTopLevelLocationAgainstRoot,
+  type TopLevelLocationDisposition,
+} from "./visitability"
 
 export const DOCUMENT_VISIT_PROGRESS_DELAY_MS = 500
 
@@ -21,6 +26,28 @@ export interface DocumentVisitControllerOptions {
   readonly onObserverError?: (error: AggregateError) => void
   readonly progressDelayMs?: number
 }
+
+export interface DocumentVisitOptions {
+  readonly action?: VisitAction
+  readonly navigation?: NavigationAdapter
+}
+
+export type DocumentVisitDelegation =
+  | Readonly<{
+      kind: "external"
+      reason: "external"
+      status: "delegated"
+      url: string
+    }>
+  | Readonly<{
+      action: VisitAction
+      kind: "navigation"
+      reason: "outside-root" | "unvisitable-extension"
+      status: "delegated"
+      url: string
+    }>
+
+export type DocumentVisitResult = DocumentLoadReport | DocumentVisitDelegation
 
 export type DocumentVisitListener = () => void
 export type DocumentVisitErrorListener = (error: Error) => void
@@ -55,12 +82,21 @@ export class DocumentVisitController {
     return this.snapshot
   }
 
-  visit(source: string): Promise<DocumentLoadReport> {
-    let admittedSource: string
+  visit(source: string, options: DocumentVisitOptions = {}): Promise<DocumentVisitResult> {
+    const action = options.action ?? "advance"
+    if (action !== "advance") {
+      return Promise.reject(
+        new TargetError("Document replace and restore visits require history support"),
+      )
+    }
+    let admission: TopLevelLocationDisposition
     try {
-      admittedSource = this.loader.resolveSource(source)
+      admission = this.loader.classifyTopLevelSource(source)
     } catch (error) {
       return Promise.reject(error)
+    }
+    if (admission.classification !== "visitable") {
+      return this.delegateInitial(admission, action, options.navigation)
     }
 
     const epoch = ++this.visitEpoch
@@ -68,7 +104,16 @@ export class DocumentVisitController {
     this.clearProgress()
     this.progressVisible = false
     this.status = "started"
-    const loaded = this.loader.load(admittedSource, this.requestOwner)
+    let redirect: TopLevelLocationDisposition | undefined
+    const loaded = this.loader.load(admission.url, this.requestOwner, {
+      beforeCommit: (candidate) => {
+        if (!candidate.redirected || candidate.classification !== "success") return "commit"
+        const disposition = this.redirectDisposition(candidate)
+        if (disposition.classification === "visitable") return "commit"
+        redirect = disposition
+        return "discard"
+      },
+    })
     if (epoch === this.visitEpoch && this.status === "started") {
       this.progressHandle = this.clock.setTimeout(() => {
         if (epoch !== this.visitEpoch || this.status !== "started") return
@@ -80,8 +125,38 @@ export class DocumentVisitController {
     }
 
     return loaded.then(
-      (report) => {
+      async (report): Promise<DocumentVisitResult> => {
         if (epoch !== this.visitEpoch) return report
+        if (report.status === "discarded") {
+          if (
+            !redirect ||
+            redirect.classification === "external" ||
+            redirect.classification === "visitable"
+          ) {
+            const error = new RequestError("Discarded document redirect has no delegation target", {
+              method: "GET",
+              responseStatus: report.responseStatus,
+            })
+            this.finish("failed")
+            this.notifyError(error)
+            throw error
+          }
+          try {
+            const result = await this.delegateNavigation(redirect, "replace", options.navigation)
+            if (epoch === this.visitEpoch) this.finish("completed")
+            return result
+          } catch (error) {
+            const reported =
+              error instanceof Error
+                ? error
+                : new RequestError("Document redirect delegation failed")
+            if (epoch === this.visitEpoch) {
+              this.finish("failed")
+              this.notifyError(reported)
+            }
+            throw reported
+          }
+        }
         if (report.status === "canceled") this.finish("canceled")
         else this.finish(report.classification === "success" ? "completed" : "failed")
         return report
@@ -116,6 +191,57 @@ export class DocumentVisitController {
   subscribeErrors(listener: DocumentVisitErrorListener): () => void {
     this.errorListeners.add(listener)
     return () => this.errorListeners.delete(listener)
+  }
+
+  private delegateInitial(
+    disposition: Exclude<TopLevelLocationDisposition, { classification: "visitable" }>,
+    action: VisitAction,
+    navigation: NavigationAdapter | undefined,
+  ): Promise<DocumentVisitDelegation> {
+    if (disposition.classification === "external") {
+      if (!navigation) {
+        return Promise.reject(new TargetError("External document visits require navigation"))
+      }
+      return Promise.resolve()
+        .then(() => navigation.openExternal(disposition.url))
+        .then(() =>
+          Object.freeze({
+            kind: "external",
+            reason: "external",
+            status: "delegated",
+            url: disposition.url,
+          }),
+        )
+    }
+    return this.delegateNavigation(disposition, action, navigation)
+  }
+
+  private delegateNavigation(
+    disposition: Extract<
+      TopLevelLocationDisposition,
+      { classification: "outside-root" | "unvisitable-extension" }
+    >,
+    action: VisitAction,
+    navigation: NavigationAdapter | undefined,
+  ): Promise<DocumentVisitDelegation> {
+    if (!navigation) {
+      return Promise.reject(new TargetError("Unvisitable document visits require navigation"))
+    }
+    return Promise.resolve()
+      .then(() => navigation.visit(disposition.url, action))
+      .then(() =>
+        Object.freeze({
+          action,
+          kind: "navigation",
+          reason: disposition.classification,
+          status: "delegated",
+          url: disposition.url,
+        }),
+      )
+  }
+
+  private redirectDisposition(candidate: DocumentCommitCandidate): TopLevelLocationDisposition {
+    return classifyTopLevelLocationAgainstRoot(candidate.url, candidate.url, candidate.rootLocation)
   }
 
   private clearProgress(): void {

@@ -8,7 +8,7 @@ import {
 
 import { DEMO_DOCUMENT } from "./demo-registry";
 
-const LINKED_DOCUMENT = `<Gallery>
+const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="linked-document" title="Document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>The app-owned native link used the host-injected document controller and replaced this session from XML.</DemoText>
   </DemoCard>

@@ -1,4 +1,5 @@
 import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters"
+import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller"
 import { FrameMissingError, TargetError } from "./errors"
 import { FrameController } from "./frame-controller"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
@@ -33,6 +34,7 @@ export type FrameVisitResult =
   | Readonly<{
       action: VisitAction
       kind: "top"
+      outcome?: DocumentVisitResult
       target: Extract<ResolvedFrameTarget, { kind: "top" }>
       url: string
     }>
@@ -56,6 +58,7 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     private readonly loader: FrameRequestLoader,
     private readonly visibility?: VisibilityAdapter,
     private readonly navigation?: NavigationAdapter,
+    private readonly topLevelVisits?: Pick<DocumentVisitController, "visit">,
   ) {}
 
   get(frameId: string): FrameController {
@@ -108,9 +111,17 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       return Object.freeze({ kind: "external", target, url: resolved.url })
     }
     if (target.kind === "top") {
-      if (!this.navigation) throw new TargetError("Top-level Frame visits require navigation")
       const action = options.action ?? "advance"
-      await this.navigation.visit(resolved.url, action)
+      if (this.topLevelVisits) {
+        const outcome = await this.topLevelVisits.visit(resolved.url, {
+          action,
+          ...(this.navigation ? { navigation: this.navigation } : {}),
+        })
+        return Object.freeze({ action, kind: "top", outcome, target, url: resolved.url })
+      } else {
+        if (!this.navigation) throw new TargetError("Top-level Frame visits require navigation")
+        await this.navigation.visit(resolved.url, action)
+      }
       return Object.freeze({ action, kind: "top", target, url: resolved.url })
     }
 
