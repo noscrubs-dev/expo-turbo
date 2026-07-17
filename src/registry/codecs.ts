@@ -40,6 +40,40 @@ export function enumCodec<const Values extends readonly [string, ...string[]]>(
   })
 }
 
+export function tokenListCodec<const Values extends readonly string[]>(
+  name: string,
+  values: Values,
+  options: Readonly<{ maxTokens: number }>,
+): AttributeCodec<Values[number][]> {
+  if (!name.trim()) throw new Error("Token-list codecs require a capability name")
+  if (!Number.isInteger(options.maxTokens) || options.maxTokens < 1) {
+    throw new Error("Token-list codecs require a positive integer token limit")
+  }
+  const admitted = new Set<string>()
+  for (const value of values) {
+    if (value.length > 64 || !/^[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*$/.test(value)) {
+      throw new Error("Token-list codec values must be bounded lowercase semantic tokens")
+    }
+    if (admitted.has(value)) throw new Error(`Duplicate token-list codec value ${value}`)
+    admitted.add(value)
+  }
+  const capabilityValues = [...admitted].sort()
+
+  const capability = JSON.stringify([name, options.maxTokens, capabilityValues])
+
+  return codec(`tokens:${capability}`, (value) => {
+    const tokens = value.trim() ? value.trim().split(/\s+/) : []
+    if (tokens.length > options.maxTokens) throw new Error("Token list exceeds its limit")
+    const used = new Set<string>()
+    for (const token of tokens) {
+      if (!admitted.has(token)) throw new Error("Unknown token-list value")
+      if (used.has(token)) throw new Error("Duplicate token-list value")
+      used.add(token)
+    }
+    return Object.freeze(tokens as Values[number][]) as Values[number][]
+  })
+}
+
 function utf8ByteLength(value: string): number {
   let bytes = 0
   for (const character of value) {

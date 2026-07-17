@@ -5,8 +5,17 @@ import { z } from "zod"
 import { PropsError, RegistryError } from "../core/errors"
 import { parseExpoTurboDocument } from "../core/parser"
 import { isElement } from "../core/tree"
-import { booleanCodec, enumCodec, integerCodec, jsonCodec, stringCodec } from "./codecs"
+import {
+  booleanCodec,
+  enumCodec,
+  integerCodec,
+  jsonCodec,
+  stringCodec,
+  tokenListCodec,
+} from "./codecs"
 import { createRegistry, defineComponent, defineComponentModule } from "./registry"
+
+const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
 
 const card = defineComponent({
   aliases: ["LegacyCard"],
@@ -14,6 +23,10 @@ const card = defineComponent({
     count: { codec: integerCodec, prop: "count" },
     enabled: { codec: booleanCodec, prop: "enabled" },
     heading: { codec: stringCodec, prop: "title" },
+    "style-tokens": {
+      codec: tokenListCodec("card-style", CARD_STYLE_TOKENS, { maxTokens: 2 }),
+      prop: "styleTokens",
+    },
     tone: { codec: enumCodec(["neutral", "positive"]), prop: "tone" },
   },
   children: "nodes",
@@ -21,6 +34,7 @@ const card = defineComponent({
   schema: z.object({
     count: z.number().int(),
     enabled: z.boolean().default(true),
+    styleTokens: z.array(z.enum(CARD_STYLE_TOKENS)).readonly().default([]),
     title: z.string().min(1),
     tone: z.enum(["neutral", "positive"]).default("neutral"),
   }),
@@ -52,6 +66,7 @@ describe("typed component registry", () => {
     const typedProps: ComponentProps<typeof card.component> = {
       count: 1,
       enabled: true,
+      styleTokens: [],
       title: "Typed",
       tone: "positive",
     }
@@ -60,12 +75,18 @@ describe("typed component registry", () => {
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
       element(
-        '<DemoCard id="card" class="featured" data-state="ready" heading="Hello" count="02" enabled="false"><DemoText>Child</DemoText></DemoCard>',
+        '<DemoCard id="card" class="featured" data-state="ready" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
       ),
     )
 
     expect(decoded.definition).toBe(card)
-    expect(decoded.props).toEqual({ count: 2, enabled: false, title: "Hello", tone: "neutral" })
+    expect(decoded.props).toEqual({
+      count: 2,
+      enabled: false,
+      styleTokens: ["tone:featured", "space:roomy"],
+      title: "Hello",
+      tone: "neutral",
+    })
     expect(decoded.protocol).toEqual({
       classNames: ["featured"],
       data: { state: "ready" },
@@ -85,6 +106,29 @@ describe("typed component registry", () => {
     ).toThrow(PropsError)
     expect(() =>
       registry.decode(element('<DemoCard heading="Hello" count="1" enabled="yes" />')),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.decode(element('<DemoCard heading="Hello" count="1" style-tokens="missing" />')),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.decode(
+        element(
+          '<DemoCard heading="Hello" count="1" style-tokens="tone:featured tone:featured" />',
+        ),
+      ),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.decode(
+        element(
+          '<DemoCard heading="Hello" count="1" style-tokens="tone:featured space:roomy layout:row" />',
+        ),
+      ),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.decode(element('<DemoCard heading="Hello" count="1" style="{}" />')),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.decode(element('<DemoCard heading="Hello" count="1" className="dynamic" />')),
     ).toThrow(PropsError)
     expect(() => registry.decode(element('<DemoCard heading="" count="1" />'))).toThrow(PropsError)
     expect(() => registry.decode(element("<DemoText><DemoCard /></DemoText>"))).toThrow(
@@ -160,6 +204,17 @@ describe("typed component registry", () => {
     expect(decoded.warnings).toEqual(["Use active instead"])
     expect(() => first.decode(element(`<DemoState payload="${"x".repeat(65)}" />`))).toThrow(
       PropsError,
+    )
+
+    const canonicalTokens = tokenListCodec("card-style", CARD_STYLE_TOKENS, { maxTokens: 2 })
+    expect(
+      tokenListCodec("card-style", [...CARD_STYLE_TOKENS].reverse(), { maxTokens: 2 }).name,
+    ).toBe(canonicalTokens.name)
+    expect(tokenListCodec("card-style", CARD_STYLE_TOKENS, { maxTokens: 3 }).name).not.toBe(
+      canonicalTokens.name,
+    )
+    expect(tokenListCodec("card-style:tone", ["featured"], { maxTokens: 2 }).name).not.toBe(
+      tokenListCodec("card-style", ["tone:featured"], { maxTokens: 2 }).name,
     )
   })
 })

@@ -1,4 +1,7 @@
 import type { ProtocolInspectorAdapter } from "../core/inspector"
+import type { StyleAdapter } from "./styles"
+
+export * from "./styles"
 
 export type Unsubscribe = () => void
 
@@ -72,10 +75,6 @@ export type ScrollAlignment = "start" | "center" | "end" | "nearest"
 
 export interface ScrollAdapter {
   scrollTo(id: string, alignment: ScrollAlignment): Promise<void> | void
-}
-
-export interface StyleAdapter<TStyle = unknown> {
-  resolve(tokens: readonly string[]): TStyle
 }
 
 export interface StorageAdapter {

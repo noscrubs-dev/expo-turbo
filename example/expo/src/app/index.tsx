@@ -12,6 +12,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
+import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
 
@@ -78,6 +79,7 @@ export default function HomeScreen() {
         )}
         session={session}
         state={actionRuntime.state}
+        styles={DEMO_STYLE_ADAPTER}
       >
         <ExpoTurboRoot />
       </ExpoTurboProvider>
