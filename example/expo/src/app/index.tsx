@@ -9,12 +9,13 @@ import {
 import type { NavigationAdapter } from "expo-turbo/adapters";
 import {
   type ExpoTurboDocumentBoundaryProps,
+  type ExpoTurboFormBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   ExpoTurboRoot,
 } from "expo-turbo/react";
 import { type Href, useRouter } from "expo-router";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
@@ -83,6 +84,83 @@ function DemoDocumentBoundary({
           <Text selectable style={{ color: "#435160", fontSize: 12 }}>
             Visit is taking longer than 500 ms…
           </Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function DemoFormBoundary({
+  accessibilityState,
+  children,
+  dismissTerminal,
+  retryFailure,
+  state,
+  terminalState,
+}: ExpoTurboFormBoundaryProps) {
+  const retryRequestId = useRef(0);
+  const failed =
+    terminalState.status === "failed" ||
+    terminalState.status === "committed-error";
+  const retryable =
+    terminalState.status === "failed" &&
+    terminalState.retryDisposition === "safe";
+  const label = state.busy
+    ? "Submitting current form"
+    : terminalState.status === "none"
+      ? "No terminal submission result"
+      : terminalState.status === "failed" ||
+          terminalState.status === "committed-error"
+        ? `${terminalState.error.name}: ${terminalState.error.message}`
+        : `Last submission: ${terminalState.status}`;
+
+  return (
+    <View style={{ gap: 10 }}>
+      <View
+        accessibilityLabel={label}
+        accessibilityState={accessibilityState}
+        accessible
+        style={{
+          backgroundColor: failed ? "#fff1f0" : "#eef6ff",
+          borderColor: failed ? "#d14343" : "#9bbce0",
+          borderRadius: 10,
+          borderWidth: 1,
+          gap: 8,
+          padding: 10,
+        }}
+      >
+        <Text selectable style={{ color: failed ? "#8d2020" : "#435160", fontSize: 12 }}>
+          {label}
+        </Text>
+        {retryable ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={state.busy}
+            onPress={() => {
+              void retryFailure({
+                protocol: {
+                  requestId: `demo-form-retry-${++retryRequestId.current}`,
+                },
+              }).catch(() => undefined);
+            }}
+            style={({ pressed }) => ({
+              alignSelf: "flex-start",
+              backgroundColor: pressed ? "#19375a" : "#285589",
+              borderRadius: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+            })}
+          >
+            <Text style={{ color: "white", fontWeight: "600" }}>
+              Retry from current values
+            </Text>
+          </Pressable>
+        ) : null}
+        {terminalState.status !== "none" && !state.busy ? (
+          <Pressable accessibilityRole="button" onPress={dismissTerminal}>
+            <Text style={{ color: "#285589", fontSize: 12 }}>Dismiss result</Text>
+          </Pressable>
         ) : null}
       </View>
       {children}
@@ -181,6 +259,7 @@ export default function HomeScreen() {
         documentComponent={DemoDocumentBoundary}
         documentController={documentController}
         frameComponent={DemoFrameBoundary}
+        formComponent={DemoFormBoundary}
         frames={frames}
         forms={forms}
         navigation={navigation}

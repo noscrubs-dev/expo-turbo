@@ -30,6 +30,7 @@ import { RegistryError, StateError, TargetError } from "../core/errors"
 import type { FormRequestPlan } from "../core/form-request"
 import type {
   FormSubmissionActivitySnapshot,
+  FormSubmissionTerminalSnapshot,
   FormSubmitterActivitySnapshot,
 } from "../core/form-submission-activity"
 import type {
@@ -39,6 +40,7 @@ import type {
 import type { FormSubmissionProposal } from "../core/form-submission-proposal"
 import type {
   ActiveFormRequestPlanOptions,
+  ActiveFormRetryOptions,
   ActiveFormSubmissionProposalOptions,
   ActiveFormSubmitOptions,
   DocumentFormControls,
@@ -118,6 +120,7 @@ export interface ExpoTurboFormAccessibilityState {
 export interface ExpoTurboFormBinding {
   readonly accessibilityState: ExpoTurboFormAccessibilityState
   cancelSubmission(): void
+  dismissTerminal(): void
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
   readonly submissionProposal: (
@@ -127,10 +130,19 @@ export interface ExpoTurboFormBinding {
     options?: SuccessfulFormEntriesOptions,
   ) => readonly SuccessfulFormEntry[]
   readonly state: FormSubmissionActivitySnapshot
+  readonly terminalState: FormSubmissionTerminalSnapshot
+  retryFailure(
+    options: ActiveFormRetryOptions,
+    controllerOptions?: FormSubmissionControllerSubmitOptions,
+  ): Promise<FormSubmissionReport>
   submit(
     options: ActiveFormSubmitOptions,
     controllerOptions?: FormSubmissionControllerSubmitOptions,
   ): Promise<FormSubmissionReport>
+}
+
+export interface ExpoTurboFormBoundaryProps extends ExpoTurboFormBinding {
+  readonly children?: ReactNode
 }
 
 export interface ExpoTurboFormControlAccessibilityState {
@@ -156,6 +168,7 @@ interface RendererContextValue {
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
+  readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
@@ -195,6 +208,7 @@ export interface ExpoTurboProviderProps {
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
+  readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly frames?: FrameControllerCollection
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
@@ -232,6 +246,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentComponent: props.documentComponent,
       documentController: props.documentController,
       frameComponent: props.frameComponent,
+      formComponent: props.formComponent,
       frames: props.frames,
       forms: props.forms,
       onError: props.onError,
@@ -247,6 +262,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentComponent,
       props.documentController,
       props.frameComponent,
+      props.formComponent,
       props.frames,
       props.forms,
       props.onError,
@@ -406,7 +422,7 @@ export interface ExpoTurboFormScopeProps {
  * effect replay; exact tree replacement remains its disposal boundary.
  */
 export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
-  const { forms } = useRenderer()
+  const { formComponent: FormComponent, forms } = useRenderer()
   const nodeKey = useContext(ProtocolNodeContext)
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
@@ -421,13 +437,24 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   )
   const snapshot = useCallback(() => registry.submissionState, [registry])
   const state = useSyncExternalStore(subscribe, snapshot, snapshot)
+  const subscribeTerminal = useCallback(
+    (listener: () => void) => registry.subscribeSubmissionTerminal(listener),
+    [registry],
+  )
+  const terminalSnapshot = useCallback(() => registry.submissionTerminalState, [registry])
+  const terminalState = useSyncExternalStore(subscribeTerminal, terminalSnapshot, terminalSnapshot)
   const binding = useMemo<ExpoTurboFormBinding>(
     () =>
       Object.freeze({
         accessibilityState: Object.freeze({ busy: state.busy }),
         cancelSubmission: () => registry.cancelSubmission(),
+        dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey: nodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        retryFailure: (
+          options: ActiveFormRetryOptions,
+          controllerOptions?: FormSubmissionControllerSubmitOptions,
+        ) => registry.retryFailure(options, controllerOptions),
         state,
         submit: (
           options: ActiveFormSubmitOptions,
@@ -437,17 +464,21 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
           registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
+        terminalState,
       }),
-    [nodeKey, registry, state],
+    [nodeKey, registry, state, terminalState],
   )
   const value = useMemo<ExpoTurboFormContextValue>(
     () => Object.freeze({ binding, registry }),
     [binding, registry],
   )
+  const contents = FormComponent
+    ? createElement(FormComponent, { ...binding }, props.children)
+    : props.children
   return createElement(
     StateScopeBoundary,
     { kind: "form", nodeKey },
-    createElement(FormContext.Provider, { value }, props.children),
+    createElement(FormContext.Provider, { value }, contents),
   )
 }
 

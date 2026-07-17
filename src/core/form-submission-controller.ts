@@ -4,7 +4,7 @@ import {
   destinationRequestOwnership,
   type FrameRequestCheckpoint,
 } from "./destination-request-ownership"
-import { ExpoTurboError, RequestError, StateError } from "./errors"
+import { ExpoTurboError, type ExpoTurboErrorCode, RequestError, StateError } from "./errors"
 import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
 import type {
   FormRequestExecutionReport,
@@ -15,6 +15,8 @@ import { admitFormRequestPlan, executeAdmittedFormRequest } from "./form-request
 import type {
   FormSubmissionActivityLease,
   FormSubmissionDuplicateBehavior,
+  FormSubmissionTerminalFailureInput,
+  FormSubmissionTerminalReportInput,
 } from "./form-submission-activity"
 import {
   assertActiveFormSubmissionProposal,
@@ -139,6 +141,60 @@ export interface FormSubmissionControllerSubmitOptions {
   readonly duplicateBehavior?: FormSubmissionDuplicateBehavior
 }
 
+const TERMINAL_ERROR_MESSAGES: Readonly<Record<ExpoTurboErrorCode, string>> = Object.freeze({
+  action: "Form response Stream action failed",
+  auth: "Form submission authorization failed",
+  content_type: "Form response content type is unsupported",
+  disposal: "Form response cleanup failed",
+  frame_missing: "Form response is missing the required Frame",
+  parse: "Form response XML is invalid",
+  props: "Form response component properties are invalid",
+  registry: "Form response component registration failed",
+  request: "Form submission request failed",
+  state: "Form submission state is invalid",
+  subscription: "Form response subscription failed",
+  target: "Form response target is invalid",
+})
+
+const TERMINAL_ERROR_NAMES: Readonly<Record<ExpoTurboErrorCode, string>> = Object.freeze({
+  action: "ActionError",
+  auth: "AuthError",
+  content_type: "ContentTypeError",
+  disposal: "DisposalError",
+  frame_missing: "FrameMissingError",
+  parse: "ParseError",
+  props: "PropsError",
+  registry: "RegistryError",
+  request: "RequestError",
+  state: "StateError",
+  subscription: "SubscriptionError",
+  target: "TargetError",
+})
+
+function terminalLocation(
+  location: ExpoTurboError["context"]["location"],
+): Readonly<{ column?: number; line?: number; offset?: number }> | undefined {
+  if (!location) return undefined
+  const column =
+    Number.isSafeInteger(location.column) && (location.column as number) >= 0
+      ? location.column
+      : undefined
+  const line =
+    Number.isSafeInteger(location.line) && (location.line as number) >= 0
+      ? location.line
+      : undefined
+  const offset =
+    Number.isSafeInteger(location.offset) && (location.offset as number) >= 0
+      ? location.offset
+      : undefined
+  if (column === undefined && line === undefined && offset === undefined) return undefined
+  return Object.freeze({
+    ...(column !== undefined ? { column } : {}),
+    ...(line !== undefined ? { line } : {}),
+    ...(offset !== undefined ? { offset } : {}),
+  })
+}
+
 function duplicateBehavior(
   options: FormSubmissionControllerSubmitOptions,
 ): FormSubmissionDuplicateBehavior {
@@ -253,127 +309,221 @@ export class FormSubmissionController {
       throw new RequestError("Form submission activity admission failed")
     }
     if (!activityLease) return this.canceledPlan(plan, proposal.destination)
+    const submissionActivity = identity.submissionActivity
+    let fetchInvoked = false
+    const settle = (report: FormSubmissionReport): FormSubmissionReport => {
+      submissionActivity.settleReport(activityLease, this.terminalReport(report))
+      return report
+    }
 
-    if (confirmation && confirmationMessage !== undefined) {
-      try {
-        const accepted = await this.confirm(
-          confirmation,
-          confirmationMessage,
-          controller,
-          identity,
-          activityLease,
-        )
-        if (accepted !== true) {
+    try {
+      if (confirmation && confirmationMessage !== undefined) {
+        try {
+          const accepted = await this.confirm(
+            confirmation,
+            confirmationMessage,
+            controller,
+            identity,
+            activityLease,
+          )
+          if (accepted !== true) {
+            controller.abort()
+            identity.submissionActivity.finish(activityLease)
+            return settle(this.canceledPlan(plan, proposal.destination))
+          }
+          identity = assertActiveFormSubmissionProposal(this.session, proposal)
+        } catch (error) {
           controller.abort()
           identity.submissionActivity.finish(activityLease)
-          return this.canceledPlan(plan, proposal.destination)
+          if (error instanceof ExpoTurboError) throw error
+          throw new RequestError("Form submission confirmation failed", {
+            target: identity.form.key,
+          })
         }
-        identity = assertActiveFormSubmissionProposal(this.session, proposal)
+      }
+
+      let lease: DestinationRequestLease | undefined
+      let originCheckpoint: FrameRequestCheckpoint | undefined
+      try {
+        if (proposal.destination.kind === "frame") {
+          if (
+            !identity.destinationFrame ||
+            identity.destinationFrameId !== proposal.destination.frameId
+          ) {
+            throw new StateError("Form submission proposal has no exact destination Frame", {
+              frameId: proposal.destination.frameId,
+            })
+          }
+          if (identity.originFrame && identity.originFrameId !== proposal.destination.frameId) {
+            originCheckpoint = this.ownership.checkpointFrame(identity.originFrame)
+          }
+          lease = this.ownership.claimFrame(identity.destinationFrame, controller, identity.form)
+        } else {
+          lease = this.ownership.claimDocument(controller, identity.treeGeneration, identity.form)
+        }
+        // A displaced request's abort listener may synchronously mutate the tree
+        // or submit newer work. Re-admit the exact proposal before any fetch.
+        if (this.ownership.owns(lease)) {
+          assertActiveFormSubmissionProposal(this.session, proposal)
+        }
       } catch (error) {
-        controller.abort()
+        if (lease) this.ownership.cancel(lease)
+        else controller.abort()
         identity.submissionActivity.finish(activityLease)
         if (error instanceof ExpoTurboError) throw error
-        throw new RequestError("Form submission confirmation failed", { target: identity.form.key })
+        throw new RequestError("Form submission ownership admission failed")
       }
-    }
+      if (!lease) throw new RequestError("Form submission ownership admission failed")
+      let activeLease = lease
 
-    let lease: DestinationRequestLease | undefined
-    let originCheckpoint: FrameRequestCheckpoint | undefined
-    try {
-      if (proposal.destination.kind === "frame") {
-        if (
-          !identity.destinationFrame ||
-          identity.destinationFrameId !== proposal.destination.frameId
-        ) {
-          throw new StateError("Form submission proposal has no exact destination Frame", {
-            frameId: proposal.destination.frameId,
+      if (!identity.submissionActivity.start(activityLease) || !this.ownership.owns(activeLease)) {
+        this.ownership.cancel(activeLease)
+        identity.submissionActivity.finish(activityLease)
+        return settle(this.canceledPlan(plan, proposal.destination))
+      }
+
+      let response: FormRequestExecutionReport
+      try {
+        fetchInvoked = true
+        response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
+          controller,
+          owns: () => this.ownership.owns(activeLease),
+          release: () => this.ownership.release(activeLease),
+          retainCandidate: true,
+        })
+      } finally {
+        // Turbo clears form/submitter presentation before applying the response.
+        // Exact activity ownership keeps an older finalizer from clearing newer work.
+        identity.submissionActivity.finish(activityLease)
+      }
+      if (response.status === "canceled") {
+        return settle(this.canceled(response, proposal.destination))
+      }
+
+      try {
+        if (!this.isCurrent(activeLease, proposal)) {
+          return settle(this.canceled(response, proposal.destination))
+        }
+        let preparedFrame: PreparedFrameResponse | undefined
+        if (response.status === "xml" && proposal.destination.kind === "frame") {
+          const frameId =
+            response.classification === "success"
+              ? proposal.destination.frameId
+              : (identity.originFrameId ?? proposal.destination.frameId)
+          preparedFrame = prepareFrameResponse(frameId, response.body, {
+            ...(this.options.limits ? { limits: this.options.limits } : {}),
+            url: response.url,
           })
         }
-        if (identity.originFrame && identity.originFrameId !== proposal.destination.frameId) {
-          originCheckpoint = this.ownership.checkpointFrame(identity.originFrame)
+        if (
+          preparedFrame &&
+          response.classification !== "success" &&
+          proposal.destination.kind === "frame" &&
+          identity.originFrame &&
+          identity.originFrameId &&
+          identity.originFrameId !== proposal.destination.frameId
+        ) {
+          if (!originCheckpoint) {
+            throw new StateError("Form submission proposal has no origin Frame checkpoint", {
+              frameId: identity.originFrameId,
+            })
+          }
+          const transferred = this.ownership.transferFrame(activeLease, originCheckpoint)
+          if (!transferred) return settle(this.canceled(response, proposal.destination))
+          activeLease = transferred
+          if (!this.isCurrent(activeLease, proposal)) {
+            return settle(this.canceled(response, proposal.destination))
+          }
         }
-        lease = this.ownership.claimFrame(identity.destinationFrame, controller, identity.form)
-      } else {
-        lease = this.ownership.claimDocument(controller, identity.treeGeneration, identity.form)
-      }
-      // A displaced request's abort listener may synchronously mutate the tree
-      // or submit newer work. Re-admit the exact proposal before any fetch.
-      if (this.ownership.owns(lease)) {
-        assertActiveFormSubmissionProposal(this.session, proposal)
+        return settle(this.apply(response, proposal, identity, activeLease, preparedFrame))
+      } finally {
+        // Exact release cannot detach newer reentrant work that superseded this lease.
+        this.ownership.release(activeLease)
       }
     } catch (error) {
-      if (lease) this.ownership.cancel(lease)
-      else controller.abort()
-      identity.submissionActivity.finish(activityLease)
-      if (error instanceof ExpoTurboError) throw error
-      throw new RequestError("Form submission ownership admission failed")
+      controller.abort()
+      const reported =
+        error instanceof ExpoTurboError
+          ? error
+          : new RequestError("Form submission failed", { method: plan.effectiveMethod })
+      submissionActivity.settleFailure(
+        activityLease,
+        this.terminalFailure(reported, plan, fetchInvoked),
+      )
+      throw reported
     }
-    if (!lease) throw new RequestError("Form submission ownership admission failed")
-    let activeLease = lease
+  }
 
-    if (!identity.submissionActivity.start(activityLease) || !this.ownership.owns(activeLease)) {
-      this.ownership.cancel(activeLease)
-      identity.submissionActivity.finish(activityLease)
-      return this.canceledPlan(plan, proposal.destination)
-    }
-
-    let response: FormRequestExecutionReport
-    try {
-      response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
-        controller,
-        owns: () => this.ownership.owns(activeLease),
-        release: () => this.ownership.release(activeLease),
-        retainCandidate: true,
+  private terminalFailure(
+    error: ExpoTurboError,
+    plan: FormRequestPlan,
+    fetchInvoked: boolean,
+  ): FormSubmissionTerminalFailureInput {
+    const location = terminalLocation(error.context.location)
+    const responseStatus =
+      Number.isSafeInteger(error.context.responseStatus) &&
+      (error.context.responseStatus as number) >= 100 &&
+      (error.context.responseStatus as number) <= 599
+        ? error.context.responseStatus
+        : undefined
+    const committed = error instanceof FormSubmissionCommitError
+    const terminalError = Object.freeze({
+      code: error.code,
+      context: Object.freeze({
+        ...(location ? { location } : {}),
+        ...(responseStatus !== undefined ? { responseStatus } : {}),
+      }),
+      message: committed
+        ? "Form submission committed but finalization failed"
+        : TERMINAL_ERROR_MESSAGES[error.code],
+      name: committed ? "FormSubmissionCommitError" : TERMINAL_ERROR_NAMES[error.code],
+    })
+    if (committed) {
+      return Object.freeze({
+        application: error.outcome.application,
+        classification: error.outcome.classification,
+        effectiveMethod: error.outcome.effectiveMethod,
+        error: terminalError,
+        requestId: error.outcome.requestId,
+        responseStatus: error.outcome.responseStatus,
+        retryDisposition: "committed",
+        status: "committed-error",
       })
-    } finally {
-      // Turbo clears form/submitter presentation before applying the response.
-      // Exact activity ownership keeps an older finalizer from clearing newer work.
-      identity.submissionActivity.finish(activityLease)
     }
-    if (response.status === "canceled") {
-      return this.canceled(response, proposal.destination)
-    }
+    return Object.freeze({
+      effectiveMethod: plan.effectiveMethod,
+      error: terminalError,
+      requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+      retryDisposition: !fetchInvoked || plan.effectiveMethod === "GET" ? "safe" : "unsafe",
+      status: "failed",
+    })
+  }
 
-    try {
-      if (!this.isCurrent(activeLease, proposal)) {
-        return this.canceled(response, proposal.destination)
-      }
-      let preparedFrame: PreparedFrameResponse | undefined
-      if (response.status === "xml" && proposal.destination.kind === "frame") {
-        const frameId =
-          response.classification === "success"
-            ? proposal.destination.frameId
-            : (identity.originFrameId ?? proposal.destination.frameId)
-        preparedFrame = prepareFrameResponse(frameId, response.body, {
-          ...(this.options.limits ? { limits: this.options.limits } : {}),
-          url: response.url,
-        })
-      }
-      if (
-        preparedFrame &&
-        response.classification !== "success" &&
-        proposal.destination.kind === "frame" &&
-        identity.originFrame &&
-        identity.originFrameId &&
-        identity.originFrameId !== proposal.destination.frameId
-      ) {
-        if (!originCheckpoint) {
-          throw new StateError("Form submission proposal has no origin Frame checkpoint", {
-            frameId: identity.originFrameId,
-          })
-        }
-        const transferred = this.ownership.transferFrame(activeLease, originCheckpoint)
-        if (!transferred) return this.canceled(response, proposal.destination)
-        activeLease = transferred
-        if (!this.isCurrent(activeLease, proposal)) {
-          return this.canceled(response, proposal.destination)
-        }
-      }
-      return this.apply(response, proposal, identity, activeLease, preparedFrame)
-    } finally {
-      // Exact release cannot detach newer reentrant work that superseded this lease.
-      this.ownership.release(activeLease)
+  private terminalReport(report: FormSubmissionReport): FormSubmissionTerminalReportInput {
+    if (report.status === "canceled") {
+      return Object.freeze({
+        effectiveMethod: report.effectiveMethod,
+        requestId: report.requestId,
+        status: "canceled",
+      })
     }
+    if (report.status === "empty") {
+      return Object.freeze({
+        classification: report.classification,
+        effectiveMethod: report.effectiveMethod,
+        requestId: report.requestId,
+        responseStatus: report.responseStatus,
+        status: "empty",
+      })
+    }
+    return Object.freeze({
+      application: report.application,
+      classification: report.classification,
+      effectiveMethod: report.effectiveMethod,
+      requestId: report.requestId,
+      responseStatus: report.responseStatus,
+      status: "applied",
+    })
   }
 
   private apply(

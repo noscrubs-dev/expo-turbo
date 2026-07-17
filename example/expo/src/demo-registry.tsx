@@ -299,40 +299,30 @@ function DemoFormSubmitterComponent(props: {
   const formBinding = useExpoTurboForm();
   const control = useExpoTurboFormControl({ kind: "submitter", name, value });
   const requestId = useRef(0);
-  const [preview, setPreview] = useState("No submission sent yet");
   return (
-    <View style={{ gap: 8 }}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={control.accessibilityState}
-        disabled={control.disabled}
-        onPress={() => {
-          setPreview("Awaiting confirmation");
-          void formBinding
-            .submit({
-              protocol: { requestId: `demo-form-${++requestId.current}` },
-              submitter: control.selection(),
-            })
-            .then((report) => setPreview(JSON.stringify(report)))
-            .catch((error: unknown) =>
-              setPreview(error instanceof Error ? error.message : "Submission failed"),
-            );
-        }}
-        style={({ pressed }) => ({
-          alignItems: "center",
-          backgroundColor: pressed ? "#19375a" : "#285589",
-          borderRadius: 10,
-          padding: 12,
-        })}
-      >
-        <Text style={{ color: "white", fontWeight: "600" }}>
-          {control.submitsWith ?? label}
-        </Text>
-      </Pressable>
-      <Text selectable style={{ color: "#435160", fontSize: 12 }}>
-        {preview}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={control.accessibilityState}
+      disabled={control.disabled}
+      onPress={() => {
+        void formBinding
+          .submit({
+            protocol: { requestId: `demo-form-${++requestId.current}` },
+            submitter: control.selection(),
+          })
+          .catch(() => undefined);
+      }}
+      style={({ pressed }) => ({
+        alignItems: "center",
+        backgroundColor: pressed ? "#19375a" : "#285589",
+        borderRadius: 10,
+        padding: 12,
+      })}
+    >
+      <Text style={{ color: "white", fontWeight: "600" }}>
+        {control.submitsWith ?? label}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -379,11 +369,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
-    <DemoText>Edit either native value, approve the host-owned native confirmation, then submit once through the exact-form activity guard. The selected submitter becomes disabled and displays its server-authored pending text only after confirmation accepts the immutable request.</DemoText>
+    <DemoText>Edit either native value, approve the host-owned native confirmation, then submit once through the exact-form activity guard. The fixture fails its first safe GET so the registered form boundary can retry from current values with a fresh request ID.</DemoText>
     <DemoForm id="native-form" action="/demo/profile" method="post">
       <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
-      <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="patch" label="Confirm and submit immutable request" name="commit" value="preview" />
+      <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="get" label="Confirm and submit immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>
   <DemoDocumentLink href="/demo/linked">
