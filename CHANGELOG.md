@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add caller-scoped form request execution with exact-plan forwarding, lane-local cancellation/supersession, same-origin final-URL and MIME admission, single-read buffering, and classified immutable response candidates without tree mutation.
 - Make the standalone Expo example install reproducibly with Bun's isolated linker, disabled peer auto-install, and a refreshed local-package dependency graph.
 - Add registration-bound submitter selection and immutable active-form request planning to the core and React APIs, composing current form/submitter attributes and live XML-ordered values into a caller-owned request plan without fetching.
 - Unify registry and React text handling around inherited `xml:space`, explicit default reset, CDATA preservation, XML-whitespace collapse, and deterministic diagnostic serialization.
