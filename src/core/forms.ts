@@ -4,6 +4,11 @@ import {
   type FormRequestPlan,
   type FormRequestProtocolOptions,
 } from "./form-request"
+import {
+  admitFormSubmissionProposal,
+  type FormSubmissionProposal,
+} from "./form-submission-proposal"
+import { resolveFormSubmissionDestination } from "./frames"
 import type { DocumentSession } from "./session"
 import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
 
@@ -41,9 +46,15 @@ export interface SuccessfulFormEntriesOptions {
 }
 
 export interface ActiveFormRequestPlanOptions extends SuccessfulFormEntriesOptions {
-  readonly protocol: FormRequestProtocolOptions
+  readonly protocol: ActiveFormRequestProtocolOptions
   readonly signal?: AbortSignal
 }
+
+export type ActiveFormRequestProtocolOptions = Omit<FormRequestProtocolOptions, "frameId"> & {
+  readonly frameId?: never
+}
+
+export type ActiveFormSubmissionProposalOptions = ActiveFormRequestPlanOptions
 
 export interface FormControlRegistration {
   readonly nodeKey: string
@@ -90,6 +101,41 @@ interface DocumentFormControlRecord {
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
+}
+
+function activeProtocolOptions(
+  value: ActiveFormRequestProtocolOptions,
+): ActiveFormRequestProtocolOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RequestError("Active form request protocol metadata must be an object")
+  }
+  if ("frameId" in value) {
+    throw new RequestError("Active form requests derive Turbo-Frame metadata from data-turbo-frame")
+  }
+  const requestId = value.requestId
+  const capabilityHash = value.capabilityHash
+  return Object.freeze({
+    ...(capabilityHash !== undefined ? { capabilityHash } : {}),
+    requestId,
+  })
+}
+
+function assertNativeTargetAttributes(
+  form: ProtocolElement,
+  submitter: FormControlRecord | undefined,
+): void {
+  if (hasAttribute(form, "target")) {
+    throw new TargetError(
+      "Native forms do not support browsing-context target; use data-turbo-frame",
+      { target: form.key },
+    )
+  }
+  if (submitter && hasAttribute(submitter.node, "formtarget")) {
+    throw new TargetError(
+      "Native submitters do not support browsing-context formtarget; use data-turbo-frame",
+      { target: submitter.node.key },
+    )
+  }
 }
 
 function formRequestAttributes(form: ProtocolElement) {
@@ -273,7 +319,95 @@ export class FormControlRegistry {
   successfulEntries(options: SuccessfulFormEntriesOptions = {}): readonly SuccessfulFormEntry[] {
     this.assertActive()
     const selection = submitterSelectionOption(options)
+    this.assertActive()
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    return this.collectSuccessfulEntries(submitter)
+  }
+
+  requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
+    this.assertActive()
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new RequestError("Active form request plan options must be an object")
+    }
+    const protocol = activeProtocolOptions(options.protocol)
+    const selection = submitterSelectionOption(options)
+    const signal = options.signal
+    this.assertActive()
+    const documentUrl = this.session.tree.document.url
+    if (!documentUrl) throw new RequestError("Active form request planning requires a document URL")
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    return buildFormRequest({
+      documentUrl,
+      entries: this.collectSuccessfulEntries(submitter),
+      form: formRequestAttributes(this.form),
+      protocol,
+      ...(signal !== undefined ? { signal } : {}),
+      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
+    })
+  }
+
+  submissionProposal(options: ActiveFormSubmissionProposalOptions): FormSubmissionProposal {
+    this.assertActive()
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new RequestError("Active form submission proposal options must be an object")
+    }
+    const protocol = activeProtocolOptions(options.protocol)
+    const selection = submitterSelectionOption(options)
+    const signal = options.signal
+    this.assertActive()
+    const documentUrl = this.session.tree.document.url
+    if (!documentUrl) {
+      throw new RequestError("Active form submission proposals require a document URL")
+    }
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    assertNativeTargetAttributes(this.form, submitter)
+
+    const formTarget = attributeValue(this.form, "data-turbo-frame")
+    const submitterTarget = submitter
+      ? attributeValue(submitter.node, "data-turbo-frame")
+      : undefined
+    const destination = resolveFormSubmissionDestination(this.session.tree, this.form, {
+      ...(formTarget !== undefined ? { formTarget } : {}),
+      ...(submitterTarget !== undefined ? { submitterTarget } : {}),
+    })
+    const plan = buildFormRequest({
+      documentUrl,
+      entries: this.collectSuccessfulEntries(submitter),
+      form: formRequestAttributes(this.form),
+      protocol: {
+        ...protocol,
+        ...(destination.kind === "frame" ? { frameId: destination.frameId } : {}),
+      },
+      ...(signal !== undefined ? { signal } : {}),
+      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
+    })
+    const destinationFrame =
+      destination.kind === "frame"
+        ? this.session.tree.getElementById(destination.frameId)
+        : undefined
+    if (destination.kind === "frame" && destinationFrame?.kind !== "frame") {
+      throw new StateError("Form submission destination Frame is no longer active", {
+        frameId: destination.frameId,
+      })
+    }
+    const proposal = Object.freeze({ destination, plan }) as FormSubmissionProposal
+    return admitFormSubmissionProposal(proposal, {
+      ...(destination.kind === "frame"
+        ? {
+            destinationFrame: destinationFrame as ProtocolElement,
+            destinationFrameId: destination.frameId,
+          }
+        : {}),
+      form: this.form,
+      session: this.session,
+      ...(submitter ? { submitter: submitter.node } : {}),
+      treeGeneration: this.session.treeGeneration,
+    })
+  }
+
+  private collectSuccessfulEntries(
+    submitter: FormControlRecord | undefined,
+  ): readonly SuccessfulFormEntry[] {
     const entries: SuccessfulFormEntry[] = []
 
     const append = (descriptor: FormControlDescriptor) => {
@@ -309,25 +443,6 @@ export class FormControlRegistry {
     for (const child of this.form.children) visit(child)
     if (submitter) append(submitter.descriptor)
     return Object.freeze(entries)
-  }
-
-  requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
-    this.assertActive()
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new RequestError("Active form request plan options must be an object")
-    }
-    const documentUrl = this.session.tree.document.url
-    if (!documentUrl) throw new RequestError("Active form request planning requires a document URL")
-    const selection = submitterSelectionOption(options)
-    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
-    return buildFormRequest({
-      documentUrl,
-      entries: this.successfulEntries(selection ? { submitter: selection } : {}),
-      form: formRequestAttributes(this.form),
-      protocol: options.protocol,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
-    })
   }
 
   dispose(): void {

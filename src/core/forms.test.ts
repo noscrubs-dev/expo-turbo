@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
+import { assertActiveFormSubmissionProposal } from "./form-submission-proposal"
 import {
   DocumentFormControls,
   type FormControlDescriptor,
@@ -166,7 +167,6 @@ describe("native form control registry", () => {
     const plan = registry.requestPlan({
       protocol: {
         capabilityHash: "capability-hash",
-        frameId: "profile-frame",
         requestId: "request-1",
       },
       signal: controller.signal,
@@ -188,7 +188,6 @@ describe("native form control registry", () => {
         },
         headers: {
           Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
-          "Turbo-Frame": "profile-frame",
           "X-Expo-Turbo-Capabilities": "capability-hash",
           "X-Expo-Turbo-Protocol": "0.1",
           "X-Expo-Turbo-Runtime": "0.1.0",
@@ -237,6 +236,245 @@ describe("native form control registry", () => {
         signal: false as never,
       }),
     ).toThrow(RequestError)
+  })
+
+  test("atomically derives an exact Frame destination and Turbo-Frame request metadata", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <turbo-frame id="named" />
+          <turbo-frame id="outer">
+            <turbo-frame id="current" target="named">
+              <DemoForm id="form" action="/save" method="post" data-turbo-frame="_top">
+                <DemoInput id="field" />
+                <DemoButton id="save" data-turbo-frame="_parent" />
+              </DemoForm>
+            </turbo-frame>
+          </turbo-frame>
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    registry.register("id:field", { kind: "value", name: "value", value: "one" })
+    const submitter = registry.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "Save",
+    })
+
+    const proposal = registry.submissionProposal({
+      protocol: { requestId: "proposal-parent" },
+      submitter: submitter.selection,
+    })
+
+    expect(proposal.destination).toEqual({
+      frameId: "outer",
+      kind: "frame",
+      requestedTarget: "_parent",
+    })
+    expect(proposal.plan.request.headers["Turbo-Frame"]).toBe("outer")
+    expect(proposal.plan.entries).toEqual([
+      { name: "value", value: "one" },
+      { name: "commit", value: "Save" },
+    ])
+    expect(Object.isFrozen(proposal)).toBe(true)
+    expect(Object.isFrozen(proposal.destination)).toBe(true)
+    expect(Object.isFrozen(proposal.plan)).toBe(true)
+    expect(() => assertActiveFormSubmissionProposal(session, proposal)).not.toThrow()
+
+    session.setAttribute("id:save", "data-turbo-frame", "_top")
+    const documentProposal = registry.submissionProposal({
+      protocol: { requestId: "proposal-document" },
+      submitter: submitter.selection,
+    })
+    expect(documentProposal.destination).toEqual({
+      kind: "document",
+      requestedTarget: "_top",
+    })
+    expect(documentProposal.plan.request.headers).not.toHaveProperty("Turbo-Frame")
+
+    session.setAttribute("id:save", "data-turbo-frame", "")
+    const blankSubmitter = registry.submissionProposal({
+      protocol: { requestId: "proposal-blank" },
+      submitter: submitter.selection,
+    })
+    expect(blankSubmitter.destination).toEqual({
+      frameId: "named",
+      kind: "frame",
+      requestedTarget: "named",
+    })
+    expect(blankSubmitter.plan.request.headers["Turbo-Frame"]).toBe("named")
+
+    session.removeAttribute("id:save", "data-turbo-frame")
+    session.setAttribute("id:form", "data-turbo-frame", "_self")
+    expect(
+      registry.submissionProposal({
+        protocol: { requestId: "proposal-self" },
+        submitter: submitter.selection,
+      }).destination,
+    ).toEqual({ frameId: "current", kind: "frame", requestedTarget: "_self" })
+
+    expect(() =>
+      registry.requestPlan({
+        protocol: { frameId: "forged", requestId: "forged-frame" },
+      } as never),
+    ).toThrow(/derive Turbo-Frame metadata/)
+
+    const getterProtocol = {
+      get requestId() {
+        Object.defineProperty(this, "frameId", {
+          configurable: true,
+          enumerable: true,
+          value: "forged-by-getter",
+        })
+        return "getter-frame"
+      },
+    }
+    expect(
+      registry.requestPlan({ protocol: getterProtocol as never }).request.headers,
+    ).not.toHaveProperty("Turbo-Frame")
+
+    const proxyProtocol = new Proxy(
+      { frameId: "forged-by-proxy", requestId: "proxy-frame" },
+      { has: () => false },
+    )
+    expect(
+      registry.submissionProposal({ protocol: proxyProtocol as never }).plan.request.headers[
+        "Turbo-Frame"
+      ],
+    ).toBe("current")
+  })
+
+  test("captures an enabled named Frame from a document-level form and rejects browser targets", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="form" action="/search" data-turbo-frame="named">
+            <DemoButton id="save" data-turbo-frame="" />
+          </DemoForm>
+          <turbo-frame id="named" />
+          <turbo-frame id="disabled" disabled="" />
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    const submitter = registry.register("id:save", { kind: "submitter" })
+
+    const named = registry.submissionProposal({
+      protocol: { requestId: "top-named" },
+      submitter: submitter.selection,
+    })
+    expect(named.destination).toEqual({
+      frameId: "named",
+      kind: "frame",
+      requestedTarget: "named",
+    })
+    expect(named.plan.request.headers["Turbo-Frame"]).toBe("named")
+
+    for (const target of ["disabled", "missing", "_top", "_self", "_parent"]) {
+      session.setAttribute("id:form", "data-turbo-frame", target)
+      const proposal = registry.submissionProposal({
+        protocol: { requestId: `top-${target}` },
+      })
+      expect(proposal.destination).toEqual({ kind: "document", requestedTarget: target })
+      expect(proposal.plan.request.headers).not.toHaveProperty("Turbo-Frame")
+    }
+
+    session.setAttribute("id:form", "target", "")
+    expect(() =>
+      registry.submissionProposal({ protocol: { requestId: "browser-target" } }),
+    ).toThrow(/use data-turbo-frame/)
+    session.removeAttribute("id:form", "target")
+    session.setAttribute("id:save", "formtarget", "")
+    expect(() =>
+      registry.submissionProposal({
+        protocol: { requestId: "browser-formtarget" },
+        submitter: submitter.selection,
+      }),
+    ).toThrow(/use data-turbo-frame/)
+  })
+
+  test("retains hidden exact form, submitter, Frame, and tree-generation identity", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="form" action="/save" data-turbo-frame="destination">
+            <DemoButton id="save" />
+          </DemoForm>
+          <turbo-frame id="destination" />
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    const submitter = registry.register("id:save", { kind: "submitter" })
+    const proposal = registry.submissionProposal({
+      protocol: { requestId: "identity" },
+      submitter: submitter.selection,
+    })
+    expect(() => assertActiveFormSubmissionProposal(session, proposal)).not.toThrow()
+    expect(() =>
+      assertActiveFormSubmissionProposal(
+        session,
+        Object.freeze({ destination: proposal.destination, plan: proposal.plan }) as never,
+      ),
+    ).toThrow(StateError)
+
+    const destination = session.tree.getElementById("destination")
+    const replacement = parseExpoTurboDocument('<turbo-frame id="destination" />').getElementById(
+      "destination",
+    )
+    if (!destination || !replacement) throw new Error("destination fixture is missing")
+    session.mutate((tree) => tree.replaceNodeWithClones(destination, [replacement]))
+    expect(() => assertActiveFormSubmissionProposal(session, proposal)).toThrow(/destination Frame/)
+
+    const replacementProposal = registry.submissionProposal({
+      protocol: { requestId: "replacement-destination" },
+      submitter: submitter.selection,
+    })
+    const save = session.tree.getElementById("save")
+    const saveReplacement = parseExpoTurboDocument('<DemoButton id="save" />').getElementById(
+      "save",
+    )
+    if (!save || !saveReplacement) throw new Error("submitter fixture is missing")
+    session.mutate((tree) => tree.replaceNodeWithClones(save, [saveReplacement]))
+    expect(() => assertActiveFormSubmissionProposal(session, replacementProposal)).toThrow(
+      /submitter node/,
+    )
+
+    const originalTree = session.tree
+    session.replaceTree(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>', {
+        url: "https://example.test/replacement",
+      }),
+    )
+    session.replaceTree(originalTree)
+    expect(() => assertActiveFormSubmissionProposal(session, replacementProposal)).toThrow(
+      /form node/,
+    )
+  })
+
+  test("snapshots caller inputs once before admitting an exact live proposal", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const form = session.tree.getElementById("form")
+    if (!form) throw new Error("form fixture is missing")
+    let signalReads = 0
+    const controller = new AbortController()
+
+    expect(() =>
+      registry.submissionProposal({
+        protocol: { requestId: "mutating-signal" },
+        get signal() {
+          signalReads += 1
+          session.mutate((tree) => tree.removeNode(form))
+          return controller.signal
+        },
+      }),
+    ).toThrow(StateError)
+    expect(signalReads).toBe(1)
   })
 
   test("reads current form metadata and submitter Stream presence without inventing a fetch", () => {

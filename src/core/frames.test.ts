@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
-import { FrameMissingError } from "./errors"
-import { applyFrameResponse, resolveFrameTarget } from "./frames"
+import { FrameMissingError, TargetError } from "./errors"
+import { applyFrameResponse, resolveFormSubmissionDestination, resolveFrameTarget } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
@@ -146,5 +146,103 @@ describe("Turbo Frame target resolution", () => {
       requestedTarget: "missing",
     })
     expect(() => resolveFrameTarget(tree, "missing")).toThrow(FrameMissingError)
+  })
+})
+
+describe("native form submission destination resolution", () => {
+  test("captures only an active enabled named Frame from document-level forms", () => {
+    const tree = parseExpoTurboDocument(
+      `<Gallery>
+        <DemoForm id="form" />
+        <turbo-frame id="named" />
+        <turbo-frame id="alternate" />
+        <turbo-frame id="disabled" disabled="" />
+      </Gallery>`,
+    )
+    const form = tree.getElementById("form")
+    if (!form) throw new Error("form fixture is missing")
+
+    expect(resolveFormSubmissionDestination(tree, form)).toEqual({ kind: "document" })
+    expect(
+      resolveFormSubmissionDestination(tree, form, {
+        formTarget: "named",
+        submitterTarget: "",
+      }),
+    ).toEqual({ frameId: "named", kind: "frame", requestedTarget: "named" })
+    expect(
+      resolveFormSubmissionDestination(tree, form, {
+        formTarget: "named",
+        submitterTarget: "alternate",
+      }),
+    ).toEqual({ frameId: "alternate", kind: "frame", requestedTarget: "alternate" })
+    for (const target of ["missing", "disabled", "_top", "_self", "_parent"]) {
+      expect(resolveFormSubmissionDestination(tree, form, { formTarget: target })).toEqual({
+        kind: "document",
+        requestedTarget: target,
+      })
+    }
+    expect(() => resolveFormSubmissionDestination(tree, form, null as never)).toThrow(TargetError)
+    expect(() =>
+      resolveFormSubmissionDestination(tree, form, { submitterTarget: 7 } as never),
+    ).toThrow(TargetError)
+    expect(() => resolveFormSubmissionDestination(tree, null as never)).toThrow(FrameMissingError)
+
+    let targetReads = 0
+    expect(() =>
+      resolveFormSubmissionDestination(tree, form, {
+        get formTarget() {
+          targetReads += 1
+          tree.removeNode(form)
+          return "named"
+        },
+      }),
+    ).toThrow(FrameMissingError)
+    expect(targetReads).toBe(1)
+  })
+
+  test("uses Turbo's in-Frame blank-submitter and nearest-Frame semantics", () => {
+    const tree = parseExpoTurboDocument(
+      `<Gallery>
+        <turbo-frame id="named" />
+        <turbo-frame id="outer">
+          <turbo-frame id="current" target="named">
+            <DemoForm id="form" />
+          </turbo-frame>
+        </turbo-frame>
+        <turbo-frame id="disabled-current" disabled="">
+          <DemoForm id="disabled-form" />
+        </turbo-frame>
+      </Gallery>`,
+    )
+    const form = tree.getElementById("form")
+    const disabledForm = tree.getElementById("disabled-form")
+    if (!form || !disabledForm) throw new Error("form fixture is missing")
+
+    expect(resolveFormSubmissionDestination(tree, form)).toEqual({
+      frameId: "named",
+      kind: "frame",
+      requestedTarget: "named",
+    })
+    expect(
+      resolveFormSubmissionDestination(tree, form, {
+        formTarget: "_top",
+        submitterTarget: "",
+      }),
+    ).toEqual({ frameId: "named", kind: "frame", requestedTarget: "named" })
+    expect(
+      resolveFormSubmissionDestination(tree, form, {
+        formTarget: "named",
+        submitterTarget: "_parent",
+      }),
+    ).toEqual({ frameId: "outer", kind: "frame", requestedTarget: "_parent" })
+    expect(resolveFormSubmissionDestination(tree, form, { submitterTarget: "missing" })).toEqual({
+      frameId: "current",
+      kind: "frame",
+      requestedTarget: "missing",
+    })
+    expect(resolveFormSubmissionDestination(tree, disabledForm, { formTarget: "named" })).toEqual({
+      kind: "document",
+      requestedTarget: "named",
+    })
   })
 })
