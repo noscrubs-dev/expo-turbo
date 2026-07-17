@@ -4,7 +4,7 @@ import { z } from "zod"
 import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
 import { RegistryError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
-import { DocumentSession } from "./session"
+import { DocumentSession, SessionCommitError } from "./session"
 import { dispatchTurboStreamFragment, type StreamActionReport } from "./streams"
 import { attributeValue, isElement } from "./tree"
 
@@ -53,6 +53,28 @@ describe("Turbo Stream dispatcher", () => {
     ])
     expect(childIds(document.tree.getElementById("victim"))).toEqual(["replacement"])
     expect(document.tree.getElementById("marker")).toBeUndefined()
+  })
+
+  test("propagates committed session-finalization failures and stops later siblings", () => {
+    const document = session(
+      '<Gallery><Target id="first"><Old /></Target><Target id="second"><Old /></Target></Gallery>',
+    )
+    const actionErrors: StreamActionReport[] = []
+    document.subscribe("id:first", () => {
+      throw new Error("listener details")
+    })
+
+    expect(() =>
+      dispatchTurboStreamFragment(
+        document,
+        `<turbo-stream action="update" target="first"><template><Committed id="committed-first" /></template></turbo-stream>
+         <turbo-stream action="update" target="second"><template><Stale id="stale-second" /></template></turbo-stream>`,
+        { onActionError: (report) => actionErrors.push(report) },
+      ),
+    ).toThrow(SessionCommitError)
+    expect(document.tree.getElementById("committed-first")).toBeDefined()
+    expect(document.tree.getElementById("stale-second")).toBeUndefined()
+    expect(actionErrors).toEqual([])
   })
 
   test("preserves update identity, replaces replace identity, and invalidates the stable snapshot", () => {

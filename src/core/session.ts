@@ -14,6 +14,14 @@ export interface NodeSnapshot {
   readonly revision: number
 }
 
+/** A logical mutation committed, but synchronous disposal/listener finalization failed. */
+export class SessionCommitError extends AggregateError {
+  constructor(errors: readonly unknown[]) {
+    super(errors, "Document session notification failed")
+    this.name = "SessionCommitError"
+  }
+}
+
 let nextSessionIdentity = 0
 
 export class DocumentSession {
@@ -201,7 +209,7 @@ export class DocumentSession {
       errors.unshift(...disposalErrors)
     }
     if (errors.length > 0) {
-      throw new AggregateError(errors, "Document session notification failed")
+      throw new SessionCommitError(errors)
     }
   }
 }

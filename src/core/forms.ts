@@ -390,6 +390,17 @@ export class FormControlRegistry {
         frameId: destination.frameId,
       })
     }
+    let originParent = this.form.parent
+    while (originParent && originParent.kind !== "document" && originParent.kind !== "frame") {
+      originParent = originParent.parent
+    }
+    const originFrame = originParent?.kind === "frame" ? originParent : undefined
+    const originFrameId = originFrame ? attributeValue(originFrame, "id") : undefined
+    if (originFrame && !originFrameId) {
+      throw new StateError("Form submission origin Frame requires a nonblank id", {
+        target: originFrame.key,
+      })
+    }
     const proposal = Object.freeze({ destination, plan }) as FormSubmissionProposal
     return admitFormSubmissionProposal(proposal, {
       destination,
@@ -400,6 +411,7 @@ export class FormControlRegistry {
           }
         : {}),
       form: this.form,
+      ...(originFrame ? { originFrame, originFrameId: originFrameId as string } : {}),
       session: this.session,
       ...(submitter ? { submitter: submitter.node } : {}),
       treeGeneration: this.session.treeGeneration,

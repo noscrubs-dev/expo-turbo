@@ -17,6 +17,8 @@ export interface FormSubmissionProposalIdentity {
   readonly destinationFrame?: ProtocolElement
   readonly destinationFrameId?: string
   readonly form: ProtocolElement
+  readonly originFrame?: ProtocolElement
+  readonly originFrameId?: string
   readonly session: DocumentSession
   readonly submitter?: ProtocolElement
   readonly treeGeneration: number
@@ -66,6 +68,14 @@ export function assertActiveFormSubmissionProposal(
     const frameId = identity.destinationFrameId
     if (!frameId || session.tree.getElementById(frameId) !== identity.destinationFrame) {
       throw new StateError("Form submission proposal no longer owns its destination Frame", {
+        ...(frameId ? { frameId } : {}),
+      })
+    }
+  }
+  if (identity.originFrame) {
+    const frameId = identity.originFrameId
+    if (!frameId || session.tree.getElementById(frameId) !== identity.originFrame) {
+      throw new StateError("Form submission proposal no longer owns its origin Frame", {
         ...(frameId ? { frameId } : {}),
       })
     }

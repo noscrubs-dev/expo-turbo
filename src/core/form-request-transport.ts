@@ -50,6 +50,8 @@ export type FormRequestExecutionReport =
 
 export interface FormRequestTransportOwnership {
   readonly controller: AbortController
+  /** Internal controller mode: the caller releases only after synchronous application. */
+  readonly retainCandidate?: boolean
   owns(): boolean
   release(): void
 }
@@ -149,7 +151,7 @@ export async function executeAdmittedFormRequest(
         }>,
   ): FormRequestExecutionReport => {
     if (!ownership.owns()) return canceled()
-    release()
+    if (!ownership.retainCandidate) release()
     return Object.freeze({ ...report, ...candidate }) as FormResponseCandidate
   }
 

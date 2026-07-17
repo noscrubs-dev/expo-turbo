@@ -1,11 +1,8 @@
 import { FrameMissingError, TargetError } from "./errors"
-import { type ParseLimits, parseExpoTurboDocument } from "./parser"
+import { commitPreparedFrameResponse, prepareFrameResponse } from "./frame-response-application"
+import type { ParseLimits } from "./parser"
 import type { DocumentSession } from "./session"
-import {
-  dispatchTurboStreamElements,
-  type StreamActionDispatchOptions,
-  type StreamDispatchReport,
-} from "./streams"
+import type { StreamActionDispatchOptions, StreamDispatchReport } from "./streams"
 import {
   attributeValue,
   type DocumentTree,
@@ -198,21 +195,6 @@ export interface FrameResponseReport {
   readonly streams: StreamDispatchReport
 }
 
-function embeddedStreams(frame: ProtocolElement): ProtocolElement[] {
-  const streams: ProtocolElement[] = []
-  const visit = (node: ProtocolNode) => {
-    if (!isElement(node)) return
-    if (node.kind === "stream") {
-      streams.push(node)
-      return
-    }
-    if (node.kind === "template") return
-    for (const child of node.children) visit(child)
-  }
-  for (const child of frame.children) visit(child)
-  return streams
-}
-
 export function applyFrameResponse(
   session: DocumentSession,
   frameId: string,
@@ -227,32 +209,9 @@ export function applyFrameResponse(
     })
   }
 
-  const response = parseExpoTurboDocument(xml, {
+  const prepared = prepareFrameResponse(frameId, xml, {
     ...(options.finalUrl ? { url: options.finalUrl } : {}),
     ...(options.limits ? { limits: options.limits } : {}),
   })
-  const responseFrame = response
-    .getFrames()
-    .find((frame) => attributeValue(frame, "id") === frameId)
-  if (!responseFrame) {
-    throw new FrameMissingError(`Response is missing frame ${JSON.stringify(frameId)}`, {
-      frameId,
-    })
-  }
-
-  const streams = embeddedStreams(responseFrame)
-  for (const stream of streams) response.removeNode(stream)
-
-  session.mutate((tree) => {
-    const changed = tree.replaceChildrenWithClones(activeFrame, responseFrame.children)
-    if (options.finalUrl) tree.setAttribute(activeFrame, "src", options.finalUrl)
-    return changed
-  })
-
-  const streamReport = dispatchTurboStreamElements(session, streams, options)
-  return Object.freeze({
-    ...(options.finalUrl ? { finalUrl: options.finalUrl } : {}),
-    frameId,
-    streams: streamReport,
-  })
+  return commitPreparedFrameResponse(session, activeFrame, prepared, options)
 }

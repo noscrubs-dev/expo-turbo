@@ -18,7 +18,15 @@ export * from "./selectors"
 export * from "./serializer"
 export * from "./session"
 export * from "./state"
-export * from "./streams"
+export {
+  dispatchTurboStreamElements,
+  dispatchTurboStreamFragment,
+  type StreamActionDispatchOptions,
+  type StreamActionReport,
+  type StreamActionStatus,
+  type StreamDispatchOptions,
+  type StreamDispatchReport,
+} from "./streams"
 export * from "./tree"
 export * from "./versions"
 export * from "./visitability"
