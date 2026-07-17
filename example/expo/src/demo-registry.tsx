@@ -7,7 +7,7 @@ import {
   tokenListCodec,
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { z } from "zod";
 
@@ -207,19 +207,29 @@ const action = defineComponent({
 function DemoFormComponent({ children }: { children?: ReactNode }) {
   return (
     <ExpoTurboFormScope>
-      <View
-        style={{
-          backgroundColor: "#f6f8fa",
-          borderColor: "#c8d1dc",
-          borderRadius: 12,
-          borderWidth: 1,
-          gap: 10,
-          padding: 12,
-        }}
-      >
-        {children}
-      </View>
+      <DemoFormSurface>{children}</DemoFormSurface>
     </ExpoTurboFormScope>
+  );
+}
+
+function DemoFormSurface({ children }: { children?: ReactNode }) {
+  const form = useExpoTurboForm();
+  return (
+    <View
+      accessibilityLabel={form.state.busy ? "Form submitting" : "Form ready"}
+      accessibilityState={form.accessibilityState}
+      accessible
+      style={{
+        backgroundColor: "#f6f8fa",
+        borderColor: "#c8d1dc",
+        borderRadius: 12,
+        borderWidth: 1,
+        gap: 10,
+        padding: 12,
+      }}
+    >
+      {children}
+    </View>
   );
 }
 
@@ -288,25 +298,25 @@ function DemoFormSubmitterComponent(props: {
   const { label, name, value } = props;
   const formBinding = useExpoTurboForm();
   const control = useExpoTurboFormControl({ kind: "submitter", name, value });
-  const [preview, setPreview] = useState("No request plan built yet");
+  const requestId = useRef(0);
+  const [preview, setPreview] = useState("No submission sent yet");
   return (
     <View style={{ gap: 8 }}>
       <Pressable
         accessibilityRole="button"
+        accessibilityState={control.accessibilityState}
+        disabled={control.disabled}
         onPress={() => {
-          const plan = formBinding.requestPlan({
-            protocol: { requestId: "demo-form-preview" },
-            submitter: control.selection(),
-          });
-          setPreview(
-            JSON.stringify({
-              body: plan.request.body?.value,
-              effectiveMethod: plan.effectiveMethod,
-              entries: plan.entries,
-              method: plan.request.method,
-              url: plan.request.url,
-            }),
-          );
+          setPreview("Submission pending");
+          void formBinding
+            .submit({
+              protocol: { requestId: `demo-form-${++requestId.current}` },
+              submitter: control.selection(),
+            })
+            .then((report) => setPreview(JSON.stringify(report)))
+            .catch((error: unknown) =>
+              setPreview(error instanceof Error ? error.message : "Submission failed"),
+            );
         }}
         style={({ pressed }) => ({
           alignItems: "center",
@@ -315,7 +325,9 @@ function DemoFormSubmitterComponent(props: {
           padding: 12,
         })}
       >
-        <Text style={{ color: "white", fontWeight: "600" }}>{label}</Text>
+        <Text style={{ color: "white", fontWeight: "600" }}>
+          {control.submitsWith ?? label}
+        </Text>
       </Pressable>
       <Text selectable style={{ color: "#435160", fontSize: 12 }}>
         {preview}
@@ -367,11 +379,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
-    <DemoText>Edit either native value, then build one frozen request plan from the exact form, selected submitter, live entries, and raw XML request attributes. This preview does not fetch.</DemoText>
+    <DemoText>Edit either native value, then submit once through the exact-form activity guard. The selected submitter becomes disabled and displays its server-authored pending text while one deterministic request is active.</DemoText>
     <DemoForm id="native-form" action="/demo/profile" method="post">
       <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
-      <DemoFormSubmitter id="collect-form" formaction="/demo/profile/preview" formmethod="patch" label="Preview immutable request" name="commit" value="preview" />
+      <DemoFormSubmitter id="collect-form" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="patch" label="Submit immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>
   <DemoDocumentLink href="/demo/linked">

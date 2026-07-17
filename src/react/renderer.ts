@@ -28,10 +28,19 @@ import type {
 } from "../core/document-visit-controller"
 import { RegistryError, StateError, TargetError } from "../core/errors"
 import type { FormRequestPlan } from "../core/form-request"
+import type {
+  FormSubmissionActivitySnapshot,
+  FormSubmitterActivitySnapshot,
+} from "../core/form-submission-activity"
+import type {
+  FormSubmissionControllerSubmitOptions,
+  FormSubmissionReport,
+} from "../core/form-submission-controller"
 import type { FormSubmissionProposal } from "../core/form-submission-proposal"
 import type {
   ActiveFormRequestPlanOptions,
   ActiveFormSubmissionProposalOptions,
+  ActiveFormSubmitOptions,
   DocumentFormControls,
   FormControlDescriptor,
   FormControlRegistration,
@@ -102,7 +111,13 @@ export interface ExpoTurboFrameBoundaryProps extends ExpoTurboFrameBinding {
   readonly children?: ReactNode
 }
 
+export interface ExpoTurboFormAccessibilityState {
+  readonly busy: boolean
+}
+
 export interface ExpoTurboFormBinding {
+  readonly accessibilityState: ExpoTurboFormAccessibilityState
+  cancelSubmission(): void
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
   readonly submissionProposal: (
@@ -111,11 +126,24 @@ export interface ExpoTurboFormBinding {
   readonly successfulEntries: (
     options?: SuccessfulFormEntriesOptions,
   ) => readonly SuccessfulFormEntry[]
+  readonly state: FormSubmissionActivitySnapshot
+  submit(
+    options: ActiveFormSubmitOptions,
+    controllerOptions?: FormSubmissionControllerSubmitOptions,
+  ): Promise<FormSubmissionReport>
+}
+
+export interface ExpoTurboFormControlAccessibilityState {
+  readonly disabled: boolean
 }
 
 export interface ExpoTurboFormControlBinding {
+  readonly accessibilityState: ExpoTurboFormControlAccessibilityState
+  readonly disabled: boolean
   readonly nodeKey: string
+  readonly pending: boolean
   selection(): FormControlSelection
+  readonly submitsWith?: string
 }
 
 interface ExpoTurboFormContextValue {
@@ -383,17 +411,30 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
   const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
+  const subscribe = useCallback(
+    (listener: () => void) => registry.subscribeSubmission(listener),
+    [registry],
+  )
+  const snapshot = useCallback(() => registry.submissionState, [registry])
+  const state = useSyncExternalStore(subscribe, snapshot, snapshot)
   const binding = useMemo<ExpoTurboFormBinding>(
     () =>
       Object.freeze({
+        accessibilityState: Object.freeze({ busy: state.busy }),
+        cancelSubmission: () => registry.cancelSubmission(),
         formNodeKey: nodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        state,
+        submit: (
+          options: ActiveFormSubmitOptions,
+          controllerOptions?: FormSubmissionControllerSubmitOptions,
+        ) => registry.submit(options, controllerOptions),
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
           registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
       }),
-    [nodeKey, registry],
+    [nodeKey, registry, state],
   )
   const value = useMemo<ExpoTurboFormContextValue>(
     () => Object.freeze({ binding, registry }),
@@ -422,6 +463,17 @@ export function useExpoTurboFormControl(
   if (!context) throw new RegistryError("Expo Turbo form controls require a form scope")
   if (!nodeKey) throw new RegistryError("Expo Turbo form controls require a component node")
 
+  const subscribe = useCallback(
+    (listener: () => void) => context.registry.subscribeControlSubmission(nodeKey, listener),
+    [context.registry, nodeKey],
+  )
+  const snapshot = useCallback(
+    (): FormSubmitterActivitySnapshot => context.registry.controlSubmissionState(nodeKey),
+    [context.registry, nodeKey],
+  )
+  const submissionState = useSyncExternalStore(subscribe, snapshot, snapshot)
+  const disabled = descriptor.disabled === true || submissionState.pending
+
   useLayoutEffect(() => {
     descriptorRef.current = descriptor
     registration.current?.update(descriptor)
@@ -438,14 +490,20 @@ export function useExpoTurboFormControl(
   return useMemo(
     () =>
       Object.freeze({
+        accessibilityState: Object.freeze({ disabled }),
+        disabled,
         nodeKey,
+        pending: submissionState.pending,
         selection: () => {
           const current = registration.current
           if (!current) throw new StateError("Form control registration is not active")
           return current.selection
         },
+        ...(submissionState.submitsWith !== undefined
+          ? { submitsWith: submissionState.submitsWith }
+          : {}),
       }),
-    [nodeKey],
+    [disabled, nodeKey, submissionState],
   )
 }
 

@@ -22,6 +22,7 @@ import {
   DocumentSession,
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
+  FormSubmissionController,
   type FormRequestPlan,
   type FormRequestProtocolOptions,
   type FormSubmissionProposal,
@@ -675,8 +676,12 @@ describe("React protocol renderer", () => {
         ...(value !== undefined ? { value } : {}),
       })
       return createElement("native-submitter", {
+        accessibilityState: binding.accessibilityState,
+        disabled: binding.disabled,
         nodeKey: binding.nodeKey,
+        pending: binding.pending,
         selection: binding.selection,
+        submitsWith: binding.submitsWith,
         value,
       })
     }
@@ -799,8 +804,9 @@ describe("React protocol renderer", () => {
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
           <NativeValue id="disabled" disabled="true" name="ignored" value="secret" />
           <NativeValue id="unnamed" value="ignored" />
-          <NativeSubmitter id="submit" name="commit" value="save" formaction="/profile/save" formmethod="patch" data-turbo-stream="" />
+          <NativeSubmitter id="submit" name="commit" value="save" formaction="/profile/save" formmethod="patch" data-turbo-stream="" data-turbo-submits-with="Saving…" />
           <NativeSubmitter id="alternate" name="commit" value="ignored" />
+          <NativeSubmitter id="authored-disabled" disabled="true" name="commit" value="disabled" />
         </NativeForm>
         <turbo-frame id="profile-frame" />
         <NativeForm id="outer-form">
@@ -813,7 +819,15 @@ describe("React protocol renderer", () => {
         </NativeForm>
       </Gallery>`, { url: "https://example.test/forms/current" }),
     )
-    const forms = new DocumentFormControls(session)
+    const pendingSubmissions: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const submissionController = new FormSubmissionController(session, {
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => pendingSubmissions.push({ request, resolve })),
+    })
+    const forms = new DocumentFormControls(session, { submissionController })
     const scopes = new DocumentStateScopes(session)
     const state = new DocumentStateStore()
     let renderer: ReactTestRenderer | undefined
@@ -899,6 +913,92 @@ describe("React protocol renderer", () => {
     expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
     expect(other.successfulEntries()).toEqual([{ name: "other", value: "isolated" }])
 
+    let submission: Promise<unknown> | undefined
+    await act(async () => {
+      submission = primary.submit({
+        protocol: { requestId: "react-submission" },
+        submitter: selectedSubmitter,
+      })
+      await Promise.resolve()
+    })
+    expect(pendingSubmissions).toHaveLength(1)
+    expect(bindings.get("primary")?.state).toMatchObject({
+      busy: true,
+      requestId: "react-submission",
+      status: "submitting",
+      submitterNodeKey: "id:submit",
+    })
+    expect(bindings.get("primary")?.accessibilityState).toEqual({ busy: true })
+    const pendingSubmitter = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:submit")
+    const unaffectedSubmitter = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:alternate")
+    const authoredDisabledSubmitter = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:authored-disabled")
+    expect(pendingSubmitter?.props).toMatchObject({
+      accessibilityState: { disabled: true },
+      disabled: true,
+      pending: true,
+      submitsWith: "Saving…",
+      value: "save",
+    })
+    expect(unaffectedSubmitter?.props).toMatchObject({
+      accessibilityState: { disabled: false },
+      disabled: false,
+      pending: false,
+      value: "ignored",
+    })
+    expect(unaffectedSubmitter?.props.submitsWith).toBeUndefined()
+    expect(authoredDisabledSubmitter?.props).toMatchObject({
+      accessibilityState: { disabled: true },
+      disabled: true,
+      pending: false,
+      value: "disabled",
+    })
+
+    let duplicate: Promise<unknown> | undefined
+    await act(async () => {
+      duplicate = primary.submit({
+        protocol: { requestId: "react-duplicate" },
+        submitter: selectedSubmitter,
+      })
+      await Promise.resolve()
+    })
+    await expect(duplicate).resolves.toMatchObject({
+      requestId: "react-duplicate",
+      status: "canceled",
+    })
+    expect(pendingSubmissions).toHaveLength(1)
+    expect(bindings.get("primary")?.state.requestId).toBe("react-submission")
+
+    const activeSubmission = pendingSubmissions[0]
+    if (!activeSubmission || !submission) throw new Error("form submission was not captured")
+    await act(async () => {
+      activeSubmission.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: activeSubmission.request.url,
+      })
+      await submission
+    })
+    expect(bindings.get("primary")?.state).toMatchObject({ busy: false, status: "idle" })
+    expect(bindings.get("primary")?.accessibilityState).toEqual({ busy: false })
+    const restoredSubmitter = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-submitter")
+      .find((control) => control.props.nodeKey === "id:submit")
+    expect(restoredSubmitter?.props).toMatchObject({
+      accessibilityState: { disabled: false },
+      disabled: false,
+      pending: false,
+      value: "save",
+    })
+    expect(restoredSubmitter?.props.submitsWith).toBeUndefined()
+
     const liveControl = activeRenderer.root
       .findAll((node) => String(node.type) === "native-live-value")
       .find((control) => control.props.nodeKey === "id:local")
@@ -958,7 +1058,7 @@ describe("React protocol renderer", () => {
       )
     })
     const updated = bindings.get("updated")
-    expect(updated).toBe(primary)
+    expect(updated?.formNodeKey).toBe(primary.formNodeKey)
     expect(updated?.successfulEntries()).toEqual([{ name: "next", value: "child-update" }])
     expect(entriesAtPassiveMount.get("updated")).toEqual([
       { name: "next", value: "child-update" },

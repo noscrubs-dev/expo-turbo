@@ -5,6 +5,18 @@ import {
   type FormRequestProtocolOptions,
 } from "./form-request"
 import {
+  type ExactFormSubmissionActivity,
+  type FormSubmissionActivityListener,
+  type FormSubmissionActivitySnapshot,
+  type FormSubmitterActivitySnapshot,
+  formSubmissionActivity,
+} from "./form-submission-activity"
+import type {
+  FormSubmissionController,
+  FormSubmissionControllerSubmitOptions,
+  FormSubmissionReport,
+} from "./form-submission-controller"
+import {
   admitFormSubmissionProposal,
   type FormSubmissionProposal,
 } from "./form-submission-proposal"
@@ -56,6 +68,16 @@ export type ActiveFormRequestProtocolOptions = Omit<FormRequestProtocolOptions, 
 
 export type ActiveFormSubmissionProposalOptions = ActiveFormRequestPlanOptions
 
+export type ActiveFormSubmitOptions = Omit<ActiveFormSubmissionProposalOptions, "signal"> & {
+  readonly signal?: never
+}
+
+export interface FormControlRegistryOptions {
+  readonly submissionController?: FormSubmissionController
+}
+
+export type DocumentFormControlsOptions = FormControlRegistryOptions
+
 export interface FormControlRegistration {
   readonly nodeKey: string
   readonly selection: FormControlSelection
@@ -98,6 +120,11 @@ interface DocumentFormControlRecord {
   readonly registry: FormControlRegistry
   unregisterDisposal: () => void
 }
+
+const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
+  pending: false,
+  revision: 0,
+})
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
@@ -261,11 +288,13 @@ export class FormControlRegistry {
   private readonly form: ProtocolElement
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
   private readonly selections = new WeakMap<FormControlSelection, FormControlRecord>()
+  private readonly submissionActivity: ExactFormSubmissionActivity
   private unregisterFormDisposal: () => void
 
   constructor(
     private readonly session: DocumentSession,
     formNodeKey: string,
+    private readonly options: FormControlRegistryOptions = {},
   ) {
     const form = session.tree.getNodeByKey(formNodeKey)
     if (!form || !isElement(form)) {
@@ -274,6 +303,7 @@ export class FormControlRegistry {
       })
     }
     this.form = form
+    this.submissionActivity = formSubmissionActivity(session, form)
     this.unregisterFormDisposal = session.registerDisposal(formNodeKey, () => {
       this.disposeRegistry(false)
     })
@@ -281,6 +311,31 @@ export class FormControlRegistry {
 
   get isDisposed(): boolean {
     return this.disposed
+  }
+
+  get submissionState(): FormSubmissionActivitySnapshot {
+    return this.submissionActivity.state
+  }
+
+  subscribeSubmission(listener: FormSubmissionActivityListener): () => void {
+    return this.submissionActivity.subscribe(listener)
+  }
+
+  cancelSubmission(): void {
+    this.submissionActivity.cancelActive()
+  }
+
+  controlSubmissionState(nodeKey: string): FormSubmitterActivitySnapshot {
+    const node = this.activeControlOrUndefined(nodeKey)
+    return node ? this.submissionActivity.stateForSubmitter(node) : INACTIVE_SUBMITTER_STATE
+  }
+
+  subscribeControlSubmission(
+    nodeKey: string,
+    listener: FormSubmissionActivityListener,
+  ): () => void {
+    const node = this.activeControlOrUndefined(nodeKey)
+    return node ? this.submissionActivity.subscribeSubmitter(node, listener) : () => undefined
   }
 
   register(nodeKey: string, descriptor: FormControlDescriptor): FormControlRegistration {
@@ -412,10 +467,39 @@ export class FormControlRegistry {
         : {}),
       form: this.form,
       ...(originFrame ? { originFrame, originFrameId: originFrameId as string } : {}),
+      submissionActivity: this.submissionActivity,
       session: this.session,
       ...(submitter ? { submitter: submitter.node } : {}),
       treeGeneration: this.session.treeGeneration,
     })
+  }
+
+  submit(
+    options: ActiveFormSubmitOptions,
+    controllerOptions: FormSubmissionControllerSubmitOptions = {},
+  ): Promise<FormSubmissionReport> {
+    this.assertActive()
+    const submissionController = this.options.submissionController
+    if (!submissionController) {
+      throw new StateError("Active form submission requires a configured submission controller")
+    }
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new RequestError("Active form submit options must be an object")
+    }
+    if ("signal" in options) {
+      throw new RequestError("Active form submission owns its abort signal")
+    }
+    const protocol = options.protocol
+    const submitter = submitterSelectionOption(options)
+    return submissionController.submit(
+      (signal) =>
+        this.submissionProposal({
+          protocol,
+          signal,
+          ...(submitter ? { submitter } : {}),
+        }),
+      controllerOptions,
+    )
   }
 
   private collectSuccessfulEntries(
@@ -477,6 +561,21 @@ export class FormControlRegistry {
       })
     }
     return node
+  }
+
+  private activeControlOrUndefined(nodeKey: string): ProtocolElement | undefined {
+    if (
+      this.disposed ||
+      this.session.tree.getNodeByKey(this.form.key) !== this.form ||
+      !this.session.tree.contains(this.form)
+    ) {
+      return undefined
+    }
+    const node = this.session.tree.getNodeByKey(nodeKey)
+    if (!node || !isElement(node)) return undefined
+    let parent = node.parent
+    while (parent && parent !== this.form) parent = parent.parent
+    return parent === this.form ? node : undefined
   }
 
   private activeSubmitter(selection: FormControlSelection): FormControlRecord {
@@ -541,7 +640,10 @@ export class DocumentFormControls {
   private disposed = false
   private readonly records = new Map<string, DocumentFormControlRecord>()
 
-  constructor(private readonly session: DocumentSession) {}
+  constructor(
+    private readonly session: DocumentSession,
+    private readonly options: DocumentFormControlsOptions = {},
+  ) {}
 
   get isDisposed(): boolean {
     return this.disposed
@@ -562,7 +664,7 @@ export class DocumentFormControls {
 
     const record: DocumentFormControlRecord = {
       node: form,
-      registry: new FormControlRegistry(this.session, form.key),
+      registry: new FormControlRegistry(this.session, form.key, this.options),
       unregisterDisposal: () => undefined,
     }
     record.unregisterDisposal = this.session.registerDisposal(form.key, () => {
