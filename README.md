@@ -1,6 +1,6 @@
 # expo-turbo
 
-Turbo-compatible XML, Frames, Streams, and Action Cable adapters for Expo React Native and Rails.
+Host-neutral XML protocol runtime foundation for Expo React Native and Rails, targeting Turbo 8.0.23 semantics.
 
 > [!IMPORTANT]
 > This repository implements an early XML tree, typed registry, React renderer with opt-in document/Frame lifecycle, and Rails XML foundation. It does not yet implement or claim complete Turbo compatibility, and no package has been published.
@@ -65,7 +65,7 @@ A checked item is implemented and covered by the public test suite at the curren
 - [x] Core identity-bound Frame/form state-scope registry with child-update preservation, replacement/removal cleanup, explicit disposal, and stable-ID reuse isolation.
 - [x] React Frame/form state inheritance with automatic Frame boundaries, explicit form boundaries, nearest-scope bindings/actions, update preservation, and replacement cleanup.
 - [x] Host-neutral, identity-bound registry for the caller-admitted string-entry subset: enabled named values, checked checkables, and prefiltered ordered multi-values in XML order; repeated/empty entries are preserved, the activated submitter follows Turbo 8.0.23's append-last ordering, and exact-node cleanup follows control or form removal/replacement.
-- [x] Pure immutable form request planning from raw form/submitter metadata and successful string entries: same-origin action resolution, method/enctype/Stream precedence, GET query replacement, URL-encoded unsafe bodies, Rails `_method` normalization, submitter-entry consistency, and shared protocol headers; fragments and unconsumable encodings fail closed.
+- [x] Pure immutable form request planning from raw form/submitter metadata and successful string entries: credential-free same-origin HTTP(S) action resolution; submitter/form action, method, and enctype precedence; GET Stream opt-in and automatic unsafe Stream headers; GET query replacement; URL-encoded unsafe bodies; Rails `_method` normalization; submitter-entry consistency; and shared protocol headers. Explicit action fragments and unsafe `text/plain`/multipart bodies fail closed.
 - [x] Bounded typed state-reference decoding with exact `{"$state":"key"}` values, `{{state:key}}` scalar interpolation, recursive arrays/objects, nearest-scope action admission, and typed failures.
 - [x] Bounded semantic style adapters with schema-owned `style-tokens`, frozen capability manifests, token/group/component limits, deterministic precedence, explicit React resolution, and an example-owned native corpus.
 - [x] Deterministic descendant-first subtree disposal hooks with identity-safe replacement handling, explicit unregister, typed cleanup errors, and once-only registered-component cleanup on logical or React unmount.
@@ -96,7 +96,11 @@ A checked item is implemented and covered by the public test suite at the curren
 - [ ] Form-submission loading/accessibility surfaces, pending submitter behavior, live announcements, and physical accessibility evidence.
 - [ ] Remaining Turbo link/navigation behavior: host-router URL/history synchronization, explicit `replace`/`restore` visits, fragment/anchor navigation and scrolling, disabled/method/Stream/confirmation/action metadata, explicit non-HTTP scheme policies, snapshot cache/restoration, and preload/prefetch.
 - [ ] Concrete native visibility registration for ordinary layout, `ScrollView`, and virtualized `FlatList` cells; promoted Frame history, autofocus, autoscroll, and scroll adapters.
-- [ ] Remaining successful-control semantics plus React form/field/submitter registration and request execution; `text/plain` server decoding, multipart/uploads, validation/focus, pending UI, response classification, redirects, and authoritative `422` rendering.
+- [ ] Remaining successful-control semantics: disabled fieldset/option inheritance, external form ownership, datalist ancestry, files, image coordinates, `_charset_`, `dirname`, and form-associated custom elements.
+- [ ] React form/field/submitter registration and current native-value updates.
+- [ ] Rails `text/plain` decoding plus native multipart/upload transport.
+- [ ] Form request execution/cancellation and matching-Frame, Stream, `204`, redirect, error, and authoritative `422` response handling.
+- [ ] Native constraint validation and invalid-control focus behavior.
 - [ ] Concrete visit/request/frame/form/Stream/morph lifecycle event families, refresh Stream actions, morph mode, and renderer flush timing.
 - [ ] Native morphing and state/permanent-node preservation.
 - [ ] Action Cable transport, protected subscriptions, reconnect, and canonical refresh reconciliation.
