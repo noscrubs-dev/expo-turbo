@@ -219,6 +219,28 @@ function urlEncodedBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBo
   })
 }
 
+function requestSignal(value: unknown): AbortSignal | undefined {
+  if (value === undefined) return undefined
+  try {
+    const candidate = value as Partial<AbortSignal>
+    if (
+      !value ||
+      typeof value !== "object" ||
+      typeof candidate.aborted !== "boolean" ||
+      typeof candidate.addEventListener !== "function" ||
+      typeof candidate.removeEventListener !== "function" ||
+      typeof candidate.dispatchEvent !== "function" ||
+      !("onabort" in value) ||
+      (candidate.onabort !== null && typeof candidate.onabort !== "function")
+    ) {
+      throw new Error("invalid signal")
+    }
+  } catch {
+    throw new RequestError("Form request signal must be an AbortSignal")
+  }
+  return value as AbortSignal
+}
+
 /**
  * Builds one immutable transport plan from raw form/submitter attributes and
  * successful string entries. Fetch ownership, multipart uploads, constraint
@@ -233,6 +255,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   }
   const form = attributes(options.form, "form") as FormRequestAttributes
   const submitter = activatedSubmitter(options.submitter)
+  const signal = requestSignal(options.signal)
   if (
     !options.protocol ||
     typeof options.protocol !== "object" ||
@@ -292,7 +315,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
     request = Object.freeze({
       headers,
       method: source,
-      ...(options.signal ? { signal: options.signal } : {}),
+      ...(signal ? { signal } : {}),
       url: url.toString(),
     })
   } else {
@@ -311,7 +334,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
       body,
       headers,
       method: "POST",
-      ...(options.signal ? { signal: options.signal } : {}),
+      ...(signal ? { signal } : {}),
       url: url.toString(),
     })
   }

@@ -1,6 +1,11 @@
-import { PropsError, RegistryError, StateError, TargetError } from "./errors"
+import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
+import {
+  buildFormRequest,
+  type FormRequestPlan,
+  type FormRequestProtocolOptions,
+} from "./form-request"
 import type { DocumentSession } from "./session"
-import { isElement, type ProtocolElement, type ProtocolNode } from "./tree"
+import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
 
 interface FormControlBase {
   readonly disabled?: boolean
@@ -32,13 +37,43 @@ export interface SuccessfulFormEntry {
 }
 
 export interface SuccessfulFormEntriesOptions {
-  readonly submitterNodeKey?: string
+  readonly submitter?: FormControlSelection
+}
+
+export interface ActiveFormRequestPlanOptions extends SuccessfulFormEntriesOptions {
+  readonly protocol: FormRequestProtocolOptions
+  readonly signal?: AbortSignal
 }
 
 export interface FormControlRegistration {
   readonly nodeKey: string
+  readonly selection: FormControlSelection
   unregister(): void
   update(descriptor: FormControlDescriptor): void
+}
+
+declare const FORM_CONTROL_SELECTION: unique symbol
+
+export interface FormControlSelection {
+  readonly [FORM_CONTROL_SELECTION]: true
+  readonly nodeKey: string
+}
+
+function submitterSelectionOption(value: unknown): FormControlSelection | undefined {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new TargetError("Form successful-entry options must be an object")
+    }
+    if ("submitterNodeKey" in value) {
+      throw new TargetError(
+        "Form submitterNodeKey is unsupported; pass the registration-bound submitter selection",
+      )
+    }
+    return (value as SuccessfulFormEntriesOptions).submitter
+  } catch (error) {
+    if (error instanceof TargetError) throw error
+    throw new TargetError("Form submitter selection could not be read")
+  }
 }
 
 interface FormControlRecord {
@@ -51,6 +86,43 @@ interface DocumentFormControlRecord {
   readonly node: ProtocolElement
   readonly registry: FormControlRegistry
   unregisterDisposal: () => void
+}
+
+function hasAttribute(node: ProtocolElement, name: string): boolean {
+  return node.attributes.some((attribute) => attribute.name === name)
+}
+
+function formRequestAttributes(form: ProtocolElement) {
+  const action = attributeValue(form, "action")
+  const enctype = attributeValue(form, "enctype")
+  const method = attributeValue(form, "method")
+  return Object.freeze({
+    ...(action !== undefined ? { action } : {}),
+    ...(enctype !== undefined ? { enctype } : {}),
+    ...(method !== undefined ? { method } : {}),
+    ...(hasAttribute(form, "data-turbo-stream") ? { streamAttributePresent: true as const } : {}),
+  })
+}
+
+function submitterRequestAttributes(record: FormControlRecord) {
+  if (record.descriptor.kind !== "submitter") {
+    throw new TargetError(`Form control ${JSON.stringify(record.node.key)} is not a submitter`, {
+      target: record.node.key,
+    })
+  }
+  const action = attributeValue(record.node, "formaction")
+  const enctype = attributeValue(record.node, "formenctype")
+  const method = attributeValue(record.node, "formmethod")
+  return Object.freeze({
+    ...(action !== undefined ? { action } : {}),
+    ...(enctype !== undefined ? { enctype } : {}),
+    ...(method !== undefined ? { method } : {}),
+    ...(record.descriptor.name !== undefined ? { name: record.descriptor.name } : {}),
+    ...(hasAttribute(record.node, "data-turbo-stream")
+      ? { streamAttributePresent: true as const }
+      : {}),
+    ...(record.descriptor.value !== undefined ? { value: record.descriptor.value } : {}),
+  })
 }
 
 function normalizeDescriptor(
@@ -142,6 +214,7 @@ export class FormControlRegistry {
   private disposed = false
   private readonly form: ProtocolElement
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
+  private readonly selections = new WeakMap<FormControlSelection, FormControlRecord>()
   private unregisterFormDisposal: () => void
 
   constructor(
@@ -183,9 +256,12 @@ export class FormControlRegistry {
       this.release(record, false)
     })
     this.records.set(node, record)
+    const selection = Object.freeze({ nodeKey: node.key }) as FormControlSelection
+    this.selections.set(selection, record)
 
     return Object.freeze({
       nodeKey: node.key,
+      selection,
       unregister: () => this.release(record, true),
       update: (next: FormControlDescriptor) => {
         this.assertRecordActive(record)
@@ -196,10 +272,8 @@ export class FormControlRegistry {
 
   successfulEntries(options: SuccessfulFormEntriesOptions = {}): readonly SuccessfulFormEntry[] {
     this.assertActive()
-    const submitter =
-      options.submitterNodeKey === undefined
-        ? undefined
-        : this.activeSubmitter(options.submitterNodeKey)
+    const selection = submitterSelectionOption(options)
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
     const entries: SuccessfulFormEntry[] = []
 
     const append = (descriptor: FormControlDescriptor) => {
@@ -237,6 +311,25 @@ export class FormControlRegistry {
     return Object.freeze(entries)
   }
 
+  requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
+    this.assertActive()
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new RequestError("Active form request plan options must be an object")
+    }
+    const documentUrl = this.session.tree.document.url
+    if (!documentUrl) throw new RequestError("Active form request planning requires a document URL")
+    const selection = submitterSelectionOption(options)
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    return buildFormRequest({
+      documentUrl,
+      entries: this.successfulEntries(selection ? { submitter: selection } : {}),
+      form: formRequestAttributes(this.form),
+      protocol: options.protocol,
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
+    })
+  }
+
   dispose(): void {
     this.disposeRegistry(true)
   }
@@ -258,17 +351,22 @@ export class FormControlRegistry {
     return node
   }
 
-  private activeSubmitter(nodeKey: string): FormControlRecord {
-    const node = this.activeControl(nodeKey)
-    const record = this.records.get(node)
+  private activeSubmitter(selection: FormControlSelection): FormControlRecord {
+    if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+      throw new TargetError("Form submitter requires a registration-bound selection")
+    }
+    const record = this.selections.get(selection)
+    if (!record || this.records.get(record.node) !== record) {
+      throw new TargetError("Form submitter selection is no longer active")
+    }
     if (record?.descriptor.kind !== "submitter") {
-      throw new TargetError(`Form submitter ${JSON.stringify(nodeKey)} is not registered`, {
-        target: nodeKey,
+      throw new TargetError(`Form control ${JSON.stringify(record.node.key)} is not a submitter`, {
+        target: record.node.key,
       })
     }
     if (record.descriptor.disabled) {
-      throw new TargetError(`Form submitter ${JSON.stringify(nodeKey)} is disabled`, {
-        target: nodeKey,
+      throw new TargetError(`Form submitter ${JSON.stringify(record.node.key)} is disabled`, {
+        target: record.node.key,
       })
     }
     return record

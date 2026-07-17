@@ -304,6 +304,73 @@ describe("form request construction", () => {
     }
   })
 
+  test("rejects malformed request signals without relying on realm identity", () => {
+    const invalidSignals = [
+      null,
+      false,
+      0,
+      "",
+      {},
+      { aborted: false },
+      { aborted: false, addEventListener() {} },
+      {
+        aborted: "false",
+        addEventListener() {},
+        removeEventListener() {},
+      },
+      {
+        aborted: false,
+        addEventListener() {},
+        dispatchEvent() {
+          return true
+        },
+        removeEventListener() {},
+      },
+      {
+        aborted: false,
+        addEventListener() {},
+        dispatchEvent() {
+          return true
+        },
+        onabort: "invalid",
+        removeEventListener() {},
+      },
+    ]
+    for (const signal of invalidSignals) {
+      expect(() => plan({ signal: signal as never })).toThrow(RequestError)
+    }
+
+    const throwing = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("sensitive signal detail")
+        },
+      },
+    )
+    try {
+      plan({ signal: throwing as never })
+      throw new Error("throwing signal fixture was accepted")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequestError)
+      if (!(error instanceof RequestError)) throw error
+      expect(`${error.message} ${JSON.stringify(error.context)}`).not.toContain("sensitive")
+    }
+
+    // React Native 0.86 installs abort-controller@3, whose AbortSignal has
+    // this common surface but not the newer reason/throwIfAborted members.
+    const reactNativeCompatible = {
+      aborted: false,
+      addEventListener() {},
+      dispatchEvent() {
+        return true
+      },
+      onabort: null,
+      removeEventListener() {},
+    } as unknown as AbortSignal
+    expect(plan({ signal: reactNativeCompatible }).request.signal).toBe(reactNativeCompatible)
+  })
+
   test("validates URL admission before inspecting sensitive entries", () => {
     const entries = new Proxy([] as SuccessfulFormEntry[], {
       get() {
