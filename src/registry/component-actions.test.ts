@@ -141,12 +141,29 @@ describe("component action registry", () => {
   test("executes a definition against an explicit scoped state store", async () => {
     const documentState = memoryState()
     const scopedState = memoryState()
+    scopedState.set("step", 3)
+    scopedState.set("target", "count")
     const runner = createComponentActionRunner(registry(), documentState)
 
-    await runner.executeDefinition(increment, { by: "3", key: "count" }, undefined, scopedState)
+    await runner.executeDefinition(
+      increment,
+      { by: { $state: "step" }, key: "{{state:target}}" },
+      undefined,
+      scopedState,
+    )
 
     expect(documentState.get("count")).toBeUndefined()
     expect(scopedState.get("count")).toBe(3)
+  })
+
+  test("reports state-reference failures through the action error contract", async () => {
+    const runner = createComponentActionRunner(registry(), memoryState())
+    await expect(
+      runner.executeDefinition(increment, {
+        by: { $state: "missing" },
+        key: "count",
+      }),
+    ).rejects.toBeInstanceOf(ActionError)
   })
 
   test("rejects duplicate modules/actions and definitions not owned by the runner", async () => {

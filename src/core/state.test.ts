@@ -3,7 +3,13 @@ import { describe, expect, test } from "bun:test"
 import { StateError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
-import { DocumentStateScopes, DocumentStateStore, type StateSnapshot } from "./state"
+import {
+  DocumentStateScopes,
+  DocumentStateStore,
+  resolveStateReferences,
+  type StateReferenceInput,
+  type StateSnapshot,
+} from "./state"
 
 describe("document state store", () => {
   test("keeps snapshots stable and notifies only the changed key", () => {
@@ -127,5 +133,87 @@ describe("node state scopes", () => {
     const scopes = new DocumentStateScopes(session)
     expect(() => scopes.scopeFor("missing", "form")).toThrow(StateError)
     expect(() => scopes.disposeScope("missing")).toThrow(StateError)
+  })
+})
+
+describe("state references", () => {
+  test("resolves exact values and scalar interpolation through nested arrays and objects", () => {
+    const exact = Object.freeze({ enabled: true, values: [1, 2] })
+    const state = new DocumentStateStore({
+      count: 3,
+      exact,
+      name: "Ada",
+      ready: true,
+    })
+
+    const resolved = resolveStateReferences(
+      {
+        exact: { $state: "exact" },
+        nested: ["Hello {{state:name}}", { copy: "{{state:count}}/{{state:ready}}" }],
+      },
+      state,
+    ) as { exact: unknown; nested: unknown[] }
+
+    expect(resolved.exact).toBe(exact)
+    expect(resolved.nested).toEqual(["Hello Ada", { copy: "3/true" }])
+
+    const tuple = ["{{state:name}}", { $state: "count" }] satisfies StateReferenceInput<
+      readonly [string, number]
+    >
+    expect(resolveStateReferences(tuple, state)).toEqual(["Ada", 3])
+    // @ts-expect-error State-reference inputs preserve the source tuple's arity.
+    const oversizedTuple: StateReferenceInput<readonly [string, number]> = ["Ada", 3, 4]
+    expect(oversizedTuple).toHaveLength(3)
+  })
+
+  test("keeps resolution confined to the selected store", () => {
+    const documentState = new DocumentStateStore({ value: "document" })
+    const scopedState = new DocumentStateStore({ value: "form" })
+
+    expect(resolveStateReferences({ $state: "value" }, documentState)).toBe("document")
+    expect(resolveStateReferences({ $state: "value" }, scopedState)).toBe("form")
+  })
+
+  test("rejects missing, malformed, ambiguous, structured, cyclic, and excessive references", () => {
+    const state = new DocumentStateStore({ structured: { private: true } })
+    expect(() => resolveStateReferences({ $state: "missing" }, state)).toThrow(StateError)
+    expect(() => resolveStateReferences("{{state:missing", state)).toThrow(StateError)
+    expect(() => resolveStateReferences("{{state}}", state)).toThrow(StateError)
+    expect(() => resolveStateReferences("{{state key}}", state)).toThrow(StateError)
+    expect(() => resolveStateReferences("{{state.key}}", state)).toThrow(StateError)
+    expect(() => resolveStateReferences({ $state: "structured", extra: true }, state)).toThrow(
+      StateError,
+    )
+    expect(() => resolveStateReferences("{{state:structured}}", state)).toThrow(StateError)
+
+    const cyclic: unknown[] = []
+    cyclic.push(cyclic)
+    expect(() => resolveStateReferences(cyclic, state)).toThrow(StateError)
+    expect(() => resolveStateReferences([["deep"]], state, { maxDepth: 1 })).toThrow(StateError)
+    expect(() => resolveStateReferences({}, state, { maxDepth: 0 })).toThrow(StateError)
+  })
+
+  test("rejects prototype and hidden-property exact-reference lookalikes", () => {
+    const state = new DocumentStateStore({ safe: "resolved" })
+    class ReferenceLookalike {
+      readonly $state = "safe"
+    }
+    const arrayLookalike: unknown[] & { $state?: string } = []
+    arrayLookalike.$state = "safe"
+    const hiddenLookalike = { $state: "safe" }
+    Object.defineProperty(hiddenLookalike, "hidden", { value: true })
+    const symbolLookalike = { $state: "safe", [Symbol("hidden")]: true }
+    const accessorLookalike = Object.defineProperty({}, "$state", {
+      enumerable: true,
+      get: () => {
+        throw new Error("accessor must not run")
+      },
+    })
+
+    expect(() => resolveStateReferences(new ReferenceLookalike(), state)).toThrow(StateError)
+    expect(() => resolveStateReferences(arrayLookalike, state)).toThrow(StateError)
+    expect(() => resolveStateReferences(hiddenLookalike, state)).toThrow(StateError)
+    expect(() => resolveStateReferences(symbolLookalike, state)).toThrow(StateError)
+    expect(() => resolveStateReferences(accessorLookalike, state)).toThrow(StateError)
   })
 })

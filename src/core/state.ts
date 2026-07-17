@@ -10,6 +10,24 @@ export interface StateStore {
   set(key: string, value: unknown): void
 }
 
+export interface ExactStateReference {
+  readonly $state: string
+}
+
+export type StateReferenceInput<Value> =
+  | ExactStateReference
+  | (Value extends string
+      ? Value
+      : Value extends readonly unknown[]
+        ? { readonly [Key in keyof Value]: StateReferenceInput<Value[Key]> }
+        : Value extends object
+          ? { readonly [Key in keyof Value]: StateReferenceInput<Value[Key]> }
+          : Value)
+
+export interface StateReferenceOptions {
+  readonly maxDepth?: number
+}
+
 export interface StateSnapshot<Value = unknown> {
   readonly disposed: boolean
   readonly key: string
@@ -29,6 +47,100 @@ interface ScopeRecord {
   readonly node: ProtocolNode
   readonly scope: NodeStateScope
   unregisterDisposal(): void
+}
+
+const STATE_INTERPOLATION = /\{\{state:([^{}]*)\}\}/g
+
+function ownDataEntries(value: object): readonly (readonly [string, unknown])[] {
+  return Reflect.ownKeys(value).map((key) => {
+    if (typeof key !== "string") {
+      throw new StateError("State reference objects must contain only string keys")
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (!descriptor?.enumerable || !("value" in descriptor)) {
+      throw new StateError("State reference objects must contain only enumerable data properties")
+    }
+    return [key, descriptor.value] as const
+  })
+}
+
+function stateValue(state: StateStore, key: string): unknown {
+  if (!key.trim()) throw new StateError("State reference keys must not be blank")
+  const value = state.get(key)
+  if (value === undefined) {
+    throw new StateError(`State reference ${JSON.stringify(key)} has no value`, { target: key })
+  }
+  return value
+}
+
+function interpolatedValue(state: StateStore, key: string): string {
+  const value = stateValue(state, key)
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "bigint" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return String(value)
+  }
+  throw new StateError(`State reference ${JSON.stringify(key)} is not a scalar string value`, {
+    target: key,
+  })
+}
+
+export function resolveStateReferences(
+  input: unknown,
+  state: StateStore,
+  options: StateReferenceOptions = {},
+): unknown {
+  const maxDepth = options.maxDepth ?? 32
+  if (!Number.isInteger(maxDepth) || maxDepth < 1) {
+    throw new StateError("State reference maxDepth must be a positive integer")
+  }
+  const active = new Set<object>()
+
+  const resolve = (value: unknown, depth: number): unknown => {
+    if (depth > maxDepth) throw new StateError("State reference input exceeds maxDepth")
+    if (typeof value === "string") {
+      const remainder = value.replace(STATE_INTERPOLATION, "")
+      if (remainder.includes("{{state")) {
+        throw new StateError("State interpolation is malformed")
+      }
+      return value.replace(STATE_INTERPOLATION, (_token, key: string) =>
+        interpolatedValue(state, key),
+      )
+    }
+    if (value === null || typeof value !== "object") return value
+    if (active.has(value)) throw new StateError("State reference input contains a cycle")
+
+    active.add(value)
+    try {
+      if (Array.isArray(value)) {
+        if (Object.hasOwn(value, "$state")) {
+          throw new StateError("Exact state references must be plain objects")
+        }
+        return value.map((item) => resolve(item, depth + 1))
+      }
+      const prototype = Object.getPrototypeOf(value)
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new StateError("State reference input must contain only arrays and plain objects")
+      }
+      const entries = ownDataEntries(value)
+      const exactReference = entries.find(([key]) => key === "$state")
+      if (exactReference) {
+        if (entries.length !== 1 || typeof exactReference[1] !== "string") {
+          throw new StateError('Exact state references must contain only a string "$state" key')
+        }
+        return stateValue(state, exactReference[1])
+      }
+      return Object.fromEntries(entries.map(([key, item]) => [key, resolve(item, depth + 1)]))
+    } finally {
+      active.delete(value)
+    }
+  }
+
+  return resolve(input, 0)
 }
 
 export class DocumentStateStore implements StateStore {
