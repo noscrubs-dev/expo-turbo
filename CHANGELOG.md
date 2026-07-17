@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Wire opt-in Frame controllers into the React renderer so mounted Frames connect, eager sources load, lifecycle snapshots update, and removed subtrees cancel and dispose their requests.
 - Add Turbo-compatible Frame target precedence plus named, `_self`, `_parent`, and `_top` resolution, and an observable Frame controller for eager/manual loading, reload, lifecycle state, and cancellation.
 - Add the same-origin Frame request loader with protocol headers, MIME validation, empty-response handling, cancellation, and request-epoch protection.
 - Add exact Frame response extraction, wrapper-preserving child commits, redirected source tracking, embedded Stream processing, and missing-frame failures.

@@ -7,11 +7,14 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useSyncExternalStore,
 } from "react"
 
 import { RegistryError } from "../core/errors"
+import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
+import type { FrameControllerCollection } from "../core/frame-controller-registry"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import { attributeValue, type ProtocolElement, type ProtocolNode } from "../core/tree"
 import type { ComponentRegistry, DecodedComponent, RegistryComponent } from "../registry/registry"
@@ -24,6 +27,7 @@ export interface ExpoTurboRenderError {
 }
 
 interface RendererContextValue {
+  readonly frames: FrameControllerCollection | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
@@ -34,6 +38,7 @@ const RendererContext = createContext<RendererContextValue | undefined>(undefine
 
 export interface ExpoTurboProviderProps {
   readonly children?: ReactNode
+  readonly frames?: FrameControllerCollection
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -43,12 +48,13 @@ export interface ExpoTurboProviderProps {
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const value = useMemo<RendererContextValue>(
     () => ({
+      frames: props.frames,
       onError: props.onError,
       registry: props.registry,
       renderError: props.renderError,
       session: props.session,
     }),
-    [props.onError, props.registry, props.renderError, props.session],
+    [props.frames, props.onError, props.registry, props.renderError, props.session],
   )
   return createElement(RendererContext.Provider, { value }, props.children)
 }
@@ -66,6 +72,15 @@ export function useProtocolNode(key: string): NodeSnapshot | undefined {
     [key, session],
   )
   const snapshot = useCallback(() => session.getNodeSnapshot(key), [key, session])
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
+export function useFrameControllerState(controller: FrameController): FrameControllerSnapshot {
+  const subscribe = useCallback(
+    (listener: () => void) => controller.subscribe(listener),
+    [controller],
+  )
+  const snapshot = useCallback(() => controller.state, [controller])
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }
 
@@ -140,6 +155,31 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
     : createElement(component, componentProps, children)
 }
 
+interface ConnectedFrameProps {
+  readonly frameId: string
+  readonly frames: FrameControllerCollection
+  readonly node: ProtocolElement
+  readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+}
+
+function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
+  const controller = useMemo(() => props.frames.get(props.frameId), [props.frameId, props.frames])
+  useFrameControllerState(controller)
+  useEffect(() => {
+    let disposed = false
+    controller.connect().catch((cause: unknown) => {
+      if (disposed) return
+      const error = cause instanceof Error ? cause : new Error("Frame source load failed")
+      props.onError?.({ error, nodeKey: props.node.key })
+    })
+    return () => {
+      disposed = true
+      props.frames.delete(props.frameId, controller)
+    }
+  }, [controller, props.frameId, props.frames, props.node.key, props.onError])
+  return createElement(Fragment, null, renderChildren(props.node.children))
+}
+
 function ProtocolElementView(
   props: Readonly<{ node: ProtocolElement; revision: number }>,
 ): ReactNode {
@@ -151,8 +191,17 @@ function ProtocolElementView(
   ) {
     return null
   }
-  if (props.node.kind === "frame")
-    return createElement(Fragment, null, renderChildren(props.node.children))
+  if (props.node.kind === "frame") {
+    const frameId = attributeValue(props.node, "id")
+    return context.frames && frameId
+      ? createElement(ConnectedFrame, {
+          frameId,
+          frames: context.frames,
+          node: props.node,
+          onError: context.onError,
+        })
+      : createElement(Fragment, null, renderChildren(props.node.children))
+  }
 
   return createElement(
     NodeErrorBoundary,
