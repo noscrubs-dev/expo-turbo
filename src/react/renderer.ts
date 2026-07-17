@@ -13,6 +13,7 @@ import {
   useSyncExternalStore,
 } from "react"
 
+import type { NavigationAdapter } from "../adapters"
 import {
   type ComponentStyleLayers,
   resolveComponentStyle,
@@ -26,6 +27,7 @@ import type {
 import { RegistryError, TargetError } from "../core/errors"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection } from "../core/frame-controller-registry"
+import { resolveProtocolUrl } from "../core/protocol-request"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
   DocumentStateScopes,
@@ -102,6 +104,7 @@ interface RendererContextValue {
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
 const DocumentContext = createContext<ExpoTurboDocumentBinding | undefined>(undefined)
 const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
+const NavigationContext = createContext<NavigationAdapter | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
@@ -126,6 +129,7 @@ export interface ExpoTurboProviderProps {
   readonly documentController?: DocumentVisitController
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly frames?: FrameControllerCollection
+  readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -168,7 +172,11 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.styles,
     ],
   )
-  return createElement(RendererContext.Provider, { value }, props.children)
+  return createElement(
+    RendererContext.Provider,
+    { value },
+    createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+  )
 }
 
 function useRenderer(): RendererContextValue {
@@ -347,64 +355,89 @@ export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
   return useContext(DocumentContext)
 }
 
-export type ExpoTurboDocumentLinkActivation = () => Promise<DocumentLoadReport>
+export type ExpoTurboDocumentLinkDelegation =
+  | Readonly<{
+      kind: "external"
+      reason: "external" | "opt-out"
+      status: "delegated"
+      url: string
+    }>
+  | Readonly<{
+      action: "advance"
+      kind: "navigation"
+      reason: "opt-out"
+      status: "delegated"
+      url: string
+    }>
+
+export type ExpoTurboDocumentLinkResult = DocumentLoadReport | ExpoTurboDocumentLinkDelegation
+
+export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
 
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
   const { documentController, session } = useRenderer()
+  const navigation = useContext(NavigationContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
-  const activate = useCallback(() => {
+  const activate = useCallback(async () => {
     if (!documentController || !nodeKey || !node || !isElement(node)) {
-      return Promise.reject(new TargetError("Document link is outside the active document"))
+      throw new TargetError("Document link is outside the active document")
     }
     if (session.tree.getNodeByKey(nodeKey) !== node) {
-      return Promise.reject(new TargetError("Document link is outside the active document"))
+      throw new TargetError("Document link is outside the active document")
     }
     for (const name of UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES) {
       if (attributeValue(node, name) !== undefined) {
-        return Promise.reject(
-          new TargetError("Document link metadata requires unsupported navigation behavior"),
-        )
+        throw new TargetError("Document link metadata requires unsupported navigation behavior")
       }
     }
     let current: ProtocolNode | null = node
     let foundTurboSetting = false
+    let optedOut = false
     while (current && current.kind !== "document") {
       if (current.kind === "frame") {
         const frameId = attributeValue(current, "id")
-        return Promise.reject(
-          new TargetError("Frame-scoped document links require Frame navigation", {
-            ...(frameId ? { frameId } : {}),
-          }),
-        )
+        throw new TargetError("Frame-scoped document links require Frame navigation", {
+          ...(frameId ? { frameId } : {}),
+        })
       }
       if (!foundTurboSetting && isElement(current)) {
         const setting = attributeValue(current, "data-turbo")
         if (setting !== undefined) {
           foundTurboSetting = true
-          if (setting === "false") {
-            return Promise.reject(
-              new TargetError("Opted-out document links require host navigation"),
-            )
-          }
+          optedOut = setting === "false"
         }
       }
       current = current.parent
     }
     const documentUrl = session.tree.document.url
-    if (documentUrl) {
-      try {
-        if (new URL(href, documentUrl).href.includes("#")) {
-          return Promise.reject(
-            new TargetError("Document link fragments require navigation support"),
-          )
-        }
-      } catch {
-        // The document controller owns typed URL admission and redaction.
+    if (!documentUrl) throw new TargetError("Document links require an active document URL")
+    const resolved = resolveProtocolUrl(href, documentUrl)
+    if (resolved.url.includes("#")) {
+      throw new TargetError("Document link fragments require navigation support")
+    }
+    const reason = optedOut
+      ? "opt-out"
+      : resolved.urlOrigin !== resolved.documentOrigin
+        ? "external"
+        : undefined
+    if (reason) {
+      if (!navigation) throw new TargetError("Document link delegation requires host navigation")
+      if (resolved.urlOrigin !== resolved.documentOrigin) {
+        await navigation.openExternal(resolved.url)
+        return Object.freeze({ kind: "external", reason, status: "delegated", url: resolved.url })
       }
+      await navigation.visit(resolved.url, "advance")
+      return Object.freeze({
+        action: "advance",
+        kind: "navigation",
+        reason: "opt-out",
+        status: "delegated",
+        url: resolved.url,
+      })
     }
     return documentController.visit(href)
-  }, [documentController, href, node, nodeKey, session])
+  }, [documentController, href, navigation, node, nodeKey, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
   }

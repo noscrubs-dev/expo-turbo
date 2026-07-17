@@ -217,6 +217,9 @@ export const DEMO_DOCUMENT = `<Gallery>
   <DemoDocumentLink href="/demo/linked">
     <DemoText>Open a same-origin document through the app-owned native link.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="https://example.com">
+    <DemoText>Delegate a safe cross-origin link through the app-owned navigation adapter.</DemoText>
+  </DemoDocumentLink>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>

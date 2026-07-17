@@ -103,13 +103,13 @@ export class FrameControllerRegistry implements FrameControllerCollection {
 
     if (resolved.urlOrigin !== resolved.documentOrigin) {
       if (!this.navigation) throw new TargetError("External Frame visits require navigation")
-      this.navigation.openExternal(resolved.url)
+      await this.navigation.openExternal(resolved.url)
       return Object.freeze({ kind: "external", target, url: resolved.url })
     }
     if (target.kind === "top") {
       if (!this.navigation) throw new TargetError("Top-level Frame visits require navigation")
       const action = options.action ?? "advance"
-      this.navigation.visit(resolved.url, action)
+      await this.navigation.visit(resolved.url, action)
       return Object.freeze({ action, kind: "top", target, url: resolved.url })
     }
 
