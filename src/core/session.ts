@@ -24,6 +24,7 @@ export class DocumentSession {
   private readonly snapshots = new Map<string, NodeSnapshot>()
   private currentRevision = 0
   private currentTree: DocumentTree
+  private currentTreeGeneration = 0
   private nextIdentity = 0
 
   constructor(
@@ -39,6 +40,10 @@ export class DocumentSession {
 
   get tree(): DocumentTree {
     return this.currentTree
+  }
+
+  get treeGeneration(): number {
+    return this.currentTreeGeneration
   }
 
   getNodeSnapshot(key: string): NodeSnapshot | undefined {
@@ -58,6 +63,7 @@ export class DocumentSession {
 
   replaceTree(tree: DocumentTree): void {
     this.currentTree = tree
+    this.currentTreeGeneration += 1
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()

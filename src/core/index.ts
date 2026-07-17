@@ -1,4 +1,5 @@
 export * from "./custom-stream-actions"
+export * from "./document-loader"
 export * from "./errors"
 export * from "./events"
 export * from "./frame-controller"
