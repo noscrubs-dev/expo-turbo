@@ -5,6 +5,7 @@
   "private": true,
   "dependencies": {
     "@xmldom/xmldom": "0.9.10",
+    "css-select": "7.0.0",
     "expo": "~57.0.6",
     "expo-constants": "~57.0.5",
     "expo-linking": "~57.0.3",
