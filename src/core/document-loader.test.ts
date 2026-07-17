@@ -118,6 +118,119 @@ describe("Document request loader", () => {
     }
   })
 
+  test("exposes a synchronous parsed candidate that can be discarded before tree replacement", async () => {
+    const session = documentSession()
+    const previousTree = session.tree
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response('<Gallery data-turbo-root="/elsewhere"><Discarded id="discarded" /></Gallery>', {
+            redirected: true,
+            url: "https://example.test/final",
+          }),
+      },
+      { next: () => "request-discard" },
+    )
+    let candidateStatus: string | undefined
+    let rootLocation: string | undefined
+
+    const report = await loader.load("/requested", undefined, {
+      beforeCommit: (candidate) => {
+        candidateStatus = candidate.status
+        rootLocation = candidate.rootLocation
+        expect("tree" in candidate).toBe(false)
+        return "discard"
+      },
+    })
+
+    expect(candidateStatus).toBe("committed")
+    expect(rootLocation).toBe("https://example.test/elsewhere")
+    expect(report).toEqual({
+      candidateStatus: "committed",
+      classification: "success",
+      redirected: true,
+      requestId: "request-discard",
+      requestedUrl: "https://example.test/requested",
+      responseStatus: 200,
+      status: "discarded",
+      url: "https://example.test/final",
+    })
+    expect(Object.isFrozen(report)).toBe(true)
+    expect(session.tree).toBe(previousTree)
+    expect(session.revision).toBe(0)
+    expect(session.tree.getElementById("discarded")).toBeUndefined()
+  })
+
+  test("can discard a redirected empty response without changing the current document", async () => {
+    const session = documentSession()
+    const previousTree = session.tree
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response("unused", {
+            headers: {},
+            redirected: true,
+            status: 204,
+            url: "https://example.test/final-empty",
+          }),
+      },
+      { next: () => "request-empty-discard" },
+    )
+
+    const report = await loader.load("/requested-empty", undefined, {
+      beforeCommit: (candidate) => {
+        expect(candidate.status).toBe("empty")
+        expect("tree" in candidate).toBe(false)
+        return "discard"
+      },
+    })
+
+    expect(report).toMatchObject({
+      candidateStatus: "empty",
+      redirected: true,
+      status: "discarded",
+      url: "https://example.test/final-empty",
+    })
+    expect(session.tree).toBe(previousTree)
+    expect(session.revision).toBe(0)
+  })
+
+  test("fails closed on invalid commit admission and releases ownership for retry", async () => {
+    for (const beforeCommit of [
+      () => "invalid" as never,
+      () => {
+        throw new Error("unsafe admission failure")
+      },
+    ]) {
+      let requests = 0
+      const session = documentSession()
+      const previousTree = session.tree
+      const loader = new DocumentRequestLoader(
+        session,
+        {
+          fetch: async (request) => {
+            requests += 1
+            return response(`<Gallery><Result id="result-${requests}" /></Gallery>`, {
+              url: request.url,
+            })
+          },
+        },
+        { next: () => `request-${requests + 1}` },
+      )
+
+      await expect(loader.load("/first", undefined, { beforeCommit })).rejects.toBeInstanceOf(
+        RequestError,
+      )
+      expect(session.tree).toBe(previousTree)
+      expect(session.revision).toBe(0)
+
+      expect(await loader.load("/retry")).toMatchObject({ status: "committed" })
+      expect(session.tree.getElementById("result-2")?.tagName).toBe("Result")
+    }
+  })
+
   test("treats 204 and an empty 201 as explicit native no-op outcomes", async () => {
     const session = documentSession()
     const tree = session.tree

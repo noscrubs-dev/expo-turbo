@@ -9,6 +9,11 @@ import {
 } from "./protocol-request"
 import type { DocumentSession } from "./session"
 import type { DocumentTree } from "./tree"
+import {
+  classifyTopLevelLocation,
+  documentRootLocation,
+  type TopLevelLocationDisposition,
+} from "./visitability"
 
 export type DocumentResponseClassification = "client-error" | "server-error" | "success"
 
@@ -26,12 +31,31 @@ interface DocumentResponseReport extends DocumentResponseOutcome {
 
 export type DocumentLoadReport =
   | (DocumentResponseReport & Readonly<{ status: "committed" | "empty" }>)
+  | (DocumentResponseReport &
+      Readonly<{
+        candidateStatus: "committed" | "empty"
+        status: "discarded"
+      }>)
   | Readonly<{
       requestId: string
       requestedUrl: string
       status: "canceled"
       url: string
     }>
+
+export type DocumentCommitCandidate =
+  | (DocumentResponseReport &
+      Readonly<{
+        rootLocation: string
+        status: "committed"
+      }>)
+  | (DocumentResponseReport & Readonly<{ rootLocation: string; status: "empty" }>)
+
+export type DocumentCommitDisposition = "commit" | "discard"
+
+export interface DocumentLoadOptions {
+  readonly beforeCommit?: (candidate: DocumentCommitCandidate) => DocumentCommitDisposition
+}
 
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
@@ -87,6 +111,10 @@ export class DocumentRequestLoader {
     private readonly options: DocumentRequestLoaderOptions = {},
   ) {}
 
+  classifyTopLevelSource(source: string): TopLevelLocationDisposition {
+    return classifyTopLevelLocation(this.session.tree, source)
+  }
+
   cancel(owner?: object): void {
     const active = this.active
     if (!active || (owner && active.owner !== owner)) return
@@ -100,7 +128,11 @@ export class DocumentRequestLoader {
     return resolveSameOriginProtocolUrl(source, documentUrl)
   }
 
-  async load(source: string, owner?: object): Promise<DocumentLoadReport> {
+  async load(
+    source: string,
+    owner?: object,
+    options: DocumentLoadOptions = {},
+  ): Promise<DocumentLoadReport> {
     const requestedUrl = this.resolveSource(source)
     this.cancel()
 
@@ -120,7 +152,7 @@ export class DocumentRequestLoader {
           finalUrl: string
           redirected: boolean
           response: TurboResponse
-          tree: DocumentTree
+          tree?: DocumentTree
         }>
       | undefined
 
@@ -142,46 +174,30 @@ export class DocumentRequestLoader {
       const redirected = response.redirected || finalUrl !== requestedUrl
 
       if (response.status === 204) {
-        this.release(active)
-        return Object.freeze({
-          classification,
-          redirected,
-          requestId,
-          requestedUrl,
-          responseStatus: response.status,
-          status: "empty",
-          url: finalUrl,
-        })
-      }
-
-      let xml: string
-      if (response.status === 201) {
-        xml = await response.text()
-        if (!this.owns(active)) return this.canceled(active, finalUrl)
-        if (xml.trim() === "") {
-          this.release(active)
-          return Object.freeze({
-            classification,
-            redirected,
-            requestId,
-            requestedUrl,
-            responseStatus: response.status,
-            status: "empty",
+        commit = { classification, finalUrl, redirected, response }
+      } else {
+        let xml: string
+        if (response.status === 201) {
+          xml = await response.text()
+          if (!this.owns(active)) return this.canceled(active, finalUrl)
+          if (xml.trim() === "") {
+            commit = { classification, finalUrl, redirected, response }
+          }
+        } else {
+          this.assertContentType(response)
+          xml = await response.text()
+          if (!this.owns(active)) return this.canceled(active, finalUrl)
+        }
+        if (!commit) {
+          if (response.status === 201) this.assertContentType(response)
+          const tree = parseExpoTurboDocument(xml, {
+            ...(this.options.limits ? { limits: this.options.limits } : {}),
             url: finalUrl,
           })
+          if (!this.owns(active)) return this.canceled(active, finalUrl)
+          commit = { classification, finalUrl, redirected, response, tree }
         }
-      } else {
-        this.assertContentType(response)
-        xml = await response.text()
-        if (!this.owns(active)) return this.canceled(active, finalUrl)
       }
-      if (response.status === 201) this.assertContentType(response)
-      const tree = parseExpoTurboDocument(xml, {
-        ...(this.options.limits ? { limits: this.options.limits } : {}),
-        url: finalUrl,
-      })
-      if (!this.owns(active)) return this.canceled(active, finalUrl)
-      commit = { classification, finalUrl, redirected, response, tree }
     } catch (error) {
       if (active.controller.signal.aborted || !this.owns(active)) {
         return this.canceled(active)
@@ -195,16 +211,66 @@ export class DocumentRequestLoader {
     }
 
     if (!commit) throw new RequestError("Document request did not produce a terminal outcome")
+    const candidateStatus = commit.tree ? ("committed" as const) : ("empty" as const)
+    let disposition: DocumentCommitDisposition = "commit"
+    if (options.beforeCommit) {
+      try {
+        const candidate: DocumentCommitCandidate = Object.freeze({
+          classification: commit.classification,
+          redirected: commit.redirected,
+          requestId,
+          requestedUrl,
+          responseStatus: commit.response.status,
+          rootLocation: documentRootLocation(commit.tree ?? this.session.tree),
+          status: candidateStatus,
+          url: commit.finalUrl,
+        })
+        disposition = options.beforeCommit(candidate)
+        if (disposition !== "commit" && disposition !== "discard") {
+          throw new RequestError("Document commit disposition must be commit or discard", {
+            method: "GET",
+            responseStatus: candidate.responseStatus,
+          })
+        }
+      } catch (error) {
+        this.release(active)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document commit admission failed", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
+    }
+    if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
     this.release(active)
+    if (disposition === "discard") {
+      return Object.freeze({
+        classification: commit.classification,
+        redirected: commit.redirected,
+        requestId,
+        requestedUrl,
+        responseStatus: commit.response.status,
+        candidateStatus,
+        status: "discarded",
+        url: commit.finalUrl,
+      })
+    }
     const report = Object.freeze({
       classification: commit.classification,
       redirected: commit.redirected,
       requestId,
       requestedUrl,
       responseStatus: commit.response.status,
-      status: "committed",
+      status: candidateStatus,
       url: commit.finalUrl,
     })
+    if (candidateStatus === "empty") return report
+    if (!commit.tree) {
+      throw new RequestError("Committed document candidate requires a parsed tree", {
+        method: "GET",
+        responseStatus: commit.response.status,
+      })
+    }
     try {
       this.session.replaceTree(commit.tree)
     } catch {

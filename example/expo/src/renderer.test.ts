@@ -180,6 +180,7 @@ function renderDocumentLinks(
         }),
         undefined,
         navigation,
+        controller,
       )
     : undefined
   const renderer = render(
@@ -1010,6 +1011,151 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("delegates root-external and excluded-extension links without disturbing the current visit owner", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const navigation: { action: string; url: string }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <DocumentLink href="/app/pending" />
+        <DocumentLink href="/application" />
+        <DocumentLink href="/app/archive.pdf" />
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/app/gallery",
+      {
+        back() {},
+        openExternal() {},
+        visit: (url, action) => navigation.push({ action, url }),
+      },
+    )
+
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/app/pending")()
+    })
+    const started = harness.controller.state
+    const outside = await harness.activation("/application")()
+    const extension = await harness.activation("/app/archive.pdf")()
+
+    expect(outside).toMatchObject({
+      action: "advance",
+      kind: "navigation",
+      reason: "outside-root",
+      status: "delegated",
+    })
+    expect(extension).toMatchObject({
+      action: "advance",
+      kind: "navigation",
+      reason: "unvisitable-extension",
+      status: "delegated",
+    })
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/application" },
+      { action: "advance", url: "https://example.test/app/archive.pdf" },
+    ])
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.controller.cancel())
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery data-turbo-root="/app" />',
+      url: "https://example.test/app/pending",
+    })
+    await current
+    act(() => harness.renderer.unmount())
+  })
+
+  test("applies root policy before interactive Frame capture and to promoted Frame visits", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const navigation: { action: string; url: string }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <DocumentLink href="/app" />
+        <DocumentLink href="/app/child" />
+        <DocumentLink href="/outside-top" data-turbo-frame="_top" />
+        <turbo-frame id="frame">
+          <DocumentLink href="/app/frame-target" />
+          <DocumentLink href="/outside-frame" />
+          <DocumentLink href="/app/archive.pdf" />
+          <DocumentLink href="/outside-promoted" data-turbo-frame="_top" />
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+      "https://example.test/app/gallery",
+      {
+        back() {},
+        openExternal() {},
+        visit: (url, action) => navigation.push({ action, url }),
+      },
+      async (request) => {
+        frameRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<turbo-frame id="frame" />',
+          url: request.url,
+        }
+      },
+    )
+
+    await act(async () => {
+      await harness.activation("/app")()
+    })
+    await act(async () => {
+      await harness.activation("/app/child")()
+    })
+    await act(async () => {
+      await harness.activation("/outside-top")()
+    })
+    await act(async () => {
+      await harness.activation("/outside-promoted")()
+    })
+    await act(async () => {
+      await harness.activation("/outside-frame")()
+    })
+    await act(async () => {
+      await harness.activation("/app/archive.pdf")()
+    })
+    await act(async () => {
+      await harness.activation("/app/frame-target")()
+    })
+
+    expect(documentRequests.map((request) => request.url)).toEqual([
+      "https://example.test/app",
+      "https://example.test/app/child",
+    ])
+    expect(frameRequests).toHaveLength(1)
+    expect(frameRequests[0]).toMatchObject({
+      headers: { "Turbo-Frame": "frame" },
+      url: "https://example.test/app/frame-target",
+    })
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/outside-top" },
+      { action: "advance", url: "https://example.test/outside-promoted" },
+      { action: "advance", url: "https://example.test/outside-frame" },
+      { action: "advance", url: "https://example.test/app/archive.pdf" },
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
   test("uses the closest data-turbo setting for document-link ownership", async () => {
     const external: string[] = []
     const navigation: { action: string; url: string }[] = []
@@ -1240,7 +1386,13 @@ describe("React protocol renderer", () => {
       </Gallery>`,
       async (request) => {
         documentRequests.push(request)
-        throw new Error("document fetch must not run")
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
       },
       "https://example.test/gallery",
       adapter,
@@ -1274,6 +1426,7 @@ describe("React protocol renderer", () => {
     expect(top).toMatchObject({
       action: "advance",
       kind: "top",
+      outcome: { status: "empty" },
       target: { requestedTarget: "_top" },
     })
     expect(optedOut).toEqual({
@@ -1289,11 +1442,14 @@ describe("React protocol renderer", () => {
       target: { requestedTarget: "_parent" },
     })
     expect(navigation).toEqual([
-      { action: "advance", url: "https://example.test/top" },
       { action: "advance", url: "https://example.test/opted-out" },
     ])
     expect(frameRequests.map((request) => request.headers["Turbo-Frame"])).toEqual(["outer"])
-    expect(documentRequests).toHaveLength(0)
+    expect(documentRequests).toHaveLength(1)
+    expect(documentRequests[0]).toMatchObject({
+      headers: expect.not.objectContaining({ "Turbo-Frame": expect.anything() }),
+      url: "https://example.test/top",
+    })
     act(() => harness.renderer.unmount())
   })
 

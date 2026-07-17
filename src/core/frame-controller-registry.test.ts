@@ -132,6 +132,107 @@ describe("Frame controller registry visits", () => {
     expect(requests).toHaveLength(0)
   })
 
+  test("routes only promoted same-origin visits through the shared document coordinator", async () => {
+    const requests: TurboRequest[] = []
+    const topLevel: Array<{ action: VisitAction | undefined; url: string }> = []
+    const external: string[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery data-turbo-root="/app">
+          <turbo-frame id="outer">
+            <turbo-frame id="current" />
+          </turbo-frame>
+        </Gallery>`,
+        { url: "https://example.test/app/document" },
+      ),
+    )
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          requests.push(request)
+          const frameId = request.headers["Turbo-Frame"]
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => `<turbo-frame id="${frameId}" />`,
+            url: request.url,
+          }
+        },
+      },
+      { next: () => `request-${requests.length + 1}` },
+    )
+    const registry = new FrameControllerRegistry(
+      session,
+      loader,
+      undefined,
+      {
+        back() {},
+        openExternal: (url) => external.push(url),
+        visit() {
+          throw new Error("fallback navigation must not own promoted visits")
+        },
+      },
+      {
+        visit: async (url, options) => {
+          topLevel.push({ action: options?.action, url })
+          return Object.freeze({
+            action: options?.action ?? "advance",
+            kind: "navigation",
+            reason: "outside-root",
+            status: "delegated",
+            url,
+          })
+        },
+      },
+    )
+
+    const rootExternalFrame = await registry.visit("/outside-frame", {
+      frame: "current",
+    })
+    const extensionFrame = await registry.visit("/app/archive.pdf", {
+      frame: "current",
+    })
+    const promoted = await registry.visit("/outside", {
+      elementTarget: "_top",
+      frame: "current",
+    })
+    await registry.visit("https://outside.test/path", {
+      elementTarget: "_top",
+      frame: "current",
+    })
+    await registry.visit("/outside-parent", {
+      elementTarget: "_parent",
+      frame: "current",
+    })
+
+    expect(rootExternalFrame).toMatchObject({ frameId: "current", kind: "frame" })
+    expect(extensionFrame).toMatchObject({ frameId: "current", kind: "frame" })
+    expect(promoted).toMatchObject({
+      action: "advance",
+      kind: "top",
+      outcome: {
+        action: "advance",
+        kind: "navigation",
+        reason: "outside-root",
+        status: "delegated",
+      },
+    })
+    expect(topLevel).toEqual([{ action: "advance", url: "https://example.test/outside" }])
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/outside-frame",
+      "https://example.test/app/archive.pdf",
+      "https://example.test/outside-parent",
+    ])
+    expect(requests.map((request) => request.headers["Turbo-Frame"])).toEqual([
+      "current",
+      "current",
+      "outer",
+    ])
+    expect(external).toEqual(["https://outside.test/path"])
+  })
+
   test("awaits host navigation and preserves Frame ownership when the adapter rejects", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument('<Gallery><turbo-frame id="current" src="/valid" /></Gallery>', {

@@ -209,7 +209,7 @@ export const DEMO_REGISTRY = createRegistry(
   }),
 );
 
-export const DEMO_DOCUMENT = `<Gallery>
+export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="static-renderer" title="Rendered from XML" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
   </DemoCard>

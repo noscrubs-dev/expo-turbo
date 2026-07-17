@@ -19,9 +19,10 @@ import {
   resolveComponentStyle,
   type StyleAdapter,
 } from "../adapters/styles"
-import type { DocumentLoadReport } from "../core/document-loader"
 import type {
   DocumentVisitController,
+  DocumentVisitDelegation,
+  DocumentVisitResult,
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
 import { RegistryError, TargetError } from "../core/errors"
@@ -42,6 +43,7 @@ import {
   type ProtocolNode,
   renderedTextValue,
 } from "../core/tree"
+import { classifyTopLevelLocation } from "../core/visitability"
 import type {
   ComponentActionExecutor,
   ComponentActionLifecycle,
@@ -355,9 +357,10 @@ export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
 }
 
 export type ExpoTurboDocumentLinkDelegation =
+  | DocumentVisitDelegation
   | Readonly<{
       kind: "external"
-      reason: "external" | "opt-out"
+      reason: "opt-out"
       status: "delegated"
       url: string
     }>
@@ -370,7 +373,7 @@ export type ExpoTurboDocumentLinkDelegation =
     }>
 
 export type ExpoTurboDocumentLinkResult =
-  | DocumentLoadReport
+  | DocumentVisitResult
   | ExpoTurboDocumentLinkDelegation
   | FrameVisitResult
 
@@ -411,6 +414,16 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       current = current.parent
     }
     const elementTarget = attributeValue(node, "data-turbo-frame")
+    const documentUrl = session.tree.document.url
+    if (!documentUrl) throw new TargetError("Document links require an active document URL")
+    const resolved = resolveProtocolUrl(href, documentUrl)
+    if (resolved.url.includes("#")) {
+      throw new TargetError("Document link fragments require navigation support")
+    }
+    const documentVisitOptions = navigation ? { navigation } : {}
+    if (!optedOut && classifyTopLevelLocation(session.tree, href).classification !== "visitable") {
+      return documentController.visit(href, documentVisitOptions)
+    }
     if (!optedOut && nearestFrameId !== undefined) {
       if (!nearestFrameId) {
         throw new TargetError("Frame-scoped document links require an identified Frame")
@@ -439,22 +452,16 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         })
       }
     }
-    const documentUrl = session.tree.document.url
-    if (!documentUrl) throw new TargetError("Document links require an active document URL")
-    const resolved = resolveProtocolUrl(href, documentUrl)
-    if (resolved.url.includes("#")) {
-      throw new TargetError("Document link fragments require navigation support")
-    }
-    const reason = optedOut
-      ? "opt-out"
-      : resolved.urlOrigin !== resolved.documentOrigin
-        ? "external"
-        : undefined
-    if (reason) {
+    if (optedOut) {
       if (!navigation) throw new TargetError("Document link delegation requires host navigation")
       if (resolved.urlOrigin !== resolved.documentOrigin) {
         await navigation.openExternal(resolved.url)
-        return Object.freeze({ kind: "external", reason, status: "delegated", url: resolved.url })
+        return Object.freeze({
+          kind: "external",
+          reason: "opt-out",
+          status: "delegated",
+          url: resolved.url,
+        })
       }
       await navigation.visit(resolved.url, "advance")
       return Object.freeze({
@@ -465,7 +472,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         url: resolved.url,
       })
     }
-    return documentController.visit(href)
+    return documentController.visit(href, documentVisitOptions)
   }, [documentController, frames, href, navigation, node, nodeKey, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
