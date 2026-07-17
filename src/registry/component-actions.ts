@@ -1,12 +1,9 @@
 import type { z } from "zod"
 
 import { ActionError, RegistryError } from "../core/errors"
+import type { StateStore } from "../core/state"
 
-export interface ComponentActionStateStore {
-  delete(key: string): void
-  get(key: string): unknown
-  set(key: string, value: unknown): void
-}
+export type ComponentActionStateStore = StateStore
 
 export interface ComponentActionHandlerContext<Params> {
   readonly action: string

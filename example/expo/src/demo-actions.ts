@@ -3,8 +3,8 @@ import {
   createComponentActionRunner,
   defineComponentAction,
   defineComponentActionModule,
-  type ComponentActionStateStore,
 } from "expo-turbo/registry";
+import { DocumentStateStore } from "expo-turbo/core";
 import { z } from "zod";
 
 export const recordGreeting = defineComponentAction({
@@ -24,16 +24,7 @@ const actions = createComponentActionRegistry(
   }),
 );
 
-export function createDemoActionRunner() {
-  const values = new Map<string, unknown>();
-  const state: ComponentActionStateStore = {
-    delete: (key) => {
-      values.delete(key);
-    },
-    get: (key) => values.get(key),
-    set: (key, value) => {
-      values.set(key, value);
-    },
-  };
-  return createComponentActionRunner(actions, state);
+export function createDemoActionRuntime() {
+  const state = new DocumentStateStore();
+  return Object.freeze({ actions: createComponentActionRunner(actions, state), state });
 }

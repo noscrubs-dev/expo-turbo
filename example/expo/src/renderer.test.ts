@@ -9,6 +9,7 @@ import type { TurboRequest, TurboResponse } from "expo-turbo/adapters"
 import {
   applyFrameResponse,
   dispatchTurboStreamFragment,
+  DocumentStateStore,
   DocumentSession,
   EXPO_TURBO_MIME_TYPE,
   type FrameControllerCollection,
@@ -26,13 +27,13 @@ import {
   defineComponent,
   defineComponentModule,
   stringCodec,
-  type ComponentActionStateStore,
 } from "expo-turbo/registry"
 import {
   ExpoTurboProvider,
   type ExpoTurboRenderError,
   ExpoTurboRoot,
   useComponentAction,
+  useDocumentState,
 } from "expo-turbo/react"
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -166,16 +167,7 @@ describe("React protocol renderer", () => {
   })
 
   test("invokes a provider-owned typed component action from a registered component", async () => {
-    const values = new Map<string, unknown>()
-    const state: ComponentActionStateStore = {
-      delete: (key) => {
-        values.delete(key)
-      },
-      get: (key) => values.get(key),
-      set: (key, value) => {
-        values.set(key, value)
-      },
-    }
+    const state = new DocumentStateStore()
     const record = defineComponentAction({
       action: "record",
       handler: ({ params, state: actionState }) => {
@@ -196,7 +188,11 @@ describe("React protocol renderer", () => {
     )
     function ActionTrigger({ value }: { value: string }): ReactNode {
       const execute = useComponentAction(record)
-      return createElement("button", { onClick: () => execute({ value }) })
+      const recorded = useDocumentState<string>("recorded")
+      return createElement("button", {
+        "data-recorded": recorded.value,
+        onClick: () => execute({ value }),
+      })
     }
     const trigger = defineComponent({
       attributes: { value: { codec: stringCodec, prop: "value" } },
@@ -220,17 +216,21 @@ describe("React protocol renderer", () => {
       renderer = create(
         createElement(
           ExpoTurboProvider,
-          { actions, registry: componentRegistry, session },
+          { actions, registry: componentRegistry, session, state },
           createElement(ExpoTurboRoot),
         ),
       )
     })
     if (!renderer) throw new Error("renderer was not created")
-    const press = renderer.root.findByType("button").props.onClick
+    const activeRenderer = renderer
+    const press = activeRenderer.root.findByType("button").props.onClick
     await act(async () => {
       await press()
     })
     expect(state.get("recorded")).toBe("from-xml")
+    expect(activeRenderer.root.findByType("button").props["data-recorded"]).toBe("from-xml")
+    act(() => activeRenderer.unmount())
+    expect(state.isDisposed).toBe(true)
   })
 
   test("renders a matching Frame response without replacing its mounted wrapper", () => {
