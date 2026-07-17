@@ -6,7 +6,87 @@ import {
   type StreamActionDispatchOptions,
   type StreamDispatchReport,
 } from "./streams"
-import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
+import {
+  attributeValue,
+  type DocumentTree,
+  isElement,
+  type ProtocolElement,
+  type ProtocolNode,
+} from "./tree"
+
+export interface ResolveFrameTargetOptions {
+  readonly elementTarget?: string | null
+  readonly submitterTarget?: string | null
+}
+
+export type ResolvedFrameTarget =
+  | Readonly<{ frameId: string; kind: "frame"; requestedTarget?: string }>
+  | Readonly<{ kind: "top"; requestedTarget?: string }>
+
+function isDisabled(frame: ProtocolElement): boolean {
+  return attributeValue(frame, "disabled") !== undefined
+}
+
+function parentFrame(frame: ProtocolElement): ProtocolElement | undefined {
+  let parent = frame.parent
+  while (parent && parent.kind !== "document") {
+    if (parent.kind === "frame") return parent
+    parent = parent.parent
+  }
+  return undefined
+}
+
+export function resolveFrameTarget(
+  tree: DocumentTree,
+  currentFrameId: string,
+  options: ResolveFrameTargetOptions = {},
+): ResolvedFrameTarget {
+  const current = tree.getElementById(currentFrameId)
+  if (current?.kind !== "frame") {
+    throw new FrameMissingError(`Active frame ${JSON.stringify(currentFrameId)} is missing`, {
+      frameId: currentFrameId,
+    })
+  }
+
+  const explicitTarget =
+    options.submitterTarget !== undefined && options.submitterTarget !== null
+      ? options.submitterTarget
+      : options.elementTarget
+  const requestedTarget = explicitTarget || attributeValue(current, "target")
+
+  if (isDisabled(current)) {
+    return Object.freeze({
+      kind: "top",
+      ...(requestedTarget ? { requestedTarget } : {}),
+    })
+  }
+  if (!requestedTarget || requestedTarget === "_self") {
+    return Object.freeze({
+      frameId: currentFrameId,
+      kind: "frame",
+      ...(requestedTarget ? { requestedTarget } : {}),
+    })
+  }
+  if (requestedTarget === "_top") {
+    return Object.freeze({ kind: "top", requestedTarget })
+  }
+  if (requestedTarget === "_parent") {
+    const parent = parentFrame(current)
+    const parentId = parent && !isDisabled(parent) ? attributeValue(parent, "id") : undefined
+    return parentId
+      ? Object.freeze({ frameId: parentId, kind: "frame", requestedTarget })
+      : Object.freeze({ kind: "top", requestedTarget })
+  }
+
+  const named = tree.getElementById(requestedTarget)
+  if (named?.kind === "frame" && isDisabled(named)) {
+    return Object.freeze({ kind: "top", requestedTarget })
+  }
+  if (named?.kind === "frame") {
+    return Object.freeze({ frameId: requestedTarget, kind: "frame", requestedTarget })
+  }
+  return Object.freeze({ frameId: currentFrameId, kind: "frame", requestedTarget })
+}
 
 export interface ApplyFrameResponseOptions extends StreamActionDispatchOptions {
   readonly finalUrl?: string

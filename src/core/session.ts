@@ -54,6 +54,15 @@ export class DocumentSession {
     this.commit([key])
   }
 
+  removeAttribute(key: string, name: string): void {
+    const node = this.currentTree.getNodeByKey(key)
+    if (!node || !isElement(node)) {
+      throw new TargetError(`No active element has key ${JSON.stringify(key)}`, { target: key })
+    }
+    this.currentTree.removeAttribute(node, name)
+    this.commit([key])
+  }
+
   mutate(mutator: (tree: DocumentTree) => readonly string[]): void {
     this.commit(mutator(this.currentTree))
   }

@@ -248,6 +248,19 @@ export class DocumentTree {
     }
   }
 
+  removeAttribute(element: ProtocolElement, name: string): void {
+    if (!this.nodes.has(element)) throw new TargetError("Element is outside the active document")
+    if (name === "id")
+      throw new TargetError("Element ids cannot be removed without replacing the element")
+    if (name === "xmlns" || name.includes(":")) {
+      throw new TargetError("Namespaced attributes require a declared codec")
+    }
+
+    const attributes = element.attributes as ProtocolAttribute[]
+    const index = attributes.findIndex((attribute) => attribute.name === name)
+    if (index !== -1) attributes.splice(index, 1)
+  }
+
   private assertActiveParent(parent: ProtocolParentNode): void {
     if (!this.nodes.has(parent)) throw new TargetError("Parent is outside the active document")
   }

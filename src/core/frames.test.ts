@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { FrameMissingError } from "./errors"
-import { applyFrameResponse } from "./frames"
+import { applyFrameResponse, resolveFrameTarget } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
@@ -73,5 +73,78 @@ describe("Turbo Frame responses", () => {
     expect(() => applyFrameResponse(session(), "missing", '<turbo-frame id="missing"/>')).toThrow(
       FrameMissingError,
     )
+  })
+})
+
+describe("Turbo Frame target resolution", () => {
+  test("applies submitter, element, Frame default, and current-frame precedence", () => {
+    const tree = parseExpoTurboDocument(
+      `<Gallery>
+        <turbo-frame id="named" />
+        <turbo-frame id="outer">
+          <turbo-frame id="current" target="named" />
+        </turbo-frame>
+      </Gallery>`,
+    )
+
+    expect(resolveFrameTarget(tree, "current")).toEqual({
+      frameId: "named",
+      kind: "frame",
+      requestedTarget: "named",
+    })
+    expect(resolveFrameTarget(tree, "current", { elementTarget: "_self" })).toEqual({
+      frameId: "current",
+      kind: "frame",
+      requestedTarget: "_self",
+    })
+    expect(
+      resolveFrameTarget(tree, "current", {
+        elementTarget: "named",
+        submitterTarget: "_parent",
+      }),
+    ).toEqual({ frameId: "outer", kind: "frame", requestedTarget: "_parent" })
+    expect(
+      resolveFrameTarget(tree, "current", { elementTarget: "_parent", submitterTarget: "" }),
+    ).toEqual({ frameId: "named", kind: "frame", requestedTarget: "named" })
+  })
+
+  test("promotes _top and unavailable or disabled parent targets", () => {
+    const tree = parseExpoTurboDocument(
+      `<Gallery>
+        <turbo-frame id="disabled" disabled="" />
+        <turbo-frame id="outer" disabled="">
+          <turbo-frame id="current" />
+        </turbo-frame>
+        <turbo-frame id="top-level" />
+      </Gallery>`,
+    )
+
+    expect(resolveFrameTarget(tree, "current", { elementTarget: "_top" })).toEqual({
+      kind: "top",
+      requestedTarget: "_top",
+    })
+    expect(resolveFrameTarget(tree, "current", { elementTarget: "_parent" })).toEqual({
+      kind: "top",
+      requestedTarget: "_parent",
+    })
+    expect(resolveFrameTarget(tree, "top-level", { elementTarget: "_parent" })).toEqual({
+      kind: "top",
+      requestedTarget: "_parent",
+    })
+    expect(resolveFrameTarget(tree, "current", { elementTarget: "disabled" })).toEqual({
+      kind: "top",
+      requestedTarget: "disabled",
+    })
+  })
+
+  test("falls back to the current Frame for missing named targets", () => {
+    const tree = parseExpoTurboDocument('<Gallery><turbo-frame id="current" /></Gallery>')
+
+    expect(resolveFrameTarget(tree, "current", { elementTarget: "missing" })).toEqual({
+      frameId: "current",
+      kind: "frame",
+      requestedTarget: "missing",
+    })
+    expect(() => resolveFrameTarget(tree, "missing")).toThrow(FrameMissingError)
   })
 })
