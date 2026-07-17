@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import type { ComponentProps } from "react"
 import { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
@@ -48,15 +49,13 @@ function element(xml: string) {
 
 describe("typed component registry", () => {
   test("preserves inferred component props and decodes explicit attributes", () => {
-    const typedComponent: (props: {
-      count: number
-      enabled: boolean
-      title: string
-      tone: "neutral" | "positive"
-    }) => unknown = card.component
-    expect(typedComponent({ count: 1, enabled: true, title: "Typed", tone: "positive" })).toBe(
-      "Typed:1",
-    )
+    const typedProps: ComponentProps<typeof card.component> = {
+      count: 1,
+      enabled: true,
+      title: "Typed",
+      tone: "positive",
+    }
+    expect(typedProps.title).toBe("Typed")
 
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
@@ -73,7 +72,6 @@ describe("typed component registry", () => {
       id: "card",
     })
     expect(decoded.children.filter(isElement)).toHaveLength(1)
-    expect(card.renderDecoded(decoded.props)).toBe("Hello:2")
     expect(registry.resolve("LegacyCard")).toBe(card)
     expect(registry.get("DemoCard")).toBe(card)
   })

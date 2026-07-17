@@ -76,6 +76,7 @@ export class DocumentTree {
   readonly document: ProtocolDocument
   private readonly frames: ProtocolElement[] = []
   private readonly idIndex = new Map<string, ProtocolElement>()
+  private readonly keyIndex = new Map<string, ProtocolNode>()
   private readonly nodes = new Set<ProtocolNode>()
   private readonly streamSources: ProtocolElement[] = []
 
@@ -83,6 +84,10 @@ export class DocumentTree {
     this.document = document
     walk(document, (node) => {
       this.nodes.add(node)
+      if (this.keyIndex.has(node.key)) {
+        throw new ParseError(`Duplicate internal key ${JSON.stringify(node.key)}`)
+      }
+      this.keyIndex.set(node.key, node)
       if (!isElement(node)) return
 
       const id = attributeValue(node, "id")
@@ -113,6 +118,10 @@ export class DocumentTree {
     return this.frames
   }
 
+  getNodeByKey(key: string): ProtocolNode | undefined {
+    return this.keyIndex.get(key)
+  }
+
   getStreamSources(): readonly ProtocolElement[] {
     return this.streamSources
   }
@@ -125,10 +134,11 @@ export class DocumentTree {
     if (name === "id" && value.trim() === "") throw new TargetError("Element ids must not be blank")
 
     const current = attributeValue(element, name)
-    if (name === "id" && current !== value && this.idIndex.has(value)) {
-      throw new TargetError(`Duplicate id ${JSON.stringify(value)}`, { target: value })
+    if (name === "id" && current !== value) {
+      throw new TargetError("Element ids cannot change without replacing the element", {
+        ...(current ? { target: current } : {}),
+      })
     }
-
     const attributes = element.attributes as ProtocolAttribute[]
     const index = attributes.findIndex((attribute) => attribute.name === name)
     const attribute: ProtocolAttribute = {

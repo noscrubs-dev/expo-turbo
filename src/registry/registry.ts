@@ -1,3 +1,4 @@
+import type { ComponentType, ReactNode } from "react"
 import type { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
@@ -30,7 +31,7 @@ export type AttributeBinding<Props> = {
 }[StringKey<Props>]
 
 export type ComponentChildren = "nodes" | "none" | "text"
-export type ComponentRenderer<Props> = (props: Props) => unknown
+export type ComponentRenderer<Props> = ComponentType<Props & Readonly<{ children?: ReactNode }>>
 
 export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodObject> {
   readonly aliases?: readonly string[]
@@ -51,9 +52,9 @@ export interface RegistryComponent {
   readonly aliases: readonly string[]
   readonly attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   readonly children: ComponentChildren
+  readonly component: unknown
   readonly tag: string
   decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
-  renderDecoded(props: unknown): unknown
 }
 
 export interface DefinedComponent<Tag extends string, Schema extends z.ZodObject>
@@ -102,9 +103,6 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     component: config.component,
     decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
       return config.schema.parse(attributes)
-    },
-    renderDecoded(props: unknown): unknown {
-      return config.component(props as z.output<Schema>)
     },
     schema: config.schema,
     tag: config.tag,

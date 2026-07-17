@@ -19,10 +19,13 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/bun": "1.3.14",
     "@types/react": "~19.2.2",
+    "@types/react-test-renderer": "19.1.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~57.0.0",
     "eslint-import-resolver-typescript": "^3.10.1",
+    "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -30,8 +33,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "postinstall": "node scripts/link-react-peer.mjs",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "check": "bun run lint && bun run typecheck && expo export --platform web"
+    "check": "bun run lint && bun run typecheck && bun test && expo export --platform web"
   }
 }
