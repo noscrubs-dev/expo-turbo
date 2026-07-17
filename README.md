@@ -9,12 +9,12 @@ Turbo-compatible XML, Frames, Streams, and Action Cable adapters for Expo React 
 
 - `src/` — public TypeScript package source.
 - `rails/` — public `expo_turbo-rails` gem and non-route-owning Rails Engine.
-- `example/expo/` — future standalone native compatibility gallery.
-- `example/rails/` — future standalone Rails and Action Cable host.
+- `example/expo/` — standalone native consumer and future compatibility gallery.
+- `example/rails/` — standalone Rails and Action Cable host.
 - `protocol/` — shared protocol manifest and conformance fixtures.
 - `docs/` — public architecture, compatibility, and release guidance.
 
-The repository root is the publishable TypeScript package. It is intentionally not a package-manager workspace; both example applications will keep independent dependency state.
+The repository root is the publishable TypeScript package. It is intentionally not a package-manager workspace; both example applications keep independent dependency state.
 
 ## Development
 
@@ -32,6 +32,15 @@ cd rails
 bundle install
 bundle exec rake
 gem build expo_turbo-rails.gemspec
+```
+
+Install each example independently, then run both checks from the repository root:
+
+```sh
+cd example/expo && bun install --frozen-lockfile
+cd ../rails && bundle install
+cd ../..
+bun run examples:check
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) before proposing changes.
