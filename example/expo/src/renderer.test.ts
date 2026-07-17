@@ -5,7 +5,11 @@ import { createElement, type ReactNode } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
-import { DocumentSession, parseExpoTurboDocument } from "expo-turbo/core"
+import {
+  dispatchTurboStreamFragment,
+  DocumentSession,
+  parseExpoTurboDocument,
+} from "expo-turbo/core"
 import {
   createRegistry,
   defineComponent,
@@ -124,6 +128,23 @@ describe("React protocol renderer", () => {
     expect(session.getNodeSnapshot("id:left")).not.toBe(leftBefore)
     expect(session.getNodeSnapshot("id:right")).toBe(rightBefore)
     expect(JSON.stringify(renderer.toJSON())).toContain("Updated")
+  })
+
+  test("renders an ordered Stream update through the same document session", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoText id="copy">Before</DemoText></Gallery>'),
+    )
+    const renderer = render(session, registryWithCounters())
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="copy"><template>After</template></turbo-stream>',
+      )
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Before")
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
   })
 
   test("contains unknown components behind an actionable retryable error surface", () => {

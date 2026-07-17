@@ -2,7 +2,7 @@
 
 This private Expo SDK 57 application is the standalone native consumer and future compatibility gallery for `expo-turbo`. It owns its manifest and Bun lockfile, is not part of a package-manager workspace, and resolves the public package root through `file:../..`.
 
-The current screen renders a small registered native component tree from XML and exercises stable node subscriptions plus renderer error containment. Fixture transport, inspector controls, mutations, and real Rails mode land in later implementation gates.
+The current screen renders a small registered native component tree from XML and includes an interactive ordered Stream update. It exercises stable node subscriptions plus renderer error containment; fixture transport, inspector controls, and real Rails mode land in later implementation gates.
 
 ## Run
 

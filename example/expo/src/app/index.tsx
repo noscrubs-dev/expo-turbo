@@ -1,9 +1,13 @@
 import { Stack } from "expo-router";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
-import { DocumentSession, parseExpoTurboDocument } from "expo-turbo/core";
+import {
+  dispatchTurboStreamFragment,
+  DocumentSession,
+  parseExpoTurboDocument,
+} from "expo-turbo/core";
 import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { useMemo } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
@@ -65,6 +69,25 @@ export default function HomeScreen() {
       >
         <ExpoTurboRoot />
       </ExpoTurboProvider>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          dispatchTurboStreamFragment(
+            session,
+            '<turbo-stream action="update" target="static-renderer"><template><DemoText>Updated in place by an ordered Turbo Stream action.</DemoText></template></turbo-stream>',
+          )
+        }
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#19375a" : "#285589",
+          borderRadius: 12,
+          padding: 14,
+        })}
+      >
+        <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+          Apply Stream update
+        </Text>
+      </Pressable>
     </ScrollView>
   );
 }
