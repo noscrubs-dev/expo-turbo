@@ -10,6 +10,7 @@ import {
   enumCodec,
   integerCodec,
   jsonCodec,
+  presenceCodec,
   stringCodec,
   tokenListCodec,
 } from "./codecs"
@@ -21,6 +22,7 @@ const card = defineComponent({
   aliases: ["LegacyCard"],
   attributes: {
     count: { codec: integerCodec, prop: "count" },
+    disabled: { codec: presenceCodec, prop: "disabled" },
     enabled: { codec: booleanCodec, prop: "enabled" },
     heading: { codec: stringCodec, prop: "title" },
     "style-tokens": {
@@ -33,6 +35,7 @@ const card = defineComponent({
   component: (props) => `${props.title}:${props.count}`,
   schema: z.object({
     count: z.number().int(),
+    disabled: z.boolean().default(false),
     enabled: z.boolean().default(true),
     styleTokens: z.array(z.enum(CARD_STYLE_TOKENS)).readonly().default([]),
     title: z.string().min(1),
@@ -65,6 +68,7 @@ describe("typed component registry", () => {
   test("preserves inferred component props and decodes explicit attributes", () => {
     const typedProps: ComponentProps<typeof card.component> = {
       count: 1,
+      disabled: false,
       enabled: true,
       styleTokens: [],
       title: "Typed",
@@ -82,6 +86,7 @@ describe("typed component registry", () => {
     expect(decoded.definition).toBe(card)
     expect(decoded.props).toEqual({
       count: 2,
+      disabled: false,
       enabled: false,
       styleTokens: ["tone:featured", "space:roomy"],
       title: "Hello",
@@ -95,6 +100,13 @@ describe("typed component registry", () => {
     expect(decoded.children.filter(isElement)).toHaveLength(1)
     expect(registry.resolve("LegacyCard")).toBe(card)
     expect(registry.get("DemoCard")).toBe(card)
+
+    for (const value of ["", "false", "disabled"]) {
+      expect(
+        registry.decode(element(`<DemoCard heading="Present" count="1" disabled="${value}" />`))
+          .props,
+      ).toMatchObject({ disabled: true })
+    }
   })
 
   test("fails closed for unknown names, attributes, invalid codecs, props, and child slots", () => {
@@ -198,6 +210,11 @@ describe("typed component registry", () => {
       "DemoState",
       "DemoText",
     ])
+    expect(
+      first.capabilities.components
+        .find((component) => component.tag === "DemoCard")
+        ?.attributes.find((attribute) => attribute.name === "disabled"),
+    ).toMatchObject({ codec: "presence", prop: "disabled" })
 
     const decoded = first.decode(element('<DemoState payload="{&quot;active&quot;:true}" />'))
     expect(decoded.props).toEqual({ state: { active: true } })

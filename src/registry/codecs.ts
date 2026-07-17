@@ -11,6 +11,8 @@ function codec<Value>(name: string, decode: (value: string) => Value): Attribute
 
 export const stringCodec = codec("string", (value) => value)
 
+export const presenceCodec = codec("presence", () => true as const)
+
 export const booleanCodec = codec("boolean", (value) => {
   if (value === "true") return true
   if (value === "false") return false

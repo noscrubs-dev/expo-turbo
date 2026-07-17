@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
 import { createElement, type ReactNode, StrictMode, useEffect, useState } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
@@ -47,6 +47,7 @@ import {
   defineComponentActionModule,
   defineComponent,
   defineComponentModule,
+  presenceCodec,
   stringCodec,
   tokenListCodec,
 } from "expo-turbo/registry"
@@ -465,19 +466,31 @@ function renderDocumentLinks(
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
   let renders = 0
-  function DocumentLink({ href }: { href: string; target?: string }): ReactNode {
+  function DocumentLink({
+    disabled,
+    href,
+  }: {
+    disabled: boolean
+    href: string
+    target?: string
+  }): ReactNode {
     renders += 1
     activations.set(href, useExpoTurboDocumentLink(href))
-    return createElement("link", { href })
+    return createElement("link", { disabled, href })
   }
   const link = defineComponent({
     attributes: {
+      disabled: { codec: presenceCodec, prop: "disabled" },
       href: { codec: stringCodec, prop: "href" },
       target: { codec: stringCodec, prop: "target" },
     },
     children: "none",
     component: DocumentLink,
-    schema: z.object({ href: z.string().trim().min(1), target: z.string().optional() }),
+    schema: z.object({
+      disabled: z.boolean().default(false),
+      href: z.string().trim().min(1),
+      target: z.string().optional(),
+    }),
     tag: "DocumentLink",
   })
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
@@ -2711,6 +2724,48 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("projects authored disabled link presence through the Expo Pressable", async () => {
+    mock.module("react-native", () => ({
+      Platform: { OS: "web" },
+      Pressable: (props: Readonly<Record<string, unknown>>) => createElement("pressable", props),
+      Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
+      TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
+      View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
+    }))
+    const { DEMO_REGISTRY } = await import("./demo-registry")
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoDocumentLink disabled="" href="/disabled"><DemoText>Disabled</DemoText></DemoDocumentLink></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () => {
+            throw new Error("Disabled demo link must not fetch")
+          },
+        },
+        { next: () => "request-disabled-demo-link" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const renderer = render(session, DEMO_REGISTRY, { documentController: controller })
+    const pressables = renderer.root.findAll((node) => String(node.type) === "pressable")
+
+    expect(pressables).toHaveLength(1)
+    for (const pressable of pressables) {
+      expect(pressable.props.accessibilityState).toEqual({ busy: false, disabled: true })
+    }
+
+    act(() => renderer.unmount())
+  })
+
   test("delegates external and opted-out links without disturbing the current visit owner", async () => {
     const pending: {
       request: TurboRequest
@@ -3514,6 +3569,75 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("ignores exact disabled links without disturbing ownership and reads presence at activation", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/pending" />
+        <DocumentLink id="dynamic" href="/dynamic" />
+        <DocumentLink disabled="" href="/disabled" />
+        <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" /></turbo-frame>
+        <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" /></Gallery>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+    )
+    const dynamic = harness.activation("/dynamic")
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/pending")()
+      harness.session.setAttribute("id:dynamic", "disabled", "")
+    })
+    const started = harness.controller.state
+
+    for (const activate of [
+      dynamic,
+      harness.activation("/disabled"),
+      harness.activation("/frame-disabled"),
+      harness.activation("/opted-out-disabled"),
+    ]) {
+      const result = await activate()
+      expect(result).toEqual({ kind: "disabled", status: "ignored" })
+      expect(Object.isFrozen(result)).toBe(true)
+    }
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.session.removeAttribute("id:dynamic", "disabled"))
+    let resumed: Promise<unknown> | undefined
+    act(() => {
+      resumed = dynamic()
+    })
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.url).toBe("https://example.test/dynamic")
+
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DocumentLink href="/stale" /></Gallery>',
+        url: "https://example.test/pending",
+      })
+      await current
+      pending[1]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DocumentLink href="/after" /></Gallery>',
+        url: "https://example.test/dynamic",
+      })
+      await resumed
+    })
+    expect(harness.session.tree.document.url).toBe("https://example.test/dynamic")
+
+    act(() => harness.renderer.unmount())
+  })
+
   test("rejects stale and unconfigured Frame-scoped link activations before fetching", async () => {
     const pending: {
       request: TurboRequest
@@ -3538,7 +3662,7 @@ describe("React protocol renderer", () => {
     act(() => {
       dispatchTurboStreamFragment(
         harness.session,
-        '<turbo-stream action="replace" target="top-link"><template><DocumentLink id="top-link" href="/replacement" /></template></turbo-stream>',
+        '<turbo-stream action="replace" target="top-link"><template><DocumentLink id="top-link" disabled="" href="/replacement" /></template></turbo-stream>',
       )
     })
     await expect(stale()).rejects.toBeInstanceOf(TargetError)

@@ -3,6 +3,7 @@ import {
   defineComponent,
   defineComponentModule,
   enumCodec,
+  presenceCodec,
   stringCodec,
   tokenListCodec,
 } from "expo-turbo/registry";
@@ -104,20 +105,23 @@ const text = defineComponent({
 
 function DemoDocumentLinkComponent({
   children,
+  disabled,
   href,
 }: {
   children?: ReactNode;
+  disabled: boolean;
   href: string;
 }) {
   const activate = useExpoTurboDocumentLink(href);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const unavailable = disabled || pending;
   return (
     <View style={{ gap: 6 }}>
       <Pressable
         accessibilityRole="link"
-        accessibilityState={{ busy: pending, disabled: pending }}
-        disabled={pending}
+        accessibilityState={{ busy: pending, disabled: unavailable }}
+        disabled={unavailable}
         onPress={() => {
           setError(undefined);
           setPending(true);
@@ -133,7 +137,7 @@ function DemoDocumentLinkComponent({
           borderColor: "#9ebcda",
           borderRadius: 12,
           borderWidth: 1,
-          opacity: pending ? 0.6 : 1,
+          opacity: unavailable ? 0.6 : 1,
           padding: 12,
         })}
       >
@@ -149,10 +153,13 @@ function DemoDocumentLinkComponent({
 }
 
 const documentLink = defineComponent({
-  attributes: { href: { codec: stringCodec, prop: "href" } },
+  attributes: {
+    disabled: { codec: presenceCodec, prop: "disabled" },
+    href: { codec: stringCodec, prop: "href" },
+  },
   children: "nodes",
   component: DemoDocumentLinkComponent,
-  schema: z.object({ href: z.string().trim().min(1) }),
+  schema: z.object({ disabled: z.boolean().default(false), href: z.string().trim().min(1) }),
   tag: "DemoDocumentLink",
 });
 
@@ -381,6 +388,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
   <DemoDocumentLink href="https://example.com">
     <DemoText>Delegate a safe cross-origin link through the app-owned navigation adapter.</DemoText>
+  </DemoDocumentLink>
+  <DemoDocumentLink disabled="" href="/demo/disabled">
+    <DemoText>Disabled native links remain visible without activating a request or navigation.</DemoText>
   </DemoDocumentLink>
   <turbo-frame id="link-frame">
     <DemoCard title="Frame-scoped native link" style-tokens="tone:info space:compact">
