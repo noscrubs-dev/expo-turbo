@@ -34,8 +34,12 @@ function harness(documentUrl = "https://example.test/document"): Harness {
   )
   const navigationAdapter: NavigationAdapter = {
     back() {},
-    openExternal: (url) => external.push(url),
-    visit: (url, action) => navigation.push({ action, url }),
+    openExternal: (url) => {
+      external.push(url)
+    },
+    visit: (url, action) => {
+      navigation.push({ action, url })
+    },
   }
   let requestId = 0
   const loader = new FrameRequestLoader(
@@ -126,6 +130,65 @@ describe("Frame controller registry visits", () => {
     expect(navigation).toEqual([{ action: "replace", url: "https://example.test/top" }])
     expect(external).toEqual(["https://outside.test/path"])
     expect(requests).toHaveLength(0)
+  })
+
+  test("awaits host navigation and preserves Frame ownership when the adapter rejects", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><turbo-frame id="current" src="/valid" /></Gallery>', {
+        url: "https://example.test/document",
+      }),
+    )
+    const requests: TurboRequest[] = []
+    const failure = new Error("Host navigation failed")
+    let resolveRequest: ((response: TurboResponse) => void) | undefined
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch(request): Promise<TurboResponse> {
+          requests.push(request)
+          return new Promise((resolve) => {
+            resolveRequest = resolve
+          })
+        },
+      },
+      { next: () => "request-1" },
+    )
+    const registry = new FrameControllerRegistry(session, loader, undefined, {
+      back() {},
+      async openExternal() {
+        throw failure
+      },
+      async visit() {
+        throw failure
+      },
+    })
+    const controller = registry.get("current")
+    const current = controller.connect()
+    const started = controller.state
+
+    await expect(registry.visit("https://outside.test/path", { frame: "current" })).rejects.toBe(
+      failure,
+    )
+    await expect(registry.visit("/top", { elementTarget: "_top", frame: "current" })).rejects.toBe(
+      failure,
+    )
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    expect(controller.state).toBe(started)
+    const frame = session.tree.getElementById("current")
+    if (!frame) throw new Error("fixture Frame is missing")
+    expect(attributeValue(frame, "src")).toBe("/valid")
+
+    controller.cancel()
+    resolveRequest?.({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="current"><Late /></turbo-frame>',
+      url: "https://example.test/valid",
+    })
+    await current
+    registry.dispose()
   })
 
   test("rejects unsafe, credential-bearing, malformed, and fragment visit URLs before dispatch", async () => {

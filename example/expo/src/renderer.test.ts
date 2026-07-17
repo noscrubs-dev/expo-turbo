@@ -7,6 +7,7 @@ import { z } from "zod"
 
 import {
   defineStyleAdapter,
+  type NavigationAdapter,
   type TurboRequest,
   type TurboResponse,
 } from "expo-turbo/adapters"
@@ -118,6 +119,7 @@ function render(
     documentController?: ExpoTurboProviderProps["documentController"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
+    navigation?: NavigationAdapter
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
   }> = {},
@@ -140,6 +142,7 @@ function renderDocumentLinks(
   xml: string,
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
   url = "https://example.test/gallery",
+  navigation?: NavigationAdapter,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
   let renders = 0
@@ -173,7 +176,7 @@ function renderDocumentLinks(
         version: "0.1.0",
       }),
     ),
-    { documentController: controller },
+    { documentController: controller, navigation },
   )
   return {
     activation(href: string) {
@@ -911,7 +914,230 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("rejects an unsafe document link without disturbing the current visit owner", async () => {
+  test("delegates external and opted-out links without disturbing the current visit owner", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const external: string[] = []
+    const navigation: { action: string; url: string }[] = []
+    const adapter: NavigationAdapter = {
+      back() {},
+      openExternal: (url) => {
+        external.push(url)
+      },
+      visit: (url, action) => {
+        navigation.push({ action, url })
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/pending" />
+        <DocumentLink href="https://outside.test/path" />
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
+        <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" /></Gallery>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/gallery",
+      adapter,
+    )
+
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/pending")()
+    })
+    const started = harness.controller.state
+    const externalResult = await harness.activation("https://outside.test/path")()
+    const optOutResult = await harness.activation("/opted-out")()
+    const externalOptOutResult = await harness.activation("https://outside.test/opted-out")()
+
+    expect(externalResult).toEqual({
+      kind: "external",
+      reason: "external",
+      status: "delegated",
+      url: "https://outside.test/path",
+    })
+    expect(optOutResult).toEqual({
+      action: "advance",
+      kind: "navigation",
+      reason: "opt-out",
+      status: "delegated",
+      url: "https://example.test/opted-out",
+    })
+    expect(externalOptOutResult).toEqual({
+      kind: "external",
+      reason: "opt-out",
+      status: "delegated",
+      url: "https://outside.test/opted-out",
+    })
+    expect(Object.isFrozen(externalResult)).toBe(true)
+    expect(Object.isFrozen(optOutResult)).toBe(true)
+    expect(Object.isFrozen(externalOptOutResult)).toBe(true)
+    expect(external).toEqual([
+      "https://outside.test/path",
+      "https://outside.test/opted-out",
+    ])
+    expect(navigation).toEqual([{ action: "advance", url: "https://example.test/opted-out" }])
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.controller.cancel())
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DocumentLink href="/late" /></Gallery>',
+      url: "https://example.test/pending",
+    })
+    await current
+    act(() => harness.renderer.unmount())
+  })
+
+  test("uses the closest data-turbo setting for document-link ownership", async () => {
+    const external: string[] = []
+    const navigation: { action: string; url: string }[] = []
+    const requests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo="false">
+        <Gallery data-turbo="true"><DocumentLink href="/opted-in" /></Gallery>
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery><DocumentLink href="/after" /></Gallery>',
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      {
+        back() {},
+        openExternal: (url) => {
+          external.push(url)
+        },
+        visit: (url, action) => {
+          navigation.push({ action, url })
+        },
+      },
+    )
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("/opted-in")()
+    })
+
+    expect(result).toMatchObject({ status: "committed", url: "https://example.test/opted-in" })
+    expect(requests).toHaveLength(1)
+    expect(external).toHaveLength(0)
+    expect(navigation).toHaveLength(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("turns host navigation failures into rejected activation promises", async () => {
+    const failure = new Error("Host navigation failed")
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/pending" />
+        <DocumentLink href="https://outside.test/path" />
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
+      </Gallery>`,
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/gallery",
+      {
+        back() {},
+        async openExternal() {
+          throw failure
+        },
+        async visit() {
+          throw failure
+        },
+      },
+    )
+
+    let current: Promise<unknown> | undefined
+    act(() => {
+      current = harness.activation("/pending")()
+    })
+    const started = harness.controller.state
+    const external = harness.activation("https://outside.test/path")()
+    expect(external).toBeInstanceOf(Promise)
+    await expect(external).rejects.toBe(failure)
+    await expect(harness.activation("/opted-out")()).rejects.toBe(failure)
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(harness.controller.state).toBe(started)
+
+    act(() => harness.controller.cancel())
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DocumentLink href="/late" /></Gallery>',
+      url: "https://example.test/pending",
+    })
+    await current
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects unsafe delegated links before navigation or fetching", async () => {
+    const sources = [
+      "javascript:secret-token",
+      "data:text/plain,secret-token",
+      "blob:https://example.test/secret-token",
+      "https://user:secret-token@outside.test/path",
+      "http://[secret-token",
+      "https://outside.test/path#section",
+      "/empty-fragment#",
+    ]
+    const external: string[] = []
+    const navigation: { action: string; url: string }[] = []
+    const requests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>${sources.map((href) => `<DocumentLink href="${href}" />`).join("")}</Gallery>`,
+      async (request) => {
+        requests.push(request)
+        throw new Error("fetch must not run")
+      },
+      "https://example.test/gallery",
+      {
+        back() {},
+        openExternal: (url) => {
+          external.push(url)
+        },
+        visit: (url, action) => {
+          navigation.push({ action, url })
+        },
+      },
+    )
+
+    for (const source of sources) {
+      let error: unknown
+      try {
+        await harness.activation(source)()
+      } catch (reason) {
+        error = reason
+      }
+      expect(error).toBeInstanceOf(TargetError)
+      if (!(error instanceof TargetError)) throw new Error("fixture link did not reject")
+      expect(error.cause).toBeUndefined()
+      expect(error.message).not.toContain("secret-token")
+      expect(JSON.stringify(error.context)).not.toContain("secret-token")
+    }
+    expect(external).toHaveLength(0)
+    expect(navigation).toHaveLength(0)
+    expect(requests).toHaveLength(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects an unconfigured or unsupported document link without disturbing the current visit owner", async () => {
     const pending: {
       request: TurboRequest
       resolve: (response: TurboResponse) => void

@@ -5,14 +5,16 @@ import {
   DocumentSession,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
+import type { NavigationAdapter } from "expo-turbo/adapters";
 import {
   type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   ExpoTurboRoot,
 } from "expo-turbo/react";
+import { type Href, useRouter } from "expo-router";
 import { useEffect, useMemo } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
@@ -87,6 +89,7 @@ function DemoDocumentBoundary({
 }
 
 export default function HomeScreen() {
+  const router = useRouter();
   const session = useMemo(
     () =>
       new DocumentSession(
@@ -102,6 +105,23 @@ export default function HomeScreen() {
   );
   const frames = useMemo(() => createDemoFrameControllers(session), [session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
+  const navigation = useMemo<NavigationAdapter>(
+    () => ({
+      back: () => router.back(),
+      openExternal: (url) => Linking.openURL(url).then(() => undefined),
+      visit: (url, action) => {
+        if (action === "restore") {
+          router.back();
+          return;
+        }
+        const resolved = new URL(url);
+        const href = `${resolved.pathname}${resolved.search}` as Href;
+        if (action === "replace") router.replace(href);
+        else router.push(href);
+      },
+    }),
+    [router],
+  );
   useEffect(() => () => documentController.cancel(), [documentController]);
 
   return (
@@ -149,6 +169,7 @@ export default function HomeScreen() {
         documentController={documentController}
         frameComponent={DemoFrameBoundary}
         frames={frames}
+        navigation={navigation}
         registry={DEMO_REGISTRY}
         renderError={({ error }) => (
           <Text selectable style={{ color: "#a62525" }}>
