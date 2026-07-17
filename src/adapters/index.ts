@@ -30,6 +30,10 @@ export interface FetchAdapter {
   fetch(request: TurboRequest): Promise<TurboResponse>
 }
 
+export interface FormConfirmationAdapter {
+  confirm(message: string, signal: AbortSignal): boolean | Promise<boolean>
+}
+
 export type VisitAction = "advance" | "replace" | "restore"
 
 export interface NavigationAdapter {
@@ -106,6 +110,7 @@ export interface RequestIdAdapter {
 export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
+  readonly confirmation?: FormConfirmationAdapter
   readonly fetch: FetchAdapter
   readonly focus: FocusAdapter
   readonly inspector?: ProtocolInspectorAdapter

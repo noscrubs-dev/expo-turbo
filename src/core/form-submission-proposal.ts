@@ -14,6 +14,7 @@ export interface FormSubmissionProposal {
 }
 
 export interface FormSubmissionProposalIdentity {
+  readonly confirmationMessage?: string
   readonly destination: FormSubmissionDestination
   readonly destinationFrame?: ProtocolElement
   readonly destinationFrameId?: string

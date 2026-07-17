@@ -70,6 +70,7 @@ export class ExactFormSubmissionActivity {
     requestId: string,
     submitter: ProtocolElement | undefined,
     duplicateBehavior: FormSubmissionDuplicateBehavior,
+    deferPresentation = false,
   ): FormSubmissionActivityLease | undefined {
     const previous = this.current
     if (previous && duplicateBehavior === "prevent") {
@@ -99,6 +100,11 @@ export class ExactFormSubmissionActivity {
 
     // Install the replacement before aborting its predecessor. Reentrant abort
     // work may supersede this lease and must remain authoritative.
+    if (deferPresentation && this.displayed) {
+      const displayed = this.displayed
+      this.displayed = undefined
+      this.publish(displayed.submitter)
+    }
     previous?.controller.abort()
     return this.owns(lease) ? lease : undefined
   }
