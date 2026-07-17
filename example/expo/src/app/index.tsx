@@ -1,11 +1,20 @@
 import { Stack } from "expo-router";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
+import { DocumentSession, parseExpoTurboDocument } from "expo-turbo/core";
+import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
+import { useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 
+import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
 
 export default function HomeScreen() {
+  const session = useMemo(
+    () => new DocumentSession(parseExpoTurboDocument(DEMO_DOCUMENT)),
+    [],
+  );
+
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
@@ -45,6 +54,17 @@ export default function HomeScreen() {
           Registry capability: {REGISTRY_CAPABILITY_SMOKE}
         </Text>
       </View>
+      <ExpoTurboProvider
+        registry={DEMO_REGISTRY}
+        renderError={({ error }) => (
+          <Text selectable style={{ color: "#a62525" }}>
+            {error.name}: {error.message}
+          </Text>
+        )}
+        session={session}
+      >
+        <ExpoTurboRoot />
+      </ExpoTurboProvider>
     </ScrollView>
   );
 }
