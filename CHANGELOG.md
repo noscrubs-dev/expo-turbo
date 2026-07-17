@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Make the standalone Expo example install reproducibly with Bun's isolated linker, disabled peer auto-install, and a refreshed local-package dependency graph.
 - Add registration-bound submitter selection and immutable active-form request planning to the core and React APIs, composing current form/submitter attributes and live XML-ordered values into a caller-owned request plan without fetching.
 - Unify registry and React text handling around inherited `xml:space`, explicit default reset, CDATA preservation, XML-whitespace collapse, and deterministic diagnostic serialization.
 - Add a shared programmatic Frame visit API that resolves current, named, parent, and top-level targets through the existing controller loader and navigation adapter.
