@@ -6,15 +6,17 @@ import {
   parseExpoTurboDocument,
 } from "expo-turbo/core";
 import {
+  type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   ExpoTurboRoot,
 } from "expo-turbo/react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
+import { createDemoDocumentController } from "../demo-document-controller";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
@@ -51,6 +53,39 @@ function DemoFrameBoundary({
   );
 }
 
+function DemoDocumentBoundary({
+  accessibilityState,
+  children,
+  state,
+}: ExpoTurboDocumentBoundaryProps) {
+  return (
+    <View style={{ gap: 12 }}>
+      <View
+        accessibilityLabel={`Document visit: ${state.status}`}
+        accessibilityState={accessibilityState}
+        accessible
+        style={{
+          backgroundColor: "#eef6ff",
+          borderCurve: "continuous",
+          borderRadius: 10,
+          gap: 2,
+          padding: 10,
+        }}
+      >
+        <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+          Document: {state.busy ? "Loading" : state.status}
+        </Text>
+        {state.progressVisible ? (
+          <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+            Visit is taking longer than 500 ms…
+          </Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
 export default function HomeScreen() {
   const session = useMemo(
     () =>
@@ -61,8 +96,13 @@ export default function HomeScreen() {
       ),
     [],
   );
+  const documentController = useMemo(
+    () => createDemoDocumentController(session),
+    [session],
+  );
   const frames = useMemo(() => createDemoFrameControllers(session), [session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
+  useEffect(() => () => documentController.cancel(), [documentController]);
 
   return (
     <ScrollView
@@ -105,6 +145,8 @@ export default function HomeScreen() {
       </View>
       <ExpoTurboProvider
         actions={actionRuntime.actions}
+        documentComponent={DemoDocumentBoundary}
+        documentController={documentController}
         frameComponent={DemoFrameBoundary}
         frames={frames}
         registry={DEMO_REGISTRY}

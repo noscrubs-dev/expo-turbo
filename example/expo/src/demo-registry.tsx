@@ -14,6 +14,7 @@ import { z } from "zod";
 import {
   useComponentAction,
   useDocumentState,
+  useExpoTurboDocumentLink,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
 import { useDemoComponentStyle } from "./demo-style-runtime";
@@ -98,6 +99,60 @@ const text = defineComponent({
   tag: "DemoText",
 });
 
+function DemoDocumentLinkComponent({
+  children,
+  href,
+}: {
+  children?: ReactNode;
+  href: string;
+}) {
+  const activate = useExpoTurboDocumentLink(href);
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  return (
+    <View style={{ gap: 6 }}>
+      <Pressable
+        accessibilityRole="link"
+        accessibilityState={{ busy: pending, disabled: pending }}
+        disabled={pending}
+        onPress={() => {
+          setError(undefined);
+          setPending(true);
+          void activate()
+            .catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : "Document visit failed");
+            })
+            .finally(() => setPending(false));
+        }}
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#d5e6f7" : "#e7f1fb",
+          borderColor: "#9ebcda",
+          borderRadius: 12,
+          borderWidth: 1,
+          opacity: pending ? 0.6 : 1,
+          padding: 12,
+        })}
+      >
+        {children}
+      </Pressable>
+      {error ? (
+        <Text selectable style={{ color: "#a62525", fontSize: 13 }}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const documentLink = defineComponent({
+  attributes: { href: { codec: stringCodec, prop: "href" } },
+  children: "nodes",
+  component: DemoDocumentLinkComponent,
+  schema: z.object({ href: z.string().trim().min(1) }),
+  tag: "DemoDocumentLink",
+});
+
 function DemoActionComponent({ message }: { message: string }) {
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState("Ready");
@@ -148,7 +203,7 @@ const action = defineComponent({
 
 export const DEMO_REGISTRY = createRegistry(
   defineComponentModule({
-    components: [gallery, card, text, action],
+    components: [gallery, card, text, action, documentLink],
     name: "demo-primitives",
     version: "0.1.0",
   }),
@@ -159,6 +214,9 @@ export const DEMO_DOCUMENT = `<Gallery>
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
+  <DemoDocumentLink href="/demo/linked">
+    <DemoText>Open a same-origin document through the app-owned native link.</DemoText>
+  </DemoDocumentLink>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>
