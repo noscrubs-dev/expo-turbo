@@ -2,6 +2,8 @@ import { Stack } from "expo-router"
 import { EXPO_TURBO_STATUS } from "expo-turbo"
 import { ScrollView, Text, View } from "react-native"
 
+import { PARSER_CANDIDATE_SMOKE } from "../parser-candidate-smoke"
+
 export default function HomeScreen() {
   return (
     <ScrollView
@@ -31,6 +33,9 @@ export default function HomeScreen() {
         </Text>
         <Text selectable style={{ fontSize: 17, fontWeight: "600" }}>
           {EXPO_TURBO_STATUS}
+        </Text>
+        <Text selectable style={{ color: "#435160", fontSize: 13 }}>
+          Parser bundle probe: {PARSER_CANDIDATE_SMOKE}
         </Text>
       </View>
     </ScrollView>

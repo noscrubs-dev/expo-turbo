@@ -24,3 +24,7 @@ The mutable namespace-aware DOM is presently the stronger runtime shape. That is
 selection: the spike still needs a production Hermes bundle, adversarial memory measurements,
 and selector-adapter evidence. The package must also preflight byte/DTD/processing-instruction
 limits before either candidate allocates its full result.
+
+Both exact candidate versions are also imported by the standalone Expo app's bundle probe. Static
+web, iOS, and Android exports exercise this path; the native exports produce Hermes bytecode
+bundles without Node polyfills. A production Hermes device build remains the selection gate.
