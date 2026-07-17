@@ -8,6 +8,7 @@ import {
   type ExactFormSubmissionActivity,
   type FormSubmissionActivityListener,
   type FormSubmissionActivitySnapshot,
+  type FormSubmissionTerminalSnapshot,
   type FormSubmitterActivitySnapshot,
   formSubmissionActivity,
 } from "./form-submission-activity"
@@ -72,6 +73,10 @@ export type ActiveFormSubmitOptions = Omit<ActiveFormSubmissionProposalOptions, 
   readonly signal?: never
 }
 
+export interface ActiveFormRetryOptions {
+  readonly protocol: ActiveFormRequestProtocolOptions
+}
+
 export interface FormControlRegistryOptions {
   readonly submissionController?: FormSubmissionController
 }
@@ -112,6 +117,7 @@ function submitterSelectionOption(value: unknown): FormControlSelection | undefi
 interface FormControlRecord {
   descriptor: FormControlDescriptor
   readonly node: ProtocolElement
+  readonly selection: FormControlSelection
   unregisterDisposal: () => void
 }
 
@@ -317,12 +323,24 @@ export class FormControlRegistry {
     return this.submissionActivity.state
   }
 
+  get submissionTerminalState(): FormSubmissionTerminalSnapshot {
+    return this.submissionActivity.terminalState
+  }
+
   subscribeSubmission(listener: FormSubmissionActivityListener): () => void {
     return this.submissionActivity.subscribe(listener)
   }
 
+  subscribeSubmissionTerminal(listener: FormSubmissionActivityListener): () => void {
+    return this.submissionActivity.subscribeTerminal(listener)
+  }
+
   cancelSubmission(): void {
     this.submissionActivity.cancelActive()
+  }
+
+  dismissSubmissionTerminal(): void {
+    this.submissionActivity.dismissTerminal()
   }
 
   retainSubmissionScope(): () => void {
@@ -353,16 +371,17 @@ export class FormControlRegistry {
       })
     }
 
+    const selection = Object.freeze({ nodeKey: node.key }) as FormControlSelection
     const record: FormControlRecord = {
       descriptor: admitted,
       node,
+      selection,
       unregisterDisposal: () => undefined,
     }
     record.unregisterDisposal = this.session.registerDisposal(node.key, () => {
       this.release(record, false)
     })
     this.records.set(node, record)
-    const selection = Object.freeze({ nodeKey: node.key }) as FormControlSelection
     this.selections.set(selection, record)
 
     return Object.freeze({
@@ -509,6 +528,34 @@ export class FormControlRegistry {
           signal,
           ...(submitter ? { submitter } : {}),
         }),
+      controllerOptions,
+    )
+  }
+
+  retryFailure(
+    options: ActiveFormRetryOptions,
+    controllerOptions: FormSubmissionControllerSubmitOptions = {},
+  ): Promise<FormSubmissionReport> {
+    this.assertActive()
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new RequestError("Active form retry options must be an object")
+    }
+    const protocol = activeProtocolOptions(options.protocol)
+    const source = this.submissionActivity.retrySource()
+    if (protocol.requestId === source.requestId) {
+      throw new RequestError("Form submission retry requires a fresh request ID")
+    }
+    const record = source.submitter ? this.records.get(source.submitter) : undefined
+    if (source.submitter && !record) {
+      throw new StateError("Form submission retry no longer owns its submitter registration", {
+        target: source.submitter.key,
+      })
+    }
+    return this.submit(
+      {
+        protocol,
+        ...(record ? { submitter: record.selection } : {}),
+      },
       controllerOptions,
     )
   }

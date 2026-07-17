@@ -1,3 +1,7 @@
+import type { ExpoTurboErrorCode } from "./errors"
+import { StateError } from "./errors"
+import type { FormSubmissionMethod } from "./form-request"
+import type { FormResponseClassification } from "./form-request-transport"
 import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
 
@@ -25,9 +29,124 @@ export interface FormSubmissionActivityLease {
   cleaned: boolean
   readonly controller: AbortController
   readonly requestId: string
+  started: boolean
   readonly submitter: ProtocolElement | undefined
   submitsWith: string | undefined
   readonly unregisterDisposals: Array<() => void>
+}
+
+export type FormSubmissionRetryDisposition = "committed" | "safe" | "unsafe"
+export type FormSubmissionTerminalStatus =
+  | "applied"
+  | "canceled"
+  | "committed-error"
+  | "empty"
+  | "failed"
+  | "none"
+
+export interface FormSubmissionTerminalErrorContext {
+  readonly location?: Readonly<{ column?: number; line?: number; offset?: number }>
+  readonly responseStatus?: number
+}
+
+export interface FormSubmissionTerminalError {
+  readonly code: ExpoTurboErrorCode
+  readonly context: Readonly<FormSubmissionTerminalErrorContext>
+  readonly message: string
+  readonly name: string
+}
+
+interface FormSubmissionTerminalBase {
+  readonly effectiveMethod: FormSubmissionMethod
+  readonly requestId: string
+  readonly revision: number
+  readonly submitterNodeKey?: string
+}
+
+export type FormSubmissionTerminalSnapshot =
+  | Readonly<{ readonly revision: number; readonly status: "none" }>
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly status: "canceled"
+      }
+    >
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly classification: FormResponseClassification
+        readonly responseStatus: number
+        readonly status: "empty"
+      }
+    >
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly application: "document" | "frame" | "stream"
+        readonly classification: FormResponseClassification
+        readonly responseStatus: number
+        readonly status: "applied"
+      }
+    >
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly error: FormSubmissionTerminalError
+        readonly retryDisposition: "safe" | "unsafe"
+        readonly status: "failed"
+      }
+    >
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly application: "document" | "frame" | "stream"
+        readonly classification: FormResponseClassification
+        readonly error: FormSubmissionTerminalError
+        readonly responseStatus: number
+        readonly retryDisposition: "committed"
+        readonly status: "committed-error"
+      }
+    >
+
+export type FormSubmissionTerminalReportInput =
+  | Readonly<{
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly requestId: string
+      readonly status: "canceled"
+    }>
+  | Readonly<{
+      readonly classification: FormResponseClassification
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly requestId: string
+      readonly responseStatus: number
+      readonly status: "empty"
+    }>
+  | Readonly<{
+      readonly application: "document" | "frame" | "stream"
+      readonly classification: FormResponseClassification
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly requestId: string
+      readonly responseStatus: number
+      readonly status: "applied"
+    }>
+
+export type FormSubmissionTerminalFailureInput =
+  | Readonly<{
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly error: FormSubmissionTerminalError
+      readonly requestId: string
+      readonly retryDisposition: "safe" | "unsafe"
+      readonly status: "failed"
+    }>
+  | Readonly<{
+      readonly application: "document" | "frame" | "stream"
+      readonly classification: FormResponseClassification
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly error: FormSubmissionTerminalError
+      readonly requestId: string
+      readonly responseStatus: number
+      readonly retryDisposition: "committed"
+      readonly status: "committed-error"
+    }>
+
+export interface FormSubmissionRetrySource {
+  readonly requestId: string
+  readonly submitter: ProtocolElement | undefined
 }
 
 const IDLE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
@@ -39,6 +158,7 @@ const IDLE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
 export class ExactFormSubmissionActivity {
   private current: FormSubmissionActivityLease | undefined
   private displayed: FormSubmissionActivityLease | undefined
+  private latestAttempt: FormSubmissionActivityLease | undefined
   private readonly listeners = new Set<FormSubmissionActivityListener>()
   private revision = 0
   private scopeOwners = 0
@@ -55,6 +175,14 @@ export class ExactFormSubmissionActivity {
     ProtocolElement,
     FormSubmitterActivitySnapshot
   >()
+  private readonly terminalListeners = new Set<FormSubmissionActivityListener>()
+  private terminalRevision = 0
+  private terminalSnapshot: FormSubmissionTerminalSnapshot = Object.freeze({
+    revision: 0,
+    status: "none",
+  })
+  private terminalSubmitter: ProtocolElement | undefined
+  private readonly unregisterTerminalDisposals: Array<() => void> = []
 
   constructor(
     private readonly session: DocumentSession,
@@ -63,6 +191,10 @@ export class ExactFormSubmissionActivity {
 
   get state(): FormSubmissionActivitySnapshot {
     return this.snapshot
+  }
+
+  get terminalState(): FormSubmissionTerminalSnapshot {
+    return this.terminalSnapshot
   }
 
   admit(
@@ -83,11 +215,13 @@ export class ExactFormSubmissionActivity {
       cleaned: false,
       controller,
       requestId,
+      started: false,
       submitter,
       submitsWith: undefined,
       unregisterDisposals: [],
     }
     this.current = lease
+    this.latestAttempt = lease
     lease.unregisterDisposals.push(
       this.session.registerDisposal(this.form.key, () => this.cancel(lease)),
     )
@@ -110,6 +244,9 @@ export class ExactFormSubmissionActivity {
   }
 
   start(lease: FormSubmissionActivityLease): boolean {
+    if (!this.owns(lease)) return false
+    lease.started = true
+    this.clearTerminal()
     if (!this.owns(lease)) return false
     const rawSubmitsWith = lease.submitter
       ? attributeValue(lease.submitter, "data-turbo-submits-with")
@@ -137,6 +274,59 @@ export class ExactFormSubmissionActivity {
     if (active) this.cancel(active)
   }
 
+  dismissTerminal(): void {
+    this.clearTerminal()
+  }
+
+  retrySource(): FormSubmissionRetrySource {
+    const snapshot = this.terminalSnapshot
+    if (snapshot.status !== "failed" || snapshot.retryDisposition !== "safe") {
+      throw new StateError("Form submission terminal failure is not safely retryable", {
+        target: this.form.key,
+      })
+    }
+    if (!this.activeExactNode(this.form)) {
+      throw new StateError("Form submission retry no longer owns its form node", {
+        target: this.form.key,
+      })
+    }
+    if (this.terminalSubmitter && !this.activeExactNode(this.terminalSubmitter)) {
+      throw new StateError("Form submission retry no longer owns its submitter node", {
+        target: this.terminalSubmitter.key,
+      })
+    }
+    return Object.freeze({
+      requestId: snapshot.requestId,
+      submitter: this.terminalSubmitter,
+    })
+  }
+
+  settleFailure(
+    lease: FormSubmissionActivityLease,
+    failure: FormSubmissionTerminalFailureInput,
+  ): void {
+    this.finish(lease)
+    try {
+      if (!this.canSettle(lease)) return
+      this.publishTerminal(failure, lease.submitter)
+    } finally {
+      if (this.latestAttempt === lease) this.latestAttempt = undefined
+    }
+  }
+
+  settleReport(
+    lease: FormSubmissionActivityLease,
+    report: FormSubmissionTerminalReportInput,
+  ): void {
+    this.finish(lease)
+    try {
+      if (!lease.started || !this.canSettle(lease)) return
+      this.publishTerminal(report, lease.submitter)
+    } finally {
+      if (this.latestAttempt === lease) this.latestAttempt = undefined
+    }
+  }
+
   owns(lease: FormSubmissionActivityLease): boolean {
     return this.current === lease && !lease.controller.signal.aborted
   }
@@ -155,6 +345,11 @@ export class ExactFormSubmissionActivity {
   subscribe(listener: FormSubmissionActivityListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  subscribeTerminal(listener: FormSubmissionActivityListener): () => void {
+    this.terminalListeners.add(listener)
+    return () => this.terminalListeners.delete(listener)
   }
 
   stateForSubmitter(submitter: ProtocolElement): FormSubmitterActivitySnapshot {
@@ -188,6 +383,71 @@ export class ExactFormSubmissionActivity {
     lease.cleaned = true
     lease.controller.signal.removeEventListener("abort", lease.abortListener)
     for (const unregister of lease.unregisterDisposals.splice(0)) unregister()
+  }
+
+  private activeExactNode(node: ProtocolElement): boolean {
+    return this.session.tree.getNodeByKey(node.key) === node && this.session.tree.contains(node)
+  }
+
+  private canSettle(lease: FormSubmissionActivityLease): boolean {
+    return (
+      this.latestAttempt === lease &&
+      this.current !== lease &&
+      this.activeExactNode(this.form) &&
+      (!lease.submitter || this.activeExactNode(lease.submitter))
+    )
+  }
+
+  private clearTerminal(): void {
+    if (this.terminalSnapshot.status === "none") return
+    this.clearTerminalDisposals()
+    this.terminalSubmitter = undefined
+    this.terminalRevision += 1
+    this.terminalSnapshot = Object.freeze({ revision: this.terminalRevision, status: "none" })
+    this.notify(this.terminalListeners, "Form submission terminal listener failed")
+  }
+
+  private clearTerminalDisposals(): void {
+    for (const unregister of this.unregisterTerminalDisposals.splice(0)) unregister()
+  }
+
+  private notify(listeners: Set<FormSubmissionActivityListener>, message: string): void {
+    const errors: unknown[] = []
+    for (const listener of [...listeners]) {
+      try {
+        listener()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    if (errors.length > 0) {
+      queueMicrotask(() => {
+        throw new AggregateError(errors, message)
+      })
+    }
+  }
+
+  private publishTerminal(
+    terminal: FormSubmissionTerminalFailureInput | FormSubmissionTerminalReportInput,
+    submitter: ProtocolElement | undefined,
+  ): void {
+    this.clearTerminalDisposals()
+    this.terminalSubmitter = submitter
+    this.terminalRevision += 1
+    this.terminalSnapshot = Object.freeze({
+      ...terminal,
+      revision: this.terminalRevision,
+      ...(submitter ? { submitterNodeKey: submitter.key } : {}),
+    }) as FormSubmissionTerminalSnapshot
+    this.unregisterTerminalDisposals.push(
+      this.session.registerDisposal(this.form.key, () => this.clearTerminal()),
+    )
+    if (submitter) {
+      this.unregisterTerminalDisposals.push(
+        this.session.registerDisposal(submitter.key, () => this.clearTerminal()),
+      )
+    }
+    this.notify(this.terminalListeners, "Form submission terminal listener failed")
   }
 
   private publish(previousSubmitter?: ProtocolElement, nextSubmitter?: ProtocolElement): void {

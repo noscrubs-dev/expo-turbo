@@ -9,6 +9,11 @@ export type {
   FormSubmissionActivitySnapshot,
   FormSubmissionActivityStatus,
   FormSubmissionDuplicateBehavior,
+  FormSubmissionRetryDisposition,
+  FormSubmissionTerminalError,
+  FormSubmissionTerminalErrorContext,
+  FormSubmissionTerminalSnapshot,
+  FormSubmissionTerminalStatus,
   FormSubmitterActivitySnapshot,
 } from "./form-submission-activity"
 export * from "./form-submission-controller"

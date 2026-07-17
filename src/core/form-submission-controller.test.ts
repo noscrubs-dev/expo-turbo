@@ -327,6 +327,347 @@ describe("FormSubmissionController", () => {
     expect(formControls.controlSubmissionState("id:document-submitter").pending).toBe(false)
   })
 
+  test("publishes applied, empty, and active cancellation as shared terminal outcomes after busy clears", async () => {
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const transport = pendingFetch()
+      const controller = new FormSubmissionController(session, transport.adapter)
+      const submittingControls = registry(session, "document-form")
+      const observingControls = registry(session, "document-form")
+      const observations: Array<{ busy: boolean; status: string }> = []
+      observingControls.subscribeSubmissionTerminal(() => {
+        observations.push({
+          busy: submittingControls.submissionState.busy,
+          status: observingControls.submissionTerminalState.status,
+        })
+      })
+
+      const submitting = controller.submit(proposal(submittingControls, "terminal-applied"))
+      const request = transport.pending[0]
+      if (!request) throw new Error("applied terminal request was not captured")
+      request.response.resolve(
+        response(
+          request.request,
+          '<turbo-stream action="update" target="status"><template><Applied /></template></turbo-stream>',
+          { headers: { "Content-Type": TURBO_STREAM_MIME_TYPE } },
+        ),
+      )
+
+      expect(await submitting).toMatchObject({ application: "stream", status: "applied" })
+      expect(submittingControls.submissionTerminalState).toMatchObject({
+        application: "stream",
+        classification: "success",
+        effectiveMethod: "POST",
+        requestId: "terminal-applied",
+        responseStatus: 200,
+        status: "applied",
+      })
+      expect(observingControls.submissionTerminalState).toBe(
+        submittingControls.submissionTerminalState,
+      )
+      expect(observations).toEqual([{ busy: false, status: "applied" }])
+    }
+
+    {
+      const session = fixture()
+      const transport = pendingFetch()
+      const controller = new FormSubmissionController(session, transport.adapter)
+      const submittingControls = registry(session, "document-form")
+      const observingControls = registry(session, "document-form")
+      const observations: Array<{ busy: boolean; status: string }> = []
+      observingControls.subscribeSubmissionTerminal(() => {
+        observations.push({
+          busy: submittingControls.submissionState.busy,
+          status: observingControls.submissionTerminalState.status,
+        })
+      })
+
+      const submitting = controller.submit(proposal(submittingControls, "terminal-empty"))
+      const request = transport.pending[0]
+      if (!request) throw new Error("empty terminal request was not captured")
+      request.response.resolve(response(request.request, "", { status: 204 }))
+
+      expect(await submitting).toMatchObject({ status: "empty" })
+      expect(submittingControls.submissionTerminalState).toMatchObject({
+        classification: "success",
+        effectiveMethod: "GET",
+        requestId: "terminal-empty",
+        responseStatus: 204,
+        status: "empty",
+      })
+      expect(observingControls.submissionTerminalState).toBe(
+        submittingControls.submissionTerminalState,
+      )
+      expect(observations).toEqual([{ busy: false, status: "empty" }])
+    }
+
+    {
+      const session = fixture()
+      const transport = pendingFetch()
+      const controller = new FormSubmissionController(session, transport.adapter)
+      const submittingControls = registry(session, "document-form")
+      const observingControls = registry(session, "document-form")
+      const observations: Array<{ busy: boolean; status: string }> = []
+      observingControls.subscribeSubmissionTerminal(() => {
+        observations.push({
+          busy: submittingControls.submissionState.busy,
+          status: observingControls.submissionTerminalState.status,
+        })
+      })
+
+      const submitting = controller.submit(proposal(submittingControls, "terminal-canceled"))
+      const request = transport.pending[0]
+      if (!request) throw new Error("canceled terminal request was not captured")
+      submittingControls.cancelSubmission()
+
+      expect(request.request.signal?.aborted).toBe(true)
+      expect(await submitting).toMatchObject({ status: "canceled" })
+      expect(submittingControls.submissionTerminalState).toMatchObject({
+        effectiveMethod: "GET",
+        requestId: "terminal-canceled",
+        status: "canceled",
+      })
+      expect(observingControls.submissionTerminalState).toBe(
+        submittingControls.submissionTerminalState,
+      )
+      expect(observations).toEqual([{ busy: false, status: "canceled" }])
+    }
+  })
+
+  test("keeps the prior terminal outcome when confirmation is denied before submission starts", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      confirmation: { confirm: () => false },
+    })
+    const submittingControls = registry(session, "document-form")
+    const observingControls = registry(session, "document-form")
+
+    const baseline = controller.submit(proposal(submittingControls, "terminal-before-denial"))
+    const request = transport.pending[0]
+    if (!request) throw new Error("baseline terminal request was not captured")
+    request.response.resolve(response(request.request, "", { status: 204 }))
+    await baseline
+    const priorTerminal = submittingControls.submissionTerminalState
+    expect(priorTerminal).toMatchObject({
+      requestId: "terminal-before-denial",
+      status: "empty",
+    })
+
+    session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+    expect(
+      await controller.submit(proposal(observingControls, "denied-before-start")),
+    ).toMatchObject({ requestId: "denied-before-start", status: "canceled" })
+
+    expect(transport.pending).toHaveLength(1)
+    expect(submittingControls.submissionTerminalState).toBe(priorTerminal)
+    expect(observingControls.submissionTerminalState).toBe(priorTerminal)
+  })
+
+  test("classifies transport failures as safe for GET and unsafe for non-GET without retaining causes", async () => {
+    for (const scenario of [
+      { effectiveMethod: "GET", retryDisposition: "safe" },
+      { effectiveMethod: "POST", retryDisposition: "unsafe" },
+    ] as const) {
+      const session = fixture()
+      if (scenario.effectiveMethod === "POST") {
+        session.setAttribute("id:document-form", "method", "post")
+      }
+      const submittingControls = registry(session, "document-form")
+      const observingControls = registry(session, "document-form")
+      const controller = new FormSubmissionController(session, {
+        async fetch() {
+          throw new Error(`transport secret-token-${scenario.effectiveMethod}`)
+        },
+      })
+
+      await expect(
+        controller.submit(
+          proposal(submittingControls, `terminal-failure-${scenario.effectiveMethod}`),
+        ),
+      ).rejects.toBeInstanceOf(RequestError)
+
+      const terminal = submittingControls.submissionTerminalState
+      expect(terminal).toMatchObject({
+        effectiveMethod: scenario.effectiveMethod,
+        error: {
+          code: "request",
+          context: {},
+          message: "Form submission request failed",
+          name: "RequestError",
+        },
+        requestId: `terminal-failure-${scenario.effectiveMethod}`,
+        retryDisposition: scenario.retryDisposition,
+        status: "failed",
+      })
+      expect(observingControls.submissionTerminalState).toBe(terminal)
+      expect(submittingControls.submissionState.busy).toBe(false)
+      if (terminal.status !== "failed") throw new Error("expected failed terminal state")
+      expect("cause" in terminal.error).toBe(false)
+      expect(JSON.stringify(terminal)).not.toContain("secret-token")
+      expect(Object.isFrozen(terminal.error)).toBe(true)
+      expect(Object.isFrozen(terminal.error.context)).toBe(true)
+    }
+  })
+
+  test("redacts response payload identifiers from terminal parse failures", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const controller = new FormSubmissionController(session, {
+      fetch: async (request) =>
+        response(
+          request,
+          '<Gallery><Secret id="customer-secret-42"/><Duplicate id="customer-secret-42"/></Gallery>',
+        ),
+    })
+
+    await expect(
+      controller.submit(proposal(controls, "terminal-redacted-parse")),
+    ).rejects.toMatchObject({ code: "parse" })
+
+    const terminal = controls.submissionTerminalState
+    expect(terminal).toMatchObject({
+      error: {
+        code: "parse",
+        message: "Form response XML is invalid",
+        name: "ParseError",
+      },
+      requestId: "terminal-redacted-parse",
+      retryDisposition: "safe",
+      status: "failed",
+    })
+    expect(JSON.stringify(terminal)).not.toContain("customer-secret-42")
+    if (terminal.status !== "failed") throw new Error("expected failed terminal state")
+    expect("target" in terminal.error.context).toBe(false)
+  })
+
+  test("publishes a redacted committed-error terminal outcome after Stream commit finalization fails", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    session.subscribe("id:frame-b", () => {
+      throw new Error("committed observer secret-token")
+    })
+    const submittingControls = registry(session, "document-form")
+    const observingControls = registry(session, "document-form")
+    const controller = new FormSubmissionController(session, {
+      fetch: async (request) =>
+        response(
+          request,
+          '<turbo-stream action="update" target="frame-b"><template><Committed /></template></turbo-stream>',
+          { headers: { "Content-Type": TURBO_STREAM_MIME_TYPE } },
+        ),
+    })
+
+    await expect(
+      controller.submit(proposal(submittingControls, "terminal-committed-error")),
+    ).rejects.toBeInstanceOf(FormSubmissionCommitError)
+
+    const terminal = submittingControls.submissionTerminalState
+    expect(terminal).toMatchObject({
+      application: "stream",
+      classification: "success",
+      effectiveMethod: "POST",
+      error: {
+        code: "request",
+        context: { responseStatus: 200 },
+        message: "Form submission committed but finalization failed",
+        name: "FormSubmissionCommitError",
+      },
+      requestId: "terminal-committed-error",
+      responseStatus: 200,
+      retryDisposition: "committed",
+      status: "committed-error",
+    })
+    expect(observingControls.submissionTerminalState).toBe(terminal)
+    expect(submittingControls.submissionState.busy).toBe(false)
+    if (terminal.status !== "committed-error") {
+      throw new Error("expected committed-error terminal state")
+    }
+    expect("cause" in terminal.error).toBe(false)
+    expect(JSON.stringify(terminal)).not.toContain("secret-token")
+  })
+
+  test("records valid 422 and 500 Stream responses as applied terminal outcomes", async () => {
+    for (const scenario of [
+      { classification: "client-error", status: 422 },
+      { classification: "server-error", status: 500 },
+    ] as const) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const submittingControls = registry(session, "document-form")
+      const observingControls = registry(session, "document-form")
+      const controller = new FormSubmissionController(session, {
+        fetch: async (request) =>
+          response(
+            request,
+            `<turbo-stream action="update" target="status"><template><Handled id="handled-${scenario.status}" /></template></turbo-stream>`,
+            {
+              headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+              status: scenario.status,
+            },
+          ),
+      })
+
+      expect(
+        await controller.submit(
+          proposal(submittingControls, `terminal-applied-${scenario.status}`),
+        ),
+      ).toMatchObject({
+        application: "stream",
+        classification: scenario.classification,
+        responseStatus: scenario.status,
+        status: "applied",
+      })
+      const terminal = submittingControls.submissionTerminalState
+      expect(terminal).toMatchObject({
+        application: "stream",
+        classification: scenario.classification,
+        effectiveMethod: "POST",
+        requestId: `terminal-applied-${scenario.status}`,
+        responseStatus: scenario.status,
+        status: "applied",
+      })
+      expect(observingControls.submissionTerminalState).toBe(terminal)
+      expect("error" in terminal).toBe(false)
+      expect("retryDisposition" in terminal).toBe(false)
+    }
+  })
+
+  test("keeps a superseded stale cancellation inert after the newer terminal outcome", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const controller = new FormSubmissionController(session, transport.adapter)
+    const submittingControls = registry(session, "document-form")
+    const observingControls = registry(session, "document-form")
+
+    const stale = controller.submit(proposal(submittingControls, "terminal-stale"))
+    const staleRequest = transport.pending[0]
+    if (!staleRequest) throw new Error("stale terminal request was not captured")
+    const current = controller.submit(proposal(observingControls, "terminal-current"), {
+      duplicateBehavior: "supersede",
+    })
+    const currentRequest = transport.pending[1]
+    if (!currentRequest) throw new Error("current terminal request was not captured")
+
+    expect(staleRequest.request.signal?.aborted).toBe(true)
+    expect(await stale).toMatchObject({ requestId: "terminal-stale", status: "canceled" })
+    expect(submittingControls.submissionTerminalState.status).toBe("none")
+
+    currentRequest.response.resolve(response(currentRequest.request, "", { status: 204 }))
+    expect(await current).toMatchObject({ requestId: "terminal-current", status: "empty" })
+    const currentTerminal = submittingControls.submissionTerminalState
+    expect(currentTerminal).toMatchObject({
+      requestId: "terminal-current",
+      status: "empty",
+    })
+
+    staleRequest.response.resolve(response(staleRequest.request, "", { status: 204 }))
+    await Promise.resolve()
+    expect(submittingControls.submissionTerminalState).toBe(currentTerminal)
+    expect(observingControls.submissionTerminalState).toBe(currentTerminal)
+  })
+
   test("resolves confirmation metadata by submitter-first attribute presence", async () => {
     const cases = [
       { expected: "Form confirmation", form: "Form confirmation" },

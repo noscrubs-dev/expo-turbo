@@ -52,6 +52,7 @@ import {
   createComponentStyleHook,
   type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFormBinding,
+  type ExpoTurboFormBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboFormScope,
   ExpoTurboProvider,
@@ -247,6 +248,183 @@ function formScopeUnmountFixture(
     forms: () => new DocumentFormControls(session, { submissionController: controller }),
     pending,
     provider,
+    session,
+  }
+}
+
+function formTerminalFixture(method: "get" | "post") {
+  const bindings = new Map<string, ExpoTurboFormBinding>()
+  let boundary: ExpoTurboFormBoundaryProps | undefined
+  let childMounts = 0
+  let childUnmounts = 0
+  const confirmations: string[] = []
+  const pending: {
+    request: TurboRequest
+    resolve: (response: TurboResponse) => void
+  }[] = []
+
+  function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+    return createElement(ExpoTurboFormScope, null, props.children)
+  }
+  function FormBoundary(props: ExpoTurboFormBoundaryProps): ReactNode {
+    boundary = props
+    return createElement(
+      "form-boundary",
+      {
+        busy: props.state.busy,
+        terminalRevision: props.terminalState.revision,
+        terminalStatus: props.terminalState.status,
+      },
+      props.children,
+    )
+  }
+  function CaptureForm({ slot }: { slot: string }): ReactNode {
+    const binding = useExpoTurboForm()
+    useEffect(() => {
+      bindings.set(slot, binding)
+      return () => {
+        if (bindings.get(slot) === binding) bindings.delete(slot)
+      }
+    }, [binding, slot])
+    return createElement("form-observer", { slot })
+  }
+  function MountProbe(): ReactNode {
+    useEffect(() => {
+      childMounts += 1
+      return () => {
+        childUnmounts += 1
+      }
+    }, [])
+    return createElement("mount-probe")
+  }
+  function NativeLiveValue({ name, value }: { name: string; value: string }): ReactNode {
+    const [current, setCurrent] = useState(value)
+    useExpoTurboFormControl({ kind: "value", name, value: current })
+    return createElement("terminal-live-value", { onChange: setCurrent, value: current })
+  }
+  function NativeSubmitter({ name, value }: { name: string; value: string }): ReactNode {
+    const binding = useExpoTurboFormControl({ kind: "submitter", name, value })
+    return createElement("terminal-submitter", {
+      nodeKey: binding.nodeKey,
+      selection: binding.selection,
+      value,
+    })
+  }
+
+  const form = defineComponent({
+    attributes: {
+      action: { codec: stringCodec, prop: "action" },
+      method: { codec: stringCodec, prop: "method" },
+    },
+    children: "nodes",
+    component: NativeForm,
+    schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
+    tag: "TerminalForm",
+  })
+  const capture = defineComponent({
+    attributes: { slot: { codec: stringCodec, prop: "slot" } },
+    children: "none",
+    component: CaptureForm,
+    schema: z.object({ slot: z.string() }),
+    tag: "CaptureTerminalForm",
+  })
+  const probe = defineComponent({
+    attributes: {},
+    children: "none",
+    component: MountProbe,
+    schema: z.object({}),
+    tag: "TerminalMountProbe",
+  })
+  const liveValue = defineComponent({
+    attributes: {
+      name: { codec: stringCodec, prop: "name" },
+      value: { codec: stringCodec, prop: "value" },
+    },
+    children: "none",
+    component: NativeLiveValue,
+    schema: z.object({ name: z.string(), value: z.string() }),
+    tag: "TerminalLiveValue",
+  })
+  const submitter = defineComponent({
+    attributes: {
+      formmethod: { codec: stringCodec, prop: "formmethod" },
+      name: { codec: stringCodec, prop: "name" },
+      value: { codec: stringCodec, prop: "value" },
+    },
+    children: "none",
+    component: NativeSubmitter,
+    schema: z.object({ formmethod: z.string().optional(), name: z.string(), value: z.string() }),
+    tag: "TerminalSubmitter",
+  })
+  const registry = registryWithCounters().use(
+    defineComponentModule({
+      components: [form, capture, probe, liveValue, submitter],
+      name: `form-terminal-${method}`,
+      version: "0.1.0",
+    }),
+  )
+  const session = new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery><TerminalForm id="form" action="/search" method="${method}">
+        <TerminalMountProbe />
+        <TerminalLiveValue id="query" name="query" value="before" />
+        <TerminalSubmitter id="submit" name="commit" value="search" />
+        <CaptureTerminalForm slot="first" />
+        <CaptureTerminalForm slot="second" />
+      </TerminalForm><DemoText id="status">Before</DemoText></Gallery>`,
+      { url: "https://example.test/current" },
+    ),
+  )
+  const controller = new FormSubmissionController(
+    session,
+    {
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+    },
+    {
+      confirmation: {
+        confirm: (message) => {
+          confirmations.push(message)
+          return true
+        },
+      },
+    },
+  )
+  const forms = new DocumentFormControls(session, { submissionController: controller })
+  let renderer: ReactTestRenderer | undefined
+  act(() => {
+    renderer = create(
+      createElement(
+        ExpoTurboProvider,
+        { formComponent: FormBoundary, forms, registry, session },
+        createElement(ExpoTurboRoot),
+      ),
+    )
+  })
+  if (!renderer) throw new Error("terminal form renderer was not created")
+  const activeRenderer = renderer
+
+  return {
+    binding(slot = "first") {
+      const binding = bindings.get(slot)
+      if (!binding) throw new Error(`terminal form binding ${slot} was not captured`)
+      return binding
+    },
+    boundary() {
+      if (!boundary) throw new Error("terminal form boundary was not captured")
+      return boundary
+    },
+    childMounts: () => childMounts,
+    childUnmounts: () => childUnmounts,
+    confirmations,
+    forms,
+    hostNode(type: string) {
+      const node = activeRenderer.root.findAll((candidate) => String(candidate.type) === type)[0]
+      if (!node) throw new Error(`terminal form host node ${type} was not rendered`)
+      return node
+    },
+    pending,
+    renderer: activeRenderer,
     session,
   }
 }
@@ -1203,6 +1381,241 @@ describe("React protocol renderer", () => {
     expect(() => replacement.successfulEntries()).toThrow(/disposed/)
   })
 
+  test("publishes and dismisses terminal state through the form boundary without remounting children", async () => {
+    const fixture = formTerminalFixture("get")
+    const submitter = fixture.hostNode("terminal-submitter").props.selection()
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+
+    await act(async () => {
+      submission = fixture.binding().submit({
+        protocol: { requestId: "boundary-failure" },
+        submitter,
+      })
+      await Promise.resolve()
+    })
+    const failedRequest = fixture.pending[0]
+    if (!failedRequest || !submission) throw new Error("terminal request was not captured")
+
+    await act(async () => {
+      failedRequest.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: failedRequest.request.url,
+      })
+      await expect(submission).rejects.toThrow()
+      await Promise.resolve()
+    })
+
+    expect(fixture.boundary().terminalState).toMatchObject({
+      requestId: "boundary-failure",
+      retryDisposition: "safe",
+      status: "failed",
+      submitterNodeKey: "id:submit",
+    })
+    expect(fixture.binding("first").terminalState).toBe(
+      fixture.binding("second").terminalState,
+    )
+    expect(fixture.hostNode("form-boundary").props).toMatchObject({
+      busy: false,
+      terminalStatus: "failed",
+    })
+    expect(fixture.childMounts()).toBe(1)
+    expect(fixture.childUnmounts()).toBe(0)
+
+    act(() => fixture.boundary().dismissTerminal())
+
+    expect(fixture.boundary().terminalState.status).toBe("none")
+    expect(fixture.binding("first").terminalState).toBe(
+      fixture.binding("second").terminalState,
+    )
+    expect(fixture.hostNode("form-boundary").props.terminalStatus).toBe("none")
+    expect(fixture.childMounts()).toBe(1)
+    expect(fixture.childUnmounts()).toBe(0)
+
+    act(() => fixture.renderer.unmount())
+    expect(fixture.childUnmounts()).toBe(1)
+  })
+
+  test("retries a safe failure once with a fresh request and current exact-form controls", async () => {
+    const fixture = formTerminalFixture("get")
+    const submitter = fixture.hostNode("terminal-submitter").props.selection()
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+
+    await act(async () => {
+      submission = fixture.binding("first").submit({
+        protocol: { requestId: "initial-get" },
+        submitter,
+      })
+      await Promise.resolve()
+    })
+    const failedRequest = fixture.pending[0]
+    if (!failedRequest || !submission) throw new Error("initial retry request was not captured")
+    await act(async () => {
+      failedRequest.resolve({
+        headers: { "Content-Type": "text/plain" },
+        redirected: false,
+        status: 200,
+        text: async () => "retry me",
+        url: failedRequest.request.url,
+      })
+      await expect(submission).rejects.toThrow()
+      await Promise.resolve()
+    })
+    expect(fixture.pending).toHaveLength(1)
+    expect(fixture.binding("first").terminalState).toBe(
+      fixture.binding("second").terminalState,
+    )
+    expect(() =>
+      fixture.binding("second").retryFailure({
+        protocol: { requestId: "initial-get" },
+      }),
+    ).toThrow(/fresh request ID/)
+    expect(fixture.pending).toHaveLength(1)
+
+    await act(async () => {
+      fixture.hostNode("terminal-live-value").props.onChange("after-failure")
+      fixture.session.setAttribute("id:form", "action", "/current-form?stale=1")
+      fixture.session.setAttribute("id:form", "method", "post")
+      fixture.session.setAttribute("id:submit", "formmethod", "get")
+      fixture.session.setAttribute(
+        "id:submit",
+        "data-turbo-confirm",
+        "Confirm the current retry",
+      )
+      await Promise.resolve()
+    })
+
+    let retry: ReturnType<ExpoTurboFormBinding["retryFailure"]> | undefined
+    await act(async () => {
+      retry = fixture.binding("second").retryFailure({
+        protocol: { requestId: "retry-get" },
+      })
+      await Promise.resolve()
+    })
+    const retriedRequest = fixture.pending[1]
+    if (!retriedRequest || !retry) throw new Error("retried form request was not captured")
+    const retriedUrl = new URL(retriedRequest.request.url)
+    expect(fixture.pending).toHaveLength(2)
+    expect(fixture.confirmations).toEqual(["Confirm the current retry"])
+    expect(retriedRequest.request.method).toBe("GET")
+    expect(retriedRequest.request.headers["X-Turbo-Request-Id"]).toBe("retry-get")
+    expect(retriedUrl.pathname).toBe("/current-form")
+    expect(retriedUrl.searchParams.has("stale")).toBe(false)
+    expect(retriedUrl.searchParams.getAll("query")).toEqual(["after-failure"])
+    expect(retriedUrl.searchParams.getAll("commit")).toEqual(["search"])
+
+    await act(async () => {
+      retriedRequest.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: retriedRequest.request.url,
+      })
+      await expect(retry).resolves.toMatchObject({ requestId: "retry-get", status: "empty" })
+      await Promise.resolve()
+    })
+    expect(fixture.pending).toHaveLength(2)
+    expect(fixture.boundary().terminalState).toMatchObject({
+      requestId: "retry-get",
+      status: "empty",
+    })
+    act(() => fixture.renderer.unmount())
+  })
+
+  test("refuses to replay an unsafe terminal failure", async () => {
+    const fixture = formTerminalFixture("post")
+    const submitter = fixture.hostNode("terminal-submitter").props.selection()
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+
+    await act(async () => {
+      submission = fixture.binding().submit({
+        protocol: { requestId: "unsafe-post" },
+        submitter,
+      })
+      await Promise.resolve()
+    })
+    const failedRequest = fixture.pending[0]
+    if (!failedRequest || !submission) throw new Error("unsafe form request was not captured")
+    await act(async () => {
+      failedRequest.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: failedRequest.request.url,
+      })
+      await expect(submission).rejects.toThrow()
+      await Promise.resolve()
+    })
+
+    expect(fixture.boundary().terminalState).toMatchObject({
+      requestId: "unsafe-post",
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+    await expect(
+      Promise.resolve().then(() =>
+        fixture.boundary().retryFailure({ protocol: { requestId: "unsafe-retry" } }),
+      ),
+    ).rejects.toThrow(/not safely retryable/)
+    expect(fixture.pending).toHaveLength(1)
+    expect(fixture.boundary().terminalState).toMatchObject({
+      requestId: "unsafe-post",
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+    act(() => fixture.renderer.unmount())
+  })
+
+  test("refuses to replay a submission whose response already committed", async () => {
+    const fixture = formTerminalFixture("post")
+    fixture.session.subscribe("id:status", () => {
+      throw new Error("committed observer secret")
+    })
+    const submitter = fixture.hostNode("terminal-submitter").props.selection()
+    let submission: ReturnType<ExpoTurboFormBinding["submit"]> | undefined
+
+    await act(async () => {
+      submission = fixture.binding().submit({
+        protocol: { requestId: "committed-post" },
+        submitter,
+      })
+      await Promise.resolve()
+    })
+    const request = fixture.pending[0]
+    if (!request || !submission) throw new Error("committed form request was not captured")
+    await act(async () => {
+      request.resolve({
+        headers: { "Content-Type": "text/vnd.turbo-stream.html" },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<turbo-stream action="update" target="status"><template>After</template></turbo-stream>',
+        url: request.request.url,
+      })
+      await expect(submission).rejects.toThrow()
+      await Promise.resolve()
+    })
+
+    expect(fixture.boundary().terminalState).toMatchObject({
+      application: "stream",
+      requestId: "committed-post",
+      retryDisposition: "committed",
+      status: "committed-error",
+    })
+    await expect(
+      Promise.resolve().then(() =>
+        fixture.boundary().retryFailure({ protocol: { requestId: "committed-retry" } }),
+      ),
+    ).rejects.toThrow(/not safely retryable/)
+    expect(fixture.pending).toHaveLength(1)
+    expect(JSON.stringify(fixture.boundary().terminalState)).not.toContain("secret")
+    act(() => fixture.renderer.unmount())
+  })
+
   test("cancels the active form after its last mounted scope unmounts", async () => {
     const fixture = formScopeUnmountFixture()
     const forms = fixture.forms()
@@ -1230,6 +1643,10 @@ describe("React protocol renderer", () => {
     expect(request.request.signal?.aborted).toBe(true)
     expect(await submission).toMatchObject({ requestId: "provider-unmount", status: "canceled" })
     expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.submissionTerminalState).toMatchObject({
+      requestId: "provider-unmount",
+      status: "canceled",
+    })
     expect(controls.isDisposed).toBe(false)
     expect(forms.isDisposed).toBe(false)
     expect(fixture.session.tree.getElementById("form")).toBeDefined()
@@ -1270,6 +1687,7 @@ describe("React protocol renderer", () => {
     expect(confirmationSignal?.aborted).toBe(true)
     expect(await submission).toMatchObject({ requestId: "confirm-unmount", status: "canceled" })
     expect(fixture.pending).toHaveLength(0)
+    expect(controls.submissionTerminalState.status).toBe("none")
     expect(controls.isDisposed).toBe(false)
     expect(forms.isDisposed).toBe(false)
   })
