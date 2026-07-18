@@ -55,6 +55,11 @@ export interface DocumentTreeOptions {
   readonly allowDuplicateIds?: boolean
 }
 
+export interface DocumentTreeCloneOptions {
+  /** Omit each element subtree marked by `data-turbo-temporary` presence. */
+  readonly omitTemporaryElements?: boolean
+}
+
 export function isElement(node: ProtocolNode): node is ProtocolElement {
   return !["comment", "document", "text"].includes(node.kind)
 }
@@ -183,6 +188,35 @@ export class DocumentTree {
     return this.nodes.has(node)
   }
 
+  clone(options: DocumentTreeCloneOptions = {}): DocumentTree {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TargetError("Document tree clone options must be an object")
+    }
+    if (
+      options.omitTemporaryElements !== undefined &&
+      typeof options.omitTemporaryElements !== "boolean"
+    ) {
+      throw new TargetError("Document tree temporary-element policy must be boolean")
+    }
+
+    const document: ProtocolDocument = {
+      children: [],
+      key: this.document.key,
+      kind: "document",
+      parent: null,
+      ...(this.document.location ? { location: { ...this.document.location } } : {}),
+      ...(this.document.url !== undefined ? { url: this.document.url } : {}),
+    }
+    document.children = this.document.children.flatMap((child) => {
+      const clone = this.cloneDocumentNode(child, document, options)
+      return clone ? [clone] : []
+    })
+
+    const clone = new DocumentTree(document, { allowDuplicateIds: this.allowDuplicateIds })
+    clone.mutationKey = this.mutationKey
+    return clone
+  }
+
   insertClones(
     parent: ProtocolParentNode,
     index: number,
@@ -294,6 +328,60 @@ export class DocumentTree {
 
   private assertActiveParent(parent: ProtocolParentNode): void {
     if (!this.nodes.has(parent)) throw new TargetError("Parent is outside the active document")
+  }
+
+  private cloneDocumentNode(
+    source: ProtocolNode,
+    parent: ProtocolParentNode,
+    options: DocumentTreeCloneOptions,
+  ): ProtocolNode | undefined {
+    if (
+      options.omitTemporaryElements &&
+      isElement(source) &&
+      attributeValue(source, "data-turbo-temporary") !== undefined
+    ) {
+      return undefined
+    }
+    if (source.kind === "text") {
+      return {
+        cdata: source.cdata,
+        key: source.key,
+        kind: "text",
+        parent,
+        value: source.value,
+        ...(source.location ? { location: { ...source.location } } : {}),
+      }
+    }
+    if (source.kind === "comment") {
+      return {
+        key: source.key,
+        kind: "comment",
+        parent,
+        value: source.value,
+        ...(source.location ? { location: { ...source.location } } : {}),
+      }
+    }
+    if (source.kind === "document") {
+      throw new TargetError("A document cannot be nested inside another document")
+    }
+
+    const clone: ProtocolElement = {
+      attributes: source.attributes.map((attribute) => ({ ...attribute })),
+      children: [],
+      key: source.key,
+      kind: source.kind,
+      localName: source.localName,
+      namespaceUri: source.namespaceUri,
+      parent,
+      prefix: source.prefix,
+      tagName: source.tagName,
+      ...(source.location ? { location: { ...source.location } } : {}),
+    }
+    clone.children = source.children.flatMap((child) => {
+      const childClone = this.cloneDocumentNode(child, clone, options)
+      return childClone ? [childClone] : []
+    })
+    return clone
   }
 
   private cloneNode(source: ProtocolNode, parent: ProtocolParentNode): ProtocolNode {
