@@ -83,10 +83,11 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
   validateTag(config.tag)
   if (
     config.formContainer !== undefined &&
+    config.formContainer !== "datalist" &&
     config.formContainer !== "fieldset" &&
     config.formContainer !== "legend"
   ) {
-    throw new RegistryError("Component form container must be fieldset or legend", {
+    throw new RegistryError("Component form container must be datalist, fieldset, or legend", {
       target: config.tag,
     })
   }

@@ -108,7 +108,7 @@ export interface ActiveFormRetryOptions {
 
 export type FormMode = "off" | "on" | "optin"
 
-export type FormContainerRole = "fieldset" | "legend"
+export type FormContainerRole = "datalist" | "fieldset" | "legend"
 
 export interface FormControlSemantics {
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
@@ -792,7 +792,12 @@ export class FormControlRegistry {
 
     const append = (record: FormControlRecord) => {
       const descriptor = record.descriptor
-      if (this.recordDisabled(record) || descriptor.name === undefined || descriptor.name === "") {
+      if (
+        this.recordDisabled(record) ||
+        (record !== submitter && this.barredByDatalist(record.node)) ||
+        descriptor.name === undefined ||
+        descriptor.name === ""
+      ) {
         return
       }
       switch (descriptor.kind) {
@@ -1011,10 +1016,20 @@ export class FormControlRegistry {
     return record.descriptor.disabled === true || this.disabledByFieldset(record.node)
   }
 
+  private barredByDatalist(node: ProtocolElement): boolean {
+    if (!this.formSemantics) return false
+    let parent = node.parent
+    while (parent && parent.kind !== "document") {
+      if (isElement(parent) && this.formContainerRole(parent) === "datalist") return true
+      parent = parent.parent
+    }
+    return false
+  }
+
   private formContainerRole(element: ProtocolElement): FormContainerRole | undefined {
     const role = this.formSemantics?.formContainerRole(element)
-    if (role !== undefined && role !== "fieldset" && role !== "legend") {
-      throw new PropsError("Form container role must be fieldset or legend", {
+    if (role !== undefined && role !== "datalist" && role !== "fieldset" && role !== "legend") {
+      throw new PropsError("Form container role must be datalist, fieldset, or legend", {
         target: element.key,
       })
     }

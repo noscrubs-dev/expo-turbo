@@ -182,6 +182,15 @@ describe("typed component registry", () => {
       schema: z.object({}),
       tag: "DemoFieldset",
     })
+    const datalist = defineComponent({
+      aliases: ["LegacyDatalist"],
+      attributes: {},
+      children: "nodes",
+      component: () => null,
+      formContainer: "datalist",
+      schema: z.object({}),
+      tag: "DemoDatalist",
+    })
     const legend = defineComponent({
       attributes: {},
       children: "nodes",
@@ -192,14 +201,16 @@ describe("typed component registry", () => {
     })
     const registry = createRegistry(
       defineComponentModule({
-        components: [owner, fieldset, legend],
+        components: [owner, datalist, fieldset, legend],
         name: "forms",
         version: "0.1.0",
       }),
     )
 
     expect(owner.formOwner).toBe(true)
+    expect(datalist.formContainer).toBe("datalist")
     expect(fieldset.formContainer).toBe("fieldset")
+    expect(registry.formContainerRole(element("<LegacyDatalist />"))).toBe("datalist")
     expect(registry.formContainerRole(element("<LegacyFieldset />"))).toBe("fieldset")
     expect(registry.formContainerRole(element("<DemoLegend />"))).toBe("legend")
     expect(registry.formContainerRole(element("<DemoForm />"))).toBeUndefined()
@@ -209,6 +220,9 @@ describe("typed component registry", () => {
       formOwner: true,
       tag: "DemoForm",
     })
+    expect(
+      registry.capabilities.components.find((component) => component.tag === "DemoDatalist"),
+    ).toMatchObject({ formContainer: "datalist", tag: "DemoDatalist" })
     expect(
       registry.capabilities.components.find((component) => component.tag === "DemoFieldset"),
     ).toMatchObject({ formContainer: "fieldset", tag: "DemoFieldset" })
@@ -236,7 +250,7 @@ describe("typed component registry", () => {
         schema: z.object({}),
         tag: "InvalidFormContainer",
       }),
-    ).toThrow(/fieldset or legend/)
+    ).toThrow(/datalist, fieldset, or legend/)
 
     const duplicate = defineComponentModule({
       components: [card],
