@@ -1,3 +1,4 @@
+import type { VisitAction } from "../adapters"
 import { StateError } from "./errors"
 import type { FormRequestPlan } from "./form-request"
 import type { ExactFormSubmissionActivity } from "./form-submission-activity"
@@ -25,6 +26,7 @@ export interface FormSubmissionProposalIdentity {
   readonly submissionActivity: ExactFormSubmissionActivity
   readonly submitter?: ProtocolElement
   readonly treeGeneration: number
+  readonly visitAction?: VisitAction
 }
 
 const admittedProposals = new WeakMap<object, FormSubmissionProposalIdentity>()

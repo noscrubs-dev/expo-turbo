@@ -4,9 +4,23 @@ import {
   destinationRequestOwnership,
   type FrameRequestCheckpoint,
 } from "./destination-request-ownership"
-import { beginDocumentNavigation } from "./document-navigation-epoch"
+import type {
+  DocumentHistory,
+  DocumentHistoryEntry,
+  DocumentHistoryProposal,
+} from "./document-history"
+import {
+  beginDocumentNavigation,
+  currentDocumentNavigationEpoch,
+} from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { ExpoTurboError, type ExpoTurboErrorCode, RequestError, StateError } from "./errors"
+import {
+  ExpoTurboError,
+  type ExpoTurboErrorCode,
+  RequestError,
+  StateError,
+  TargetError,
+} from "./errors"
 import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
 import type {
   FormRequestExecutionReport,
@@ -34,7 +48,7 @@ import {
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
-import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
+import { resolveProtocolUrl, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import type { DocumentSession } from "./session"
 import {
   dispatchGuardedTurboStreamElements,
@@ -62,6 +76,13 @@ interface FormSubmissionResponseMetadata extends FormSubmissionRequestMetadata {
 
 type DocumentSubmissionDestination = Extract<FormSubmissionDestination, { kind: "document" }>
 type FrameSubmissionDestination = Extract<FormSubmissionDestination, { kind: "frame" }>
+
+interface DocumentFormHistoryPlan {
+  readonly action?: "advance" | "replace"
+  readonly base: DocumentHistoryEntry
+  readonly history: DocumentHistory
+  readonly navigationEpoch: number
+}
 
 export type FormSubmissionReport =
   | Readonly<
@@ -139,6 +160,7 @@ export class FormSubmissionCommitError extends RequestError {
 
 export interface FormSubmissionControllerOptions extends StreamActionDispatchOptions {
   readonly confirmation?: FormConfirmationAdapter
+  readonly history?: DocumentHistory
   readonly limits?: Partial<ParseLimits>
   readonly snapshotCache?: DocumentSnapshotCache
 }
@@ -258,6 +280,7 @@ export class FormSubmissionController {
     this.options = Object.freeze({
       ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
+      ...(options.history ? { history: options.history } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
@@ -288,6 +311,22 @@ export class FormSubmissionController {
       controller.abort()
       if (error instanceof ExpoTurboError) throw error
       throw new RequestError("Form submission planning failed")
+    }
+
+    let historyPlan: DocumentFormHistoryPlan | undefined
+    try {
+      if (proposal.destination.kind === "document") {
+        historyPlan = this.prepareDocumentHistory(identity)
+      } else if (identity.visitAction) {
+        throw new TargetError("Frame form actions require mounted Frame history coordination", {
+          frameId: proposal.destination.frameId,
+          target: identity.form.key,
+        })
+      }
+    } catch (error) {
+      controller.abort()
+      if (error instanceof ExpoTurboError) throw error
+      throw new RequestError("Form submission history admission failed")
     }
 
     const confirmationMessage = identity.confirmationMessage
@@ -367,12 +406,14 @@ export class FormSubmissionController {
           }
           lease = this.ownership.claimFrame(identity.destinationFrame, controller, identity.form)
         } else {
+          if (historyPlan) this.assertDocumentHistory(historyPlan)
           lease = this.ownership.claimDocument(controller, identity.treeGeneration, identity.form)
         }
         // A displaced request's abort listener may synchronously mutate the tree
         // or submit newer work. Re-admit the exact proposal before any fetch.
         if (this.ownership.owns(lease)) {
           assertActiveFormSubmissionProposal(this.session, proposal)
+          if (historyPlan) this.assertDocumentHistory(historyPlan)
         }
       } catch (error) {
         if (lease) this.ownership.cancel(lease)
@@ -389,7 +430,17 @@ export class FormSubmissionController {
         identity.submissionActivity.finish(activityLease)
         return settle(this.canceledPlan(plan, proposal.destination))
       }
-      if (proposal.destination.kind === "document") beginDocumentNavigation(this.session)
+      try {
+        if (historyPlan) this.assertDocumentHistory(historyPlan)
+      } catch (error) {
+        this.ownership.cancel(activeLease)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Form submission history changed before transport")
+      }
+      if (proposal.destination.kind === "document") {
+        const navigationEpoch = beginDocumentNavigation(this.session)
+        if (historyPlan) historyPlan = Object.freeze({ ...historyPlan, navigationEpoch })
+      }
 
       let response: FormRequestExecutionReport
       try {
@@ -457,7 +508,9 @@ export class FormSubmissionController {
             return settle(this.canceled(response, proposal.destination))
           }
         }
-        return settle(this.apply(response, proposal, identity, activeLease, preparedFrame))
+        return settle(
+          this.apply(response, proposal, identity, activeLease, preparedFrame, historyPlan),
+        )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
         this.ownership.release(activeLease)
@@ -554,6 +607,7 @@ export class FormSubmissionController {
     identity: FormSubmissionProposalIdentity,
     lease: DestinationRequestLease,
     preparedFrame?: PreparedFrameResponse,
+    historyPlan?: DocumentFormHistoryPlan,
   ): FormSubmissionReport {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
@@ -705,8 +759,33 @@ export class FormSubmissionController {
     for (const stream of streams) tree.removeNode(stream)
     if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
 
+    const snapshotCache =
+      candidate.classification === "success" && candidate.effectiveMethod === "GET"
+        ? this.options.snapshotCache
+        : undefined
+    const historyProposal =
+      candidate.classification === "success" && historyPlan
+        ? this.proposeDocumentHistory(historyPlan, candidate.url)
+        : undefined
+    if (historyProposal && !this.isCurrent(lease, proposal)) {
+      return this.canceled(candidate, destination)
+    }
     const revision = this.session.revision
+    let historyCommitted = false
     try {
+      if (snapshotCache || historyProposal) {
+        const acquired = this.ownership.commitDocument(lease, () => {
+          if (historyPlan) this.assertDocumentHistory(historyPlan)
+          if (snapshotCache) this.session.captureSnapshot(snapshotCache)
+          if (historyPlan) this.assertDocumentHistory(historyPlan)
+          if (historyProposal && historyPlan) {
+            historyPlan.history.commitProposal(historyProposal)
+            historyCommitted = true
+          }
+        })
+        if (!acquired) return this.canceled(candidate, destination)
+        if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+      }
       try {
         this.session.replaceTree(tree)
       } finally {
@@ -731,6 +810,7 @@ export class FormSubmissionController {
         { application: "document", applicationDestination: destination, destination },
         revision,
         error,
+        historyCommitted,
       )
     }
   }
@@ -740,8 +820,9 @@ export class FormSubmissionController {
     context: FormSubmissionCommitContext,
     revision: number,
     error: unknown,
+    committed = false,
   ): ExpoTurboError {
-    if (this.session.revision !== revision) {
+    if (committed || this.session.revision !== revision) {
       return new FormSubmissionCommitError(candidate, context)
     }
     if (error instanceof ExpoTurboError) return error
@@ -749,6 +830,69 @@ export class FormSubmissionController {
       method: candidate.effectiveMethod,
       responseStatus: candidate.responseStatus,
     })
+  }
+
+  private prepareDocumentHistory(
+    identity: FormSubmissionProposalIdentity,
+  ): DocumentFormHistoryPlan | undefined {
+    const action = identity.visitAction
+    if (action === "restore") {
+      throw new TargetError("Document form restore actions require restoration support", {
+        target: identity.form.key,
+      })
+    }
+    const history = this.options.history
+    if (!history) {
+      if (action === "replace") {
+        throw new TargetError("Document form replace actions require configured history", {
+          target: identity.form.key,
+        })
+      }
+      return undefined
+    }
+    const base = history.current
+    if (!base || this.canonicalDocumentUrl() !== base.url) {
+      throw new StateError("Document history must match the active document before form submission")
+    }
+    return Object.freeze({
+      ...(action ? { action } : {}),
+      base,
+      history,
+      navigationEpoch: currentDocumentNavigationEpoch(this.session),
+    })
+  }
+
+  private assertDocumentHistory(plan: DocumentFormHistoryPlan): void {
+    if (
+      currentDocumentNavigationEpoch(this.session) !== plan.navigationEpoch ||
+      plan.history.current !== plan.base ||
+      this.canonicalDocumentUrl() !== plan.base.url
+    ) {
+      throw new StateError("Document history or the active document changed during form submission")
+    }
+  }
+
+  private proposeDocumentHistory(
+    plan: DocumentFormHistoryPlan,
+    finalUrl: string,
+  ): DocumentHistoryProposal {
+    this.assertDocumentHistory(plan)
+    const proposal =
+      plan.action === "replace"
+        ? plan.history.proposeReplace(finalUrl)
+        : plan.history.proposeAdvance(finalUrl)
+    this.assertDocumentHistory(plan)
+    return proposal
+  }
+
+  private canonicalDocumentUrl(): string {
+    const url = this.session.tree.document.url
+    if (!url) throw new StateError("Document form history requires an active document URL")
+    try {
+      return resolveProtocolUrl(url, url).url
+    } catch {
+      throw new StateError("Document form history requires a valid credential-free HTTP(S) URL")
+    }
   }
 
   private canceled(

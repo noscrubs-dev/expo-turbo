@@ -3,7 +3,13 @@ import { z } from "zod"
 
 import type { FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
+import {
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryWriteMethod,
+} from "./document-history"
 import { DocumentRequestLoader } from "./document-loader"
+import { beginDocumentNavigation } from "./document-navigation-epoch"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { FrameMissingError, ParseError, RequestError, StateError } from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
@@ -104,6 +110,38 @@ function populatedSnapshotCache(session: DocumentSession): DocumentSnapshotCache
   const otherUrl = "https://example.test/other"
   cache.put(otherUrl, parseExpoTurboDocument("<Other />", { url: otherUrl }))
   return cache
+}
+
+function historyFixture(
+  session: DocumentSession,
+  write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
+    undefined,
+  restorationIndex = 4,
+) {
+  const writes: Array<
+    Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
+  > = []
+  let identifier = 0
+  const history = new DocumentHistory(
+    { next: () => `history-${++identifier}` },
+    {
+      write(method, entry) {
+        writes.push(Object.freeze({ entry, method }))
+        return write(method, entry)
+      },
+    },
+  )
+  const url = session.tree.document.url
+  if (!url) throw new Error("history fixture requires a document URL")
+  history.initialize({
+    entry: {
+      restorationIdentifier: "history-current",
+      restorationIndex,
+      url,
+    },
+    kind: "managed",
+  })
+  return { history, writes }
 }
 
 describe("FormSubmissionController", () => {
@@ -1713,11 +1751,495 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("coordinates successful document form history from the final response URL", async () => {
+    for (const fixtureCase of [
+      {
+        expectedMethod: "push",
+        finalUrl: "https://example.test/elsewhere",
+        name: "default-advance",
+        redirected: true,
+      },
+      {
+        expectedMethod: "replace",
+        finalUrl: "https://example.test/current",
+        name: "default-current-redirect",
+        redirected: true,
+      },
+      {
+        expectedMethod: "replace",
+        finalUrl: "https://example.test/replaced",
+        formAction: "replace",
+        name: "explicit-replace",
+        redirected: true,
+      },
+      {
+        expectedMethod: "push",
+        finalUrl: "https://example.test/masked",
+        formAction: "replace",
+        name: "invalid-submitter-masks-form",
+        redirected: true,
+        submitterAction: " Advance ",
+      },
+      {
+        expectedMethod: "push",
+        finalUrl: "https://example.test/submitter",
+        formAction: "replace",
+        name: "submitter-advance",
+        redirected: true,
+        submitterAction: "advance",
+      },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.formAction) {
+        session.setAttribute("id:document-form", "data-turbo-action", fixtureCase.formAction)
+      }
+      if (fixtureCase.submitterAction) {
+        session.setAttribute(
+          "id:document-submitter",
+          "data-turbo-action",
+          fixtureCase.submitterAction,
+        )
+      }
+      const currentUrl = session.tree.document.url as string
+      const cache = new DocumentSnapshotCache()
+      const history = historyFixture(session)
+      const controls = registry(session, "document-form")
+      const submitter = fixtureCase.submitterAction
+        ? controls.register("id:document-submitter", {
+            kind: "submitter",
+            name: "commit",
+            value: fixtureCase.name,
+          }).selection
+        : undefined
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, `<Gallery><Result id="${fixtureCase.name}" /></Gallery>`, {
+              redirected: fixtureCase.redirected,
+              url: fixtureCase.finalUrl,
+            }),
+        },
+        { history: history.history, snapshotCache: cache },
+      )
+
+      const result = await controller.submit((signal) =>
+        controls.submissionProposal({
+          protocol: { requestId: fixtureCase.name },
+          signal,
+          ...(submitter ? { submitter } : {}),
+        }),
+      )
+
+      expect(result).toMatchObject({
+        application: "document",
+        responseUrl: fixtureCase.finalUrl,
+        status: "applied",
+      })
+      expect(history.writes).toEqual([
+        {
+          entry: {
+            restorationIdentifier: "history-1",
+            restorationIndex: fixtureCase.expectedMethod === "push" ? 5 : 4,
+            url: fixtureCase.finalUrl,
+          },
+          method: fixtureCase.expectedMethod,
+        },
+      ])
+      expect(history.history.current).toBe(history.writes[0]?.entry)
+      expect(cache.get(currentUrl)?.getElementById("document-form")).toBeDefined()
+      expect(session.tree.document.url).toBe(fixtureCase.finalUrl)
+      expect(session.tree.getElementById(fixtureCase.name)).toBeDefined()
+    }
+  })
+
+  test("captures a safe snapshot before history and publishes the response tree afterward", async () => {
+    const session = fixture()
+    const currentUrl = session.tree.document.url as string
+    const finalUrl = "https://example.test/ordered"
+    const cache = new DocumentSnapshotCache()
+    const order: string[] = []
+    const history = historyFixture(session, () => {
+      expect(cache.get(currentUrl)?.getElementById("document-form")).toBeDefined()
+      expect(session.tree.getElementById("ordered")).toBeUndefined()
+      order.push("history")
+    })
+    session.subscribe("id:document-form", () => {
+      expect(history.history.current?.url).toBe(finalUrl)
+      order.push("tree")
+    })
+
+    expect(
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Ordered id="ordered" /></Gallery>', {
+              redirected: true,
+              url: finalUrl,
+            }),
+        },
+        { history: history.history, snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "ordered-history")),
+    ).toMatchObject({ application: "document", status: "applied" })
+
+    expect(order).toEqual(["history", "tree"])
+    expect(session.tree.getElementById("ordered")).toBeDefined()
+  })
+
+  test("cancels when restoration-ID generation invalidates the exact form proposal", async () => {
+    const session = fixture()
+    const writes: DocumentHistoryEntry[] = []
+    const history = new DocumentHistory(
+      {
+        next() {
+          session.mutate((tree) => {
+            const form = tree.getElementById("document-form")
+            if (!form) throw new Error("document form is missing")
+            tree.removeNode(form)
+            return [form.key]
+          })
+          return "reentrant-history"
+        },
+      },
+      {
+        write(_method, entry) {
+          writes.push(entry)
+        },
+      },
+    )
+    history.initialize({
+      entry: {
+        restorationIdentifier: "history-current",
+        restorationIndex: 1,
+        url: session.tree.document.url as string,
+      },
+      kind: "managed",
+    })
+
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Stale id="stale" /></Gallery>', {
+            redirected: true,
+            url: "https://example.test/stale",
+          }),
+      },
+      { history },
+    ).submit(proposal(registry(session, "document-form"), "reentrant-identifier"))
+
+    expect(result).toMatchObject({ status: "canceled" })
+    expect(writes).toEqual([])
+    expect(history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.getElementById("document-form")).toBeUndefined()
+    expect(session.tree.getElementById("stale")).toBeUndefined()
+  })
+
+  test("keeps non-document-success form outcomes out of history", async () => {
+    {
+      const session = fixture()
+      const history = historyFixture(session)
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Invalid id="invalid" /></Gallery>', { status: 422 }),
+        },
+        { history: history.history, snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "history-error"))
+
+      expect(result).toMatchObject({ classification: "client-error", status: "applied" })
+      expect(history.writes).toEqual([])
+      expect(history.history.current?.url).toBe("https://example.test/current")
+      expect(cache.size).toBe(0)
+      expect(session.tree.document.url).toBe("https://example.test/current")
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const history = historyFixture(session)
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<turbo-stream action="remove" target="status"></turbo-stream>', {
+              headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+            }),
+        },
+        { history: history.history, snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "history-stream"))
+
+      expect(result).toMatchObject({ application: "stream", status: "applied" })
+      expect(history.writes).toEqual([])
+      expect(cache.size).toBe(2)
+      expect(session.tree.getElementById("status")).toBeUndefined()
+    }
+
+    {
+      const session = fixture()
+      const history = historyFixture(session)
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        { fetch: async (request) => response(request, "", { status: 204 }) },
+        { history: history.history, snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "history-empty"))
+
+      expect(result).toMatchObject({ status: "empty" })
+      expect(history.writes).toEqual([])
+      expect(cache.size).toBe(2)
+      expect(session.tree.getElementById("document-form")).toBeDefined()
+    }
+  })
+
+  test("fails form history admission and commitment without publishing a replacement tree", async () => {
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-action", "replace")
+      let fetches = 0
+      const controls = registry(session, "document-form")
+      const controller = new FormSubmissionController(session, {
+        fetch: async (request) => {
+          fetches += 1
+          return response(request, "<Unexpected />")
+        },
+      })
+
+      await expect(controller.submit(proposal(controls, "historyless-replace"))).rejects.toThrow(
+        /configured history/,
+      )
+      expect(fetches).toBe(0)
+      expect(controls.submissionState.busy).toBe(false)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-action", "restore")
+      const history = historyFixture(session)
+      let fetches = 0
+      const controls = registry(session, "document-form")
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) => {
+            fetches += 1
+            return response(request, "<Unexpected />")
+          },
+        },
+        { history: history.history },
+      )
+
+      await expect(controller.submit(proposal(controls, "restore"))).rejects.toThrow(
+        /restoration support/,
+      )
+      expect(fetches).toBe(0)
+      expect(history.writes).toEqual([])
+      expect(controls.submissionState.busy).toBe(false)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:form-a", "data-turbo-action", "advance")
+      let fetches = 0
+      const controls = registry(session, "form-a")
+      const controller = new FormSubmissionController(session, {
+        fetch: async (request) => {
+          fetches += 1
+          return response(request, "", { status: 204 })
+        },
+      })
+
+      await expect(controller.submit(proposal(controls, "frame-action"))).rejects.toThrow(
+        /mounted Frame history coordination/,
+      )
+      expect(fetches).toBe(0)
+      expect(controls.submissionState.busy).toBe(false)
+
+      session.removeAttribute("id:form-a", "data-turbo-action")
+      session.setAttribute("id:frame-a", "data-turbo-action", "replace")
+      await expect(controller.submit(proposal(controls, "inherited-frame-action"))).rejects.toThrow(
+        /mounted Frame history coordination/,
+      )
+      expect(fetches).toBe(0)
+
+      session.setAttribute("id:form-a", "data-turbo-action", "Advance")
+      expect(
+        await controller.submit(proposal(controls, "masked-inherited-frame-action")),
+      ).toMatchObject({ status: "empty" })
+      expect(fetches).toBe(1)
+    }
+
+    {
+      const session = fixture()
+      const history = historyFixture(session)
+      const controls = registry(session, "document-form")
+      let drifted = false
+      let fetches = 0
+      const adapter = {
+        fetch: async (request: TurboRequest) => {
+          fetches += 1
+          return response(request, '<Gallery><Recovered id="recovered" /></Gallery>')
+        },
+      }
+      controls.subscribeSubmission(() => {
+        if (!controls.submissionState.busy || drifted) return
+        drifted = true
+        history.history.commitProposal(
+          history.history.proposeAdvance("https://example.test/activity-drift"),
+        )
+      })
+
+      await expect(
+        new FormSubmissionController(session, adapter, { history: history.history }).submit(
+          proposal(controls, "activity-history-drift"),
+        ),
+      ).rejects.toThrow(/history or the active document changed/)
+      expect(fetches).toBe(0)
+      expect(controls.submissionState.busy).toBe(false)
+
+      const loader = new DocumentRequestLoader(session, adapter, requestIds("history-reuse"))
+      expect(await loader.load("/recovered")).toMatchObject({ status: "committed" })
+      expect(fetches).toBe(1)
+      expect(session.tree.getElementById("recovered")).toBeDefined()
+    }
+
+    {
+      const session = fixture()
+      const transport = pendingFetch()
+      const history = historyFixture(session)
+      const cache = new DocumentSnapshotCache()
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        history: history.history,
+        snapshotCache: cache,
+      })
+      const submitting = controller.submit(
+        proposal(registry(session, "document-form"), "history-drift"),
+      )
+      const request = transport.pending[0]
+      if (!request) throw new Error("form history drift request was not captured")
+      history.history.commitProposal(history.history.proposeAdvance("https://example.test/manual"))
+      request.response.resolve(
+        response(request.request, '<Gallery><Stale id="stale" /></Gallery>', {
+          redirected: true,
+          url: "https://example.test/stale",
+        }),
+      )
+
+      await expect(submitting).rejects.toThrow(/history or the active document changed/)
+      expect(history.writes).toHaveLength(1)
+      expect(history.history.current?.url).toBe("https://example.test/manual")
+      expect(cache.size).toBe(0)
+      expect(session.tree.getElementById("stale")).toBeUndefined()
+      expect(session.tree.getElementById("document-form")).toBeDefined()
+    }
+
+    {
+      const session = fixture()
+      const cache = new DocumentSnapshotCache()
+      const history = historyFixture(session, () => {
+        throw new Error("history host rejected secret-token")
+      })
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Rejected id="rejected" /></Gallery>', {
+              redirected: true,
+              url: "https://example.test/rejected",
+            }),
+        },
+        { history: history.history, snapshotCache: cache },
+      )
+
+      await expect(
+        controller.submit(proposal(registry(session, "document-form"), "history-host-failure")),
+      ).rejects.toMatchObject({ code: "state", message: "Document history host write failed" })
+      expect(history.writes).toHaveLength(1)
+      expect(history.history.current?.url).toBe("https://example.test/current")
+      expect(
+        cache.get("https://example.test/current")?.getElementById("document-form"),
+      ).toBeDefined()
+      expect(session.tree.getElementById("rejected")).toBeUndefined()
+      expect(session.tree.getElementById("document-form")).toBeDefined()
+    }
+  })
+
+  test("freezes form action across confirmation and rejects navigation-epoch drift", async () => {
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-action", "replace")
+      session.setAttribute("id:document-form", "data-turbo-confirm", "Replace?")
+      const answer = deferred<boolean>()
+      const transport = pendingFetch()
+      const history = historyFixture(session)
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        confirmation: { confirm: () => answer.promise },
+        history: history.history,
+      })
+      const submitting = controller.submit(
+        proposal(registry(session, "document-form"), "frozen-form-action"),
+      )
+
+      session.setAttribute("id:document-form", "data-turbo-action", "advance")
+      answer.resolve(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const request = transport.pending[0]
+      if (!request) throw new Error("confirmed form history request was not captured")
+      request.response.resolve(
+        response(request.request, '<Gallery><Confirmed id="confirmed" /></Gallery>', {
+          redirected: true,
+          url: "https://example.test/confirmed",
+        }),
+      )
+
+      expect(await submitting).toMatchObject({ application: "document", status: "applied" })
+      expect(history.writes[0]).toMatchObject({
+        entry: { restorationIndex: 4, url: "https://example.test/confirmed" },
+        method: "replace",
+      })
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "data-turbo-confirm", "Continue?")
+      const answer = deferred<boolean>()
+      const history = historyFixture(session)
+      let fetches = 0
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) => {
+            fetches += 1
+            return response(request, "<Unexpected />")
+          },
+        },
+        {
+          confirmation: { confirm: () => answer.promise },
+          history: history.history,
+        },
+      )
+      const controls = registry(session, "document-form")
+      const submitting = controller.submit(proposal(controls, "history-epoch-drift"))
+
+      beginDocumentNavigation(session)
+      answer.resolve(true)
+      await expect(submitting).rejects.toThrow(/history or the active document changed/)
+      expect(fetches).toBe(0)
+      expect(history.writes).toEqual([])
+      expect(controls.submissionState.busy).toBe(false)
+    }
+  })
+
   test("invalidates document snapshots only for applied unsafe success and authoritative errors", async () => {
     {
       const session = fixture()
       session.setAttribute("id:document-form", "method", "post")
       const cache = populatedSnapshotCache(session)
+      const history = historyFixture(session)
       const result = await new FormSubmissionController(
         session,
         {
@@ -1727,11 +2249,21 @@ describe("FormSubmissionController", () => {
               url: "https://example.test/unsafe-success",
             }),
         },
-        { snapshotCache: cache },
+        { history: history.history, snapshotCache: cache },
       ).submit(proposal(registry(session, "document-form"), "unsafe-success"))
 
       expect(result).toMatchObject({ application: "document", status: "applied" })
       expect(cache.size).toBe(0)
+      expect(history.writes).toEqual([
+        {
+          entry: {
+            restorationIdentifier: "history-1",
+            restorationIndex: 5,
+            url: "https://example.test/unsafe-success",
+          },
+          method: "push",
+        },
+      ])
       expect(session.tree.getElementById("unsafe-success")).toBeDefined()
     }
 
@@ -2565,16 +3097,22 @@ describe("FormSubmissionController", () => {
 
   test("reports committed finalization failures without downgrading them to cancellation", async () => {
     const session = fixture()
+    const history = historyFixture(session)
     session.subscribe("id:document-form", () => {
       throw new Error("observer details with secret-token")
     })
-    const controller = new FormSubmissionController(session, {
-      fetch: async (request) =>
-        response(request, '<Gallery><Committed id="committed-with-error" /></Gallery>'),
-    })
+    const controls = registry(session, "document-form")
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Committed id="committed-with-error" /></Gallery>'),
+      },
+      { history: history.history },
+    )
 
     try {
-      await controller.submit(proposal(registry(session, "document-form"), "commit-error"))
+      await controller.submit(proposal(controls, "commit-error"))
       throw new Error("expected finalization failure")
     } catch (error) {
       expect(error).toBeInstanceOf(FormSubmissionCommitError)
@@ -2587,6 +3125,9 @@ describe("FormSubmissionController", () => {
       expect(error.cause).toBeUndefined()
       expect(String(error)).not.toContain("secret-token")
     }
+    expect(history.writes).toHaveLength(1)
+    expect(history.history.current?.url).toBe("https://example.test/submit-document")
+    expect(controls.submissionTerminalState.status).toBe("none")
     expect(session.tree.getElementById("committed-with-error")).toBeDefined()
 
     const streamSession = fixture()
