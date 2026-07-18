@@ -113,6 +113,25 @@ describe("Frame controller registry visits", () => {
     )
   })
 
+  test("rejects Frame-local visit actions before request ownership", async () => {
+    const { registry, requests } = harness()
+
+    await expect(
+      registry.visit("/self", {
+        action: "advance",
+        frame: "current",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+    await expect(
+      registry.visit("/named", {
+        action: "replace",
+        frame: "current",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+
+    expect(requests).toHaveLength(0)
+  })
+
   test("delegates top-level and external visits through the navigation adapter", async () => {
     const { external, navigation, registry, requests } = harness()
 

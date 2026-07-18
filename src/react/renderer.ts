@@ -203,7 +203,6 @@ const announcedFormTerminalRevisions = new WeakMap<
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
   "confirm",
-  "data-turbo-action",
   "data-turbo-method",
   "data-turbo-stream",
   "download",
@@ -806,6 +805,11 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         throw new TargetError("Document link metadata requires unsupported navigation behavior")
       }
     }
+    const actionValue = attributeValue(node, "data-turbo-action")
+    const action =
+      actionValue === "advance" || actionValue === "replace" || actionValue === "restore"
+        ? actionValue
+        : undefined
     const documentUrl = session.tree.document.url
     if (!documentUrl) throw new TargetError("Document links require an active document URL")
     const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
@@ -853,6 +857,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         })
       }
       return frames.visit(href, {
+        ...(action !== undefined ? { action } : {}),
         ...(elementTarget !== undefined ? { elementTarget } : {}),
         frame: nearestFrameId,
       })
@@ -866,6 +871,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           })
         }
         return frames.visit(href, {
+          ...(action !== undefined ? { action } : {}),
           elementTarget,
           frame: elementTarget,
         })
@@ -891,7 +897,10 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         url: resolved.url,
       })
     }
-    return documentController.visit(href, documentVisitOptions)
+    return documentController.visit(href, {
+      ...(action !== undefined ? { action } : {}),
+      ...documentVisitOptions,
+    })
   }, [documentController, frames, href, navigation, node, nodeKey, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
