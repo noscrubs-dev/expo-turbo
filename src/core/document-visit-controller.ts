@@ -160,17 +160,17 @@ export class DocumentVisitController {
       return Promise.resolve(undefined)
     }
     let currentUrl: string | undefined
-    let historyGuard: DocumentVisitHistoryGuard | undefined
+    let historyPlan: DocumentVisitHistoryPlan | undefined
     try {
       currentUrl = this.canonicalDocumentUrl(this.loader.currentUrl)
       if (!currentUrl || this.canonicalDocumentUrl(baseUrl) !== currentUrl) {
         return Promise.resolve(undefined)
       }
-      historyGuard = this.captureHistoryGuard(currentUrl, "refresh")
+      historyPlan = this.history ? this.proposeHistory("replace", currentUrl) : undefined
     } catch (error) {
       return Promise.reject(error)
     }
-    return this.startVisit(currentUrl, undefined, undefined, undefined, historyGuard)
+    return this.startVisit(currentUrl, undefined, undefined, historyPlan)
   }
 
   /**
