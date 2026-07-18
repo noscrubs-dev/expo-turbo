@@ -80,15 +80,15 @@ function ActiveDemoRouterRouteOwner({
         detach = runtime.navigation.attach(navigation, routeKey);
         let documentUrl = runtime.session.tree.document.url;
         if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
-        const managedEntry = runtime.navigation.readManagedEntry();
+        const routeState = runtime.navigation.readRouteState();
+        const routeUrl = routeState.kind === "managed" ? routeState.entry.url : routeState.url;
         if (
           !runtime.documentRuntime.history.current &&
-          managedEntry &&
-          managedEntry.url !== documentUrl
+          routeUrl !== documentUrl
         ) {
-          bootstrap = runtime.documentRuntime.bootstrapManagedEntry(
-            managedEntry,
-            () => runtime.navigation.readManagedEntry(),
+          bootstrap = runtime.documentRuntime.bootstrapInitialState(
+            routeState,
+            () => runtime.navigation.readRouteState(),
           );
           const report = await bootstrap.result;
           if (!active) return;

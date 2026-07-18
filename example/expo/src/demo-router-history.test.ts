@@ -7,6 +7,7 @@ import {
 
 import {
   DEMO_ROUTER_HISTORY_PARAMS,
+  DEMO_ROUTER_ROUTE_NAME,
   DemoRouterHistoryBridge,
   type DemoRouterNavigation,
   type DemoRouterRoute,
@@ -14,6 +15,11 @@ import {
   decodeDemoRouterHistoryEntry,
   encodeDemoRouterHistoryEntry,
 } from "./demo-router-history";
+import { DEMO_ROUTER_PATH_PARAM } from "./demo-router-path";
+
+const INITIAL_ROUTE_KEY = "demo-route-1";
+const GALLERY_URL = "https://example.test/demo";
+const LINKED_URL = "https://example.test/demo/linked";
 
 type WriteBehavior =
   | "collateral"
@@ -39,16 +45,19 @@ class FakeNavigation implements DemoRouterNavigation {
       type: "stack",
       key: "stack-1",
       index: 0,
-      history: Object.freeze([Object.freeze({ key: "index-1", type: "route" })]),
-      routeNames: Object.freeze(["index"]),
+      history: Object.freeze([Object.freeze({ key: INITIAL_ROUTE_KEY, type: "route" })]),
+      routeNames: Object.freeze([DEMO_ROUTER_ROUTE_NAME]),
       preloadedRoutes: Object.freeze([]),
       routes: Object.freeze([
         Object.freeze({
-          key: "index-1",
-          name: "index",
-          path: "/",
+          key: INITIAL_ROUTE_KEY,
+          name: DEMO_ROUTER_ROUTE_NAME,
+          path: "/demo",
           state: Object.freeze({ index: 0, routes: Object.freeze([]) }),
-          ...(params ? { params } : {}),
+          params: Object.freeze({
+            [DEMO_ROUTER_PATH_PARAM]: Object.freeze(["demo"]),
+            ...(params ?? {}),
+          }),
         }),
       ]),
     });
@@ -144,7 +153,7 @@ class FakeNavigation implements DemoRouterNavigation {
     this.state = Object.freeze({
       ...this.state,
       ...(this.setParamsBehavior === "collateral"
-        ? { routeNames: Object.freeze(["index", "corrupt"]) }
+        ? { routeNames: Object.freeze([DEMO_ROUTER_ROUTE_NAME, "corrupt"]) }
         : {}),
       routes: Object.freeze(routes),
     });
@@ -227,11 +236,11 @@ function harness(params?: Readonly<Record<string, unknown>>) {
     { next: () => `history-${++identifier}` },
     bridge,
   );
-  const detach = bridge.attach(navigation, "index-1");
+  const detach = bridge.attach(navigation, INITIAL_ROUTE_KEY);
   return { bridge, detach, external, history, navigation };
 }
 
-function initialize(fixture: ReturnType<typeof harness>, url = "https://example.test/demo") {
+function initialize(fixture: ReturnType<typeof harness>, url = GALLERY_URL) {
   const initialized = fixture.history.initialize(fixture.bridge.readInitialState(url));
   fixture.bridge.reconcile();
   return initialized;
@@ -268,7 +277,7 @@ describe("demo Expo Router history bridge", () => {
   });
 
   test("adopts managed initial state without writing the route", () => {
-    const entry = managedEntry("persisted", 4, "https://example.test/demo");
+    const entry = managedEntry("persisted", 4, GALLERY_URL);
     const fixture = harness({ source: "deep-link", ...encodeDemoRouterHistoryEntry(entry) });
     const route = fixture.navigation.state.routes[0];
 
@@ -280,16 +289,31 @@ describe("demo Expo Router history bridge", () => {
   });
 
   test("gates managed metadata that does not describe the active document", () => {
-    const entry = managedEntry("stale-document", 3, "https://example.test/linked");
+    const entry = managedEntry("stale-document", 3, LINKED_URL);
     const fixture = harness(encodeDemoRouterHistoryEntry(entry));
 
-    expect(fixture.bridge.readManagedEntry()).toEqual(entry);
-
+    expect(() => fixture.bridge.readRouteState()).toThrow(StateError);
     expect(() => initialize(fixture)).toThrow(StateError);
     expect(fixture.history.current).toBeUndefined();
     expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)?.url).toBe(
-      "https://example.test/linked",
+      LINKED_URL,
     );
+  });
+
+  test("decodes unmanaged canonical paths and adopts matching managed paths", () => {
+    const unmanaged = harness({ [DEMO_ROUTER_PATH_PARAM]: ["demo", "linked"] });
+    expect(unmanaged.bridge.readRouteState()).toEqual({
+      kind: "unmanaged",
+      url: LINKED_URL,
+    });
+    unmanaged.detach();
+
+    const entry = managedEntry("linked-entry", 2, LINKED_URL);
+    const managed = harness({
+      [DEMO_ROUTER_PATH_PARAM]: ["demo", "linked"],
+      ...encodeDemoRouterHistoryEntry(entry),
+    });
+    expect(managed.bridge.readRouteState()).toEqual({ entry, kind: "managed" });
   });
 
   test("repairs absent, partial, and malformed initial metadata with same-key setParams", () => {
@@ -326,7 +350,7 @@ describe("demo Expo Router history bridge", () => {
     const traversals: DocumentHistoryEntry[] = [];
     fixture.bridge.subscribe((entry) => traversals.push(entry));
     const firstRoute = fixture.navigation.state.routes[0];
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
 
     expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
 
@@ -334,7 +358,8 @@ describe("demo Expo Router history bridge", () => {
     expect(fixture.navigation.state.routes[0]).toBe(firstRoute);
     const pushed = fixture.navigation.state.routes[1] as DemoRouterRoute;
     expect(pushed.key).not.toBe(firstRoute?.key);
-    expect(pushed.name).toBe("index");
+    expect(pushed.name).toBe(DEMO_ROUTER_ROUTE_NAME);
+    expect(pushed.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual(["demo", "linked"]);
     expect(pushed.params?.source).toBe("gallery");
     expect(decodeDemoRouterHistoryEntry(pushed.params)).toEqual(proposal.entry);
     expect(traversals).toEqual([]);
@@ -347,13 +372,13 @@ describe("demo Expo Router history bridge", () => {
     fixture.navigation.preload(
       Object.freeze({
         key: "index-preloaded",
-        name: "index",
+        name: DEMO_ROUTER_ROUTE_NAME,
         path: "/preview",
         params: Object.freeze({ preview: "discarded" }),
         state: nestedState,
       }),
     );
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
 
     fixture.history.commitProposal(proposal);
 
@@ -365,6 +390,7 @@ describe("demo Expo Router history bridge", () => {
     expect(pushed.state).toBe(nestedState);
     expect(pushed.params?.preview).toBeUndefined();
     expect(pushed.params?.source).toBe("gallery");
+    expect(pushed.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual(["demo", "linked"]);
     expect(decodeDemoRouterHistoryEntry(pushed.params)).toEqual(proposal.entry);
     expect(fixture.navigation.state.preloadedRoutes).toEqual([]);
   });
@@ -376,7 +402,7 @@ describe("demo Expo Router history bridge", () => {
     const traversals: DocumentHistoryEntry[] = [];
     fixture.bridge.subscribe((entry) => traversals.push(entry));
     const route = fixture.navigation.state.routes[0] as DemoRouterRoute;
-    const proposal = fixture.history.proposeReplace("https://example.test/replaced");
+    const proposal = fixture.history.proposeReplace(LINKED_URL);
 
     fixture.history.commitProposal(proposal);
     fixture.navigation.flush();
@@ -385,6 +411,7 @@ describe("demo Expo Router history bridge", () => {
     expect(replaced.key).toBe(route.key);
     expect(replaced.name).toBe(route.name);
     expect(replaced.params?.source).toBe("gallery");
+    expect(replaced.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual(["demo", "linked"]);
     expect(decodeDemoRouterHistoryEntry(replaced.params)).toEqual(proposal.entry);
     expect(traversals).toEqual([]);
   });
@@ -392,7 +419,7 @@ describe("demo Expo Router history bridge", () => {
   test("emits popped back and restored-state forward traversal exactly once", () => {
     const fixture = harness();
     const initial = initialize(fixture).entry;
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
     fixture.history.commitProposal(proposal);
     const forwardState = fixture.navigation.state;
     const traversals: DocumentHistoryEntry[] = [];
@@ -408,13 +435,13 @@ describe("demo Expo Router history bridge", () => {
 
     expect(traversals).toEqual([initial, proposal.entry]);
     expect(fixture.history.current).toEqual(proposal.entry);
-    expect(fixture.navigation.state.routes[1]?.key).toBe("index-2");
+    expect(fixture.navigation.state.routes[1]?.key).toBe(`${DEMO_ROUTER_ROUTE_NAME}-2`);
   });
 
   test("reconciles a focus change that happened before a replacement attachment", () => {
     const fixture = harness();
     const initial = initialize(fixture).entry;
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
     fixture.history.commitProposal(proposal);
     fixture.navigation.focus(0);
     const traversals: DocumentHistoryEntry[] = [];
@@ -422,7 +449,7 @@ describe("demo Expo Router history bridge", () => {
       traversals.push(entry);
       fixture.history.adoptTraversal(entry);
     });
-    const detachReplacement = fixture.bridge.attach(fixture.navigation, "index-1");
+    const detachReplacement = fixture.bridge.attach(fixture.navigation, INITIAL_ROUTE_KEY);
 
     fixture.bridge.reconcile();
 
@@ -436,7 +463,7 @@ describe("demo Expo Router history bridge", () => {
       const fixture = harness();
       initialize(fixture);
       const initial = fixture.history.current;
-      const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+      const proposal = fixture.history.proposeAdvance(LINKED_URL);
       fixture.navigation.pushBehavior = behavior;
 
       let error: unknown;
@@ -465,7 +492,7 @@ describe("demo Expo Router history bridge", () => {
     const errors: (Error | undefined)[] = [];
     fixture.bridge.subscribe((entry) => traversals.push(entry));
     fixture.bridge.subscribeErrors((error) => errors.push(error));
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
     fixture.navigation.pushBehavior = "partial";
 
     expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
@@ -481,7 +508,7 @@ describe("demo Expo Router history bridge", () => {
       const fixture = harness();
       initialize(fixture);
       const initial = fixture.history.current;
-      const proposal = fixture.history.proposeReplace("https://example.test/replaced");
+      const proposal = fixture.history.proposeReplace(LINKED_URL);
       fixture.navigation.setParamsBehavior = behavior;
 
       expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
@@ -503,15 +530,15 @@ describe("demo Expo Router history bridge", () => {
       const before = fixture.navigation.state;
       const proposal =
         method === "push"
-          ? fixture.history.proposeAdvance("https://example.test/linked")
-          : fixture.history.proposeReplace("https://example.test/replaced");
+          ? fixture.history.proposeAdvance(LINKED_URL)
+          : fixture.history.proposeReplace(LINKED_URL);
       if (method === "push") fixture.navigation.pushBehavior = "collateral";
       else fixture.navigation.setParamsBehavior = "collateral";
 
       expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
 
       expect(fixture.navigation.state).toBe(before);
-      expect(fixture.history.current?.url).toBe("https://example.test/demo");
+      expect(fixture.history.current?.url).toBe(GALLERY_URL);
       if (method === "push") fixture.navigation.pushBehavior = "commit";
       else fixture.navigation.setParamsBehavior = "commit";
       expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
@@ -524,7 +551,7 @@ describe("demo Expo Router history bridge", () => {
     fixture.navigation.synchronousEvents = false;
     const traversals: DocumentHistoryEntry[] = [];
     fixture.bridge.subscribe((entry) => traversals.push(entry));
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
     fixture.navigation.pushBehavior = "partial";
 
     expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
@@ -552,8 +579,8 @@ describe("demo Expo Router history bridge", () => {
       fixture.bridge.subscribeErrors((error) => errors.push(error));
       const proposal =
         scenario.method === "push"
-          ? fixture.history.proposeAdvance("https://example.test/linked")
-          : fixture.history.proposeReplace("https://example.test/replaced");
+          ? fixture.history.proposeAdvance(LINKED_URL)
+          : fixture.history.proposeReplace(LINKED_URL);
       fixture.navigation.resetBehavior = scenario.reset;
       if (scenario.method === "push") fixture.navigation.pushBehavior = "partial";
       else fixture.navigation.setParamsBehavior = "partial";
@@ -562,7 +589,9 @@ describe("demo Expo Router history bridge", () => {
 
       expect(fixture.history.current).toBe(initial);
       expect(errors.at(-1)).toBeInstanceOf(StateError);
-      expect(() => fixture.bridge.attach(fixture.navigation, "index-1")).toThrow(StateError);
+      expect(() => fixture.bridge.attach(fixture.navigation, INITIAL_ROUTE_KEY)).toThrow(
+        StateError,
+      );
       expect(() => fixture.bridge.reconcile()).toThrow(StateError);
     }
   });
@@ -574,7 +603,7 @@ describe("demo Expo Router history bridge", () => {
 
       expect(() =>
         fixture.history.initialize(
-          fixture.bridge.readInitialState("https://example.test/demo"),
+          fixture.bridge.readInitialState(GALLERY_URL),
         ),
       ).toThrow(StateError);
       expect(fixture.history.current).toBeUndefined();
@@ -595,9 +624,11 @@ describe("demo Expo Router history bridge", () => {
     fixture.bridge.subscribeErrors((error) => errors.push(error));
 
     fixture.navigation.replaceFocusedParams({
+      [DEMO_ROUTER_PATH_PARAM]: ["demo"],
       [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "malformed",
     });
     fixture.navigation.replaceFocusedParams({
+      [DEMO_ROUTER_PATH_PARAM]: ["demo"],
       [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "still-malformed",
     });
 
@@ -610,11 +641,12 @@ describe("demo Expo Router history bridge", () => {
     const fixture = harness();
     initialize(fixture);
     fixture.navigation.replaceFocusedParams({
+      [DEMO_ROUTER_PATH_PARAM]: ["demo"],
       [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "malformed",
     });
     fixture.detach();
 
-    const detach = fixture.bridge.attach(fixture.navigation, "index-1");
+    const detach = fixture.bridge.attach(fixture.navigation, INITIAL_ROUTE_KEY);
 
     expect(() => fixture.bridge.reconcile()).toThrow(StateError);
     detach();
@@ -623,18 +655,21 @@ describe("demo Expo Router history bridge", () => {
   test("makes stale cleanup and inactive attachments harmless", () => {
     const fixture = harness();
     initialize(fixture);
-    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
     fixture.history.commitProposal(proposal);
     const oldDetach = fixture.detach;
-    const newDetach = fixture.bridge.attach(fixture.navigation, "index-2");
+    const newDetach = fixture.bridge.attach(
+      fixture.navigation,
+      `${DEMO_ROUTER_ROUTE_NAME}-2`,
+    );
     fixture.bridge.reconcile();
 
     oldDetach();
-    const replacement = fixture.history.proposeReplace("https://example.test/final");
+    const replacement = fixture.history.proposeReplace(LINKED_URL);
     expect(fixture.history.commitProposal(replacement)).toBe(replacement.entry);
 
     newDetach();
-    const detached = fixture.history.proposeReplace("https://example.test/detached");
+    const detached = fixture.history.proposeReplace(GALLERY_URL);
     expect(() => fixture.history.commitProposal(detached)).toThrow(StateError);
     expect(fixture.history.current).toBe(replacement.entry);
   });
@@ -654,15 +689,20 @@ describe("demo Expo Router history bridge", () => {
     for (const state of [
       { index: 0 },
       { index: 0, routes: {} },
-      { index: 0, routes: [{ key: 1, name: "index" }] },
-      { index: 0, routes: [{ key: "index-1", name: 1 }] },
-      { index: 0, routes: [{ key: "index-1", name: "index", params: [] }] },
+      { index: 0, routes: [{ key: 1, name: DEMO_ROUTER_ROUTE_NAME }] },
+      { index: 0, routes: [{ key: INITIAL_ROUTE_KEY, name: 1 }] },
+      {
+        index: 0,
+        routes: [{ key: INITIAL_ROUTE_KEY, name: DEMO_ROUTER_ROUTE_NAME, params: [] }],
+      },
     ]) {
       const fixture = harness();
       fixture.detach();
       fixture.navigation.state = state as unknown as DemoRouterState;
 
-      expect(() => fixture.bridge.attach(fixture.navigation, "index-1")).toThrow(StateError);
+      expect(() => fixture.bridge.attach(fixture.navigation, INITIAL_ROUTE_KEY)).toThrow(
+        StateError,
+      );
     }
   });
 });

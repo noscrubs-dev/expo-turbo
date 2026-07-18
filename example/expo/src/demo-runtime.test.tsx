@@ -24,7 +24,14 @@ mock.module("react-native", () => ({
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
 }));
 
-const { encodeDemoRouterHistoryEntry } = await import("./demo-router-history");
+const {
+  DEMO_ROUTER_ROUTE_NAME,
+  decodeDemoRouterHistoryEntry,
+  encodeDemoRouterHistoryEntry,
+} = await import("./demo-router-history");
+const { DEMO_ROUTER_PATH_PARAM, encodeDemoRouterDocumentPath } = await import(
+  "./demo-router-path"
+);
 const { DemoRouterRouteOwner } = await import("./demo-router-route-owner");
 const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
   "./demo-runtime"
@@ -77,6 +84,19 @@ class ControlledFetch implements FetchAdapter {
 }
 
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const INITIAL_ROUTE_KEY = "demo-route-1";
+const GALLERY_URL = "https://example.test/demo";
+const LINKED_URL = "https://example.test/demo/linked";
+
+function routeParams(
+  url: string,
+  params: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    [DEMO_ROUTER_PATH_PARAM]: encodeDemoRouterDocumentPath(url),
+    ...params,
+  });
+}
 
 class TestNavigation implements DemoRouterNavigation {
   private key = 1;
@@ -92,13 +112,14 @@ class TestNavigation implements DemoRouterNavigation {
       type: "stack",
       key: "stack-1",
       index: 0,
-      routeNames: Object.freeze(["index"]),
+      routeNames: Object.freeze([DEMO_ROUTER_ROUTE_NAME]),
       preloadedRoutes: Object.freeze([]),
       routes: Object.freeze([
         Object.freeze({
-          key: "index-1",
-          name: "index",
-          ...(params ? { params } : {}),
+          key: INITIAL_ROUTE_KEY,
+          name: DEMO_ROUTER_ROUTE_NAME,
+          path: "/demo",
+          params: routeParams(GALLERY_URL, params),
         }),
       ]),
     });
@@ -190,7 +211,7 @@ function routeTree(
     { runtime },
     createElement(
       DemoRouterRouteOwner,
-      { focused, navigation, routeKey: "index-1", runtime },
+      { focused, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
       createElement("active-route"),
     ),
   );
@@ -282,7 +303,7 @@ describe("demo app runtime ownership", () => {
         createElement(
           DemoRuntimeProvider,
           { runtime },
-          routeOwner(false, "index-1", "first"),
+          routeOwner(false, INITIAL_ROUTE_KEY, "first"),
         ),
       );
       await Promise.resolve();
@@ -296,13 +317,13 @@ describe("demo app runtime ownership", () => {
         createElement(
           DemoRuntimeProvider,
           { runtime },
-          routeOwner(true, "index-1", "first"),
+          routeOwner(true, INITIAL_ROUTE_KEY, "first"),
         ),
       );
       await Promise.resolve();
     });
     expect(navigation.listenerCount).toBe(1);
-    expect(runtime.documentRuntime.history.current?.url).toBe("https://example.test/demo");
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
     expect(activeRoutes()).toHaveLength(1);
     expect(activeRoutes()[0]?.props.label).toBe("first");
 
@@ -312,7 +333,7 @@ describe("demo app runtime ownership", () => {
     expect(activeRoutes()).toHaveLength(1);
 
     const proposal = runtime.documentRuntime.history.proposeAdvance(
-      "https://example.test/linked",
+      LINKED_URL,
     );
     runtime.documentRuntime.history.commitProposal(proposal);
     expect(navigation.state.routes).toHaveLength(2);
@@ -325,8 +346,8 @@ describe("demo app runtime ownership", () => {
           createElement(
             Fragment,
             null,
-            routeOwner(false, "index-1", "first"),
-            routeOwner(true, "index-2", "second"),
+            routeOwner(false, INITIAL_ROUTE_KEY, "first"),
+            routeOwner(true, `${DEMO_ROUTER_ROUTE_NAME}-2`, "second"),
           ),
         ),
       );
@@ -360,7 +381,7 @@ describe("demo app runtime ownership", () => {
       encodeDemoRouterHistoryEntry({
         restorationIdentifier: "demo-history-1",
         restorationIndex: 0,
-        url: "https://example.test/demo",
+        url: GALLERY_URL,
       }),
     );
     let renderer: ReactTestRenderer | undefined;
@@ -378,7 +399,7 @@ describe("demo app runtime ownership", () => {
     expect(navigation.resetCalls).toBe(0);
     expect(navigation.setParamsCalls).toBe(0);
     const proposal = runtime.documentRuntime.history.proposeAdvance(
-      "https://example.test/linked",
+      LINKED_URL,
     );
     expect(proposal.entry.restorationIdentifier).not.toBe("demo-history-1");
     expect(runtime.documentRuntime.history.commitProposal(proposal)).toBe(proposal.entry);
@@ -395,9 +416,11 @@ describe("demo app runtime ownership", () => {
     const entry = {
       restorationIdentifier: "persisted-linked",
       restorationIndex: 4,
-      url: "https://example.test/demo/linked",
+      url: LINKED_URL,
     } as const;
-    const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+    const navigation = new TestNavigation(
+      routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+    );
     const initialState = navigation.state;
     const initialTree = runtime.session.tree;
     let renderer: ReactTestRenderer | undefined;
@@ -437,6 +460,50 @@ describe("demo app runtime ownership", () => {
     });
   });
 
+  test("bootstraps an unmanaged canonical deep link and repairs it in the tree commit", async () => {
+    const fetch = new ControlledFetch();
+    const runtime = createDemoRuntime({ documentFetch: fetch });
+    const navigation = new TestNavigation(routeParams(LINKED_URL));
+    const initialState = navigation.state;
+    const initialTree = runtime.session.tree;
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(routeTree(runtime, navigation));
+      await Promise.resolve();
+    });
+
+    expect(renderer?.toJSON()).toBeNull();
+    expect(runtime.documentRuntime.history.current).toBeUndefined();
+    expect(runtime.session.tree).toBe(initialTree);
+    expect(fetch.pending[0]?.request.url).toBe(LINKED_URL);
+    expect(navigation.state).toBe(initialState);
+
+    await act(async () => {
+      const pending = fetch.pending[0];
+      if (!pending) throw new Error("missing unmanaged cold-start request");
+      pending.resolve(response(pending.request));
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(LINKED_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(LINKED_URL);
+    expect(runtime.documentRuntime.history.current?.restorationIndex).toBe(0);
+    expect(navigation.state).not.toBe(initialState);
+    expect(navigation.setParamsCalls).toBe(1);
+    expect(navigation.pushCalls).toBe(0);
+    expect(navigation.resetCalls).toBe(0);
+    expect(decodeDemoRouterHistoryEntry(navigation.state.routes[0]?.params)).toEqual(
+      runtime.documentRuntime.history.current,
+    );
+    expect(renderer?.root.findAll((node) => String(node.type) === "active-route")).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("adopts exact authoritative XML error documents during a managed cold start", async () => {
     for (const status of [422, 500]) {
       const requests: TurboRequest[] = [];
@@ -451,9 +518,11 @@ describe("demo app runtime ownership", () => {
       const entry = {
         restorationIdentifier: `error-${status}`,
         restorationIndex: status,
-        url: `https://example.test/demo/error-${status}`,
+        url: LINKED_URL,
       } as const;
-      const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+      const navigation = new TestNavigation(
+        routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+      );
       const initialState = navigation.state;
       let renderer: ReactTestRenderer | undefined;
 
@@ -483,7 +552,7 @@ describe("demo app runtime ownership", () => {
         fetch: async (request: TurboRequest) =>
           response(request, {
             redirected: true,
-            url: "https://example.test/demo/redirected",
+            url: GALLERY_URL,
           }),
       },
       {
@@ -513,9 +582,11 @@ describe("demo app runtime ownership", () => {
       const entry = {
         restorationIdentifier: `failed-${scenario.name}`,
         restorationIndex: 2,
-        url: "https://example.test/demo/failed",
+        url: LINKED_URL,
       } as const;
-      const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+      const navigation = new TestNavigation(
+        routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+      );
       const initialState = navigation.state;
       const initialTree = runtime.session.tree;
       let renderer: ReactTestRenderer | undefined;
@@ -591,14 +662,16 @@ describe("demo app runtime ownership", () => {
     const initialEntry = {
       restorationIdentifier: "first-entry",
       restorationIndex: 1,
-      url: "https://example.test/demo/first",
+      url: LINKED_URL,
     } as const;
     const replacementEntry = {
       restorationIdentifier: "second-entry",
       restorationIndex: 2,
-      url: "https://example.test/demo/second",
+      url: LINKED_URL,
     } as const;
-    const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(initialEntry));
+    const navigation = new TestNavigation(
+      routeParams(initialEntry.url, encodeDemoRouterHistoryEntry(initialEntry)),
+    );
     const initialTree = runtime.session.tree;
     let renderer: ReactTestRenderer | undefined;
 
@@ -609,7 +682,11 @@ describe("demo app runtime ownership", () => {
     const pending = fetch.pending[0];
     if (!pending) throw new Error("missing stale-entry request");
 
-    act(() => navigation.replaceFocusedParams(encodeDemoRouterHistoryEntry(replacementEntry)));
+    act(() =>
+      navigation.replaceFocusedParams(
+        routeParams(replacementEntry.url, encodeDemoRouterHistoryEntry(replacementEntry)),
+      ),
+    );
     await act(async () => {
       pending.resolve(response(pending.request));
       await nextTurn();
@@ -619,7 +696,7 @@ describe("demo app runtime ownership", () => {
     expect(runtime.documentRuntime.history.current).toBeUndefined();
     expect(JSON.stringify(renderer?.toJSON())).toContain("StateError");
     expect(navigation.state.routes[0]?.params).toEqual(
-      encodeDemoRouterHistoryEntry(replacementEntry),
+      routeParams(replacementEntry.url, encodeDemoRouterHistoryEntry(replacementEntry)),
     );
 
     await act(async () => {
@@ -664,9 +741,11 @@ describe("demo app runtime ownership", () => {
     const entry = {
       restorationIdentifier: "committed-finalization",
       restorationIndex: 6,
-      url: "https://example.test/demo/committed-finalization",
+      url: LINKED_URL,
     } as const;
-    const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+    const navigation = new TestNavigation(
+      routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+    );
     const unsubscribe = runtime.session.subscribe(runtime.session.tree.document.key, () => {
       throw new Error("secret finalization failure");
     });
@@ -720,9 +799,11 @@ describe("demo app runtime ownership", () => {
     const entry = {
       restorationIdentifier: "retry-linked",
       restorationIndex: 5,
-      url: "https://example.test/demo/retry",
+      url: LINKED_URL,
     } as const;
-    const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+    const navigation = new TestNavigation(
+      routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+    );
     let renderer: ReactTestRenderer | undefined;
 
     await act(async () => {
@@ -759,9 +840,11 @@ describe("demo app runtime ownership", () => {
     const entry = {
       restorationIdentifier: "canceled-linked",
       restorationIndex: 1,
-      url: "https://example.test/demo/canceled",
+      url: LINKED_URL,
     } as const;
-    const navigation = new TestNavigation(encodeDemoRouterHistoryEntry(entry));
+    const navigation = new TestNavigation(
+      routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+    );
     const initialTree = runtime.session.tree;
     let renderer: ReactTestRenderer | undefined;
 
