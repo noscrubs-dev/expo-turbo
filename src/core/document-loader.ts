@@ -54,6 +54,7 @@ export type DocumentSnapshotRestoreReport = Readonly<{
 }>
 
 export interface DocumentSnapshotRestoreOptions {
+  readonly beforeClaim?: () => undefined
   readonly beforeTreeCommit?: () => undefined
   readonly onRestoreStart?: () => undefined
 }
@@ -74,6 +75,7 @@ export type DocumentTreeCommitCandidate = Extract<
 export type DocumentCommitDisposition = "commit" | "discard"
 
 export interface DocumentLoadOptions {
+  readonly beforeClaim?: () => undefined
   readonly beforeCommit?: (candidate: DocumentCommitCandidate) => DocumentCommitDisposition
   readonly beforeTreeCommit?: (candidate: DocumentTreeCommitCandidate) => undefined
   readonly onRequestStart?: () => undefined
@@ -173,6 +175,18 @@ export class DocumentRequestLoader {
     if (!cached) return Object.freeze({ status: "miss", url: restoredUrl })
 
     const tree = cached.clone({ documentUrl: restoredUrl })
+    if (options.beforeClaim) {
+      try {
+        const result = options.beforeClaim()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new StateError("Document snapshot claim callback must not return a value")
+        }
+      } catch (error) {
+        if (error instanceof ExpoTurboError) throw error
+        throw new StateError("Document snapshot claim callback failed")
+      }
+    }
     const active: ActiveDocumentOperation = {
       controller: new AbortController(),
       ...(owner ? { owner } : {}),
@@ -278,6 +292,20 @@ export class DocumentRequestLoader {
       requestId,
       requestedUrl,
       treeGeneration,
+    }
+    if (options.beforeClaim) {
+      try {
+        const result = options.beforeClaim()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new RequestError("Document request claim callback must not return a value", {
+            method: "GET",
+          })
+        }
+      } catch (error) {
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document request claim callback failed", { method: "GET" })
+      }
     }
     const previous = this.active
     this.active = active

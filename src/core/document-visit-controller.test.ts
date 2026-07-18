@@ -71,7 +71,16 @@ class ManualClock implements ClockAdapter {
 }
 
 class ReentrantSnapshotCache extends DocumentSnapshotCache {
+  onGet: (() => void) | undefined
   onPut: (() => void) | undefined
+
+  override get(url: string): DocumentTree | undefined {
+    const snapshot = super.get(url)
+    const onGet = this.onGet
+    this.onGet = undefined
+    onGet?.()
+    return snapshot
+  }
 
   override put(url: string, tree: DocumentTree): void {
     super.put(url, tree)
@@ -341,6 +350,143 @@ describe("Document visit controller", () => {
     expect(session.tree.getElementById("late")).toBeUndefined()
   })
 
+  test("does not let stale cache lookup reclaim ownership from a newer traversal", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/older",
+      parseExpoTurboDocument('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    const { history } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+    let newest: Promise<unknown> | undefined
+    snapshotCache.onGet = () => {
+      newest = controller.restoreTraversal({
+        restorationIdentifier: "history-newest",
+        restorationIndex: 2,
+        url: "https://example.test/newest",
+      })
+    }
+
+    const older = controller.restoreTraversal({
+      restorationIdentifier: "history-older",
+      restorationIndex: 1,
+      url: "https://example.test/older",
+    })
+
+    await expect(older).rejects.toThrow("superseded before ownership")
+    if (!newest) throw new Error("newer traversal was not started")
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    pending[0]?.resolve(
+      response('<Gallery><Newest id="newest" /></Gallery>', {
+        url: "https://example.test/newest",
+      }),
+    )
+    expect(await newest).toMatchObject({
+      result: { classification: "success", status: "committed" },
+      source: "network",
+    })
+    expect(history.current?.restorationIdentifier).toBe("history-newest")
+    expect(session.tree.getElementById("newest")).toBeDefined()
+    expect(session.tree.getElementById("older")).toBeUndefined()
+  })
+
+  test("rejects a stale pre-start traversal after claim reentrancy without fetching", async () => {
+    const { history } = historyFixture()
+    const pendingPeer: Array<(response: TurboResponse) => void> = []
+    let invalid: Promise<unknown> | undefined
+    let traversalFetches = 0
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Old id="old" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const traversalLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          traversalFetches += 1
+          return response('<Gallery><Unexpected id="unexpected" /></Gallery>')
+        },
+      },
+      { next: () => "traversal-request" },
+    )
+    const controller = new DocumentVisitController(traversalLoader, new ManualClock(), { history })
+    const peerLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pendingPeer.push(resolve)
+            request.signal?.addEventListener("abort", () => {
+              invalid = controller.restoreTraversal({
+                restorationIdentifier: "invalid",
+                restorationIndex: 2,
+                url: "https://outside.test/private",
+              })
+              void invalid.catch(() => undefined)
+            })
+          }),
+      },
+      { next: () => "peer-request" },
+    )
+    const peer = peerLoader.load("/peer")
+
+    const traversal = controller.restoreTraversal({
+      restorationIdentifier: "history-traversal",
+      restorationIndex: 1,
+      url: "https://example.test/traversal",
+    })
+
+    await expect(traversal).rejects.toThrow("superseded before starting")
+    if (!invalid) throw new Error("invalid traversal was not emitted")
+    await expect(invalid).rejects.toBeInstanceOf(TargetError)
+    expect(traversalFetches).toBe(0)
+    expect(controller.state.status).toBe("initialized")
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("unexpected")).toBeUndefined()
+    pendingPeer[0]?.(response('<Gallery><Peer id="peer" /></Gallery>'))
+    expect(await peer).toMatchObject({ status: "canceled" })
+  })
+
+  test("copies traversal entry primitives before history adoption", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/newest",
+      parseExpoTurboDocument('<Gallery><Newest id="newest" /></Gallery>', {
+        url: "https://example.test/newest",
+      }),
+    )
+    const { history } = historyFixture()
+    const { controller, session } = harness({ history, snapshotCache })
+    let newest: Promise<unknown> | undefined
+    let emitted = false
+    const older = controller.restoreTraversal({
+      get restorationIdentifier() {
+        if (!emitted) {
+          emitted = true
+          newest = controller.restoreTraversal({
+            restorationIdentifier: "history-newest",
+            restorationIndex: 2,
+            url: "https://example.test/newest",
+          })
+        }
+        return "history-older"
+      },
+      restorationIndex: 1,
+      url: "https://example.test/older",
+    })
+
+    await expect(older).rejects.toThrow("superseded before admission")
+    if (!newest) throw new Error("newer traversal was not started")
+    expect(await newest).toMatchObject({ source: "snapshot", status: "restored" })
+    expect(history.current?.restorationIdentifier).toBe("history-newest")
+    expect(session.tree.getElementById("newest")).toBeDefined()
+    expect(session.tree.getElementById("older")).toBeUndefined()
+  })
+
   test("lets a started subscriber cancel cached restoration before tree replacement", async () => {
     const snapshotCache = new DocumentSnapshotCache()
     snapshotCache.put(
@@ -436,6 +582,20 @@ describe("Document visit controller", () => {
         url: "https://example.test/fragment#target",
       }),
     ).rejects.toBeInstanceOf(TargetError)
+    await expect(
+      malformed.controller.restoreTraversal({
+        extra: "secret",
+        restorationIdentifier: "extra",
+        restorationIndex: 1,
+        url: "https://example.test/extra",
+      } as never),
+    ).rejects.toThrow("unsupported fields")
+    await expect(malformed.controller.restoreTraversal(null as never)).rejects.toBeInstanceOf(
+      StateError,
+    )
+    await expect(malformed.controller.restoreTraversal([] as never)).rejects.toBeInstanceOf(
+      StateError,
+    )
     expect(alignedHistory.current?.restorationIdentifier).toBe("history-current")
     expect(malformed.pending).toHaveLength(0)
   })

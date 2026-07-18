@@ -90,6 +90,7 @@ interface DocumentVisitHistoryGuard {
   readonly entry: DocumentHistoryEntry
   readonly history: DocumentHistory
   readonly kind: "refresh" | "traversal"
+  readonly traversalEpoch?: number
 }
 
 export class DocumentVisitController {
@@ -106,6 +107,7 @@ export class DocumentVisitController {
   private snapshot: DocumentVisitSnapshot
   private status: DocumentVisitStatus = "initialized"
   private traversalEntry: DocumentHistoryEntry | undefined
+  private traversalEpoch = 0
   private visitEpoch = 0
 
   constructor(
@@ -177,11 +179,34 @@ export class DocumentVisitController {
    * history-neutral GET.
    */
   restoreTraversal(entry: DocumentHistoryEntry): Promise<DocumentTraversalRestoreResult> {
+    const traversalEpoch = ++this.traversalEpoch
     let direction: DocumentHistoryTraversalDirection
     let history: DocumentHistory
     let restoredEntry: DocumentHistoryEntry
     let restorationData: DocumentRestorationData
     try {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+        throw new StateError("Document history entries must be objects")
+      }
+      const receivedKeys = Object.keys(entry)
+      if (traversalEpoch !== this.traversalEpoch) {
+        throw new StateError("Document traversal was superseded before admission")
+      }
+      if (
+        receivedKeys.some(
+          (key) => !["restorationIdentifier", "restorationIndex", "url"].includes(key),
+        )
+      ) {
+        throw new StateError("Document history entries contain unsupported fields")
+      }
+      const receivedEntry = Object.freeze({
+        restorationIdentifier: entry.restorationIdentifier,
+        restorationIndex: entry.restorationIndex,
+        url: entry.url,
+      })
+      if (traversalEpoch !== this.traversalEpoch) {
+        throw new StateError("Document traversal was superseded before admission")
+      }
       const configuredHistory = this.history
       if (!configuredHistory) {
         throw new TargetError("Document traversal restoration requires configured history")
@@ -189,7 +214,7 @@ export class DocumentVisitController {
       history = configuredHistory
       const current = history.current
       if (!current) throw new StateError("Document history is not initialized")
-      const traversalUrl = this.loader.resolveSource(entry.url)
+      const traversalUrl = this.loader.resolveSource(receivedEntry.url)
       if (new URL(traversalUrl).hash !== "") {
         throw new TargetError("Document traversal fragments require anchor restoration support")
       }
@@ -198,13 +223,17 @@ export class DocumentVisitController {
       } else if (this.canonicalDocumentUrl(this.loader.currentUrl) !== current.url) {
         throw new StateError("Document history must match the active document before traversal")
       }
-      direction = history.adoptTraversal(entry)
+      if (traversalEpoch !== this.traversalEpoch) {
+        throw new StateError("Document traversal was superseded before history adoption")
+      }
+      direction = history.adoptTraversal(receivedEntry)
       const adopted = history.current
       if (!adopted) throw new StateError("Document traversal did not publish a history entry")
       restoredEntry = adopted
       this.traversalEntry = adopted
       restorationData = history.getRestorationData(adopted.restorationIdentifier)
     } catch (error) {
+      if (traversalEpoch === this.traversalEpoch) this.cancel()
       return Promise.reject(error)
     }
 
@@ -213,16 +242,28 @@ export class DocumentVisitController {
       let epoch: number | undefined
       try {
         const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
+          beforeClaim: () => {
+            if (traversalEpoch !== this.traversalEpoch) {
+              throw new StateError("Document snapshot traversal was superseded before ownership")
+            }
+            return undefined
+          },
           beforeTreeCommit: () => {
+            if (traversalEpoch !== this.traversalEpoch) {
+              throw new StateError("Document snapshot traversal was superseded")
+            }
             if (history.current !== restoredEntry) {
               throw new StateError("Document history changed during snapshot restoration")
             }
             this.loader.captureCurrentSnapshot(cache)
-            if (history.current !== restoredEntry) {
+            if (traversalEpoch !== this.traversalEpoch || history.current !== restoredEntry) {
               throw new StateError("Document history changed during snapshot restoration")
             }
           },
           onRestoreStart: () => {
+            if (traversalEpoch !== this.traversalEpoch) {
+              throw new StateError("Document snapshot traversal was superseded")
+            }
             epoch = ++this.visitEpoch
             this.progressVisible = false
             this.status = "started"
@@ -261,6 +302,7 @@ export class DocumentVisitController {
       entry: restoredEntry,
       history,
       kind: "traversal",
+      traversalEpoch,
     }
     return this.startVisit(restoredEntry.url, undefined, cache, undefined, historyGuard).then(
       (result) => {
@@ -310,7 +352,21 @@ export class DocumentVisitController {
     let historyPlan = initialHistoryPlan
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
+      ...(historyGuard?.kind === "traversal" && {
+        beforeClaim: () => {
+          if (historyGuard.traversalEpoch !== this.traversalEpoch) {
+            throw new StateError("Document traversal request was superseded before ownership")
+          }
+          return undefined
+        },
+      }),
       beforeCommit: (candidate) => {
+        if (
+          historyGuard?.kind === "traversal" &&
+          historyGuard.traversalEpoch !== this.traversalEpoch
+        ) {
+          throw new StateError("Document traversal response was superseded")
+        }
         if (
           historyGuard?.kind === "traversal" &&
           (historyGuard.history.current !== historyGuard.entry ||
@@ -341,6 +397,12 @@ export class DocumentVisitController {
       ...((snapshotCache || historyPlan || historyGuard) && {
         beforeTreeCommit: (candidate: DocumentTreeCommitCandidate) => {
           if (
+            historyGuard?.kind === "traversal" &&
+            historyGuard.traversalEpoch !== this.traversalEpoch
+          ) {
+            throw new StateError("Document traversal response was superseded")
+          }
+          if (
             historyGuard &&
             (historyGuard.history.current !== historyGuard.entry ||
               candidate.url !== historyGuard.entry.url)
@@ -351,6 +413,12 @@ export class DocumentVisitController {
             throw new StateError("Document history proposal no longer matches the commit candidate")
           }
           if (snapshotCache) this.loader.captureCurrentSnapshot(snapshotCache)
+          if (
+            historyGuard?.kind === "traversal" &&
+            historyGuard.traversalEpoch !== this.traversalEpoch
+          ) {
+            throw new StateError("Document traversal response was superseded")
+          }
           if (historyGuard && historyGuard.history.current !== historyGuard.entry) {
             throw new StateError(
               historyGuard.kind === "traversal"
@@ -362,6 +430,12 @@ export class DocumentVisitController {
         },
       }),
       onRequestStart: () => {
+        if (
+          historyGuard?.kind === "traversal" &&
+          historyGuard.traversalEpoch !== this.traversalEpoch
+        ) {
+          throw new StateError("Document traversal request was superseded before starting")
+        }
         epoch = ++this.visitEpoch
         this.progressVisible = false
         this.status = "started"
