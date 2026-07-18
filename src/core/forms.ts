@@ -35,12 +35,21 @@ export interface FormControlDirectionality {
   readonly value: "ltr" | "rtl"
 }
 
-export interface FormSelectOption {
+interface FormSelectOptionBase {
   readonly disabled?: boolean
   readonly kind: "option"
   readonly selected: boolean
-  readonly value: string
 }
+
+export type FormSelectOption =
+  | (FormSelectOptionBase & {
+      readonly textContent?: string
+      readonly value: string
+    })
+  | (FormSelectOptionBase & {
+      readonly textContent: string
+      readonly value?: undefined
+    })
 
 export interface FormSelectOptionGroup {
   readonly disabled?: boolean
@@ -76,6 +85,25 @@ export type FormControlDescriptor =
       readonly directionality?: FormControlDirectionality
       readonly kind: "value"
       readonly value: string
+    })
+
+interface NormalizedFormSelectOption extends FormSelectOptionBase {
+  readonly value: string
+}
+
+interface NormalizedFormSelectOptionGroup {
+  readonly disabled?: boolean
+  readonly kind: "group"
+  readonly options: readonly NormalizedFormSelectOption[]
+}
+
+type NormalizedFormSelectItem = NormalizedFormSelectOption | NormalizedFormSelectOptionGroup
+
+type NormalizedFormControlDescriptor =
+  | Exclude<FormControlDescriptor, { readonly kind: "select" }>
+  | (FormControlBase & {
+      readonly kind: "select"
+      readonly options: readonly NormalizedFormSelectItem[]
     })
 
 export interface SuccessfulFormEntry {
@@ -154,7 +182,7 @@ function submitterSelectionOption(value: unknown): FormControlSelection | undefi
 }
 
 interface FormControlRecord {
-  descriptor: FormControlDescriptor
+  descriptor: NormalizedFormControlDescriptor
   readonly node: ProtocolElement
   readonly selection: FormControlSelection
   unregisterDisposal: () => void
@@ -167,6 +195,13 @@ interface DocumentFormControlRecord {
 }
 
 const CHARSET_CONTROL_NAME = "_charset_"
+
+function selectOptionTextValue(textContent: string): string {
+  return textContent
+    .replace(/[\t\n\f\r ]+/g, " ")
+    .replace(/^ /, "")
+    .replace(/ $/, "")
+}
 
 function isCharsetControlName(name: string): boolean {
   if (name.length !== CHARSET_CONTROL_NAME.length) return false
@@ -286,7 +321,7 @@ function submitterRequestAttributes(record: FormControlRecord) {
 function normalizeDescriptor(
   descriptor: FormControlDescriptor,
   nodeKey: string,
-): FormControlDescriptor {
+): NormalizedFormControlDescriptor {
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
     throw new PropsError("Form control descriptors must be objects")
   }
@@ -356,7 +391,7 @@ function normalizeDescriptor(
           target: nodeKey,
         })
       }
-      const normalizeOption = (value: unknown): FormSelectOption => {
+      const normalizeOption = (value: unknown): NormalizedFormSelectOption => {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
           throw new PropsError("Select form control options must be objects", {
             target: nodeKey,
@@ -368,8 +403,23 @@ function normalizeDescriptor(
             target: nodeKey,
           })
         }
-        if (typeof option.value !== "string") {
-          throw new PropsError("Select form control option values must be strings", {
+        if (option.textContent !== undefined && typeof option.textContent !== "string") {
+          throw new PropsError("Select form control option text must be a string", {
+            target: nodeKey,
+          })
+        }
+        let admittedValue: string
+        if (option.value !== undefined) {
+          if (typeof option.value !== "string") {
+            throw new PropsError("Select form control option values must be strings", {
+              target: nodeKey,
+            })
+          }
+          admittedValue = option.value
+        } else if (typeof option.textContent === "string") {
+          admittedValue = selectOptionTextValue(option.textContent)
+        } else {
+          throw new PropsError("Select form control options require a value or text snapshot", {
             target: nodeKey,
           })
         }
@@ -387,10 +437,10 @@ function normalizeDescriptor(
           ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
           kind: option.kind,
           selected: option.selected,
-          value: option.value,
+          value: admittedValue,
         })
       }
-      const options = Array.from(descriptor.options, (value): FormSelectItem => {
+      const options = Array.from(descriptor.options, (value): NormalizedFormSelectItem => {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
           throw new PropsError("Select form control items must be objects", {
             target: nodeKey,
