@@ -3,7 +3,7 @@ import type { FormRequestPlan } from "./form-request"
 import type { ExactFormSubmissionActivity } from "./form-submission-activity"
 import type { FormSubmissionDestination } from "./frames"
 import type { DocumentSession } from "./session"
-import type { ProtocolElement } from "./tree"
+import { attributeValue, type ProtocolElement } from "./tree"
 
 declare const FORM_SUBMISSION_PROPOSAL: unique symbol
 
@@ -66,6 +66,22 @@ export function assertActiveFormSubmissionProposal(
     throw new StateError("Form submission proposal no longer owns its submitter node", {
       target: identity.submitter.key,
     })
+  }
+  if (identity.submitter) {
+    const formId = attributeValue(identity.submitter, "form")
+    let ownsForm = false
+    if (formId !== undefined) {
+      ownsForm = formId !== "" && session.tree.getElementById(formId) === identity.form
+    } else {
+      let parent = identity.submitter.parent
+      while (parent && parent !== identity.form) parent = parent.parent
+      ownsForm = parent === identity.form
+    }
+    if (!ownsForm) {
+      throw new StateError("Form submission proposal submitter no longer owns its form", {
+        target: identity.submitter.key,
+      })
+    }
   }
   if (identity.destinationFrame) {
     const frameId = identity.destinationFrameId

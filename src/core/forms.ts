@@ -652,14 +652,18 @@ export class FormControlRegistry {
     const visit = (node: ProtocolNode) => {
       const record = this.records.get(node)
       if (record && record !== submitter && record.descriptor.kind !== "submitter") {
+        this.assertRecordActive(record)
         append(record.descriptor)
       }
       if (node.kind === "document" || isElement(node)) {
         for (const child of node.children) visit(child)
       }
     }
-    for (const child of this.form.children) visit(child)
-    if (submitter) append(submitter.descriptor)
+    visit(this.session.tree.document)
+    if (submitter) {
+      this.assertRecordActive(submitter)
+      append(submitter.descriptor)
+    }
     return Object.freeze(entries)
   }
 
@@ -673,6 +677,27 @@ export class FormControlRegistry {
       throw new TargetError(`No active form control has key ${JSON.stringify(nodeKey)}`, {
         target: nodeKey,
       })
+    }
+    const formId = attributeValue(node, "form")
+    if (formId !== undefined) {
+      if (formId === "") {
+        throw new TargetError(`Form control ${JSON.stringify(nodeKey)} has a blank form owner`, {
+          target: nodeKey,
+        })
+      }
+      const owner = this.session.tree.getElementById(formId)
+      if (!owner) {
+        throw new TargetError(
+          `Form control ${JSON.stringify(nodeKey)} references a missing form owner`,
+          { target: nodeKey },
+        )
+      }
+      if (owner !== this.form) {
+        throw new TargetError(`Form control ${JSON.stringify(nodeKey)} belongs to another form`, {
+          target: nodeKey,
+        })
+      }
+      return node
     }
     let parent = node.parent
     while (parent && parent !== this.form) parent = parent.parent
@@ -694,6 +719,12 @@ export class FormControlRegistry {
     }
     const node = this.session.tree.getNodeByKey(nodeKey)
     if (!node || !isElement(node)) return undefined
+    const formId = attributeValue(node, "form")
+    if (formId !== undefined) {
+      return formId !== "" && this.session.tree.getElementById(formId) === this.form
+        ? node
+        : undefined
+    }
     let parent = node.parent
     while (parent && parent !== this.form) parent = parent.parent
     return parent === this.form ? node : undefined
@@ -707,6 +738,7 @@ export class FormControlRegistry {
     if (!record || this.records.get(record.node) !== record) {
       throw new TargetError("Form submitter selection is no longer active")
     }
+    this.assertRecordActive(record)
     if (record?.descriptor.kind !== "submitter") {
       throw new TargetError(`Form control ${JSON.stringify(record.node.key)} is not a submitter`, {
         target: record.node.key,
@@ -733,6 +765,27 @@ export class FormControlRegistry {
     this.assertActive()
     if (this.records.get(record.node) !== record) {
       throw new StateError("Form control registration is no longer active", {
+        target: record.node.key,
+      })
+    }
+    if (this.session.tree.getNodeByKey(record.node.key) !== record.node) {
+      throw new StateError("Form control registration no longer owns its node", {
+        target: record.node.key,
+      })
+    }
+    const formId = attributeValue(record.node, "form")
+    if (formId !== undefined) {
+      if (formId === "" || this.session.tree.getElementById(formId) !== this.form) {
+        throw new StateError("Form control registration no longer owns its form", {
+          target: record.node.key,
+        })
+      }
+      return
+    }
+    let parent = record.node.parent
+    while (parent && parent !== this.form) parent = parent.parent
+    if (parent !== this.form) {
+      throw new StateError("Form control registration no longer owns its form", {
         target: record.node.key,
       })
     }

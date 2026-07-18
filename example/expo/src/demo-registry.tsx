@@ -247,6 +247,7 @@ const form = defineComponent({
   },
   children: "nodes",
   component: DemoFormComponent,
+  formOwner: true,
   schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
   tag: "DemoForm",
 });
