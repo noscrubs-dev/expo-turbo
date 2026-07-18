@@ -56,10 +56,16 @@ export type DocumentCommitCandidate =
       }>)
   | (DocumentResponseReport & Readonly<{ rootLocation: string; status: "empty" }>)
 
+export type DocumentTreeCommitCandidate = Extract<
+  DocumentCommitCandidate,
+  Readonly<{ status: "committed" }>
+>
+
 export type DocumentCommitDisposition = "commit" | "discard"
 
 export interface DocumentLoadOptions {
   readonly beforeCommit?: (candidate: DocumentCommitCandidate) => DocumentCommitDisposition
+  readonly beforeTreeCommit?: (candidate: DocumentTreeCommitCandidate) => undefined
 }
 
 export interface DocumentRequestLoaderOptions {
@@ -132,12 +138,13 @@ export class DocumentRequestLoader {
     this.session.captureSnapshot(cache)
   }
 
-  cancel(owner?: object): void {
+  cancel(owner?: object): boolean {
     const active = this.active
-    if (!active || (owner && active.owner !== owner)) return
-    if (active.lease) this.ownership.cancel(active.lease)
-    else active.controller.abort()
+    if (!active || (owner && active.owner !== owner)) return false
+    if (active.lease && !this.ownership.cancel(active.lease)) return false
+    if (!active.lease) active.controller.abort()
     if (this.active === active) this.active = undefined
+    return true
   }
 
   resolveSource(source: string): string {
@@ -241,10 +248,10 @@ export class DocumentRequestLoader {
 
     if (!commit) throw new RequestError("Document request did not produce a terminal outcome")
     const candidateStatus = commit.tree ? ("committed" as const) : ("empty" as const)
-    let disposition: DocumentCommitDisposition = "commit"
-    if (options.beforeCommit) {
+    let candidate: DocumentCommitCandidate | undefined
+    if (options.beforeCommit || (options.beforeTreeCommit && candidateStatus === "committed")) {
       try {
-        const candidate: DocumentCommitCandidate = Object.freeze({
+        candidate = Object.freeze({
           classification: commit.classification,
           redirected: commit.redirected,
           requestId,
@@ -254,6 +261,19 @@ export class DocumentRequestLoader {
           status: candidateStatus,
           url: commit.finalUrl,
         })
+      } catch (error) {
+        this.release(active)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document commit candidate creation failed", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
+    }
+    let disposition: DocumentCommitDisposition = "commit"
+    if (options.beforeCommit) {
+      try {
+        if (!candidate) throw new RequestError("Document commit candidate is unavailable")
         disposition = options.beforeCommit(candidate)
         if (disposition !== "commit" && disposition !== "discard") {
           throw new RequestError("Document commit disposition must be commit or discard", {
@@ -271,8 +291,8 @@ export class DocumentRequestLoader {
       }
     }
     if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
-    this.release(active)
     if (disposition === "discard") {
+      this.release(active)
       return Object.freeze({
         classification: commit.classification,
         redirected: commit.redirected,
@@ -293,13 +313,55 @@ export class DocumentRequestLoader {
       status: candidateStatus,
       url: commit.finalUrl,
     })
-    if (candidateStatus === "empty") return report
+    if (candidateStatus === "empty") {
+      this.release(active)
+      return report
+    }
     if (!commit.tree) {
+      this.release(active)
       throw new RequestError("Committed document candidate requires a parsed tree", {
         method: "GET",
         responseStatus: commit.response.status,
       })
     }
+    if (options.beforeTreeCommit) {
+      const lease = active.lease
+      if (!lease) {
+        this.release(active)
+        throw new RequestError("Document tree commit requires active request ownership", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
+      try {
+        if (!candidate) {
+          throw new RequestError("Document tree commit candidate is unavailable", {
+            method: "GET",
+            responseStatus: commit.response.status,
+          })
+        }
+        const acquired = this.ownership.commitDocument(lease, () => {
+          const result = options.beforeTreeCommit?.(candidate as DocumentTreeCommitCandidate)
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => undefined)
+            throw new RequestError("Document tree commit callback must not return a value", {
+              method: "GET",
+              responseStatus: commit.response.status,
+            })
+          }
+        })
+        if (!acquired) return this.canceled(active, commit.finalUrl)
+      } catch (error) {
+        this.release(active)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document tree commit callback failed", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
+      if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
+    }
+    this.release(active)
     try {
       this.session.replaceTree(commit.tree)
     } catch {
