@@ -5,6 +5,7 @@ import {
   type DocumentLoadReport,
   type DocumentRequestLoader,
 } from "./document-loader"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { RequestError, TargetError } from "./errors"
 import {
   classifyTopLevelLocationAgainstRoot,
@@ -25,6 +26,7 @@ export interface DocumentVisitSnapshot {
 export interface DocumentVisitControllerOptions {
   readonly onObserverError?: (error: AggregateError) => void
   readonly progressDelayMs?: number
+  readonly snapshotCache?: DocumentSnapshotCache
 }
 
 export interface DocumentVisitOptions {
@@ -58,6 +60,7 @@ export class DocumentVisitController {
   private readonly onObserverError: ((error: AggregateError) => void) | undefined
   private readonly progressDelayMs: number
   private readonly requestOwner = Object.freeze({})
+  private readonly snapshotCache: DocumentSnapshotCache | undefined
   private progressHandle: unknown
   private progressVisible = false
   private revision = 0
@@ -72,6 +75,7 @@ export class DocumentVisitController {
   ) {
     this.onObserverError = options.onObserverError
     this.progressDelayMs = options.progressDelayMs ?? DOCUMENT_VISIT_PROGRESS_DELAY_MS
+    this.snapshotCache = options.snapshotCache
     if (!Number.isFinite(this.progressDelayMs) || this.progressDelayMs < 0) {
       throw new RequestError("Document visit progress delay must be a non-negative number")
     }
@@ -99,7 +103,7 @@ export class DocumentVisitController {
       return this.delegateInitial(admission, action, options.navigation)
     }
 
-    return this.startVisit(admission.url, options.navigation)
+    return this.startVisit(admission.url, options.navigation, this.snapshotCache)
   }
 
   /**
@@ -130,7 +134,11 @@ export class DocumentVisitController {
     return () => this.errorListeners.delete(listener)
   }
 
-  private startVisit(source: string, navigation?: NavigationAdapter): Promise<DocumentVisitResult> {
+  private startVisit(
+    source: string,
+    navigation?: NavigationAdapter,
+    snapshotCache?: DocumentSnapshotCache,
+  ): Promise<DocumentVisitResult> {
     const epoch = ++this.visitEpoch
     this.loader.cancel(this.requestOwner)
     this.clearProgress()
@@ -139,11 +147,17 @@ export class DocumentVisitController {
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
       beforeCommit: (candidate) => {
-        if (!candidate.redirected || candidate.classification !== "success") return "commit"
-        const disposition = this.redirectDisposition(candidate)
-        if (disposition.classification === "visitable") return "commit"
-        redirect = disposition
-        return "discard"
+        if (candidate.redirected && candidate.classification === "success") {
+          const disposition = this.redirectDisposition(candidate)
+          if (disposition.classification !== "visitable") {
+            redirect = disposition
+            return "discard"
+          }
+        }
+        if (candidate.status === "committed" && snapshotCache) {
+          this.loader.captureCurrentSnapshot(snapshotCache)
+        }
+        return "commit"
       },
     })
     if (epoch === this.visitEpoch && this.status === "started") {

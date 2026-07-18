@@ -8,6 +8,7 @@ import type {
   TurboResponse,
 } from "../adapters"
 import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
+import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
   DocumentVisitController,
@@ -16,6 +17,7 @@ import { ContentTypeError, ParseError, RequestError, TargetError } from "./error
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
+import { attributeValue } from "./tree"
 
 interface PendingRequest {
   readonly request: TurboRequest
@@ -71,6 +73,7 @@ function harness(
     fetch?: FetchAdapter["fetch"]
     onObserverError?: (error: AggregateError) => void
     progressDelayMs?: number
+    snapshotCache?: DocumentSnapshotCache
   }> = {},
 ) {
   const pending: PendingRequest[] = []
@@ -96,6 +99,7 @@ function harness(
   const controller = new DocumentVisitController(loader, clock, {
     ...(options.onObserverError ? { onObserverError: options.onObserverError } : {}),
     ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
+    ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
   })
   return { clock, controller, loader, pending, session }
 }
@@ -149,8 +153,53 @@ describe("Document visit controller", () => {
     expect(session.tree.getElementById("next")?.tagName).toBe("Next")
   })
 
+  test("captures the latest outgoing truth immediately before an advance commit", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const { controller, pending, session } = harness({
+      documentXml:
+        '<Gallery><Old id="old" data-state="initial" /><Temporary id="temporary" data-turbo-temporary="" /></Gallery>',
+      snapshotCache,
+    })
+    const visit = controller.visit("/next")
+    expect(snapshotCache.size).toBe(0)
+
+    session.setAttribute("id:old", "data-state", "latest")
+    pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    const cached = snapshotCache.get("https://example.test/current")
+    const old = cached?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+    expect(cached?.getElementById("temporary")).toBeUndefined()
+    expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+    expect(session.tree.getElementById("old")).toBeUndefined()
+  })
+
+  test("commits an advance without caching a no-cache outgoing document", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const { controller, pending, session } = harness({
+      documentXml: '<Gallery data-turbo-cache-control="no-cache"><Old id="old" /></Gallery>',
+      snapshotCache,
+    })
+    const visit = controller.visit("/next")
+    pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(snapshotCache.size).toBe(0)
+    expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+  })
+
   test("clears fast-visit progress and ignores a manually fired stale timer", async () => {
-    const { clock, controller, pending, session } = harness()
+    const snapshotCache = new DocumentSnapshotCache()
+    const { clock, controller, pending, session } = harness({ snapshotCache })
     const visit = controller.visit("/empty")
     const timer = clock.timers[0]
 
@@ -168,6 +217,7 @@ describe("Document visit controller", () => {
     expect(controller.state).toBe(terminal)
     expect(controller.state.status).toBe("completed")
     expect(session.tree.getElementById("old")?.tagName).toBe("Old")
+    expect(snapshotCache.size).toBe(0)
   })
 
   test("commits authoritative HTTP error documents before publishing failed", async () => {
@@ -175,7 +225,8 @@ describe("Document visit controller", () => {
       { classification: "client-error", status: 422 },
       { classification: "server-error", status: 500 },
     ] as const) {
-      const { controller, pending, session } = harness()
+      const snapshotCache = new DocumentSnapshotCache()
+      const { controller, pending, session } = harness({ snapshotCache })
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
       const visit = controller.visit(`/error-${fixture.status}`)
@@ -195,6 +246,7 @@ describe("Document visit controller", () => {
       expect(controller.state.busy).toBe(false)
       expect(errors).toHaveLength(0)
       expect(session.tree.getElementById(`error-${fixture.status}`)?.tagName).toBe("Error")
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
     }
   })
 
@@ -218,7 +270,11 @@ describe("Document visit controller", () => {
     ]
 
     for (const fixture of fixtures) {
-      const { clock, controller, session } = harness({ fetch: fixture.fetch })
+      const snapshotCache = new DocumentSnapshotCache()
+      const { clock, controller, session } = harness({
+        fetch: fixture.fetch,
+        snapshotCache,
+      })
       const tree = session.tree
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
@@ -233,11 +289,13 @@ describe("Document visit controller", () => {
       expect(errors[0]).toBeInstanceOf(fixture.error)
       expect(clock.timers[0]?.cleared).toBe(true)
       expect(session.tree).toBe(tree)
+      expect(snapshotCache.size).toBe(0)
     }
   })
 
   test("cancels immediately and ignores every later request and timer callback", async () => {
-    const { clock, controller, pending, session } = harness()
+    const snapshotCache = new DocumentSnapshotCache()
+    const { clock, controller, pending, session } = harness({ snapshotCache })
     const visit = controller.visit("/pending")
     const loading = controller.state
 
@@ -258,6 +316,7 @@ describe("Document visit controller", () => {
     clock.fire(0)
     expect(controller.state).toBe(canceled)
     expect(session.tree.getElementById("late")).toBeUndefined()
+    expect(snapshotCache.size).toBe(0)
 
     const retry = controller.visit("/retry")
     pending[1]?.resolve(
@@ -483,7 +542,8 @@ describe("Document visit controller", () => {
       openExternal() {},
       visit: (url) => navigationCalls.push(url),
     }
-    const { controller, pending } = harness()
+    const snapshotCache = new DocumentSnapshotCache()
+    const { controller, pending } = harness({ snapshotCache })
     const active = controller.visit("/pending")
     const started = controller.state
 
@@ -497,6 +557,7 @@ describe("Document visit controller", () => {
     expect(pending).toHaveLength(1)
     expect(pending[0]?.request.signal?.aborted).toBe(false)
     expect(controller.state).toBe(started)
+    expect(snapshotCache.size).toBe(0)
     pending[0]?.resolve(
       response('<Gallery><Done id="done" /></Gallery>', {
         url: "https://example.test/pending",
@@ -506,8 +567,10 @@ describe("Document visit controller", () => {
   })
 
   test("refreshes exact current truth without exposing general replace-history visits", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+      snapshotCache,
     })
 
     expect(await controller.refreshCurrent("https://example.test/stale")).toBeUndefined()
@@ -526,6 +589,7 @@ describe("Document visit controller", () => {
     )
     expect(await refreshing).toMatchObject({ status: "committed" })
     expect(session.tree.getElementById("fresh")).toBeDefined()
+    expect(snapshotCache.size).toBe(0)
   })
 
   test("delegates root-external, excluded-extension, and cross-origin proposals without disturbing the current visit", async () => {
@@ -587,6 +651,7 @@ describe("Document visit controller", () => {
   })
 
   test("reproposes a successful redirect against the response document root before commit", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
     const navigationCalls: { action: string; url: string }[] = []
     const navigation: NavigationAdapter = {
       back() {},
@@ -595,6 +660,7 @@ describe("Document visit controller", () => {
     }
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+      snapshotCache,
     })
     const previousTree = session.tree
     const visit = controller.visit("/app/start", { navigation })
@@ -616,6 +682,7 @@ describe("Document visit controller", () => {
     expect(navigationCalls).toEqual([{ action: "replace", url: "https://example.test/app/final" }])
     expect(session.tree).toBe(previousTree)
     expect(session.tree.getElementById("discarded")).toBeUndefined()
+    expect(snapshotCache.size).toBe(0)
     expect(controller.state).toMatchObject({ busy: false, status: "completed" })
   })
 
@@ -910,7 +977,8 @@ describe("Document visit controller", () => {
       { expected: "completed", status: 200 },
       { expected: "failed", status: 422 },
     ] as const) {
-      const { controller, pending, session } = harness()
+      const snapshotCache = new DocumentSnapshotCache()
+      const { controller, pending, session } = harness({ snapshotCache })
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
       session.registerDisposal("id:old", () => {
@@ -930,6 +998,7 @@ describe("Document visit controller", () => {
       expect(errors).toHaveLength(1)
       expect(errors[0]).toBeInstanceOf(DocumentCommitError)
       expect(session.tree.getElementById(`committed-${fixture.status}`)?.tagName).toBe("Committed")
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
     }
   })
 

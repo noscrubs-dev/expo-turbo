@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import {
@@ -125,6 +126,10 @@ export class DocumentRequestLoader {
 
   get currentUrl(): string | undefined {
     return this.session.tree.document.url
+  }
+
+  captureCurrentSnapshot(cache: DocumentSnapshotCache): void {
+    this.session.captureSnapshot(cache)
   }
 
   cancel(owner?: object): void {
