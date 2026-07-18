@@ -5,6 +5,7 @@ import {
   EXPO_TURBO_STATUS,
   FormSubmissionController,
   type FormSubmissionReport,
+  FrameCommitError,
   subscribeDocumentHistoryTraversal,
 } from "./index"
 
@@ -12,6 +13,7 @@ describe("package status", () => {
   test("does not claim runtime compatibility", () => {
     expect(EXPO_TURBO_STATUS).toBe("foundation")
     expect(FormSubmissionController).toBeFunction()
+    expect(FrameCommitError).toBeFunction()
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
   })

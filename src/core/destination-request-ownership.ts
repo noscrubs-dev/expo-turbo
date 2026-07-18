@@ -21,6 +21,7 @@ export interface FrameRequestCheckpoint {
 class DestinationRequestOwnership {
   private document: DestinationRequestLease | undefined
   private documentCommit: DestinationRequestLease | undefined
+  private frameCommit: DestinationRequestLease | undefined
   private readonly frameGenerations = new WeakMap<ProtocolElement, number>()
   private readonly frames = new Map<string, DestinationRequestLease>()
   private readonly sourceOwners = new WeakMap<object, DestinationRequestLease>()
@@ -67,7 +68,7 @@ class DestinationRequestOwnership {
   }
 
   cancel(lease: DestinationRequestLease): boolean {
-    if (this.documentCommit === lease) return false
+    if (this.documentCommit === lease || this.frameCommit === lease) return false
     this.detach(lease)
     lease.controller.abort()
     return true
@@ -110,7 +111,7 @@ class DestinationRequestOwnership {
       throw new StateError("Document commit ownership requires a document lease")
     }
     if (!this.owns(lease)) return false
-    if (this.documentCommit) {
+    if (this.documentCommit || this.frameCommit) {
       throw new StateError("A document commit transaction is already active")
     }
     this.documentCommit = lease
@@ -119,6 +120,23 @@ class DestinationRequestOwnership {
       return true
     } finally {
       if (this.documentCommit === lease) this.documentCommit = undefined
+    }
+  }
+
+  commitFrame(lease: DestinationRequestLease, callback: () => void): boolean {
+    if (lease.destination !== "frame") {
+      throw new StateError("Frame commit ownership requires a Frame lease")
+    }
+    if (!this.owns(lease)) return false
+    if (this.documentCommit || this.frameCommit) {
+      throw new StateError("A Frame commit transaction is already active")
+    }
+    this.frameCommit = lease
+    try {
+      callback()
+      return true
+    } finally {
+      if (this.frameCommit === lease) this.frameCommit = undefined
     }
   }
 
@@ -170,6 +188,9 @@ class DestinationRequestOwnership {
   private claim(lease: DestinationRequestLease): DestinationRequestLease {
     if (this.documentCommit) {
       throw new StateError("Destination requests cannot start during a document commit transaction")
+    }
+    if (this.frameCommit) {
+      throw new StateError("Destination requests cannot start during a Frame commit transaction")
     }
     const displaced = new Set<DestinationRequestLease>()
     const destinationLease =

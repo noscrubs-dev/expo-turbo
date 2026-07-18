@@ -338,6 +338,13 @@ export class DocumentTree {
     if (index !== -1) attributes.splice(index, 1)
   }
 
+  retargetDocumentUrl(url: string): void {
+    if (typeof url !== "string" || url.trim() === "") {
+      throw new TargetError("Document URL must be a nonblank string")
+    }
+    ;(this.document as { url?: string }).url = url
+  }
+
   private assertActiveParent(parent: ProtocolParentNode): void {
     if (!this.nodes.has(parent)) throw new TargetError("Parent is outside the active document")
   }

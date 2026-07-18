@@ -3,8 +3,14 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
-import { ContentTypeError, FrameMissingError, TargetError } from "./errors"
-import { applyFrameResponse, type FrameResponseReport } from "./frames"
+import { ContentTypeError, FrameMissingError, RequestError, TargetError } from "./errors"
+import {
+  commitPreparedFrameMutation,
+  dispatchPreparedFrameResponseStreams,
+  prepareFrameMutation,
+  prepareFrameResponseTree,
+} from "./frame-response-application"
+import type { FrameResponseReport } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
 import {
   EXPO_TURBO_MIME_TYPE,
@@ -30,6 +36,44 @@ export interface FrameLoadReport {
   readonly url: string
 }
 
+export interface FrameTreeCommitCandidate {
+  readonly frameId: string
+  readonly redirected: boolean
+  readonly requestId: string
+  readonly requestIds: readonly string[]
+  readonly requestedUrl: string
+  readonly responseStatus: number
+  readonly url: string
+}
+
+export interface FrameLoadOptions {
+  /**
+   * Runs synchronously after response extraction and structural preflight but before the
+   * prepared Frame mutation begins. The callback must be atomic-on-error and must not mutate
+   * the document session or reenter package controllers.
+   */
+  readonly beforeFrameCommit?: (candidate: FrameTreeCommitCandidate) => undefined
+  /** Exact owner token used by cancellation and controller lifecycle coordination. */
+  readonly owner?: object
+}
+
+export interface FrameCommittedOutcome extends FrameTreeCommitCandidate {
+  readonly status: "completed"
+}
+
+export class FrameCommitError extends RequestError {
+  readonly outcome: FrameCommittedOutcome
+
+  constructor(candidate: FrameTreeCommitCandidate) {
+    super("Frame committed but session finalization failed", {
+      frameId: candidate.frameId,
+      method: "GET",
+      responseStatus: candidate.responseStatus,
+    })
+    this.outcome = Object.freeze({ ...candidate, status: "completed" })
+  }
+}
+
 export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
   readonly maxRecurseDepth?: number
@@ -51,6 +95,56 @@ function recurseFrame(
     const source = attributeValue(frame, "src")
     const recurse = attributeValue(frame, "recurse")?.split(/\s+/).filter(Boolean)
     return Boolean(id && source && recurse?.includes(targetFrameId))
+  })
+}
+
+function frameLoadOptions(options: FrameLoadOptions): FrameLoadOptions {
+  if (!options || typeof options !== "object") {
+    throw new RequestError("Frame load options must be an object", { method: "GET" })
+  }
+  let isArray: boolean
+  try {
+    isArray = Array.isArray(options)
+  } catch {
+    throw new RequestError("Frame load options could not be read", { method: "GET" })
+  }
+  if (isArray) {
+    throw new RequestError("Frame load options must be an object", { method: "GET" })
+  }
+
+  let descriptors: Record<PropertyKey, PropertyDescriptor>
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(options) as Record<
+      PropertyKey,
+      PropertyDescriptor
+    >
+  } catch {
+    throw new RequestError("Frame load options could not be read", { method: "GET" })
+  }
+  const keys = Reflect.ownKeys(descriptors)
+  if (keys.some((key) => key !== "beforeFrameCommit" && key !== "owner")) {
+    throw new RequestError("Frame load options contain unsupported fields", { method: "GET" })
+  }
+  if (
+    keys.some((key) => {
+      const descriptor = descriptors[key]
+      return !descriptor || !("value" in descriptor)
+    })
+  ) {
+    throw new RequestError("Frame load options must use data properties", { method: "GET" })
+  }
+
+  const beforeFrameCommit = descriptors.beforeFrameCommit?.value
+  if (beforeFrameCommit !== undefined && typeof beforeFrameCommit !== "function") {
+    throw new RequestError("Frame commit callback must be a function", { method: "GET" })
+  }
+  const owner = descriptors.owner?.value
+  if (owner !== undefined && (!owner || typeof owner !== "object")) {
+    throw new RequestError("Frame load owner must be an object", { method: "GET" })
+  }
+  return Object.freeze({
+    ...(beforeFrameCommit ? { beforeFrameCommit } : {}),
+    ...(owner ? { owner } : {}),
   })
 }
 
@@ -80,15 +174,25 @@ export class FrameRequestLoader {
     }
   }
 
-  cancel(frameId: string, owner?: object): void {
+  cancel(frameId: string, owner?: object): boolean {
     const active = this.active.get(frameId)
-    if (!active || (owner && active.owner !== owner)) return
-    if (active.lease) this.ownership.cancel(active.lease)
-    else active.controller.abort()
+    if (!active || (owner && active.owner !== owner)) return false
+    if (active.lease) {
+      if (!this.ownership.cancel(active.lease)) return false
+    } else {
+      active.controller.abort()
+    }
     if (this.active.get(frameId) === active) this.active.delete(frameId)
+    return true
   }
 
-  async load(frameId: string, source: string, owner?: object): Promise<FrameLoadReport> {
+  async load(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions = {},
+  ): Promise<FrameLoadReport> {
+    const loadOptions = frameLoadOptions(options)
+    const owner = loadOptions.owner
     const url = this.resolveSameOrigin(source, undefined, frameId)
     const frame = this.session.tree.getElementById(frameId)
     if (frame?.kind !== "frame") {
@@ -126,6 +230,7 @@ export class FrameRequestLoader {
       let recurseDepth = 0
       let responseStatus: number | undefined
       let responseUrl = url
+      let responseRedirected = false
       const visited = new Set([url])
       let preparedRequest:
         | Readonly<{ headers: Readonly<Record<string, string>>; requestId: string }>
@@ -161,6 +266,7 @@ export class FrameRequestLoader {
         if (recurseDepth === 0) {
           responseStatus = response.status
           responseUrl = finalUrl
+          responseRedirected = response.redirected || finalUrl !== url
         }
         if (response.status === 204) {
           if (recurseDepth > 0) {
@@ -196,17 +302,88 @@ export class FrameRequestLoader {
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
-          const frame = applyFrameResponse(this.session, frameId, xml, {
+          const prepared = prepareFrameResponseTree(frameId, document)
+          const mutation = prepareFrameMutation(this.session, frame, prepared, {
             finalUrl: responseUrl,
-            ...this.streamOptions,
           })
-          this.release(frameId, active)
-          return Object.freeze({
-            frame,
+          const candidate: FrameTreeCommitCandidate = Object.freeze({
             frameId,
+            redirected: responseRedirected,
             requestId: requestIds[0] ?? requestId,
             requestIds: Object.freeze([...requestIds]),
+            requestedUrl: url,
             responseStatus: responseStatus ?? response.status,
+            url: responseUrl,
+          })
+          if (loadOptions.beforeFrameCommit) {
+            const lease = active.lease
+            if (!lease) {
+              throw new RequestError("Frame commit requires active request ownership", {
+                frameId,
+                method: "GET",
+                responseStatus: candidate.responseStatus,
+              })
+            }
+            let callbackEntered = false
+            let callbackContractError: RequestError | undefined
+            try {
+              const acquired = this.ownership.commitFrame(lease, () => {
+                callbackEntered = true
+                const result = loadOptions.beforeFrameCommit?.(candidate)
+                if (result !== undefined) {
+                  void Promise.resolve(result).catch(() => undefined)
+                  callbackContractError = new RequestError(
+                    "Frame commit callback must not return a value",
+                    {
+                      frameId,
+                      method: "GET",
+                      responseStatus: candidate.responseStatus,
+                    },
+                  )
+                  throw callbackContractError
+                }
+              })
+              if (!acquired) return this.canceled(frameId, requestIds, responseUrl, active)
+            } catch (error) {
+              if (error === callbackContractError) throw error
+              if (callbackEntered) {
+                throw new RequestError("Frame commit callback failed", {
+                  frameId,
+                  method: "GET",
+                  responseStatus: candidate.responseStatus,
+                })
+              }
+              throw error
+            }
+            if (!this.owns(frameId, active)) {
+              return this.canceled(frameId, requestIds, responseUrl, active)
+            }
+          }
+
+          const revision = this.session.revision
+          let frameReport: FrameResponseReport
+          try {
+            commitPreparedFrameMutation(this.session, mutation)
+            const streams = dispatchPreparedFrameResponseStreams(
+              this.session,
+              prepared,
+              this.streamOptions,
+              {
+                shouldContinue: () => Boolean(active.lease && this.ownership.retains(active.lease)),
+              },
+            )
+            frameReport = Object.freeze({ finalUrl: responseUrl, frameId, streams })
+          } catch (error) {
+            if (this.session.revision !== revision) throw new FrameCommitError(candidate)
+            throw error
+          }
+          this.release(frameId, active)
+          return Object.freeze({
+            frame: frameReport,
+            frameId,
+            requestId: candidate.requestId,
+            requestIds: candidate.requestIds,
+            responseStatus: candidate.responseStatus,
             status: "completed",
             url: responseUrl,
           })
@@ -244,6 +421,10 @@ export class FrameRequestLoader {
         recurseDepth += 1
       }
     } catch (error) {
+      if (error instanceof FrameCommitError) {
+        this.release(frameId, active)
+        throw error
+      }
       if (active.controller.signal.aborted || !this.owns(frameId, active)) {
         return this.canceled(frameId, requestIds, url, active)
       }
