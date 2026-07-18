@@ -104,6 +104,11 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       throw new TargetError("Frame visit fragments require navigation support")
     }
     const target = resolveFrameTarget(this.session.tree, options.frame, options)
+    if (options.action !== undefined && target.kind === "frame") {
+      throw new TargetError("Frame action visits require history support", {
+        frameId: target.frameId,
+      })
+    }
 
     if (resolved.urlOrigin !== resolved.documentOrigin) {
       if (!this.navigation) throw new TargetError("External Frame visits require navigation")

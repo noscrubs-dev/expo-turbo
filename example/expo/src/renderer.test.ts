@@ -3476,6 +3476,224 @@ describe("React protocol renderer", () => {
     }
   })
 
+  test("uses advance for exact advance and Turbo non-actions on plain top-level links", async () => {
+    for (const { action, href } of [
+      { action: "advance", href: "/advance-action" },
+      { action: "", href: "/blank-action" },
+      { action: "bogus", href: "/invalid-action" },
+      { action: "Advance", href: "/case-action" },
+      { action: " advance ", href: "/spaced-action" },
+    ]) {
+      const requests: TurboRequest[] = []
+      const harness = renderDocumentLinks(
+        `<Gallery><DocumentLink href="${href}" data-turbo-action="${action}" /></Gallery>`,
+        async (request) => {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => "<Gallery />",
+            url: request.url,
+          }
+        },
+      )
+
+      let result: unknown
+      await act(async () => {
+        result = await harness.activation(href)()
+      })
+
+      expect(result).toMatchObject({ status: "committed", url: `https://example.test${href}` })
+      expect(requests).toHaveLength(1)
+      act(() => harness.renderer.unmount())
+    }
+  })
+
+  test("keeps Turbo non-actions and browser-bypassed actions on their existing paths", async () => {
+    const documentRequests: TurboRequest[] = []
+    const external: string[] = []
+    const frameRequests: TurboRequest[] = []
+    const navigation: { action: string; url: string }[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <turbo-frame id="frame"><DocumentLink href="/app/frame-non-action" data-turbo-action="bogus" /></turbo-frame>
+        <turbo-frame id="named" />
+        <DocumentLink href="/app/named-frame-non-action" data-turbo-frame="named" data-turbo-action="" />
+        <DocumentLink href="https://outside.test/action" data-turbo-action="replace" />
+        <DocumentLink href="mailto:action@example.com" data-turbo-action="restore" />
+        <DocumentLink href="/outside-root-action" data-turbo-action="restore" />
+        <Gallery data-turbo="false"><DocumentLink href="/app/opted-out-action" data-turbo-action="replace" /></Gallery>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("delegated action link must not fetch")
+      },
+      "https://example.test/app/gallery",
+      {
+        back() {},
+        openExternal: (url) => {
+          external.push(url)
+        },
+        visit: (url, action) => {
+          navigation.push({ action, url })
+        },
+      },
+      async (request) => {
+        frameRequests.push(request)
+        const frameId = request.headers["Turbo-Frame"]
+        if (!frameId) throw new Error("Frame request is missing its target header")
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => `<turbo-frame id="${frameId}" />`,
+          url: request.url,
+        }
+      },
+    )
+
+    const results: unknown[] = []
+    for (const href of ["/app/frame-non-action", "/app/named-frame-non-action"]) {
+      await act(async () => {
+        results.push(await harness.activation(href)())
+      })
+    }
+    results.push(await harness.activation("https://outside.test/action")())
+    results.push(await harness.activation("mailto:action@example.com")())
+    results.push(await harness.activation("/outside-root-action")())
+    results.push(await harness.activation("/app/opted-out-action")())
+
+    expect(results.map((result) => (result as { kind: string }).kind)).toEqual([
+      "frame",
+      "frame",
+      "external",
+      "external",
+      "navigation",
+      "navigation",
+    ])
+    expect(documentRequests).toHaveLength(0)
+    expect(frameRequests.map((request) => request.headers["Turbo-Frame"])).toEqual([
+      "frame",
+      "named",
+    ])
+    expect(external).toEqual([
+      "https://outside.test/action",
+      "mailto:action@example.com",
+    ])
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/outside-root-action" },
+      { action: "advance", url: "https://example.test/app/opted-out-action" },
+    ])
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("supports promoted advance and rejects promoted history actions before ownership", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="frame">
+          <DocumentLink href="/top-action" data-turbo-action="advance" data-turbo-frame="_top" />
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("promoted action link must not fetch a Frame")
+      },
+    )
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("/top-action")()
+    })
+
+    expect(result).toMatchObject({
+      action: "advance",
+      kind: "top",
+      outcome: { status: "committed", url: "https://example.test/top-action" },
+      target: { kind: "top", requestedTarget: "_top" },
+      url: "https://example.test/top-action",
+    })
+    expect(documentRequests).toHaveLength(1)
+    expect(documentRequests[0]?.headers).not.toHaveProperty("Turbo-Frame")
+    expect(frameRequests).toHaveLength(0)
+    act(() => harness.renderer.unmount())
+
+    for (const action of ["replace", "restore"]) {
+      const rejectedDocumentRequests: TurboRequest[] = []
+      const rejectedFrameRequests: TurboRequest[] = []
+      const rejected = renderDocumentLinks(
+        `<Gallery>
+          <turbo-frame id="frame">
+            <DocumentLink href="/${action}-top-action" data-turbo-action="${action}" data-turbo-frame="_top" />
+          </turbo-frame>
+        </Gallery>`,
+        async (request) => {
+          rejectedDocumentRequests.push(request)
+          throw new Error("promoted history action must not fetch a document")
+        },
+        "https://example.test/gallery",
+        undefined,
+        async (request) => {
+          rejectedFrameRequests.push(request)
+          throw new Error("promoted history action must not fetch a Frame")
+        },
+      )
+
+      await expect(rejected.activation(`/${action}-top-action`)()).rejects.toBeInstanceOf(
+        TargetError,
+      )
+      expect(rejectedDocumentRequests).toHaveLength(0)
+      expect(rejectedFrameRequests).toHaveLength(0)
+      expect(rejected.controller.state.status).toBe("initialized")
+      act(() => rejected.renderer.unmount())
+    }
+  })
+
+  test("keeps recognized Frame-local actions fail-closed before request ownership", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="frame"><DocumentLink href="/frame-action" data-turbo-action="advance" /></turbo-frame>
+        <turbo-frame id="named" />
+        <DocumentLink href="/named-frame-action" data-turbo-frame="named" data-turbo-action="replace" />
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("Frame-local action link must not fetch a document")
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("Frame-local action link must not fetch a Frame")
+      },
+    )
+
+    for (const href of ["/frame-action", "/named-frame-action"]) {
+      await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
+    }
+    expect(documentRequests).toHaveLength(0)
+    expect(frameRequests).toHaveLength(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
   test("projects authored disabled link presence through the Expo Pressable", async () => {
     mock.module("react-native", () => ({
       Platform: { OS: "web" },
@@ -4377,6 +4595,7 @@ describe("React protocol renderer", () => {
         <DocumentLink href="/target" target="_blank" />
         <DocumentLink href="/case-target" target="_SELF" />
         <DocumentLink href="/action" data-turbo-action="replace" />
+        <DocumentLink href="/restore-action" data-turbo-action="restore" />
         <DocumentLink href="/confirm-alias" confirm="Continue?" />
         <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
       </Gallery>`,
@@ -4408,6 +4627,7 @@ describe("React protocol renderer", () => {
       "/target",
       "/case-target",
       "/action",
+      "/restore-action",
       "/confirm-alias",
       "/opted-out",
     ]) {
@@ -4438,7 +4658,7 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink id="dynamic" href="/dynamic" data-turbo-confirm="Continue?" />
-        <DocumentLink disabled="" download="" href="/disabled" target="_blank" data-turbo-confirm="Continue?" />
+        <DocumentLink disabled="" download="" href="/disabled" target="_blank" data-turbo-action="replace" data-turbo-confirm="Continue?" />
         <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" data-turbo-confirm="Continue?" /></turbo-frame>
         <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" data-turbo-confirm="Continue?" /></Gallery>
       </Gallery>`,
