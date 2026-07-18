@@ -17,9 +17,14 @@ export interface FrameHistoryCoordinatorOptions {
 }
 
 declare const FRAME_HISTORY_COMMIT_PLAN: unique symbol
+declare const FRAME_FORM_HISTORY_PLAN: unique symbol
 
 interface FrameHistoryCommitPlan {
   readonly [FRAME_HISTORY_COMMIT_PLAN]: true
+}
+
+interface FrameFormHistoryPlan {
+  readonly [FRAME_FORM_HISTORY_PLAN]: true
 }
 
 interface FrameHistoryCommitPlanState {
@@ -42,7 +47,24 @@ interface FrameHistoryCoordinatorState {
   readonly snapshotCache?: DocumentSnapshotCache
 }
 
+interface FrameFormHistoryPlanState {
+  readonly action: FrameHistoryAction
+  readonly documentNavigationEpoch: number
+  readonly frame: ProtocolElement
+  readonly frameScope: object
+  readonly history: DocumentHistory
+  readonly isMounted: () => boolean
+  readonly requestedUrl: string
+  readonly session: DocumentSession
+  snapshot?: DocumentTree
+  readonly snapshotCache?: DocumentSnapshotCache
+  snapshotUrl?: string
+  responseUrl?: string
+  status: "admitted" | "committed" | "ready" | "staged"
+}
+
 const frameHistoryCommitPlans = new WeakMap<FrameHistoryCommitPlan, FrameHistoryCommitPlanState>()
+const frameFormHistoryPlans = new WeakMap<FrameFormHistoryPlan, FrameFormHistoryPlanState>()
 const frameHistoryCoordinators = new WeakMap<
   FrameHistoryCoordinator,
   FrameHistoryCoordinatorState
@@ -65,6 +87,49 @@ function planState(plan: FrameHistoryCommitPlan): FrameHistoryCommitPlanState {
     throw new StateError("Frame history commit plan is invalid")
   }
   return state
+}
+
+function formPlanState(
+  plan: FrameFormHistoryPlan,
+  allowed: readonly FrameFormHistoryPlanState["status"][] = ["admitted", "ready", "staged"],
+): FrameFormHistoryPlanState {
+  const state = frameFormHistoryPlans.get(plan)
+  if (!state || !allowed.includes(state.status)) {
+    throw new StateError("Frame form history plan is invalid")
+  }
+  return state
+}
+
+function validateFormPlanIdentity(
+  state: FrameFormHistoryPlanState,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+): void {
+  if (state.session !== session || state.frame !== frame || state.requestedUrl !== requestedUrl) {
+    throw new StateError("Frame form history plan does not match the request")
+  }
+}
+
+function formPlanCurrent(state: FrameFormHistoryPlanState): boolean {
+  const frameId = attributeValue(state.frame, "id")
+  const current = state.history.current
+  return Boolean(
+    frameId &&
+      currentDocumentNavigationEpoch(state.session) === state.documentNavigationEpoch &&
+      state.session.tree.getElementById(frameId) === state.frame &&
+      state.isMounted() &&
+      current &&
+      canonicalDocumentUrl(state.session.tree.document.url) === current.url,
+  )
+}
+
+function formResponseUrl(state: FrameFormHistoryPlanState, finalUrl: string): string {
+  const disposition = classifyTopLevelLocation(state.session.tree, finalUrl)
+  if (disposition.classification !== "visitable" || disposition.url.includes("#")) {
+    throw new TargetError("Promoted Frame form responses require a root-visitable destination")
+  }
+  return disposition.url
 }
 
 function validateCandidate(
@@ -187,6 +252,205 @@ export function prepareFrameHistoryCommit(
   return plan
 }
 
+export function prepareFrameFormHistoryCommit(
+  coordinator: FrameHistoryCoordinator,
+  frameScope: object,
+  isMounted: () => boolean,
+  frame: ProtocolElement,
+  requestedUrl: string,
+  action: FrameHistoryAction,
+): FrameFormHistoryPlan {
+  const coordinatorState = frameHistoryCoordinators.get(coordinator)
+  if (!coordinatorState) throw new StateError("Frame history coordinator is invalid")
+  if (action !== "advance" && action !== "replace") {
+    throw new TargetError("Frame form history action is unsupported")
+  }
+  if (typeof isMounted !== "function" || !isMounted()) {
+    throw new StateError("Frame form history requires an exact mounted Frame controller")
+  }
+  const { history, session, snapshotCache } = coordinatorState
+  const disposition = classifyTopLevelLocation(session.tree, requestedUrl)
+  if (disposition.classification !== "visitable" || disposition.url.includes("#")) {
+    throw new TargetError("Promoted Frame forms require a root-visitable destination")
+  }
+  const frameId = attributeValue(frame, "id")
+  if (frame.kind !== "frame" || !frameId || session.tree.getElementById(frameId) !== frame) {
+    throw new StateError("Frame form history requires an exact active Frame", {
+      ...(frameId ? { frameId } : {}),
+    })
+  }
+  const current = history.current
+  if (!current || canonicalDocumentUrl(session.tree.document.url) !== current.url) {
+    throw new StateError(
+      "Document history must match the active document before Frame form promotion",
+    )
+  }
+
+  const plan = Object.freeze({}) as FrameFormHistoryPlan
+  frameFormHistoryPlans.set(plan, {
+    action,
+    documentNavigationEpoch: currentDocumentNavigationEpoch(session),
+    frame,
+    frameScope,
+    history,
+    isMounted,
+    requestedUrl: disposition.url,
+    session,
+    ...(snapshotCache ? { snapshotCache } : {}),
+    status: "ready",
+  })
+  return plan
+}
+
+export function frameFormHistoryPlanCurrent(
+  plan: FrameFormHistoryPlan,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+): boolean {
+  const state = formPlanState(plan, ["admitted", "committed", "ready", "staged"])
+  validateFormPlanIdentity(state, session, frame, requestedUrl)
+  return formPlanCurrent(state)
+}
+
+export function assertFrameFormHistoryPlanCurrent(
+  plan: FrameFormHistoryPlan,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+): void {
+  const state = formPlanState(plan, ["admitted", "committed", "ready", "staged"])
+  validateFormPlanIdentity(state, session, frame, requestedUrl)
+  if (!formPlanCurrent(state)) {
+    throw new StateError("Document history or the mounted Frame changed during form submission")
+  }
+}
+
+export function invalidateFrameFormHistoryCache(plan: FrameFormHistoryPlan): void {
+  formPlanState(plan, ["admitted", "ready", "staged"]).snapshotCache?.clear()
+}
+
+export function stageFrameFormHistoryResponse(
+  plan: FrameFormHistoryPlan,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+  finalUrl: string,
+  options: Readonly<{ invalidateCache: boolean; publishSource: boolean }>,
+): void {
+  const state = formPlanState(plan, ["ready"])
+  validateFormPlanIdentity(state, session, frame, requestedUrl)
+  if (!formPlanCurrent(state)) {
+    throw new StateError("Frame form history response was superseded")
+  }
+
+  let responseUrl: string
+  try {
+    responseUrl = formResponseUrl(state, finalUrl)
+  } catch (error) {
+    if (options.invalidateCache) state.snapshotCache?.clear()
+    throw error
+  }
+  const current = state.history.current
+  if (!current) {
+    if (options.invalidateCache) state.snapshotCache?.clear()
+    throw new StateError("Document history is not initialized")
+  }
+  const tree = session.tree
+  const treeGeneration = session.treeGeneration
+  let snapshot: DocumentTree | undefined
+  try {
+    snapshot = state.snapshotCache ? tree.clone() : undefined
+    if (
+      session.tree !== tree ||
+      session.treeGeneration !== treeGeneration ||
+      !formPlanCurrent(state) ||
+      state.history.current !== current
+    ) {
+      throw new StateError("Document history or the mounted Frame changed during snapshot capture")
+    }
+  } finally {
+    if (options.invalidateCache) state.snapshotCache?.clear()
+  }
+  if (!formPlanCurrent(state) || state.history.current !== current) {
+    throw new StateError("Document history or the mounted Frame changed during cache invalidation")
+  }
+  if (options.publishSource && attributeValue(frame, "src") !== responseUrl) {
+    session.setAttribute(frame.key, "src", responseUrl)
+  }
+  if (snapshot) state.snapshot = snapshot
+  state.snapshotUrl = current.url
+  state.responseUrl = responseUrl
+  state.status = options.publishSource ? "admitted" : "staged"
+}
+
+export function admitFrameFormHistoryResponse(
+  plan: FrameFormHistoryPlan,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+  finalUrl: string,
+): void {
+  const state = formPlanState(plan, ["admitted", "staged"])
+  validateFormPlanIdentity(state, session, frame, requestedUrl)
+  if (!formPlanCurrent(state)) throw new StateError("Frame form history response was superseded")
+  const responseUrl = formResponseUrl(state, finalUrl)
+  if (state.responseUrl !== responseUrl) {
+    throw new StateError("Frame form history response URL changed after admission")
+  }
+  if (state.status === "staged" && attributeValue(frame, "src") !== responseUrl) {
+    session.setAttribute(frame.key, "src", responseUrl)
+  }
+  state.status = "admitted"
+}
+
+export function commitFrameFormHistoryPlan(
+  plan: FrameFormHistoryPlan,
+  session: DocumentSession,
+  frame: ProtocolElement,
+  requestedUrl: string,
+  finalUrl: string,
+  expectedRevision: number,
+): DocumentHistoryEntry {
+  const state = formPlanState(plan, ["admitted"])
+  validateFormPlanIdentity(state, session, frame, requestedUrl)
+  if (!formPlanCurrent(state) || session.revision !== expectedRevision) {
+    throw new StateError("Frame form history proposal is stale")
+  }
+  const responseUrl = formResponseUrl(state, finalUrl)
+  if (state.responseUrl !== responseUrl || attributeValue(frame, "src") !== responseUrl) {
+    throw new StateError("Frame form history response was not admitted")
+  }
+
+  const current = state.history.current
+  if (!current) throw new StateError("Document history is not initialized")
+  const proposal =
+    state.action === "replace"
+      ? state.history.proposeFrameReplace(state.frameScope, responseUrl)
+      : state.history.proposeFrameAdvance(state.frameScope, responseUrl)
+  const tree = session.tree
+  const treeGeneration = session.treeGeneration
+  if (!formPlanCurrent(state) || state.history.current !== current) {
+    throw new StateError("Frame form history changed during proposal creation")
+  }
+  if (state.snapshot && state.snapshotCache && state.snapshotUrl) {
+    state.snapshotCache.put(state.snapshotUrl, state.snapshot)
+  }
+  if (
+    session.tree !== tree ||
+    session.treeGeneration !== treeGeneration ||
+    session.revision !== expectedRevision ||
+    !formPlanCurrent(state) ||
+    state.history.current !== current
+  ) {
+    throw new StateError("Frame form history changed during snapshot storage")
+  }
+
+  const entry = state.history.commitProposal(proposal)
+  state.status = "committed"
+  return entry
+}
+
 export function assertFrameHistoryCommitPlan(
   value: unknown,
 ): asserts value is FrameHistoryCommitPlan {
@@ -284,4 +548,4 @@ export function commitFrameHistoryPlan(
   return entry
 }
 
-export type { FrameHistoryCommitPlan }
+export type { FrameFormHistoryPlan, FrameHistoryCommitPlan }

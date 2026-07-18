@@ -39,6 +39,18 @@ import {
   type FormSubmissionProposal,
   type FormSubmissionProposalIdentity,
 } from "./form-submission-proposal"
+import type { FrameControllerRegistry } from "./frame-controller-registry"
+import {
+  admitFrameFormHistoryResponse,
+  assertFrameFormHistoryPlanCurrent,
+  commitFrameFormHistoryPlan,
+  type FrameFormHistoryPlan,
+  frameFormHistoryPlanCurrent,
+  invalidateFrameFormHistoryCache,
+  prepareFrameFormHistoryCommit,
+  stageFrameFormHistoryResponse,
+} from "./frame-history"
+import { resolveMountedFrameHistory } from "./frame-history-internal"
 import {
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
@@ -48,7 +60,11 @@ import {
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
-import { resolveProtocolUrl, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
+import {
+  EXPO_TURBO_MIME_TYPE,
+  resolveProtocolUrl,
+  TURBO_STREAM_MIME_TYPE,
+} from "./protocol-request"
 import type { DocumentSession } from "./session"
 import {
   dispatchGuardedTurboStreamElements,
@@ -160,6 +176,7 @@ export class FormSubmissionCommitError extends RequestError {
 
 export interface FormSubmissionControllerOptions extends StreamActionDispatchOptions {
   readonly confirmation?: FormConfirmationAdapter
+  readonly frameControllers?: FrameControllerRegistry
   readonly history?: DocumentHistory
   readonly limits?: Partial<ParseLimits>
   readonly snapshotCache?: DocumentSnapshotCache
@@ -280,6 +297,7 @@ export class FormSubmissionController {
     this.options = Object.freeze({
       ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
+      ...(options.frameControllers ? { frameControllers: options.frameControllers } : {}),
       ...(options.history ? { history: options.history } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
@@ -314,14 +332,12 @@ export class FormSubmissionController {
     }
 
     let historyPlan: DocumentFormHistoryPlan | undefined
+    let frameHistoryPlan: FrameFormHistoryPlan | undefined
     try {
       if (proposal.destination.kind === "document") {
         historyPlan = this.prepareDocumentHistory(identity)
       } else if (identity.visitAction) {
-        throw new TargetError("Frame form actions require mounted Frame history coordination", {
-          frameId: proposal.destination.frameId,
-          target: identity.form.key,
-        })
+        frameHistoryPlan = this.prepareFrameHistory(identity, plan.request.url)
       }
     } catch (error) {
       controller.abort()
@@ -379,6 +395,8 @@ export class FormSubmissionController {
             return settle(this.canceledPlan(plan, proposal.destination))
           }
           identity = assertActiveFormSubmissionProposal(this.session, proposal)
+          if (frameHistoryPlan)
+            this.assertFrameHistory(frameHistoryPlan, identity, plan.request.url)
         } catch (error) {
           controller.abort()
           identity.submissionActivity.finish(activityLease)
@@ -401,6 +419,8 @@ export class FormSubmissionController {
               frameId: proposal.destination.frameId,
             })
           }
+          if (frameHistoryPlan)
+            this.assertFrameHistory(frameHistoryPlan, identity, plan.request.url)
           if (identity.originFrame && identity.originFrameId !== proposal.destination.frameId) {
             originCheckpoint = this.ownership.checkpointFrame(identity.originFrame)
           }
@@ -414,6 +434,8 @@ export class FormSubmissionController {
         if (this.ownership.owns(lease)) {
           assertActiveFormSubmissionProposal(this.session, proposal)
           if (historyPlan) this.assertDocumentHistory(historyPlan)
+          if (frameHistoryPlan)
+            this.assertFrameHistory(frameHistoryPlan, identity, plan.request.url)
         }
       } catch (error) {
         if (lease) this.ownership.cancel(lease)
@@ -432,6 +454,7 @@ export class FormSubmissionController {
       }
       try {
         if (historyPlan) this.assertDocumentHistory(historyPlan)
+        if (frameHistoryPlan) this.assertFrameHistory(frameHistoryPlan, identity, plan.request.url)
       } catch (error) {
         this.ownership.cancel(activeLease)
         if (error instanceof ExpoTurboError) throw error
@@ -448,15 +471,52 @@ export class FormSubmissionController {
         this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
         response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
           beforeResponseBody: (admittedResponse) => {
-            if (
-              proposal.destination.kind === "frame" &&
+            if (proposal.destination.kind !== "frame" || !this.isCurrent(activeLease, proposal)) {
+              return undefined
+            }
+            const invalidatesCache =
               admittedResponse.contentType !== TURBO_STREAM_MIME_TYPE &&
               (admittedResponse.classification !== "success" ||
-                admittedResponse.effectiveMethod !== "GET") &&
-              this.isCurrent(activeLease, proposal)
-            ) {
-              this.options.snapshotCache?.clear()
+                admittedResponse.effectiveMethod !== "GET")
+            if (frameHistoryPlan) {
+              const destinationFrame = identity.destinationFrame
+              if (
+                !destinationFrame ||
+                !frameFormHistoryPlanCurrent(
+                  frameHistoryPlan,
+                  this.session,
+                  destinationFrame,
+                  plan.request.url,
+                )
+              ) {
+                controller.abort()
+                return undefined
+              }
+              if (
+                admittedResponse.classification === "success" &&
+                admittedResponse.responseStatus !== 204 &&
+                admittedResponse.contentType === EXPO_TURBO_MIME_TYPE
+              ) {
+                try {
+                  stageFrameFormHistoryResponse(
+                    frameHistoryPlan,
+                    this.session,
+                    destinationFrame,
+                    plan.request.url,
+                    admittedResponse.url,
+                    {
+                      invalidateCache: invalidatesCache,
+                      publishSource: admittedResponse.responseStatus !== 201,
+                    },
+                  )
+                } finally {
+                  if (invalidatesCache) this.options.snapshotCache?.clear()
+                }
+                return undefined
+              }
+              if (invalidatesCache) invalidateFrameFormHistoryCache(frameHistoryPlan)
             }
+            if (invalidatesCache) this.options.snapshotCache?.clear()
             return undefined
           },
           controller,
@@ -476,6 +536,35 @@ export class FormSubmissionController {
       try {
         if (!this.isCurrent(activeLease, proposal)) {
           return settle(this.canceled(response, proposal.destination))
+        }
+        if (
+          frameHistoryPlan &&
+          response.status === "xml" &&
+          response.classification === "success" &&
+          proposal.destination.kind === "frame"
+        ) {
+          const destinationFrame = identity.destinationFrame
+          if (
+            !destinationFrame ||
+            !frameFormHistoryPlanCurrent(
+              frameHistoryPlan,
+              this.session,
+              destinationFrame,
+              plan.request.url,
+            )
+          ) {
+            return settle(this.canceled(response, proposal.destination))
+          }
+          admitFrameFormHistoryResponse(
+            frameHistoryPlan,
+            this.session,
+            destinationFrame,
+            plan.request.url,
+            response.url,
+          )
+          if (!this.isCurrent(activeLease, proposal)) {
+            return settle(this.canceled(response, proposal.destination))
+          }
         }
         let preparedFrame: PreparedFrameResponse | undefined
         if (response.status === "xml" && proposal.destination.kind === "frame") {
@@ -509,7 +598,15 @@ export class FormSubmissionController {
           }
         }
         return settle(
-          this.apply(response, proposal, identity, activeLease, preparedFrame, historyPlan),
+          this.apply(
+            response,
+            proposal,
+            identity,
+            activeLease,
+            preparedFrame,
+            historyPlan,
+            frameHistoryPlan,
+          ),
         )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
@@ -608,6 +705,7 @@ export class FormSubmissionController {
     lease: DestinationRequestLease,
     preparedFrame?: PreparedFrameResponse,
     historyPlan?: DocumentFormHistoryPlan,
+    frameHistoryPlan?: FrameFormHistoryPlan,
   ): FormSubmissionReport {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
@@ -690,12 +788,32 @@ export class FormSubmissionController {
         })
       }
       const revision = this.session.revision
+      let historyCommitted = false
       try {
         const finalUrl =
           candidate.classification === "success" || candidate.redirected ? candidate.url : undefined
+        const promotedHistory =
+          candidate.classification === "success" ? frameHistoryPlan : undefined
         const mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
+          ...(promotedHistory ? { documentUrl: candidate.url } : {}),
           ...(finalUrl ? { finalUrl } : {}),
         })
+        if (promotedHistory) {
+          const acquired = this.ownership.commitFrame(lease, () => {
+            this.assertFrameHistory(promotedHistory, identity, candidate.requestedUrl)
+            commitFrameFormHistoryPlan(
+              promotedHistory,
+              this.session,
+              activeFrame,
+              candidate.requestedUrl,
+              candidate.url,
+              revision,
+            )
+            historyCommitted = true
+          })
+          if (!acquired) return this.canceled(candidate, destination)
+          if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+        }
         commitPreparedFrameMutation(this.session, mutation)
         const streams = dispatchPreparedFrameResponseStreams(
           this.session,
@@ -724,6 +842,7 @@ export class FormSubmissionController {
           { application: "frame", applicationDestination, destination },
           revision,
           error,
+          historyCommitted,
         )
       }
     }
@@ -860,6 +979,50 @@ export class FormSubmissionController {
       history,
       navigationEpoch: currentDocumentNavigationEpoch(this.session),
     })
+  }
+
+  private prepareFrameHistory(
+    identity: FormSubmissionProposalIdentity,
+    requestedUrl: string,
+  ): FrameFormHistoryPlan {
+    const action = identity.visitAction
+    const frame = identity.destinationFrame
+    const frameId = identity.destinationFrameId
+    if (!action || !frame || !frameId) {
+      throw new StateError("Frame form history requires an exact destination Frame")
+    }
+    if (action === "restore") {
+      throw new TargetError("Frame form restore actions require whole-document traversal", {
+        frameId,
+        target: identity.form.key,
+      })
+    }
+    const registry = this.options.frameControllers
+    const binding = registry ? resolveMountedFrameHistory(registry, frameId, frame) : undefined
+    if (!binding) {
+      throw new TargetError("Frame form actions require mounted Frame history coordination", {
+        frameId,
+        target: identity.form.key,
+      })
+    }
+    return prepareFrameFormHistoryCommit(
+      binding.coordinator,
+      binding.scope,
+      binding.isCurrent,
+      frame,
+      requestedUrl,
+      action,
+    )
+  }
+
+  private assertFrameHistory(
+    plan: FrameFormHistoryPlan,
+    identity: FormSubmissionProposalIdentity,
+    requestedUrl: string,
+  ): void {
+    const frame = identity.destinationFrame
+    if (!frame) throw new StateError("Frame form history requires an exact destination Frame")
+    assertFrameFormHistoryPlanCurrent(plan, this.session, frame, requestedUrl)
   }
 
   private assertDocumentHistory(plan: DocumentFormHistoryPlan): void {

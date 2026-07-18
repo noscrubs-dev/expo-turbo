@@ -1,9 +1,11 @@
 import type { TurboResponse } from "expo-turbo/adapters";
 import {
   type DocumentRefreshRequester,
+  type DocumentSession,
+  type DocumentSnapshotCache,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
-  type DocumentSession,
+  type FrameControllerRegistry,
 } from "expo-turbo/core";
 import { Alert, Platform } from "react-native";
 
@@ -12,6 +14,8 @@ import { createDemoFormConfirmationAdapter } from "./demo-form-confirmation";
 export function createDemoFormController(
   session: DocumentSession,
   refresh: DocumentRefreshRequester,
+  frameControllers: FrameControllerRegistry,
+  snapshotCache: DocumentSnapshotCache,
 ): FormSubmissionController {
   let failedOnce = false;
   return new FormSubmissionController(
@@ -19,6 +23,19 @@ export function createDemoFormController(
     {
       async fetch(request): Promise<TurboResponse> {
         await new Promise((resolve) => setTimeout(resolve, 400));
+        if (request.headers["Turbo-Frame"] === "link-frame") {
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => `<turbo-frame id="link-frame">
+              <DemoCard title="Frame form promoted">
+                <DemoText>The generated form reused the mounted Frame history scope and promoted its final URL.</DemoText>
+              </DemoCard>
+            </turbo-frame>`,
+            url: request.url,
+          };
+        }
         if (!failedOnce) {
           failedOnce = true;
           return {
@@ -45,7 +62,9 @@ export function createDemoFormController(
           Alert.alert(title, message, [...buttons], options),
         webConfirm: (message) => globalThis.confirm(message),
       }),
+      frameControllers,
       refresh,
+      snapshotCache,
     },
   );
 }

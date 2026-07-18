@@ -457,6 +457,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoDocumentLink href="/demo/frame-linked">
         <DemoText>Load this Frame through the shared Frame visit controller.</DemoText>
       </DemoDocumentLink>
+      <DemoDocumentLink href="/demo/frame-form" data-turbo-method="post" data-turbo-action="advance">
+        <DemoText>Submit a generated form and promote this mounted Frame through shared history.</DemoText>
+      </DemoDocumentLink>
     </DemoCard>
   </turbo-frame>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">

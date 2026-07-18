@@ -15,6 +15,8 @@ import { FrameMissingError, ParseError, RequestError, StateError } from "./error
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
+import { FrameControllerRegistry } from "./frame-controller-registry"
+import { FrameHistoryCoordinator } from "./frame-history"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
@@ -142,6 +144,34 @@ function historyFixture(
     kind: "managed",
   })
   return { history, writes }
+}
+
+function mountedFrameHistoryFixture(
+  session: DocumentSession,
+  frameId: string,
+  cache = new DocumentSnapshotCache(),
+  write?: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined,
+  mounted = true,
+) {
+  const ledger = historyFixture(session, write)
+  const frameHistory = new FrameHistoryCoordinator(session, {
+    history: ledger.history,
+    snapshotCache: cache,
+  })
+  const frameControllers = new FrameControllerRegistry(
+    session,
+    new FrameRequestLoader(
+      session,
+      { fetch: async () => Promise.reject(new Error("Frame form history must not issue a GET")) },
+      requestIds("frame-history-get"),
+    ),
+    undefined,
+    undefined,
+    undefined,
+    { frameHistory },
+  )
+  if (mounted) frameControllers.get(frameId)
+  return { ...ledger, cache, frameControllers }
 }
 
 describe("FormSubmissionController", () => {
@@ -1996,6 +2026,174 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("promotes a successful Frame form through its exact mounted history scope", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const cache = populatedSnapshotCache(session)
+    const order: string[] = []
+    const current = mountedFrameHistoryFixture(session, "frame-a", cache, (method, entry) => {
+      order.push("history")
+      expect(method).toBe("push")
+      expect(entry.url).toBe("https://example.test/frame-a/saved")
+      const frame = session.tree.getElementById("frame-a")
+      if (!frame) throw new Error("fixture Frame is missing during history write")
+      expect(attributeValue(frame, "src")).toBe("https://example.test/frame-a/saved")
+      expect(session.tree.getElementById("old-frame-content")).toBeDefined()
+      expect(session.tree.document.url).toBe("https://example.test/current")
+      return undefined
+    })
+    session.mutate((tree) => {
+      const frame = tree.getElementById("frame-a")
+      if (!frame) throw new Error("fixture Frame is missing")
+      return tree.insertClones(
+        frame,
+        frame.children.length,
+        parseExpoTurboDocument('<OldFrameContent id="old-frame-content" />').document.children,
+      )
+    })
+    const transport = pendingFetch()
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      frameControllers: current.frameControllers,
+      snapshotCache: cache,
+    })
+    const submitting = controller.submit(proposal(registry(session, "form-a"), "frame-history"))
+    const pending = transport.pending[0]
+    if (!pending) throw new Error("Frame form request was not captured")
+
+    session.setAttribute("id:status", "phase", "latest")
+    pending.response.resolve(
+      response(
+        pending.request,
+        '<turbo-frame id="frame-a"><SavedFrame id="saved-frame" /></turbo-frame>',
+        {
+          redirected: true,
+          text: async () => {
+            order.push("body")
+            const frame = session.tree.getElementById("frame-a")
+            if (!frame) throw new Error("fixture Frame is missing before response body")
+            expect(attributeValue(frame, "src")).toBe("https://example.test/frame-a/saved")
+            expect(session.tree.getElementById("old-frame-content")).toBeDefined()
+            return '<turbo-frame id="frame-a"><SavedFrame id="saved-frame" /></turbo-frame>'
+          },
+          url: "https://example.test/frame-a/saved",
+        },
+      ),
+    )
+
+    expect(await submitting).toMatchObject({
+      application: "frame",
+      frame: { finalUrl: "https://example.test/frame-a/saved", frameId: "frame-a" },
+      status: "applied",
+    })
+    expect(order).toEqual(["body", "history"])
+    expect(current.history.current).toMatchObject({
+      restorationIndex: 5,
+      url: "https://example.test/frame-a/saved",
+    })
+    expect(session.tree.document.url).toBe("https://example.test/frame-a/saved")
+    expect(session.tree.getElementById("saved-frame")).toBeDefined()
+    expect(cache.size).toBe(1)
+    const outgoing = cache.get("https://example.test/current")
+    const outgoingFrame = outgoing?.getElementById("frame-a")
+    const outgoingStatus = outgoing?.getElementById("status")
+    if (!outgoingFrame || !outgoingStatus) throw new Error("outgoing snapshot is incomplete")
+    expect(attributeValue(outgoingFrame, "src")).toBe("/frame-a")
+    expect(attributeValue(outgoingStatus, "phase")).toBe("latest")
+    expect(cache.has("https://example.test/other")).toBe(false)
+  })
+
+  test("keeps unsuccessful Frame form outcomes out of mounted history", async () => {
+    const cases: ReadonlyArray<
+      Readonly<{
+        body: string
+        contentType?: string
+        name: string
+        status: number
+      }>
+    > = [
+      { body: "", name: "empty", status: 204 },
+      {
+        body: '<turbo-frame id="frame-a"><Invalid /></turbo-frame>',
+        name: "client error",
+        status: 422,
+      },
+      {
+        body: '<turbo-stream action="remove" target="status" />',
+        contentType: TURBO_STREAM_MIME_TYPE,
+        name: "Stream",
+        status: 200,
+      },
+    ]
+
+    for (const fixtureCase of cases) {
+      const session = fixture()
+      session.setAttribute("id:form-a", "data-turbo-action", "replace")
+      if (fixtureCase.contentType === TURBO_STREAM_MIME_TYPE) {
+        session.setAttribute("id:form-a", "data-turbo-stream", "")
+      }
+      const current = mountedFrameHistoryFixture(session, "frame-a")
+      const controls = registry(session, "form-a")
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, {
+              ...(fixtureCase.contentType
+                ? { headers: { "Content-Type": fixtureCase.contentType } }
+                : {}),
+              status: fixtureCase.status,
+            }),
+        },
+        { frameControllers: current.frameControllers },
+      ).submit(proposal(controls, `frame-history-${fixtureCase.name}`))
+
+      expect(result.status).not.toBe("canceled")
+      expect(current.writes, fixtureCase.name).toEqual([])
+      expect(current.history.current?.url, fixtureCase.name).toBe("https://example.test/current")
+      expect(session.tree.document.url, fixtureCase.name).toBe("https://example.test/current")
+    }
+  })
+
+  test("keeps malformed promoted Frame form responses out of history", async () => {
+    for (const fixtureCase of [
+      { body: "<broken>", error: ParseError, name: "malformed" },
+      {
+        body: '<turbo-frame id="frame-b"><Unexpected /></turbo-frame>',
+        error: FrameMissingError,
+        name: "missing",
+      },
+    ] as const) {
+      const session = fixture()
+      session.setAttribute("id:form-a", "data-turbo-action", "advance")
+      session.setAttribute("id:form-a", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const current = mountedFrameHistoryFixture(session, "frame-a", cache)
+      const finalUrl = `https://example.test/frame-a/${fixtureCase.name}`
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, {
+              redirected: true,
+              url: finalUrl,
+            }),
+        },
+        { frameControllers: current.frameControllers, snapshotCache: cache },
+      ).submit(proposal(registry(session, "form-a"), `frame-history-${fixtureCase.name}`))
+
+      await expect(submitting).rejects.toBeInstanceOf(fixtureCase.error)
+      expect(current.writes, fixtureCase.name).toEqual([])
+      expect(current.history.current?.url, fixtureCase.name).toBe("https://example.test/current")
+      expect(session.tree.document.url, fixtureCase.name).toBe("https://example.test/current")
+      const frame = session.tree.getElementById("frame-a")
+      if (!frame) throw new Error("fixture Frame is missing after failed promotion")
+      expect(attributeValue(frame, "src"), fixtureCase.name).toBe(finalUrl)
+      expect(session.tree.getElementById("form-a"), fixtureCase.name).toBeDefined()
+      expect(cache.size, fixtureCase.name).toBe(0)
+    }
+  })
+
   test("fails form history admission and commitment without publishing a replacement tree", async () => {
     {
       const session = fixture()
@@ -2058,6 +2256,27 @@ describe("FormSubmissionController", () => {
       )
       expect(fetches).toBe(0)
       expect(controls.submissionState.busy).toBe(false)
+
+      const unmounted = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        false,
+      )
+      await expect(
+        new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) => {
+              fetches += 1
+              return response(request, "", { status: 204 })
+            },
+          },
+          { frameControllers: unmounted.frameControllers },
+        ).submit(proposal(controls, "unmounted-frame-action")),
+      ).rejects.toThrow(/mounted Frame history coordination/)
+      expect(fetches).toBe(0)
 
       session.removeAttribute("id:form-a", "data-turbo-action")
       session.setAttribute("id:frame-a", "data-turbo-action", "replace")
