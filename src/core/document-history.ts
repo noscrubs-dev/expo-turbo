@@ -313,9 +313,20 @@ export class DocumentHistory {
     entry: DocumentHistoryEntry,
     commit: () => T,
   ): T {
+    let result: unknown
     try {
-      this.host.write(method, entry)
+      result = this.host.write(method, entry)
     } catch {
+      throw new StateError("Document history host write failed")
+    }
+    if (result !== undefined) {
+      if ((typeof result === "object" && result !== null) || typeof result === "function") {
+        try {
+          void Promise.resolve(result).catch(() => undefined)
+        } catch {
+          // The protocol error below is the only exposed host failure.
+        }
+      }
       throw new StateError("Document history host write failed")
     }
     return commit()

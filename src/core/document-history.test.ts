@@ -27,7 +27,7 @@ function identifiers(
 }
 
 function historyHost(
-  write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
+  write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => unknown = () =>
     undefined,
 ): DocumentHistoryHostAdapter & {
   readonly calls: ReadonlyArray<
@@ -41,9 +41,13 @@ function historyHost(
     calls,
     write(method, entry) {
       calls.push(Object.freeze({ entry, method }))
-      return write(method, entry)
+      return write(method, entry) as undefined
     },
   }
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function createHistory(
@@ -195,6 +199,58 @@ describe("document history", () => {
     expect(host.calls.map(({ entry }) => entry.restorationIdentifier)).toEqual(["failed", "retry"])
   })
 
+  test("rejects returned host values without publishing unmanaged initialization", async () => {
+    const invalidResults: ReadonlyArray<() => unknown> = [
+      () => "secret scalar",
+      () => Promise.reject(new Error("secret asynchronous rejection")),
+      () => {
+        const promise = Promise.resolve()
+        Object.defineProperty(promise, "constructor", {
+          get() {
+            throw new Error("secret constructor getter")
+          },
+        })
+        return promise
+      },
+      () => ({
+        // biome-ignore lint/suspicious/noThenProperty: This deliberately exercises a hostile thenable.
+        then(_resolve: (value: unknown) => void, reject: (error: unknown) => void) {
+          reject(new Error("secret thenable rejection"))
+        },
+      }),
+    ]
+
+    for (const invalidResult of invalidResults) {
+      const ids = identifiers("failed", "retry")
+      let attempts = 0
+      const host = historyHost(() => {
+        attempts += 1
+        return attempts === 1 ? invalidResult() : undefined
+      })
+      const history = createHistory(ids, host)
+
+      let error: unknown
+      try {
+        history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
+      } catch (caught) {
+        error = caught
+      }
+      expect(error).toBeInstanceOf(StateError)
+      expect(String(error)).not.toContain("secret")
+      expect(history.current).toBeUndefined()
+      expect(ids.calls).toBe(1)
+      await tick()
+
+      const initialized = history.initialize({
+        kind: "unmanaged",
+        url: "https://example.test/current",
+      })
+      expect(initialized.entry.restorationIdentifier).toBe("retry")
+      expect(history.current).toBe(initialized.entry)
+      expect(ids.calls).toBe(2)
+    }
+  })
+
   test("proposes and commits a different-location advance as a frozen push", () => {
     const ids = identifiers("initial", "pushed")
     const observedCurrent: Array<DocumentHistoryEntry | undefined> = []
@@ -254,6 +310,43 @@ describe("document history", () => {
     }
     expect(history.current).toBe(initialized.entry)
     expect(() => history.getRestorationData("next")).toThrow(StateError)
+
+    expect(history.commitProposal(proposal)).toBe(proposal.entry)
+    expect(history.current).toBe(proposal.entry)
+    expect(host.calls.slice(1)).toEqual([
+      { entry: proposal.entry, method: "push" },
+      { entry: proposal.entry, method: "push" },
+    ])
+  })
+
+  test("keeps a proposal retryable when the host returns a rejected thenable", async () => {
+    let proposalWrites = 0
+    const host = historyHost((method) => {
+      if (method !== "push") return undefined
+      proposalWrites += 1
+      if (proposalWrites === 1) {
+        return Promise.reject(new Error("secret asynchronous proposal rejection"))
+      }
+      return undefined
+    })
+    const history = createHistory(identifiers("initial", "next"), host)
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    const proposal = history.proposeAdvance("https://example.test/next")
+
+    let error: unknown
+    try {
+      history.commitProposal(proposal)
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toBeInstanceOf(StateError)
+    expect(String(error)).not.toContain("secret")
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("next")).toThrow(StateError)
+    await tick()
 
     expect(history.commitProposal(proposal)).toBe(proposal.entry)
     expect(history.current).toBe(proposal.entry)
