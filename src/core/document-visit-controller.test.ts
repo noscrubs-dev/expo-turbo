@@ -13,7 +13,11 @@ import {
   type DocumentHistoryHostAdapter,
   type DocumentHistoryWriteMethod,
 } from "./document-history"
-import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
+import {
+  DocumentCommitError,
+  DocumentRequestLoader,
+  DocumentSnapshotRestoreCommitError,
+} from "./document-loader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
@@ -23,7 +27,7 @@ import { ContentTypeError, ParseError, RequestError, StateError, TargetError } f
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
-import { attributeValue } from "./tree"
+import { attributeValue, type DocumentTree } from "./tree"
 
 interface PendingRequest {
   readonly request: TurboRequest
@@ -66,10 +70,22 @@ class ManualClock implements ClockAdapter {
   }
 }
 
+class ReentrantSnapshotCache extends DocumentSnapshotCache {
+  onPut: (() => void) | undefined
+
+  override put(url: string, tree: DocumentTree): void {
+    super.put(url, tree)
+    const onPut = this.onPut
+    this.onPut = undefined
+    onPut?.()
+  }
+}
+
 function historyFixture(
   write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
     undefined,
   currentUrl = "https://example.test/current",
+  restorationIndex = 0,
 ): Readonly<{
   history: DocumentHistory
   writes: ReadonlyArray<
@@ -90,7 +106,7 @@ function historyFixture(
   history.initialize({
     entry: {
       restorationIdentifier: "history-current",
-      restorationIndex: 0,
+      restorationIndex,
       url: currentUrl,
     },
     kind: "managed",
@@ -197,6 +213,416 @@ describe("Document visit controller", () => {
     })
     expect(revisions).toEqual([1, 2, 3])
     expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+  })
+
+  test("restores a no-preview snapshot for a host back traversal without fetching or writing history", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/back#stored",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Back id="back" /></Gallery>',
+        { url: "https://example.test/back#stored" },
+      ),
+    )
+    const { history, writes } = historyFixture(() => undefined, "https://example.test/current", 4)
+    const { clock, controller, pending, session } = harness({ history, snapshotCache })
+    const revisions: number[] = []
+    controller.subscribe(() => revisions.push(controller.state.revision))
+    session.setAttribute("id:old", "data-state", "latest")
+
+    const result = await controller.restoreTraversal({
+      restorationIdentifier: "history-back",
+      restorationIndex: 2,
+      url: "https://example.test/back",
+    })
+
+    expect(result).toEqual({
+      direction: "back",
+      entry: {
+        restorationIdentifier: "history-back",
+        restorationIndex: 2,
+        url: "https://example.test/back",
+      },
+      restorationData: {},
+      source: "snapshot",
+      status: "restored",
+    })
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(Object.isFrozen(result.restorationData)).toBe(true)
+    expect(pending).toHaveLength(0)
+    expect(writes).toEqual([])
+    expect(clock.timers).toHaveLength(0)
+    expect(session.tree.getElementById("back")).toBeDefined()
+    expect(session.tree.document.url).toBe("https://example.test/back")
+    expect(snapshotCache.get("https://example.test/current")?.getElementById("old")).toMatchObject({
+      attributes: expect.arrayContaining([
+        expect.objectContaining({ name: "data-state", value: "latest" }),
+      ]),
+    })
+    expect(controller.state.status).toBe("completed")
+    expect(revisions).toEqual([1, 2])
+  })
+
+  test("falls back to one history-neutral GET for a forward traversal cache miss", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const { history, writes } = historyFixture(() => undefined, "https://example.test/current", 2)
+    const { controller, pending, session } = harness({ history, snapshotCache })
+
+    const restored = controller.restoreTraversal({
+      restorationIdentifier: "history-forward",
+      restorationIndex: 5,
+      url: "https://example.test/forward",
+    })
+
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/forward")
+    expect(history.current).toEqual({
+      restorationIdentifier: "history-forward",
+      restorationIndex: 5,
+      url: "https://example.test/forward",
+    })
+    session.setAttribute("id:old", "data-state", "latest")
+    pending[0]?.resolve(
+      response('<Gallery><Forward id="forward" /></Gallery>', {
+        url: "https://example.test/forward",
+      }),
+    )
+
+    expect(await restored).toMatchObject({
+      direction: "forward",
+      result: { classification: "success", status: "committed" },
+      source: "network",
+    })
+    expect(writes).toEqual([])
+    expect(session.tree.getElementById("forward")).toBeDefined()
+    expect(snapshotCache.get("https://example.test/current")?.getElementById("old")).toMatchObject({
+      attributes: expect.arrayContaining([
+        expect.objectContaining({ name: "data-state", value: "latest" }),
+      ]),
+    })
+    expect(controller.state.status).toBe("completed")
+  })
+
+  test("lets a newer host traversal supersede an in-flight restoration", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/newest",
+      parseExpoTurboDocument('<Gallery><Newest id="newest" /></Gallery>', {
+        url: "https://example.test/newest",
+      }),
+    )
+    const { history, writes } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+
+    const first = controller.restoreTraversal({
+      restorationIdentifier: "history-first",
+      restorationIndex: 1,
+      url: "https://example.test/first",
+    })
+    expect(pending).toHaveLength(1)
+
+    const second = await controller.restoreTraversal({
+      restorationIdentifier: "history-second",
+      restorationIndex: 2,
+      url: "https://example.test/newest",
+    })
+
+    expect(second).toMatchObject({ source: "snapshot", status: "restored" })
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    pending[0]?.resolve(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/first",
+      }),
+    )
+    expect(await first).toMatchObject({ result: { status: "canceled" }, source: "network" })
+    expect(history.current?.restorationIdentifier).toBe("history-second")
+    expect(writes).toEqual([])
+    expect(session.tree.getElementById("newest")).toBeDefined()
+    expect(session.tree.getElementById("late")).toBeUndefined()
+  })
+
+  test("lets a started subscriber cancel cached restoration before tree replacement", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/cached",
+      parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
+        url: "https://example.test/cached",
+      }),
+    )
+    const { history } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+    controller.subscribe(() => {
+      if (controller.state.status === "started") controller.cancel()
+    })
+
+    const result = await controller.restoreTraversal({
+      restorationIdentifier: "history-cached",
+      restorationIndex: 1,
+      url: "https://example.test/cached",
+    })
+
+    expect(result).toMatchObject({ source: "snapshot", status: "canceled" })
+    expect(controller.state.status).toBe("canceled")
+    expect(pending).toHaveLength(0)
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("cached")).toBeUndefined()
+  })
+
+  test("rejects foreign-origin cached traversal before adopting history", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://other.test/private",
+      parseExpoTurboDocument('<Gallery><Private id="private" /></Gallery>', {
+        url: "https://other.test/private",
+      }),
+    )
+    const { history } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+
+    await expect(
+      controller.restoreTraversal({
+        restorationIdentifier: "history-private",
+        restorationIndex: 1,
+        url: "https://other.test/private",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+
+    expect(history.current?.restorationIdentifier).toBe("history-current")
+    expect(snapshotCache.has("https://other.test/private")).toBe(true)
+    expect(pending).toHaveLength(0)
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("private")).toBeUndefined()
+  })
+
+  test("rejects missing, misaligned, and malformed traversal state before request ownership", async () => {
+    const historyless = harness()
+    await expect(
+      historyless.controller.restoreTraversal({
+        restorationIdentifier: "missing",
+        restorationIndex: 1,
+        url: "https://example.test/missing",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+    expect(historyless.pending).toHaveLength(0)
+
+    const { history } = historyFixture(() => undefined, "https://example.test/other")
+    const misaligned = harness({ history })
+    await expect(
+      misaligned.controller.restoreTraversal({
+        restorationIdentifier: "misaligned",
+        restorationIndex: 1,
+        url: "https://example.test/misaligned",
+      }),
+    ).rejects.toBeInstanceOf(StateError)
+    expect(history.current?.restorationIdentifier).toBe("history-current")
+    expect(misaligned.pending).toHaveLength(0)
+
+    const alignedHistory = historyFixture().history
+    const malformed = harness({ history: alignedHistory })
+    await expect(
+      malformed.controller.restoreTraversal({
+        restorationIdentifier: "credentialed",
+        restorationIndex: 1,
+        url: "https://user:secret@example.test/private",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+    expect(alignedHistory.current?.restorationIdentifier).toBe("history-current")
+    expect(malformed.pending).toHaveLength(0)
+
+    await expect(
+      malformed.controller.restoreTraversal({
+        restorationIdentifier: "fragment",
+        restorationIndex: 1,
+        url: "https://example.test/fragment#target",
+      }),
+    ).rejects.toBeInstanceOf(TargetError)
+    expect(alignedHistory.current?.restorationIdentifier).toBe("history-current")
+    expect(malformed.pending).toHaveLength(0)
+  })
+
+  test("fails closed on a redirected traversal response without rolling host history back", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const { history, writes } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+    const restored = controller.restoreTraversal({
+      restorationIdentifier: "history-target",
+      restorationIndex: 1,
+      url: "https://example.test/target",
+    })
+
+    pending[0]?.resolve(
+      response('<Gallery><Redirected id="redirected" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    await expect(restored).rejects.toBeInstanceOf(StateError)
+    expect(history.current).toEqual({
+      restorationIdentifier: "history-target",
+      restorationIndex: 1,
+      url: "https://example.test/target",
+    })
+    expect(writes).toEqual([])
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("redirected")).toBeUndefined()
+    expect(snapshotCache.has("https://example.test/current")).toBe(false)
+    expect(controller.state.status).toBe("failed")
+  })
+
+  test("rejects a traversal response after host history moves again outside the controller", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const { history } = historyFixture()
+    const { controller, pending, session } = harness({ history, snapshotCache })
+    const restored = controller.restoreTraversal({
+      restorationIdentifier: "history-target",
+      restorationIndex: 1,
+      url: "https://example.test/target",
+    })
+    expect(
+      history.adoptTraversal({
+        restorationIdentifier: "history-other",
+        restorationIndex: 2,
+        url: "https://example.test/other",
+      }),
+    ).toBe("forward")
+
+    pending[0]?.resolve(
+      response('<Gallery><Target id="target" /></Gallery>', {
+        url: "https://example.test/target",
+      }),
+    )
+
+    await expect(restored).rejects.toBeInstanceOf(StateError)
+    expect(history.current?.restorationIdentifier).toBe("history-other")
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("target")).toBeUndefined()
+    expect(snapshotCache.has("https://example.test/current")).toBe(false)
+
+    const recovered = controller.restoreTraversal({
+      restorationIdentifier: "history-recovered",
+      restorationIndex: 3,
+      url: "https://example.test/recovered",
+    })
+    pending[1]?.resolve(
+      response('<Gallery><Recovered id="recovered" /></Gallery>', {
+        url: "https://example.test/recovered",
+      }),
+    )
+    expect(await recovered).toMatchObject({
+      direction: "forward",
+      result: { status: "committed" },
+      source: "network",
+    })
+    expect(session.tree.getElementById("recovered")).toBeDefined()
+  })
+
+  test("rechecks host history after cached and network outgoing snapshot capture", async () => {
+    const cached = new ReentrantSnapshotCache()
+    cached.put(
+      "https://example.test/cached-target",
+      parseExpoTurboDocument('<Gallery><CachedTarget id="cached-target" /></Gallery>', {
+        url: "https://example.test/cached-target",
+      }),
+    )
+    const cachedHistory = historyFixture().history
+    const cachedHarness = harness({ history: cachedHistory, snapshotCache: cached })
+    cached.onPut = () => {
+      cachedHistory.adoptTraversal({
+        restorationIdentifier: "history-cached-other",
+        restorationIndex: 2,
+        url: "https://example.test/cached-other",
+      })
+    }
+
+    await expect(
+      cachedHarness.controller.restoreTraversal({
+        restorationIdentifier: "history-cached-target",
+        restorationIndex: 1,
+        url: "https://example.test/cached-target",
+      }),
+    ).rejects.toBeInstanceOf(StateError)
+    expect(cachedHistory.current?.restorationIdentifier).toBe("history-cached-other")
+    expect(cachedHarness.session.tree.getElementById("old")).toBeDefined()
+    expect(cachedHarness.session.tree.getElementById("cached-target")).toBeUndefined()
+
+    const network = new ReentrantSnapshotCache()
+    const networkHistory = historyFixture().history
+    const networkHarness = harness({ history: networkHistory, snapshotCache: network })
+    const restoring = networkHarness.controller.restoreTraversal({
+      restorationIdentifier: "history-network-target",
+      restorationIndex: 1,
+      url: "https://example.test/network-target",
+    })
+    network.onPut = () => {
+      networkHistory.adoptTraversal({
+        restorationIdentifier: "history-network-other",
+        restorationIndex: 2,
+        url: "https://example.test/network-other",
+      })
+    }
+    networkHarness.pending[0]?.resolve(
+      response('<Gallery><NetworkTarget id="network-target" /></Gallery>', {
+        url: "https://example.test/network-target",
+      }),
+    )
+
+    await expect(restoring).rejects.toBeInstanceOf(StateError)
+    expect(networkHistory.current?.restorationIdentifier).toBe("history-network-other")
+    expect(networkHarness.session.tree.getElementById("old")).toBeDefined()
+    expect(networkHarness.session.tree.getElementById("network-target")).toBeUndefined()
+  })
+
+  test("keeps adopted history with the old tree for an empty traversal response", async () => {
+    const { history, writes } = historyFixture()
+    const { controller, pending, session } = harness({ history })
+    const restored = controller.restoreTraversal({
+      restorationIdentifier: "history-empty",
+      restorationIndex: 1,
+      url: "https://example.test/empty",
+    })
+    pending[0]?.resolve(
+      response("", {
+        status: 204,
+        url: "https://example.test/empty",
+      }),
+    )
+
+    expect(await restored).toMatchObject({ result: { status: "empty" }, source: "network" })
+    expect(history.current?.restorationIdentifier).toBe("history-empty")
+    expect(writes).toEqual([])
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(controller.state.status).toBe("completed")
+  })
+
+  test("reports cached restoration finalization errors after committing restored truth", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    const { history } = historyFixture()
+    const { controller, session } = harness({ history, snapshotCache })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    session.registerDisposal("id:old", () => {
+      throw new Error("disposal failed")
+    })
+
+    await expect(
+      controller.restoreTraversal({
+        restorationIdentifier: "history-restored",
+        restorationIndex: 1,
+        url: "https://example.test/restored",
+      }),
+    ).rejects.toBeInstanceOf(DocumentSnapshotRestoreCommitError)
+
+    expect(session.tree.getElementById("restored")).toBeDefined()
+    expect(controller.state.status).toBe("completed")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(DocumentSnapshotRestoreCommitError)
   })
 
   test("captures the latest outgoing truth immediately before an advance commit", async () => {

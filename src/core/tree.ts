@@ -56,6 +56,8 @@ export interface DocumentTreeOptions {
 }
 
 export interface DocumentTreeCloneOptions {
+  /** Retarget the cloned document location without mutating the source tree. */
+  readonly documentUrl?: string
   /** Omit each element subtree marked by `data-turbo-temporary` presence. */
   readonly omitTemporaryElements?: boolean
 }
@@ -198,6 +200,12 @@ export class DocumentTree {
     ) {
       throw new TargetError("Document tree temporary-element policy must be boolean")
     }
+    if (
+      options.documentUrl !== undefined &&
+      (typeof options.documentUrl !== "string" || options.documentUrl.trim() === "")
+    ) {
+      throw new TargetError("Document tree clone URL must be a nonblank string")
+    }
 
     const document: ProtocolDocument = {
       children: [],
@@ -205,7 +213,11 @@ export class DocumentTree {
       kind: "document",
       parent: null,
       ...(this.document.location ? { location: { ...this.document.location } } : {}),
-      ...(this.document.url !== undefined ? { url: this.document.url } : {}),
+      ...(options.documentUrl !== undefined
+        ? { url: options.documentUrl }
+        : this.document.url !== undefined
+          ? { url: this.document.url }
+          : {}),
     }
     document.children = this.document.children.flatMap((child) => {
       const clone = this.cloneDocumentNode(child, document, options)

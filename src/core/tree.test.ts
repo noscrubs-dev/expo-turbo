@@ -106,6 +106,11 @@ describe("Expo Turbo XML tree", () => {
     clone.insertClones(clonedRoot, clonedRoot.children.length, [source])
     expect(clone.getNodeByKey("mutation:2")).toBeDefined()
     expect(tree.getNodeByKey("mutation:2")).toBeUndefined()
+
+    const retargeted = tree.clone({ documentUrl: "https://example.test/restored#history" })
+    expect(retargeted.document.url).toBe("https://example.test/restored#history")
+    expect(tree.document.url).toBe("https://example.test/gallery")
+    expect(() => tree.clone({ documentUrl: "" })).toThrow(TargetError)
   })
 
   test("parses ordered multi-root Turbo Stream fragments behind a private wrapper", () => {

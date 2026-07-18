@@ -3,12 +3,15 @@ import type {
   DocumentHistory,
   DocumentHistoryEntry,
   DocumentHistoryProposal,
+  DocumentHistoryTraversalDirection,
+  DocumentRestorationData,
 } from "./document-history"
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
   type DocumentLoadReport,
   type DocumentRequestLoader,
+  DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
@@ -59,6 +62,22 @@ export type DocumentVisitDelegation =
 
 export type DocumentVisitResult = DocumentLoadReport | DocumentVisitDelegation
 
+export type DocumentTraversalRestoreResult =
+  | Readonly<{
+      direction: DocumentHistoryTraversalDirection
+      entry: DocumentHistoryEntry
+      restorationData: DocumentRestorationData
+      source: "snapshot"
+      status: "canceled" | "restored"
+    }>
+  | Readonly<{
+      direction: DocumentHistoryTraversalDirection
+      entry: DocumentHistoryEntry
+      restorationData: DocumentRestorationData
+      result: DocumentVisitResult
+      source: "network"
+    }>
+
 export type DocumentVisitListener = () => void
 export type DocumentVisitErrorListener = (error: Error) => void
 
@@ -70,6 +89,7 @@ interface DocumentVisitHistoryPlan {
 interface DocumentVisitHistoryGuard {
   readonly entry: DocumentHistoryEntry
   readonly history: DocumentHistory
+  readonly kind: "refresh" | "traversal"
 }
 
 export class DocumentVisitController {
@@ -85,6 +105,7 @@ export class DocumentVisitController {
   private revision = 0
   private snapshot: DocumentVisitSnapshot
   private status: DocumentVisitStatus = "initialized"
+  private traversalEntry: DocumentHistoryEntry | undefined
   private visitEpoch = 0
 
   constructor(
@@ -143,11 +164,120 @@ export class DocumentVisitController {
       if (!currentUrl || this.canonicalDocumentUrl(baseUrl) !== currentUrl) {
         return Promise.resolve(undefined)
       }
-      historyGuard = this.captureHistoryGuard(currentUrl)
+      historyGuard = this.captureHistoryGuard(currentUrl, "refresh")
     } catch (error) {
       return Promise.reject(error)
     }
     return this.startVisit(currentUrl, undefined, undefined, undefined, historyGuard)
+  }
+
+  /**
+   * Applies a host history traversal after the host has already moved to the
+   * supplied entry. Cached restoration is final; a miss performs one guarded
+   * history-neutral GET.
+   */
+  restoreTraversal(entry: DocumentHistoryEntry): Promise<DocumentTraversalRestoreResult> {
+    let direction: DocumentHistoryTraversalDirection
+    let history: DocumentHistory
+    let restoredEntry: DocumentHistoryEntry
+    let restorationData: DocumentRestorationData
+    try {
+      const configuredHistory = this.history
+      if (!configuredHistory) {
+        throw new TargetError("Document traversal restoration requires configured history")
+      }
+      history = configuredHistory
+      const current = history.current
+      if (!current) throw new StateError("Document history is not initialized")
+      const traversalUrl = this.loader.resolveSource(entry.url)
+      if (new URL(traversalUrl).hash !== "") {
+        throw new TargetError("Document traversal fragments require anchor restoration support")
+      }
+      if (this.traversalEntry) {
+        if (current !== this.traversalEntry) this.traversalEntry = current
+      } else if (this.canonicalDocumentUrl(this.loader.currentUrl) !== current.url) {
+        throw new StateError("Document history must match the active document before traversal")
+      }
+      direction = history.adoptTraversal(entry)
+      const adopted = history.current
+      if (!adopted) throw new StateError("Document traversal did not publish a history entry")
+      restoredEntry = adopted
+      this.traversalEntry = adopted
+      restorationData = history.getRestorationData(adopted.restorationIdentifier)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+
+    const cache = this.snapshotCache
+    if (cache) {
+      let epoch: number | undefined
+      try {
+        const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
+          beforeTreeCommit: () => {
+            if (history.current !== restoredEntry) {
+              throw new StateError("Document history changed during snapshot restoration")
+            }
+            this.loader.captureCurrentSnapshot(cache)
+            if (history.current !== restoredEntry) {
+              throw new StateError("Document history changed during snapshot restoration")
+            }
+          },
+          onRestoreStart: () => {
+            epoch = ++this.visitEpoch
+            this.progressVisible = false
+            this.status = "started"
+            this.publish()
+          },
+        })
+        if (report.status !== "miss") {
+          this.reconcileTraversal(restoredEntry)
+          if (epoch !== undefined && epoch === this.visitEpoch) {
+            this.clearProgress()
+            this.finish(report.status === "committed" ? "completed" : "canceled")
+          }
+          return Promise.resolve(
+            Object.freeze({
+              direction,
+              entry: restoredEntry,
+              restorationData,
+              source: "snapshot" as const,
+              status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
+            }),
+          )
+        }
+      } catch (error) {
+        const reported = error instanceof Error ? error : new StateError("Document restore failed")
+        this.reconcileTraversal(restoredEntry)
+        if (epoch !== undefined && epoch === this.visitEpoch) {
+          this.clearProgress()
+          this.finish(error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed")
+          this.notifyError(reported)
+        }
+        return Promise.reject(reported)
+      }
+    }
+
+    const historyGuard: DocumentVisitHistoryGuard = {
+      entry: restoredEntry,
+      history,
+      kind: "traversal",
+    }
+    return this.startVisit(restoredEntry.url, undefined, cache, undefined, historyGuard).then(
+      (result) => {
+        this.reconcileTraversal(restoredEntry)
+        return Object.freeze({
+          direction,
+          entry: restoredEntry,
+          restorationData,
+          result,
+          source: "network" as const,
+        })
+      },
+      (error: unknown) => {
+        this.reconcileTraversal(restoredEntry)
+        throw error
+      },
+    )
   }
 
   cancel(): void {
@@ -181,6 +311,14 @@ export class DocumentVisitController {
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
       beforeCommit: (candidate) => {
+        if (
+          historyGuard?.kind === "traversal" &&
+          (historyGuard.history.current !== historyGuard.entry ||
+            candidate.redirected ||
+            candidate.url !== historyGuard.entry.url)
+        ) {
+          throw new StateError("Document traversal response no longer matches host history")
+        }
         if (candidate.redirected && candidate.classification === "success") {
           const disposition = this.redirectDisposition(candidate)
           if (disposition.classification !== "visitable") {
@@ -213,6 +351,13 @@ export class DocumentVisitController {
             throw new StateError("Document history proposal no longer matches the commit candidate")
           }
           if (snapshotCache) this.loader.captureCurrentSnapshot(snapshotCache)
+          if (historyGuard && historyGuard.history.current !== historyGuard.entry) {
+            throw new StateError(
+              historyGuard.kind === "traversal"
+                ? "Document history changed during traversal restoration"
+                : "Document history changed during the current-document refresh",
+            )
+          }
           if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
         },
       }),
@@ -296,7 +441,7 @@ export class DocumentVisitController {
     action: Exclude<VisitAction, "restore">,
     url: string,
   ): DocumentVisitHistoryPlan | undefined {
-    const guard = this.captureHistoryGuard(this.loader.currentUrl)
+    const guard = this.captureHistoryGuard(this.loader.currentUrl, "refresh")
     if (!guard) {
       if (action === "replace") {
         throw new TargetError("Document replace visits require configured history")
@@ -314,14 +459,17 @@ export class DocumentVisitController {
     return { history: guard.history, proposal }
   }
 
-  private captureHistoryGuard(url: string | undefined): DocumentVisitHistoryGuard | undefined {
+  private captureHistoryGuard(
+    url: string | undefined,
+    kind: DocumentVisitHistoryGuard["kind"],
+  ): DocumentVisitHistoryGuard | undefined {
     const history = this.history
     if (!history) return undefined
     const entry = history.current
     if (!entry || this.canonicalDocumentUrl(url) !== entry.url) {
       throw new StateError("Document history must match the active document before a visit")
     }
-    return { entry, history }
+    return { entry, history, kind }
   }
 
   private canonicalDocumentUrl(url: string | undefined): string | undefined {
@@ -331,6 +479,14 @@ export class DocumentVisitController {
     } catch {
       throw new StateError("Active document history requires a valid credential-free HTTP(S) URL")
     }
+  }
+
+  private reconcileTraversal(entry: DocumentHistoryEntry): void {
+    if (this.traversalEntry !== entry) return
+    const current = this.history?.current
+    if (!current) return
+    this.traversalEntry =
+      this.canonicalDocumentUrl(this.loader.currentUrl) === current.url ? undefined : current
   }
 
   private delegateInitial(
