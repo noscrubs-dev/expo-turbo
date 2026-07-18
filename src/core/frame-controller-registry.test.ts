@@ -132,6 +132,52 @@ describe("Frame controller registry visits", () => {
     expect(requests).toHaveLength(0)
   })
 
+  test("inherits exact destination-Frame actions while an explicit null masks inheritance", async () => {
+    const inherited = harness()
+    inherited.session.setAttribute("id:named", "data-turbo-action", "replace")
+
+    await expect(
+      inherited.registry.visit("/named-inherited", { frame: "current" }),
+    ).rejects.toBeInstanceOf(TargetError)
+    expect(inherited.requests).toHaveLength(0)
+
+    const masked = harness()
+    masked.session.setAttribute("id:named", "data-turbo-action", "advance")
+    await expect(
+      masked.registry.visit("/named-masked", { action: null, frame: "current" }),
+    ).resolves.toMatchObject({ frameId: "named", kind: "frame" })
+    expect(masked.requests).toHaveLength(1)
+
+    const invalid = harness()
+    invalid.session.setAttribute("id:named", "data-turbo-action", "Advance")
+    await expect(
+      invalid.registry.visit("/named-invalid", { frame: "current" }),
+    ).resolves.toMatchObject({ frameId: "named", kind: "frame" })
+    expect(invalid.requests).toHaveLength(1)
+  })
+
+  test("does not inherit Frame actions for promoted or external visits", async () => {
+    const { external, navigation, registry, requests, session } = harness()
+    session.setAttribute("id:current", "data-turbo-action", "replace")
+    session.setAttribute("id:named", "data-turbo-action", "restore")
+
+    await expect(
+      registry.visit("/top-without-inheritance", {
+        elementTarget: "_top",
+        frame: "current",
+      }),
+    ).resolves.toMatchObject({ action: "advance", kind: "top" })
+    await expect(
+      registry.visit("https://outside.test/no-inheritance", { frame: "current" }),
+    ).resolves.toMatchObject({ kind: "external" })
+
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/top-without-inheritance" },
+    ])
+    expect(external).toEqual(["https://outside.test/no-inheritance"])
+    expect(requests).toHaveLength(0)
+  })
+
   test("delegates top-level and external visits through the navigation adapter", async () => {
     const { external, navigation, registry, requests } = harness()
 
