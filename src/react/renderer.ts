@@ -58,7 +58,7 @@ import type {
 } from "../core/forms"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
-import { resolveProtocolUrl } from "../core/protocol-request"
+import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
   DocumentStateScopes,
@@ -758,6 +758,13 @@ export type ExpoTurboDocumentLinkDelegation =
       url: string
     }>
   | Readonly<{
+      kind: "external"
+      reason: "scheme"
+      scheme: ExternalDocumentLinkScheme
+      status: "delegated"
+      url: string
+    }>
+  | Readonly<{
       action: "advance"
       kind: "navigation"
       reason: "opt-out"
@@ -796,6 +803,20 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         throw new TargetError("Document link metadata requires unsupported navigation behavior")
       }
     }
+    const documentUrl = session.tree.document.url
+    if (!documentUrl) throw new TargetError("Document links require an active document URL")
+    const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
+    if (linkUrl.kind === "external") {
+      if (!navigation) throw new TargetError("Document link delegation requires host navigation")
+      await navigation.openExternal(linkUrl.url)
+      return Object.freeze({
+        kind: "external",
+        reason: "scheme",
+        scheme: linkUrl.scheme,
+        status: "delegated",
+        url: linkUrl.url,
+      })
+    }
     let current: ProtocolNode | null = node
     let foundTurboSetting = false
     let nearestFrameId: string | null | undefined
@@ -814,12 +835,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       current = current.parent
     }
     const elementTarget = attributeValue(node, "data-turbo-frame")
-    const documentUrl = session.tree.document.url
-    if (!documentUrl) throw new TargetError("Document links require an active document URL")
-    const resolved = resolveProtocolUrl(href, documentUrl)
-    if (resolved.url.includes("#")) {
-      throw new TargetError("Document link fragments require navigation support")
-    }
+    const resolved = linkUrl.resolution
     const documentVisitOptions = navigation ? { navigation } : {}
     if (!optedOut && classifyTopLevelLocation(session.tree, href).classification !== "visitable") {
       return documentController.visit(href, documentVisitOptions)

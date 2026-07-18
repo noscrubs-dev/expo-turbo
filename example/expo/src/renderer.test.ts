@@ -3540,6 +3540,92 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("delegates mail and telephone schemes from every link capture context", async () => {
+    const external: string[] = []
+    const requests: TurboRequest[] = []
+    const adapter: NavigationAdapter = {
+      back() {},
+      openExternal: (url) => {
+        external.push(url)
+      },
+      visit() {
+        throw new Error("External schemes must not use host visits")
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="MAILTO:help@example.com?subject=Hello World" />
+        <turbo-frame id="frame"><DocumentLink href="tel:+15551234567;ext=9" /></turbo-frame>
+        <turbo-frame id="named" />
+        <DocumentLink href="mailto:named@example.com" data-turbo-frame="named" />
+        <Gallery data-turbo="false"><DocumentLink href="tel:+18005550199" /></Gallery>
+        <DocumentLink disabled="" href="mailto:disabled@example.com" />
+        <DocumentLink href="mailto:metadata@example.com" data-turbo-method="get" />
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        throw new Error("External schemes must not fetch")
+      },
+      "https://example.test/gallery",
+      adapter,
+    )
+
+    const results = await Promise.all([
+      harness.activation("MAILTO:help@example.com?subject=Hello World")(),
+      harness.activation("tel:+15551234567;ext=9")(),
+      harness.activation("mailto:named@example.com")(),
+      harness.activation("tel:+18005550199")(),
+    ])
+
+    expect(results).toEqual([
+      {
+        kind: "external",
+        reason: "scheme",
+        scheme: "mailto",
+        status: "delegated",
+        url: "mailto:help@example.com?subject=Hello%20World",
+      },
+      {
+        kind: "external",
+        reason: "scheme",
+        scheme: "tel",
+        status: "delegated",
+        url: "tel:+15551234567;ext=9",
+      },
+      {
+        kind: "external",
+        reason: "scheme",
+        scheme: "mailto",
+        status: "delegated",
+        url: "mailto:named@example.com",
+      },
+      {
+        kind: "external",
+        reason: "scheme",
+        scheme: "tel",
+        status: "delegated",
+        url: "tel:+18005550199",
+      },
+    ])
+    expect(results.every(Object.isFrozen)).toBe(true)
+    expect(await harness.activation("mailto:disabled@example.com")()).toEqual({
+      kind: "disabled",
+      status: "ignored",
+    })
+    await expect(harness.activation("mailto:metadata@example.com")()).rejects.toBeInstanceOf(
+      TargetError,
+    )
+    expect(external).toEqual([
+      "mailto:help@example.com?subject=Hello%20World",
+      "tel:+15551234567;ext=9",
+      "mailto:named@example.com",
+      "tel:+18005550199",
+    ])
+    expect(requests).toHaveLength(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
   test("delegates root-external and excluded-extension links without disturbing the current visit owner", async () => {
     const pending: {
       request: TurboRequest
@@ -4117,6 +4203,7 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink href="https://outside.test/path" />
+        <DocumentLink href="mailto:help@example.com" />
         <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
@@ -4140,6 +4227,7 @@ describe("React protocol renderer", () => {
     const external = harness.activation("https://outside.test/path")()
     expect(external).toBeInstanceOf(Promise)
     await expect(external).rejects.toBe(failure)
+    await expect(harness.activation("mailto:help@example.com")()).rejects.toBe(failure)
     await expect(harness.activation("/opted-out")()).rejects.toBe(failure)
     expect(pending).toHaveLength(1)
     expect(pending[0]?.request.signal?.aborted).toBe(false)
@@ -4161,7 +4249,10 @@ describe("React protocol renderer", () => {
     const sources = [
       "javascript:secret-token",
       "data:text/plain,secret-token",
+      "file:///secret-token",
       "blob:https://example.test/secret-token",
+      "sms:+15551234567",
+      "custom:secret-token",
       "https://user:secret-token@outside.test/path",
       "http://[secret-token",
       "https://outside.test/path#section",
@@ -4217,6 +4308,7 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink href="https://outside.test/path" />
+        <DocumentLink href="mailto:help@example.com" />
         <DocumentLink href="/fragment#section" />
         <DocumentLink href="#" />
         <DocumentLink href="/empty-fragment#" />
@@ -4239,6 +4331,9 @@ describe("React protocol renderer", () => {
     expect(pending[0]?.request.signal?.aborted).toBe(false)
 
     await expect(harness.activation("https://outside.test/path")()).rejects.toBeInstanceOf(
+      TargetError,
+    )
+    await expect(harness.activation("mailto:help@example.com")()).rejects.toBeInstanceOf(
       TargetError,
     )
     for (const href of ["/fragment#section", "#", "/empty-fragment#"]) {
