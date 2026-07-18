@@ -280,11 +280,10 @@ describe("demo Expo Router history bridge", () => {
   });
 
   test("gates managed metadata that does not describe the active document", () => {
-    const fixture = harness(
-      encodeDemoRouterHistoryEntry(
-        managedEntry("stale-document", 3, "https://example.test/linked"),
-      ),
-    );
+    const entry = managedEntry("stale-document", 3, "https://example.test/linked");
+    const fixture = harness(encodeDemoRouterHistoryEntry(entry));
+
+    expect(fixture.bridge.readManagedEntry()).toEqual(entry);
 
     expect(() => initialize(fixture)).toThrow(StateError);
     expect(fixture.history.current).toBeUndefined();

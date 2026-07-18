@@ -382,8 +382,7 @@ export class DemoRouterHistoryBridge
   }
 
   readInitialState(documentUrl: string): DocumentHistoryState {
-    const { route } = this.focusedAttachment();
-    const entry = decodeDemoRouterHistoryEntry(route.params);
+    const entry = this.readManagedEntry();
     const normalizedDocumentUrl = normalizedUrl(documentUrl);
     if (!normalizedDocumentUrl) {
       throw new StateError("Demo Router history requires a valid document URL");
@@ -394,6 +393,10 @@ export class DemoRouterHistoryBridge
     return entry
       ? Object.freeze({ entry, kind: "managed" })
       : Object.freeze({ kind: "unmanaged", url: normalizedDocumentUrl });
+  }
+
+  readManagedEntry(): DocumentHistoryEntry | undefined {
+    return decodeDemoRouterHistoryEntry(this.focusedAttachment().route.params);
   }
 
   reconcile(): void {
