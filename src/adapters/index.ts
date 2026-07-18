@@ -123,6 +123,10 @@ export interface RequestIdAdapter {
   next(): string
 }
 
+export interface RestorationIdentifierAdapter {
+  next(): string
+}
+
 export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
