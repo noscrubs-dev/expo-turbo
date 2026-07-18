@@ -39,6 +39,29 @@ function formFixture(): DocumentSession {
   )
 }
 
+function externalFormFixture(): DocumentSession {
+  return new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery>
+        <DemoInput id="before" form="form" />
+        <DemoButton id="external-submit" form="form" />
+        <DemoForm id="form" action="/save" method="post">
+          <DemoInput id="inside" />
+          <DemoInput id="override" form="other-form" />
+        </DemoForm>
+        <DemoInput id="after" form="form" />
+        <DemoForm id="other-form">
+          <DemoInput id="other-inside" />
+        </DemoForm>
+        <DemoInput id="missing-owner" form="missing" />
+        <DemoInput id="blank-owner" form="" />
+        <DemoInput id="outside" />
+      </Gallery>`,
+      { url: "https://example.test/current" },
+    ),
+  )
+}
+
 function registryFor(session: DocumentSession): FormControlRegistry {
   const form = session.tree.getElementById("form")
   if (!form) throw new Error("form fixture is missing")
@@ -102,6 +125,103 @@ describe("native form control registry", () => {
     const frozen = registry.successfulEntries({ submitter: submitter.selection })
     expect(Object.isFrozen(frozen)).toBe(true)
     expect(frozen.every(Object.isFrozen)).toBe(true)
+  })
+
+  test("collects explicitly associated controls in document order and lets them override ancestry", () => {
+    const session = externalFormFixture()
+    const registry = registryFor(session)
+    const otherRegistry = new FormControlRegistry(session, "id:other-form")
+
+    registry.register("id:after", { kind: "value", name: "after", value: "C" })
+    registry.register("id:inside", { kind: "value", name: "inside", value: "B" })
+    const submitter = registry.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "external",
+    })
+    registry.register("id:before", { kind: "value", name: "before", value: "A" })
+    otherRegistry.register("id:other-inside", {
+      kind: "value",
+      name: "other",
+      value: "E",
+    })
+    otherRegistry.register("id:override", {
+      kind: "value",
+      name: "override",
+      value: "D",
+    })
+
+    expect(registry.successfulEntries({ submitter: submitter.selection })).toEqual([
+      { name: "before", value: "A" },
+      { name: "inside", value: "B" },
+      { name: "after", value: "C" },
+      { name: "commit", value: "external" },
+    ])
+    expect(otherRegistry.successfulEntries()).toEqual([
+      { name: "override", value: "D" },
+      { name: "other", value: "E" },
+    ])
+    expect(() =>
+      registry.register("id:override", { kind: "value", name: "wrong", value: "wrong" }),
+    ).toThrow(/another form/)
+    expect(() =>
+      registry.register("id:missing-owner", {
+        kind: "value",
+        name: "missing",
+        value: "missing",
+      }),
+    ).toThrow(/missing form owner/)
+    expect(() =>
+      registry.register("id:blank-owner", {
+        kind: "value",
+        name: "blank",
+        value: "blank",
+      }),
+    ).toThrow(/blank form owner/)
+    expect(() =>
+      registry.register("id:outside", { kind: "value", name: "outside", value: "outside" }),
+    ).toThrow(/another form/)
+  })
+
+  test("requires headless controls to re-register after explicit owner changes", () => {
+    const session = externalFormFixture()
+    const registry = registryFor(session)
+    const otherRegistry = new FormControlRegistry(session, "id:other-form")
+    const registration = registry.register("id:before", {
+      kind: "value",
+      name: "before",
+      value: "A",
+    })
+
+    session.setAttribute("id:before", "form", "other-form")
+
+    expect(() => registration.update({ kind: "value", name: "before", value: "stale" })).toThrow(
+      /no longer owns its form/,
+    )
+    registration.unregister()
+    otherRegistry.register("id:before", { kind: "value", name: "before", value: "B" })
+    expect(registry.successfulEntries()).toEqual([])
+    expect(otherRegistry.successfulEntries()).toEqual([{ name: "before", value: "B" }])
+  })
+
+  test("invalidates a proposal when its external submitter changes form owner", () => {
+    const session = externalFormFixture()
+    const registry = registryFor(session)
+    const submitter = registry.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "external",
+    })
+    const proposal = registry.submissionProposal({
+      protocol: { requestId: "external-owner" },
+      submitter: submitter.selection,
+    })
+
+    session.setAttribute("id:external-submit", "form", "other-form")
+
+    expect(() => assertActiveFormSubmissionProposal(session, proposal)).toThrow(
+      /submitter no longer owns its form/,
+    )
   })
 
   test("updates values without changing XML order", () => {
@@ -968,6 +1088,30 @@ describe("document form-control ownership", () => {
     expect(rebound).not.toBe(original)
     rebound.register("id:replacement", { kind: "value", name: "field", value: "new" })
     expect(rebound.successfulEntries()).toEqual([{ name: "field", value: "new" }])
+  })
+
+  test("rebinds surviving external controls to a same-key form replacement", () => {
+    const session = externalFormFixture()
+    const forms = new DocumentFormControls(session)
+    const form = session.tree.getElementById("form")
+    if (!form) throw new Error("form fixture is missing")
+    const original = forms.controlsFor(form.key)
+    original.register("id:before", { kind: "value", name: "before", value: "old" })
+    const replacement = parseExpoTurboDocument(
+      '<DemoForm id="form"><DemoInput id="fresh" /></DemoForm>',
+    ).getElementById("form")
+    if (!replacement) throw new Error("replacement form fixture is missing")
+
+    session.mutate((tree) => tree.replaceNodeWithClones(form, [replacement]))
+
+    expect(original.isDisposed).toBe(true)
+    const rebound = forms.controlsFor("id:form")
+    rebound.register("id:before", { kind: "value", name: "before", value: "current" })
+    rebound.register("id:fresh", { kind: "value", name: "fresh", value: "new" })
+    expect(rebound.successfulEntries()).toEqual([
+      { name: "before", value: "current" },
+      { name: "fresh", value: "new" },
+    ])
   })
 
   test("disposes every owned registry and rejects later access", () => {

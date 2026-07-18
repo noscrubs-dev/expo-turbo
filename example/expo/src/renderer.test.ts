@@ -200,6 +200,7 @@ function formScopeUnmountFixture(
     },
     children: "nodes",
     component: NativeForm,
+    formOwner: true,
     schema: z.object({
       action: z.string().optional(),
       method: z.string().optional(),
@@ -338,6 +339,7 @@ function formTerminalFixture(
     },
     children: "nodes",
     component: NativeForm,
+    formOwner: true,
     schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
     tag: "TerminalForm",
   })
@@ -1027,6 +1029,7 @@ describe("React protocol renderer", () => {
       },
       children: "nodes",
       component: NativeForm,
+      formOwner: true,
       schema: z.object({
         action: z.string().optional(),
         enctype: z.string().optional(),
@@ -1455,6 +1458,242 @@ describe("React protocol renderer", () => {
     expect(other.successfulEntries()).toEqual([])
     forms.dispose()
     expect(() => replacement.successfulEntries()).toThrow(/disposed/)
+  })
+
+  test("binds explicit form owners in document order and rebinds after same-id replacement", async () => {
+    function NativeForm(
+      props: Readonly<{ action?: string; children?: ReactNode; method?: string }>,
+    ): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function CaptureForm({ slot }: { slot: string }): ReactNode {
+      const binding = useExpoTurboForm()
+      return createElement("form-binding", { binding, slot })
+    }
+    function NativeValue({ name, value }: { name: string; value: string }): ReactNode {
+      const binding = useExpoTurboFormControl({ kind: "value", name, value })
+      return createElement("external-value", { nodeKey: binding.nodeKey, value })
+    }
+    function NativeSubmitter({ name, value }: { name: string; value: string }): ReactNode {
+      const formBinding = useExpoTurboForm()
+      const binding = useExpoTurboFormControl({ kind: "submitter", name, value })
+      return createElement("external-submitter", {
+        formBinding,
+        nodeKey: binding.nodeKey,
+        selection: binding.selection,
+      })
+    }
+
+    const form = defineComponent({
+      attributes: {
+        action: { codec: stringCodec, prop: "action" },
+        method: { codec: stringCodec, prop: "method" },
+      },
+      children: "nodes",
+      component: NativeForm,
+      formOwner: true,
+      schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
+      tag: "NativeForm",
+    })
+    const capture = defineComponent({
+      attributes: { slot: { codec: stringCodec, prop: "slot" } },
+      children: "none",
+      component: CaptureForm,
+      schema: z.object({ slot: z.string() }),
+      tag: "CaptureForm",
+    })
+    const value = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeValue,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "NativeValue",
+    })
+    const submitter = defineComponent({
+      attributes: {
+        formaction: { codec: stringCodec, prop: "formaction" },
+        formmethod: { codec: stringCodec, prop: "formmethod" },
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeSubmitter,
+      schema: z.object({
+        formaction: z.string().optional(),
+        formmethod: z.string().optional(),
+        name: z.string(),
+        value: z.string(),
+      }),
+      tag: "NativeSubmitter",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, value, submitter],
+        name: "external-form-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery id="gallery">
+          <NativeValue id="before" form="form" name="before" value="A" />
+          <NativeSubmitter id="external-submit" form="form" name="commit" value="external" formaction="/external" formmethod="patch" />
+          <NativeForm id="form" action="/initial" method="post">
+            <CaptureForm slot="inside" />
+            <NativeValue id="inside" name="inside" value="B" />
+          </NativeForm>
+          <CaptureForm id="outside-capture" form="form" slot="outside" />
+          <NativeValue id="after" form="form" name="after" value="C" />
+          <NativeForm id="outer">
+            <CaptureForm slot="outer" />
+            <NativeValue id="override" form="other" name="override" value="D" />
+            <NativeForm id="other">
+              <CaptureForm slot="other" />
+              <NativeValue id="other-child" name="other" value="E" />
+            </NativeForm>
+          </NativeForm>
+        </Gallery>`,
+        { url: "https://example.test/forms/current" },
+      ),
+    )
+    const forms = new DocumentFormControls(session)
+    const errors: ExpoTurboRenderError[] = []
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              forms,
+              onError: (event) => errors.push(event),
+              registry,
+              renderError: (event) => createElement("protocol-error", null, event.error.message),
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    const activeRenderer = renderer
+    const formBinding = (slot: string): ExpoTurboFormBinding => {
+      const node = activeRenderer.root
+        .findAll((candidate) => String(candidate.type) === "form-binding")
+        .find((candidate) => candidate.props.slot === slot)
+      if (!node) throw new Error(`form binding ${slot} was not rendered`)
+      return node.props.binding
+    }
+    const externalSubmitter = () => {
+      const node = activeRenderer.root
+        .findAll((candidate) => String(candidate.type) === "external-submitter")
+        .find((candidate) => candidate.props.nodeKey === "id:external-submit")
+      if (!node) throw new Error("external submitter was not rendered")
+      return node
+    }
+
+    const inside = formBinding("inside")
+    const outside = formBinding("outside")
+    const outer = formBinding("outer")
+    const other = formBinding("other")
+    const submitterNode = externalSubmitter()
+    const selected = submitterNode.props.selection()
+    expect(outside.formNodeKey).toBe(inside.formNodeKey)
+    expect(submitterNode.props.formBinding.formNodeKey).toBe(inside.formNodeKey)
+    expect(outside.successfulEntries({ submitter: selected })).toEqual([
+      { name: "before", value: "A" },
+      { name: "inside", value: "B" },
+      { name: "after", value: "C" },
+      { name: "commit", value: "external" },
+    ])
+    expect(outer.successfulEntries()).toEqual([])
+    expect(other.successfulEntries()).toEqual([
+      { name: "override", value: "D" },
+      { name: "other", value: "E" },
+    ])
+    expect(
+      submitterNode.props.formBinding.submissionProposal({
+        protocol: { requestId: "external-submit" },
+        submitter: selected,
+      }),
+    ).toMatchObject({
+      plan: {
+        effectiveMethod: "PATCH",
+        entries: [
+          { name: "before", value: "A" },
+          { name: "inside", value: "B" },
+          { name: "after", value: "C" },
+          { name: "commit", value: "external" },
+          { name: "_method", value: "patch" },
+        ],
+        request: { method: "POST", url: "https://example.test/external" },
+        sourceMethod: "PATCH",
+      },
+    })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><NativeForm id="form" action="/replacement" method="get"><CaptureForm slot="replacement"/><NativeValue id="fresh" name="fresh" value="F"/></NativeForm></template></turbo-stream>',
+      )
+    })
+
+    const replacement = formBinding("replacement")
+    const reboundOutside = formBinding("outside")
+    expect(reboundOutside).not.toBe(outside)
+    expect(reboundOutside.formNodeKey).toBe(replacement.formNodeKey)
+    expect(() => outside.successfulEntries()).toThrow(/disposed/)
+    expect(() => replacement.successfulEntries({ submitter: selected })).toThrow(TargetError)
+    const reboundSelected = externalSubmitter().props.selection()
+    expect(reboundOutside.successfulEntries({ submitter: reboundSelected })).toEqual([
+      { name: "before", value: "A" },
+      { name: "fresh", value: "F" },
+      { name: "after", value: "C" },
+      { name: "commit", value: "external" },
+    ])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="form"></turbo-stream>',
+      )
+    })
+    expect(errors.some((event) => event.error.message.includes("missing form owner"))).toBe(true)
+    expect(JSON.stringify(activeRenderer.toJSON())).toContain("missing form owner")
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="gallery"><template><NativeForm id="form" action="/reinserted" method="get"><CaptureForm slot="reinserted"/><NativeValue id="reinserted-value" name="reinserted" value="G"/></NativeForm></template></turbo-stream>',
+      )
+    })
+    const reinserted = formBinding("reinserted")
+    const recoveredOutside = formBinding("outside")
+    expect(JSON.stringify(activeRenderer.toJSON())).not.toContain("missing form owner")
+    expect(recoveredOutside.formNodeKey).toBe(reinserted.formNodeKey)
+    expect(() => reinserted.successfulEntries({ submitter: reboundSelected })).toThrow(
+      TargetError,
+    )
+    const reinsertedSelected = externalSubmitter().props.selection()
+    expect(recoveredOutside.successfulEntries({ submitter: reinsertedSelected })).toEqual([
+      { name: "before", value: "A" },
+      { name: "after", value: "C" },
+      { name: "reinserted", value: "G" },
+      { name: "commit", value: "external" },
+    ])
+
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
+    forms.dispose()
   })
 
   test("publishes and dismisses terminal state through the form boundary without remounting children", async () => {
@@ -2328,7 +2567,7 @@ describe("React protocol renderer", () => {
     expect(announcements).toEqual([])
   })
 
-  test("reports a form control rendered outside an explicit form scope", () => {
+  test("reports a form control without an active nearest or explicit owner", () => {
     function OrphanControl(): ReactNode {
       useExpoTurboFormControl({ kind: "value", name: "orphan", value: "value" })
       return createElement("orphan")
@@ -2347,18 +2586,28 @@ describe("React protocol renderer", () => {
         version: "0.1.0",
       }),
     )
-    const session = new DocumentSession(
-      parseExpoTurboDocument("<Gallery><OrphanControl id=\"orphan\"/></Gallery>"),
-    )
-    const errors: ExpoTurboRenderError[] = []
-    const renderer = render(session, registry, {
-      forms: new DocumentFormControls(session),
-      onError: (event) => errors.push(event),
-      renderError: (event) => createElement("protocol-error", null, event.error.message),
-    })
+    for (const [document, message] of [
+      ["<Gallery><OrphanControl id=\"orphan\"/></Gallery>", "requires a form scope"],
+      [
+        "<Gallery><OrphanControl id=\"orphan\" form=\"missing\"/></Gallery>",
+        "references a missing form owner",
+      ],
+      [
+        "<Gallery id=\"container\"><OrphanControl id=\"orphan\" form=\"container\"/></Gallery>",
+        "is not a declared form owner",
+      ],
+    ] as const) {
+      const session = new DocumentSession(parseExpoTurboDocument(document))
+      const errors: ExpoTurboRenderError[] = []
+      const renderer = render(session, registry, {
+        forms: new DocumentFormControls(session),
+        onError: (event) => errors.push(event),
+        renderError: (event) => createElement("protocol-error", null, event.error.message),
+      })
 
-    expect(errors[0]?.error.message).toContain("require a form scope")
-    expect(JSON.stringify(renderer.toJSON())).toContain("require a form scope")
+      expect(errors[0]?.error.message).toContain(message)
+      expect(JSON.stringify(renderer.toJSON())).toContain(message)
+    }
   })
 
   test("reports an explicit form scope without provider form controls", () => {
@@ -2369,6 +2618,7 @@ describe("React protocol renderer", () => {
       attributes: {},
       children: "nodes",
       component: UnconfiguredForm,
+      formOwner: true,
       schema: z.object({}),
       tag: "UnconfiguredForm",
     })

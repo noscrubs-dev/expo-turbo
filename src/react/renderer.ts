@@ -210,6 +210,7 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "stream",
   "target",
 ] as const
+const MISSING_FORM_OWNER_KEY = "__expo-turbo-missing-form-owner__"
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
@@ -428,6 +429,88 @@ export interface ExpoTurboFormScopeProps {
   readonly children?: ReactNode
 }
 
+function useFormBinding(registry: FormControlRegistry, formNodeKey: string): ExpoTurboFormBinding {
+  const subscribe = useCallback(
+    (listener: () => void) => registry.subscribeSubmission(listener),
+    [registry],
+  )
+  const snapshot = useCallback(() => registry.submissionState, [registry])
+  const state = useSyncExternalStore(subscribe, snapshot, snapshot)
+  const subscribeTerminal = useCallback(
+    (listener: () => void) => registry.subscribeSubmissionTerminal(listener),
+    [registry],
+  )
+  const terminalSnapshot = useCallback(() => registry.submissionTerminalState, [registry])
+  const terminalState = useSyncExternalStore(subscribeTerminal, terminalSnapshot, terminalSnapshot)
+  return useMemo<ExpoTurboFormBinding>(
+    () =>
+      Object.freeze({
+        accessibilityState: Object.freeze({ busy: state.busy }),
+        cancelSubmission: () => registry.cancelSubmission(),
+        dismissTerminal: () => registry.dismissSubmissionTerminal(),
+        formNodeKey,
+        requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        retryFailure: (
+          options: ActiveFormRetryOptions,
+          controllerOptions?: FormSubmissionControllerSubmitOptions,
+        ) => registry.retryFailure(options, controllerOptions),
+        state,
+        submit: (
+          options: ActiveFormSubmitOptions,
+          controllerOptions?: FormSubmissionControllerSubmitOptions,
+        ) => registry.submit(options, controllerOptions),
+        submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
+          registry.submissionProposal(options),
+        successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
+          registry.successfulEntries(options),
+        terminalState,
+      }),
+    [formNodeKey, registry, state, terminalState],
+  )
+}
+
+function useResolvedFormRegistry(): Readonly<{
+  formNodeKey: string
+  registry: FormControlRegistry
+}> {
+  const { forms, registry: componentRegistry, session } = useRenderer()
+  const context = useContext(FormContext)
+  const nodeKey = useContext(ProtocolNodeContext)
+  const nodeSnapshot = useProtocolNode(nodeKey ?? MISSING_FORM_OWNER_KEY)
+  const node = nodeSnapshot?.node
+  const formId = node && isElement(node) ? attributeValue(node, "form") : undefined
+  const formNodeKey =
+    formId !== undefined && formId !== ""
+      ? `id:${formId}`
+      : (context?.binding.formNodeKey ?? MISSING_FORM_OWNER_KEY)
+  const formSnapshot = useProtocolNode(formNodeKey)
+
+  if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
+  if (!nodeKey || !node || !isElement(node)) {
+    throw new RegistryError("Expo Turbo form association requires an active component element")
+  }
+  if (formId === "") {
+    throw new RegistryError("Expo Turbo form association must not be blank")
+  }
+  if (formId === undefined) {
+    if (!context) {
+      throw new RegistryError(
+        "Expo Turbo form binding requires a form scope or explicit form association",
+      )
+    }
+    return Object.freeze({ formNodeKey: context.binding.formNodeKey, registry: context.registry })
+  }
+
+  const form = session.tree.getElementById(formId)
+  if (!form || formSnapshot?.node !== form) {
+    throw new RegistryError("Expo Turbo form association references a missing form owner")
+  }
+  if (!componentRegistry.decode(form).definition.formOwner) {
+    throw new RegistryError("Expo Turbo form association target is not a declared form owner")
+  }
+  return Object.freeze({ formNodeKey: form.key, registry: forms.controlsFor(form.key) })
+}
+
 function reportFormAnnouncementError(
   onError: ((event: ExpoTurboRenderError) => void) | undefined,
   nodeKey: string,
@@ -477,31 +560,31 @@ function claimFormTerminalAnnouncement(
  * effect replay; exact tree replacement remains its disposal boundary.
  */
 export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
-  const { formAnnouncements, formComponent: FormComponent, forms, onError, session } = useRenderer()
+  const {
+    formAnnouncements,
+    formComponent: FormComponent,
+    forms,
+    onError,
+    registry: componentRegistry,
+    session,
+  } = useRenderer()
   const nodeKey = useContext(ProtocolNodeContext)
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
+  const formNode = session.tree.getNodeByKey(nodeKey)
+  if (!formNode || !isElement(formNode)) {
+    throw new RegistryError("Expo Turbo forms require an active component element")
+  }
+  if (!componentRegistry.decode(formNode).definition.formOwner) {
+    throw new RegistryError("Expo Turbo form scope requires a declared form-owner component")
+  }
   const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
   useEffect(() => {
     const release = registry.retainSubmissionScope()
     return () => queueMicrotask(release)
   }, [registry])
-  const subscribe = useCallback(
-    (listener: () => void) => registry.subscribeSubmission(listener),
-    [registry],
-  )
-  const snapshot = useCallback(() => registry.submissionState, [registry])
-  const state = useSyncExternalStore(subscribe, snapshot, snapshot)
-  const subscribeTerminal = useCallback(
-    (listener: () => void) => registry.subscribeSubmissionTerminal(listener),
-    [registry],
-  )
-  const terminalSnapshot = useCallback(() => registry.submissionTerminalState, [registry])
-  const terminalState = useSyncExternalStore(subscribeTerminal, terminalSnapshot, terminalSnapshot)
-  const formNode = session.tree.getNodeByKey(nodeKey)
-  if (!formNode || !isElement(formNode)) {
-    throw new RegistryError("Expo Turbo forms require an active component element")
-  }
+  const binding = useFormBinding(registry, nodeKey)
+  const { terminalState } = binding
   const announcementBaseline = useRef({ node: formNode, revision: terminalState.revision })
   useEffect(() => {
     const baseline = announcementBaseline.current
@@ -533,31 +616,6 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
       reportFormAnnouncementError(onError, nodeKey, error)
     }
   }, [formAnnouncements, formNode, nodeKey, onError, registry, session, terminalState])
-  const binding = useMemo<ExpoTurboFormBinding>(
-    () =>
-      Object.freeze({
-        accessibilityState: Object.freeze({ busy: state.busy }),
-        cancelSubmission: () => registry.cancelSubmission(),
-        dismissTerminal: () => registry.dismissSubmissionTerminal(),
-        formNodeKey: nodeKey,
-        requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
-        retryFailure: (
-          options: ActiveFormRetryOptions,
-          controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => registry.retryFailure(options, controllerOptions),
-        state,
-        submit: (
-          options: ActiveFormSubmitOptions,
-          controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => registry.submit(options, controllerOptions),
-        submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
-          registry.submissionProposal(options),
-        successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
-          registry.successfulEntries(options),
-        terminalState,
-      }),
-    [nodeKey, registry, state, terminalState],
-  )
   const value = useMemo<ExpoTurboFormContextValue>(
     () => Object.freeze({ binding, registry }),
     [binding, registry],
@@ -573,28 +631,26 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
 }
 
 export function useExpoTurboForm(): ExpoTurboFormBinding {
-  const context = useContext(FormContext)
-  if (!context) throw new RegistryError("Expo Turbo form binding requires a form scope")
-  return context.binding
+  const { formNodeKey, registry } = useResolvedFormRegistry()
+  return useFormBinding(registry, formNodeKey)
 }
 
 export function useExpoTurboFormControl(
   descriptor: FormControlDescriptor,
 ): ExpoTurboFormControlBinding {
-  const context = useContext(FormContext)
+  const { registry } = useResolvedFormRegistry()
   const nodeKey = useContext(ProtocolNodeContext)
   const descriptorRef = useRef(descriptor)
   const registration = useRef<FormControlRegistration | undefined>(undefined)
-  if (!context) throw new RegistryError("Expo Turbo form controls require a form scope")
   if (!nodeKey) throw new RegistryError("Expo Turbo form controls require a component node")
 
   const subscribe = useCallback(
-    (listener: () => void) => context.registry.subscribeControlSubmission(nodeKey, listener),
-    [context.registry, nodeKey],
+    (listener: () => void) => registry.subscribeControlSubmission(nodeKey, listener),
+    [nodeKey, registry],
   )
   const snapshot = useCallback(
-    (): FormSubmitterActivitySnapshot => context.registry.controlSubmissionState(nodeKey),
-    [context.registry, nodeKey],
+    (): FormSubmitterActivitySnapshot => registry.controlSubmissionState(nodeKey),
+    [nodeKey, registry],
   )
   const submissionState = useSyncExternalStore(subscribe, snapshot, snapshot)
   const disabled = descriptor.disabled === true || submissionState.pending
@@ -604,13 +660,13 @@ export function useExpoTurboFormControl(
     registration.current?.update(descriptor)
   }, [descriptor])
   useLayoutEffect(() => {
-    const current = context.registry.register(nodeKey, descriptorRef.current)
+    const current = registry.register(nodeKey, descriptorRef.current)
     registration.current = current
     return () => {
       if (registration.current === current) registration.current = undefined
       current.unregister()
     }
-  }, [context.registry, nodeKey])
+  }, [nodeKey, registry])
 
   return useMemo(
     () =>
@@ -821,12 +877,12 @@ interface ErrorBoundaryProps {
   readonly nodeKey: string
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
-  readonly revision: number
+  readonly revision: number | string
 }
 
 interface ErrorBoundaryState {
   readonly error: Error | null
-  readonly revision: number
+  readonly revision: number | string
 }
 
 class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
@@ -883,6 +939,36 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
     { value: props.node.key },
     createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
   )
+}
+
+interface RegisteredElementBoundaryProps {
+  readonly node: ProtocolElement
+  readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+  readonly revision: number | string
+}
+
+function RegisteredElementBoundary(props: RegisteredElementBoundaryProps): ReactNode {
+  return createElement(
+    NodeErrorBoundary,
+    {
+      nodeKey: props.node.key,
+      onError: props.onError,
+      renderError: props.renderError,
+      revision: props.revision,
+    },
+    createElement(RegisteredElement, { node: props.node }),
+  )
+}
+
+function AssociatedRegisteredElementBoundary(
+  props: RegisteredElementBoundaryProps & Readonly<{ formId: string }>,
+): ReactNode {
+  const owner = useProtocolNode(`id:${props.formId}`)
+  return createElement(RegisteredElementBoundary, {
+    ...props,
+    revision: `${props.revision}:${owner?.identity ?? "missing"}`,
+  })
 }
 
 interface ConnectedFrameProps {
@@ -1023,16 +1109,16 @@ function ProtocolElementView(
     )
   }
 
-  return createElement(
-    NodeErrorBoundary,
-    {
-      nodeKey: props.node.key,
-      onError: context.onError,
-      renderError: context.renderError,
-      revision: props.revision,
-    },
-    createElement(RegisteredElement, { node: props.node }),
-  )
+  const formId = attributeValue(props.node, "form")
+  const boundaryProps = {
+    node: props.node,
+    onError: context.onError,
+    renderError: context.renderError,
+    revision: props.revision,
+  }
+  return formId !== undefined && formId !== ""
+    ? createElement(AssociatedRegisteredElementBoundary, { ...boundaryProps, formId })
+    : createElement(RegisteredElementBoundary, boundaryProps)
 }
 
 function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {

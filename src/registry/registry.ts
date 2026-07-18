@@ -39,6 +39,7 @@ export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodO
   readonly attributes: Readonly<Record<string, AttributeBinding<z.input<Schema>>>>
   readonly children: ComponentChildren
   readonly component: ComponentRenderer<z.output<Schema>>
+  readonly formOwner?: boolean
   readonly schema: Schema
   readonly tag: Tag
 }
@@ -54,6 +55,7 @@ export interface RegistryComponent {
   readonly attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   readonly children: ComponentChildren
   readonly component: unknown
+  readonly formOwner: boolean
   readonly tag: string
   decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
 }
@@ -105,6 +107,7 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
       return config.schema.parse(attributes)
     },
+    formOwner: config.formOwner === true,
     schema: config.schema,
     tag: config.tag,
   })
@@ -136,6 +139,7 @@ export interface ProtocolAttributes {
   readonly classNames: readonly string[]
   readonly data: Readonly<Record<string, string>>
   readonly direction?: "auto" | "ltr" | "rtl"
+  readonly form?: string
   readonly id?: string
   readonly xmlSpace?: "default" | "preserve"
 }
@@ -158,6 +162,7 @@ export interface ComponentCapability {
     prop: string
   }>[]
   readonly children: ComponentChildren
+  readonly formOwner: boolean
   readonly tag: string
 }
 
@@ -185,6 +190,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
       .map((attribute) => [attribute.name.slice(5), attribute.value]),
   )
   const direction = attributeValue(element, "dir")
+  const form = attributeValue(element, "form")
   if (direction && !["auto", "ltr", "rtl"].includes(direction)) {
     throw new PropsError(`Invalid shared dir attribute on ${JSON.stringify(element.tagName)}`, {
       target: element.tagName,
@@ -205,6 +211,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
     classNames: Object.freeze(classes),
     data: Object.freeze(data),
     ...(direction === "auto" || direction === "ltr" || direction === "rtl" ? { direction } : {}),
+    ...(form !== undefined ? { form } : {}),
     ...(id ? { id } : {}),
     ...(xmlSpace === "default" || xmlSpace === "preserve" ? { xmlSpace } : {}),
   })
@@ -214,6 +221,7 @@ function isSharedAttribute(name: string): boolean {
   return (
     name === "class" ||
     name === "dir" ||
+    name === "form" ||
     name === "id" ||
     name === "xml:space" ||
     name === "xmlns" ||
@@ -307,6 +315,7 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
           aliases: Object.freeze([...component.aliases].sort()),
           attributes: Object.freeze(attributes),
           children: component.children,
+          formOwner: component.formOwner,
           tag: component.tag,
         })
       })
@@ -338,8 +347,8 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
     const attributes: Record<string, unknown> = {}
     const warnings: string[] = []
     for (const attribute of element.attributes) {
-      if (isSharedAttribute(attribute.name)) continue
       const binding = definition.attributeBindings[attribute.name]
+      if (isSharedAttribute(attribute.name) && !binding) continue
       if (!binding) {
         throw new PropsError(
           `Unknown attribute ${JSON.stringify(attribute.name)} on ${JSON.stringify(element.tagName)}`,

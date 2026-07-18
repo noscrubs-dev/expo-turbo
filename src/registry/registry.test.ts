@@ -24,6 +24,7 @@ const card = defineComponent({
     count: { codec: integerCodec, prop: "count" },
     disabled: { codec: presenceCodec, prop: "disabled" },
     enabled: { codec: booleanCodec, prop: "enabled" },
+    form: { codec: stringCodec, prop: "form" },
     heading: { codec: stringCodec, prop: "title" },
     "style-tokens": {
       codec: tokenListCodec("card-style", CARD_STYLE_TOKENS, { maxTokens: 2 }),
@@ -37,6 +38,7 @@ const card = defineComponent({
     count: z.number().int(),
     disabled: z.boolean().default(false),
     enabled: z.boolean().default(true),
+    form: z.string().optional(),
     styleTokens: z.array(z.enum(CARD_STYLE_TOKENS)).readonly().default([]),
     title: z.string().min(1),
     tone: z.enum(["neutral", "positive"]).default("neutral"),
@@ -79,7 +81,7 @@ describe("typed component registry", () => {
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
       element(
-        '<DemoCard id="card" class="featured" data-state="ready" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
+        '<DemoCard id="card" class="featured" data-state="ready" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
       ),
     )
 
@@ -88,6 +90,7 @@ describe("typed component registry", () => {
       count: 2,
       disabled: false,
       enabled: false,
+      form: "profile",
       styleTokens: ["tone:featured", "space:roomy"],
       title: "Hello",
       tone: "neutral",
@@ -95,6 +98,7 @@ describe("typed component registry", () => {
     expect(decoded.protocol).toEqual({
       classNames: ["featured"],
       data: { state: "ready" },
+      form: "profile",
       id: "card",
     })
     expect(decoded.children.filter(isElement)).toHaveLength(1)
@@ -158,6 +162,30 @@ describe("typed component registry", () => {
     expect(registry.decode(element("<DemoText><![CDATA[one\n  two]]></DemoText>")).text).toBe(
       "one\n  two",
     )
+  })
+
+  test("publishes explicit form-owner capability metadata", () => {
+    const owner = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: () => null,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "DemoForm",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [owner],
+        name: "forms",
+        version: "0.1.0",
+      }),
+    )
+
+    expect(owner.formOwner).toBe(true)
+    expect(registry.capabilities.components[0]).toMatchObject({
+      formOwner: true,
+      tag: "DemoForm",
+    })
   })
 
   test("rejects reserved and duplicate ownership with both module names", () => {
