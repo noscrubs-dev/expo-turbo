@@ -145,7 +145,7 @@ function datalistFixture(): DocumentSession {
             <DemoInput id="value" />
             <DemoInput id="checkable" />
             <DemoSelect id="select" />
-            <DemoInput id="charset" />
+            <DemoInput id="hidden" />
             <DemoGroup>
               <DemoDatalist id="nested-list">
                 <DemoInput id="directional" />
@@ -526,7 +526,7 @@ describe("native form control registry", () => {
       name: "select",
       options: [{ kind: "option", selected: true, value: "ignored" }],
     })
-    registry.register("id:charset", { kind: "charset", name: "_charset_" })
+    registry.register("id:hidden", { kind: "hidden", name: "_charset_", value: "ignored" })
     registry.register("id:directional", {
       directionality: { name: "directional.dir", value: "ltr" },
       kind: "value",
@@ -754,7 +754,7 @@ describe("native form control registry", () => {
     ])
   })
 
-  test("emits explicit UTF-8 charset and directionality entries in XML order", () => {
+  test("emits explicit hidden charset and directionality entries in XML order", () => {
     const session = formFixture()
     const registry = registryFor(session)
     const directionality: { name: string; value: "ltr" | "rtl" } = {
@@ -762,7 +762,7 @@ describe("native form control registry", () => {
       value: "rtl",
     }
 
-    registry.register("id:first", { kind: "charset", name: "_CHARSET_" })
+    registry.register("id:first", { kind: "hidden", name: "_CHARSET_", value: "ignored" })
     const directional = registry.register("id:second", {
       directionality,
       kind: "value",
@@ -780,7 +780,7 @@ describe("native form control registry", () => {
       name: "_charset_",
       value: "caller-value",
     })
-    registry.register("id:multiple", { kind: "charset", name: "_charset_" })
+    registry.register("id:multiple", { kind: "hidden", name: "_charset_" })
 
     directionality.name = "changed.dir"
     directionality.value = "ltr"
@@ -814,14 +814,64 @@ describe("native form control registry", () => {
     ])
   })
 
-  test("omits charset and directionality entries with their unsuccessful owner", () => {
+  test("models explicit hidden values and hidden _charset_ replacement", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const submitter = registry.register("id:save", {
+      kind: "submitter",
+      name: "_charset_",
+      value: "submitter-value",
+    })
+
+    registry.register("id:first", {
+      kind: "hidden",
+      name: "_CHARSET_",
+      value: "caller-value",
+    })
+    registry.register("id:second", { kind: "hidden", name: "token" })
+    registry.register("id:unchecked", {
+      disabled: true,
+      kind: "hidden",
+      name: "_charset_",
+      value: "ignored",
+    })
+    registry.register("id:checked", {
+      kind: "value",
+      name: "_charset_",
+      value: "ordinary-value",
+    })
+    registry.register("id:multiple", {
+      kind: "hidden",
+      name: "_CHARſET_",
+      value: "non-ascii-name",
+    })
+    registry.register("id:disabled", {
+      disabled: true,
+      kind: "hidden",
+      name: "disabled",
+      value: "ignored",
+    })
+    registry.register("id:unnamed", { kind: "hidden", value: "ignored" })
+    registry.register("id:empty-name", { kind: "hidden", name: "", value: "ignored" })
+
+    expect(registry.successfulEntries({ submitter: submitter.selection })).toEqual([
+      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "token", value: "" },
+      { name: "_charset_", value: "ordinary-value" },
+      { name: "_CHARſET_", value: "non-ascii-name" },
+      { name: "_charset_", value: "submitter-value" },
+    ])
+  })
+
+  test("omits hidden charset and directionality entries with their unsuccessful owner", () => {
     const session = formFixture()
     const registry = registryFor(session)
 
     registry.register("id:first", {
       disabled: true,
-      kind: "charset",
+      kind: "hidden",
       name: "_charset_",
+      value: "ignored",
     })
     registry.register("id:second", {
       directionality: { name: "missing.dir", value: "ltr" },
@@ -845,16 +895,11 @@ describe("native form control registry", () => {
     expect(registry.successfulEntries()).toEqual([])
   })
 
-  test("rejects malformed charset and directionality descriptors", () => {
+  test("rejects malformed hidden and directionality descriptors", () => {
     const session = formFixture()
     const registry = registryFor(session)
     const malformed: unknown[] = [
-      { kind: "charset" },
-      { kind: "charset", name: "" },
-      { kind: "charset", name: 7 },
-      { kind: "charset", name: "charset" },
-      { kind: "charset", name: "_charset_x" },
-      { kind: "charset", name: "_CHARſET_" },
+      { kind: "hidden", name: "token", value: 7 },
       { directionality: null, kind: "value", name: "value", value: "value" },
       { directionality: [], kind: "value", name: "value", value: "value" },
       { directionality: {}, kind: "value", name: "value", value: "value" },
@@ -1100,7 +1145,7 @@ describe("native form control registry", () => {
     ).toThrow(RequestError)
   })
 
-  test("preserves charset and directionality entries through GET request planning", () => {
+  test("preserves hidden charset and directionality entries through GET request planning", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
         `<Gallery><DemoForm id="form" action="/search?stale=1">
@@ -1111,7 +1156,7 @@ describe("native form control registry", () => {
       ),
     )
     const registry = registryFor(session)
-    registry.register("id:charset", { kind: "charset", name: "_CHARSET_" })
+    registry.register("id:charset", { kind: "hidden", name: "_CHARSET_", value: "ignored" })
     registry.register("id:query", {
       directionality: { name: "query.dir", value: "ltr" },
       kind: "value",
@@ -1747,9 +1792,13 @@ void updateRegistration
 const forgedSelection: FormControlSelection = { nodeKey: "id:save" }
 void forgedSelection
 
-// @ts-expect-error Charset descriptors require an authored name.
-const unnamedCharset: FormControlDescriptor = { kind: "charset" }
-void unnamedCharset
+const invalidHidden: FormControlDescriptor = {
+  kind: "hidden",
+  name: "token",
+  // @ts-expect-error Hidden values must be strings when present.
+  value: 7,
+}
+void invalidHidden
 
 const automaticDirectionality: FormControlDirectionality = {
   name: "field.dir",
