@@ -5,6 +5,7 @@ import {
   type FrameRequestCheckpoint,
 } from "./destination-request-ownership"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ExpoTurboError, type ExpoTurboErrorCode, RequestError, StateError } from "./errors"
 import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
 import type {
@@ -25,12 +26,15 @@ import {
   type FormSubmissionProposalIdentity,
 } from "./form-submission-proposal"
 import {
-  commitPreparedFrameResponse,
+  commitPreparedFrameMutation,
+  dispatchPreparedFrameResponseStreams,
   type PreparedFrameResponse,
+  prepareFrameMutation,
   prepareFrameResponse,
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
+import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import type { DocumentSession } from "./session"
 import {
   dispatchGuardedTurboStreamElements,
@@ -136,6 +140,7 @@ export class FormSubmissionCommitError extends RequestError {
 export interface FormSubmissionControllerOptions extends StreamActionDispatchOptions {
   readonly confirmation?: FormConfirmationAdapter
   readonly limits?: Partial<ParseLimits>
+  readonly snapshotCache?: DocumentSnapshotCache
 }
 
 export interface FormSubmissionControllerSubmitOptions {
@@ -256,6 +261,7 @@ export class FormSubmissionController {
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
+      ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
     })
     this.ownership = destinationRequestOwnership(session)
   }
@@ -390,6 +396,18 @@ export class FormSubmissionController {
         fetchInvoked = true
         this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
         response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
+          beforeResponseBody: (admittedResponse) => {
+            if (
+              proposal.destination.kind === "frame" &&
+              admittedResponse.contentType !== TURBO_STREAM_MIME_TYPE &&
+              (admittedResponse.classification !== "success" ||
+                admittedResponse.effectiveMethod !== "GET") &&
+              this.isCurrent(activeLease, proposal)
+            ) {
+              this.options.snapshotCache?.clear()
+            }
+            return undefined
+          },
           controller,
           owns: () => this.ownership.owns(activeLease),
           release: () => this.ownership.release(activeLease),
@@ -619,20 +637,25 @@ export class FormSubmissionController {
       }
       const revision = this.session.revision
       try {
-        const frame = commitPreparedFrameResponse(
+        const finalUrl =
+          candidate.classification === "success" || candidate.redirected ? candidate.url : undefined
+        const mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
+          ...(finalUrl ? { finalUrl } : {}),
+        })
+        commitPreparedFrameMutation(this.session, mutation)
+        const streams = dispatchPreparedFrameResponseStreams(
           this.session,
-          activeFrame,
           preparedFrame,
-          {
-            ...(candidate.classification === "success" || candidate.redirected
-              ? { finalUrl: candidate.url }
-              : {}),
-            ...this.options,
-          },
+          this.options,
           {
             shouldContinue: () => this.ownership.retains(lease),
           },
         )
+        const frame: FrameResponseReport = Object.freeze({
+          ...(finalUrl ? { finalUrl } : {}),
+          frameId,
+          streams,
+        })
         return Object.freeze({
           ...metadata,
           application: "frame",
@@ -662,6 +685,10 @@ export class FormSubmissionController {
       })
     }
 
+    if (candidate.classification === "success" && candidate.effectiveMethod !== "GET") {
+      this.options.snapshotCache?.clear()
+    }
+
     const activeUrl = this.session.tree.document.url
     const appliedUrl = candidate.classification === "success" ? candidate.url : activeUrl
     if (!appliedUrl) {
@@ -680,7 +707,13 @@ export class FormSubmissionController {
 
     const revision = this.session.revision
     try {
-      this.session.replaceTree(tree)
+      try {
+        this.session.replaceTree(tree)
+      } finally {
+        if (candidate.classification !== "success" && this.session.tree === tree) {
+          this.options.snapshotCache?.clear()
+        }
+      }
       const streamReport = dispatchGuardedTurboStreamElements(this.session, streams, this.options, {
         shouldContinue: () => this.ownership.retains(lease),
       })

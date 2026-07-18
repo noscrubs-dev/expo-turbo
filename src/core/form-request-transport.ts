@@ -25,6 +25,10 @@ interface FormExecutionResponseReport extends FormExecutionRequestReport {
   readonly url: string
 }
 
+export interface FormAdmittedResponse extends FormExecutionResponseReport {
+  readonly contentType?: string
+}
+
 export type FormResponseCandidate =
   | (FormExecutionResponseReport & Readonly<{ status: "empty" }>)
   | (FormExecutionResponseReport &
@@ -49,6 +53,7 @@ export type FormRequestExecutionReport =
       }>)
 
 export interface FormRequestTransportOwnership {
+  readonly beforeResponseBody?: (response: FormAdmittedResponse) => undefined
   readonly controller: AbortController
   /** Internal controller mode: the caller releases only after synchronous application. */
   readonly retainCandidate?: boolean
@@ -166,6 +171,27 @@ export async function executeAdmittedFormRequest(
     url = finalUrl(response, report)
     const classification = classifyResponse(response.status, report.effectiveMethod)
     const redirected = response.redirected || url !== report.requestedUrl
+    const rawContentType = responseContentType(response)
+
+    if (ownership.beforeResponseBody) {
+      const callbackResult = ownership.beforeResponseBody(
+        Object.freeze({
+          ...report,
+          classification,
+          ...(rawContentType !== undefined ? { contentType: rawContentType } : {}),
+          redirected,
+          responseStatus: response.status,
+          url,
+        }),
+      )
+      if (callbackResult !== undefined) {
+        throw new RequestError("Form response admission callback must not return a value", {
+          method: report.effectiveMethod,
+          responseStatus: response.status,
+        })
+      }
+      if (!ownership.owns()) return canceled()
+    }
 
     if (response.status === 204) {
       return complete({

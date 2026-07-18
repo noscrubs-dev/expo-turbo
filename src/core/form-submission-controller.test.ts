@@ -4,6 +4,7 @@ import { z } from "zod"
 import type { FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
 import { DocumentRequestLoader } from "./document-loader"
+import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { FrameMissingError, ParseError, RequestError, StateError } from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
@@ -93,6 +94,16 @@ function proposal(
 function requestIds(prefix: string) {
   let value = 0
   return { next: () => `${prefix}-${++value}` }
+}
+
+function populatedSnapshotCache(session: DocumentSession): DocumentSnapshotCache {
+  const cache = new DocumentSnapshotCache()
+  const currentUrl = session.tree.document.url
+  if (!currentUrl) throw new Error("snapshot fixture requires a document URL")
+  cache.put(currentUrl, session.tree)
+  const otherUrl = "https://example.test/other"
+  cache.put(otherUrl, parseExpoTurboDocument("<Other />", { url: otherUrl }))
+  return cache
 }
 
 describe("FormSubmissionController", () => {
@@ -1699,6 +1710,359 @@ describe("FormSubmissionController", () => {
         streams: { actions: [{ action: "update", status: "applied" }] },
       })
       expect(session.tree.getElementById("document-stream-result")).toBeDefined()
+    }
+  })
+
+  test("invalidates document snapshots only for applied unsafe success and authoritative errors", async () => {
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><UnsafeSuccess id="unsafe-success" /></Gallery>', {
+              redirected: true,
+              url: "https://example.test/unsafe-success",
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "unsafe-success"))
+
+      expect(result).toMatchObject({ application: "document", status: "applied" })
+      expect(cache.size).toBe(0)
+      expect(session.tree.getElementById("unsafe-success")).toBeDefined()
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "<broken>", {
+              redirected: true,
+              url: "https://example.test/unsafe-invalid",
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "unsafe-invalid"))
+
+      await expect(submitting).rejects.toBeInstanceOf(ParseError)
+      expect(cache.size).toBe(0)
+    }
+
+    for (const fixtureCase of [
+      { classification: "client-error", name: "client-error", status: 422 },
+      { classification: "server-error", name: "server-error", status: 500 },
+    ] as const) {
+      const session = fixture()
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, `<Gallery><Failure id="${fixtureCase.name}" /></Gallery>`, {
+              status: fixtureCase.status,
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), fixtureCase.name))
+
+      expect(result).toMatchObject({
+        application: "document",
+        classification: fixtureCase.classification,
+        status: "applied",
+      })
+      expect(cache.size).toBe(0)
+      expect(session.tree.getElementById(fixtureCase.name)).toBeDefined()
+    }
+
+    {
+      const session = fixture()
+      const cache = populatedSnapshotCache(session)
+      session.subscribe("id:document-form", () => {
+        throw new Error("authoritative error finalization failed")
+      })
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Failure id="committed-error" /></Gallery>', {
+              status: 422,
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "committed-error"))
+
+      await expect(submitting).rejects.toBeInstanceOf(FormSubmissionCommitError)
+      expect(cache.size).toBe(0)
+      expect(session.tree.getElementById("committed-error")).toBeDefined()
+    }
+
+    for (const fixtureCase of [
+      {
+        body: "unused",
+        headers: {},
+        name: "empty",
+        options: { status: 204 },
+      },
+      {
+        body: "not xml",
+        headers: { "Content-Type": "text/plain" },
+        name: "wrong-mime",
+        options: {},
+      },
+      {
+        body: "<broken>",
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        name: "invalid-error-xml",
+        options: { status: 422 },
+      },
+    ] as const) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, {
+              headers: fixtureCase.headers,
+              ...fixtureCase.options,
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), fixtureCase.name))
+
+      if (fixtureCase.name === "empty") {
+        expect(await submitting).toMatchObject({ application: "empty", status: "empty" })
+      } else if (fixtureCase.name === "wrong-mime") {
+        await expect(submitting).rejects.toMatchObject({ code: "content_type" })
+      } else {
+        await expect(submitting).rejects.toBeInstanceOf(ParseError)
+      }
+      expect(cache.size).toBe(2)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "unused", {
+              redirected: true,
+              text: async () => {
+                throw new Error("document body failed")
+              },
+              url: "https://example.test/body-failed",
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "body-failed"))
+
+      await expect(submitting).rejects.toMatchObject({ code: "request" })
+      expect(cache.size).toBe(2)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-stream action="remove" target="missing"><template /></turbo-stream>',
+              { headers: { "Content-Type": TURBO_STREAM_MIME_TYPE } },
+            ),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "document-form"), "stream"))
+
+      expect(result).toMatchObject({ application: "stream", status: "applied" })
+      expect(cache.size).toBe(2)
+    }
+  })
+
+  test("invalidates Frame snapshots before body and strict Frame admission", async () => {
+    for (const fixtureCase of [
+      {
+        body: '<turbo-frame id="missing"><Result /></turbo-frame>',
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        method: "post",
+        name: "unsafe-missing",
+        options: {},
+      },
+      {
+        body: "not xml",
+        headers: { "Content-Type": "text/plain" },
+        method: undefined,
+        name: "safe-error-wrong-mime",
+        options: { status: 422 },
+      },
+      {
+        body: "unused",
+        headers: {},
+        method: "post",
+        name: "unsafe-empty",
+        options: { status: 204 },
+      },
+      {
+        body: "<broken>",
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        method: "post",
+        name: "unsafe-malformed",
+        options: {},
+      },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.method) session.setAttribute("id:form-a", "method", fixtureCase.method)
+      const cache = populatedSnapshotCache(session)
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, {
+              headers: fixtureCase.headers,
+              ...fixtureCase.options,
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "form-a"), fixtureCase.name))
+
+      if (fixtureCase.name === "unsafe-empty") {
+        expect(await submitting).toMatchObject({ application: "empty", status: "empty" })
+      } else if (fixtureCase.name === "unsafe-missing") {
+        await expect(submitting).rejects.toBeInstanceOf(FrameMissingError)
+      } else if (fixtureCase.name === "unsafe-malformed") {
+        await expect(submitting).rejects.toBeInstanceOf(ParseError)
+      } else {
+        await expect(submitting).rejects.toMatchObject({ code: "content_type" })
+      }
+      expect(cache.size).toBe(0)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:form-a", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "unused", {
+              text: async () => {
+                expect(cache.size).toBe(0)
+                throw new Error("Frame body failed")
+              },
+            }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "form-a"), "body-failed"))
+
+      await expect(submitting).rejects.toMatchObject({ code: "request" })
+      expect(cache.size).toBe(0)
+    }
+
+    for (const fixtureCase of [
+      { method: "post", name: "unsafe-success", status: 200 },
+      { method: undefined, name: "safe-error", status: 422 },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.method) session.setAttribute("id:form-a", "method", fixtureCase.method)
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              `<turbo-frame id="frame-a"><Result id="${fixtureCase.name}" /></turbo-frame>`,
+              { status: fixtureCase.status },
+            ),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "form-a"), fixtureCase.name))
+
+      expect(result).toMatchObject({ application: "frame", status: "applied" })
+      expect(cache.size).toBe(0)
+      expect(session.tree.getElementById(fixtureCase.name)).toBeDefined()
+    }
+
+    for (const fixtureCase of [
+      {
+        body: '<turbo-frame id="frame-a"><Safe id="safe-frame" /></turbo-frame>',
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        name: "safe-success",
+      },
+      {
+        body: '<turbo-stream action="remove" target="missing"><template /></turbo-stream>',
+        headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+        name: "unsafe-stream",
+      },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.name === "unsafe-stream") {
+        session.setAttribute("id:form-a", "method", "post")
+      }
+      const cache = populatedSnapshotCache(session)
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, { headers: fixtureCase.headers }),
+        },
+        { snapshotCache: cache },
+      ).submit(proposal(registry(session, "form-a"), fixtureCase.name))
+
+      expect(result).toMatchObject({ status: "applied" })
+      expect(cache.size).toBe(2)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:form-a", "method", "post")
+      const cache = populatedSnapshotCache(session)
+      const transport = pendingFetch()
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        snapshotCache: cache,
+      })
+      const stale = controller.submit(proposal(registry(session, "form-a"), "stale-unsafe"))
+      const staleRequest = transport.pending[0]
+      if (!staleRequest) throw new Error("stale Frame form request was not captured")
+
+      session.removeAttribute("id:form-a", "method")
+      const current = controller.submit(proposal(registry(session, "form-a"), "current-safe"), {
+        duplicateBehavior: "supersede",
+      })
+      const currentRequest = transport.pending[1]
+      if (!currentRequest) throw new Error("current Frame form request was not captured")
+
+      expect(await stale).toMatchObject({ status: "canceled" })
+      currentRequest.response.resolve(
+        response(
+          currentRequest.request,
+          '<turbo-frame id="frame-a"><Current id="current-safe" /></turbo-frame>',
+        ),
+      )
+      expect(await current).toMatchObject({ application: "frame", status: "applied" })
+      staleRequest.response.resolve(
+        response(staleRequest.request, "not xml", {
+          headers: { "Content-Type": "text/plain" },
+        }),
+      )
+      await Promise.resolve()
+      expect(cache.size).toBe(2)
+      expect(session.tree.getElementById("current-safe")).toBeDefined()
     }
   })
 
