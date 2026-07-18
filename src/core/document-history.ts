@@ -9,6 +9,16 @@ export interface DocumentHistoryEntry {
   readonly url: string
 }
 
+export type DocumentHistoryWriteMethod = "push" | "replace"
+
+declare const DOCUMENT_HISTORY_PROPOSAL: unique symbol
+
+export interface DocumentHistoryProposal {
+  readonly [DOCUMENT_HISTORY_PROPOSAL]: true
+  readonly entry: DocumentHistoryEntry
+  readonly method: DocumentHistoryWriteMethod
+}
+
 export type DocumentHistoryState =
   | Readonly<{ readonly entry: DocumentHistoryEntry; readonly kind: "managed" }>
   | Readonly<{ readonly kind: "unmanaged"; readonly url: string }>
@@ -25,6 +35,12 @@ export interface DocumentRestorationData {
 export interface DocumentHistoryInitialization {
   readonly entry: DocumentHistoryEntry
   readonly hostReplacementRequired: boolean
+}
+
+interface DocumentHistoryProposalIdentity {
+  readonly base: DocumentHistoryEntry
+  readonly entry: DocumentHistoryEntry
+  readonly method: DocumentHistoryWriteMethod
 }
 
 const emptyRestorationData = Object.freeze({})
@@ -117,6 +133,7 @@ function normalizeRestorationPatch(value: unknown): DocumentScrollPosition | und
 export class DocumentHistory {
   private readonly boundIdentifiers = new Set<string>()
   private currentEntry: DocumentHistoryEntry | undefined
+  private readonly proposals = new WeakMap<object, DocumentHistoryProposalIdentity>()
   private readonly restorationData = new Map<string, DocumentRestorationData>()
 
   constructor(private readonly identifiers: RestorationIdentifierAdapter) {}
@@ -171,6 +188,37 @@ export class DocumentHistory {
     return direction
   }
 
+  proposeAdvance(requestedUrl: string): DocumentHistoryProposal {
+    const current = this.currentEntry
+    if (!current) throw new StateError("Document history is not initialized")
+    const url = normalizeUrl(requestedUrl)
+    return this.propose(current, url, url === current.url ? "replace" : "push")
+  }
+
+  proposeReplace(url: string): DocumentHistoryProposal {
+    const current = this.currentEntry
+    if (!current) throw new StateError("Document history is not initialized")
+    return this.propose(current, normalizeUrl(url), "replace")
+  }
+
+  retargetProposal(proposal: DocumentHistoryProposal, finalUrl: string): DocumentHistoryProposal {
+    const identity = this.proposalIdentity(proposal)
+    const entry = normalizeEntry({ ...identity.entry, url: finalUrl })
+    this.proposals.delete(proposal)
+    return this.admitProposal(identity.base, entry, identity.method)
+  }
+
+  commitProposal(proposal: DocumentHistoryProposal): DocumentHistoryEntry {
+    const identity = this.proposalIdentity(proposal)
+    this.proposals.delete(proposal)
+    if (this.currentEntry !== identity.base) {
+      throw new StateError("Document history proposal is stale")
+    }
+    const canonical = this.bind(identity.entry)
+    this.currentEntry = canonical
+    return canonical
+  }
+
   getRestorationData(restorationIdentifier: string): DocumentRestorationData {
     const identifier = this.boundIdentifier(restorationIdentifier)
     return this.restorationData.get(identifier) ?? emptyRestorationData
@@ -192,6 +240,44 @@ export class DocumentHistory {
   private bind(entry: DocumentHistoryEntry): DocumentHistoryEntry {
     this.boundIdentifiers.add(entry.restorationIdentifier)
     return entry
+  }
+
+  private propose(
+    base: DocumentHistoryEntry,
+    url: string,
+    method: DocumentHistoryWriteMethod,
+  ): DocumentHistoryProposal {
+    if (method === "push" && base.restorationIndex === Number.MAX_SAFE_INTEGER) {
+      throw new StateError("Document restoration index cannot advance past the safe integer limit")
+    }
+    const restorationIdentifier = normalizeIdentifier(this.identifiers.next())
+    if (this.boundIdentifiers.has(restorationIdentifier)) {
+      throw new StateError("Generated document restoration identifier is already bound")
+    }
+    const entry = normalizeEntry({
+      restorationIdentifier,
+      restorationIndex: method === "push" ? base.restorationIndex + 1 : base.restorationIndex,
+      url,
+    })
+    return this.admitProposal(base, entry, method)
+  }
+
+  private admitProposal(
+    base: DocumentHistoryEntry,
+    entry: DocumentHistoryEntry,
+    method: DocumentHistoryWriteMethod,
+  ): DocumentHistoryProposal {
+    const proposal = Object.freeze({ entry, method }) as DocumentHistoryProposal
+    this.proposals.set(proposal, Object.freeze({ base, entry, method }))
+    return proposal
+  }
+
+  private proposalIdentity(proposal: DocumentHistoryProposal): DocumentHistoryProposalIdentity {
+    const identity = this.proposals.get(proposal)
+    if (!identity || proposal.entry !== identity.entry || proposal.method !== identity.method) {
+      throw new StateError("Document history proposal was not issued by this ledger")
+    }
+    return identity
   }
 
   private boundIdentifier(value: unknown): string {

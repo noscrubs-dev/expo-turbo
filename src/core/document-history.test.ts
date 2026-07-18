@@ -82,6 +82,174 @@ describe("document history", () => {
     expect(ids.calls).toBe(1)
   })
 
+  test("proposes and commits a different-location advance as a frozen push", () => {
+    const ids = identifiers("initial", "pushed")
+    const history = new DocumentHistory(ids)
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+
+    const proposal = history.proposeAdvance("https://example.test:443/next#details")
+
+    expect(proposal.entry).toEqual({
+      restorationIdentifier: "pushed",
+      restorationIndex: 1,
+      url: "https://example.test/next#details",
+    })
+    expect(proposal.method).toBe("push")
+    expect(Object.isFrozen(proposal)).toBe(true)
+    expect(Object.isFrozen(proposal.entry)).toBe(true)
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("pushed")).toThrow(StateError)
+
+    expect(history.commitProposal(proposal)).toBe(proposal.entry)
+    expect(history.current).toBe(proposal.entry)
+    expect(history.getRestorationData("pushed")).toEqual({})
+  })
+
+  test("uses replace for a same-location advance and an explicit replacement", () => {
+    const ids = identifiers("initial", "same-location", "explicit-replace")
+    const history = new DocumentHistory(ids)
+    history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current?filter=active#details",
+    })
+
+    const sameLocation = history.proposeAdvance(
+      "https://example.test:443/current?filter=active#details",
+    )
+    expect(sameLocation.entry).toEqual({
+      restorationIdentifier: "same-location",
+      restorationIndex: 0,
+      url: "https://example.test/current?filter=active#details",
+    })
+    expect(sameLocation.method).toBe("replace")
+    history.commitProposal(sameLocation)
+
+    const explicit = history.proposeReplace("https://example.test/replaced")
+    expect(explicit.entry).toEqual({
+      restorationIdentifier: "explicit-replace",
+      restorationIndex: 0,
+      url: "https://example.test/replaced",
+    })
+    expect(explicit.method).toBe("replace")
+    history.commitProposal(explicit)
+    expect(history.current).toBe(explicit.entry)
+  })
+
+  test("retargets redirects without changing the requested-location history method", () => {
+    const ids = identifiers("initial", "advance", "same-location")
+    const history = new DocumentHistory(ids)
+    history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
+
+    const advance = history.proposeAdvance("https://example.test/start")
+    const redirectedToCurrent = history.retargetProposal(advance, "https://example.test/current")
+    expect(redirectedToCurrent.entry).toEqual({
+      restorationIdentifier: "advance",
+      restorationIndex: 1,
+      url: "https://example.test/current",
+    })
+    expect(redirectedToCurrent.method).toBe("push")
+    expect(() => history.commitProposal(advance)).toThrow(StateError)
+    expect(history.current?.restorationIndex).toBe(0)
+    history.commitProposal(redirectedToCurrent)
+
+    const sameLocation = history.proposeAdvance("https://example.test/current")
+    const redirectedAway = history.retargetProposal(sameLocation, "https://example.test/redirected")
+    expect(redirectedAway.entry).toEqual({
+      restorationIdentifier: "same-location",
+      restorationIndex: 1,
+      url: "https://example.test/redirected",
+    })
+    expect(redirectedAway.method).toBe("replace")
+    history.commitProposal(redirectedAway)
+    expect(history.current).toBe(redirectedAway.entry)
+  })
+
+  test("rejects forged, stale, and already-settled proposals atomically", () => {
+    const history = new DocumentHistory(identifiers("initial", "first", "second"))
+    history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
+    const first = history.proposeAdvance("https://example.test/first")
+    const second = history.proposeAdvance("https://example.test/second")
+
+    history.commitProposal(second)
+    expect(() => history.commitProposal(first)).toThrow("Document history proposal is stale")
+    expect(() => history.commitProposal(second)).toThrow(StateError)
+    expect(() =>
+      history.commitProposal({ entry: second.entry, method: second.method } as never),
+    ).toThrow(StateError)
+    expect(history.current).toBe(second.entry)
+    expect(() => history.getRestorationData("first")).toThrow(StateError)
+  })
+
+  test("rejects push overflow before consuming an identifier", () => {
+    const ids = identifiers("replacement")
+    const history = new DocumentHistory(ids)
+    history.initialize({
+      entry: {
+        restorationIdentifier: "current",
+        restorationIndex: Number.MAX_SAFE_INTEGER,
+        url: "https://example.test/current",
+      },
+      kind: "managed",
+    })
+
+    expect(() => history.proposeAdvance("https://example.test/next")).toThrow(StateError)
+    expect(ids.calls).toBe(0)
+
+    const replacement = history.proposeAdvance("https://example.test/current")
+    expect(replacement.method).toBe("replace")
+    expect(replacement.entry.restorationIndex).toBe(Number.MAX_SAFE_INTEGER)
+    expect(ids.calls).toBe(1)
+  })
+
+  test("keeps the ledger and original proposal intact when retargeting fails", () => {
+    const history = new DocumentHistory(identifiers("initial", "advance"))
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    const proposal = history.proposeAdvance("https://example.test/next")
+    let error: unknown
+
+    try {
+      history.retargetProposal(proposal, "https://user:secret@example.test/private")
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(StateError)
+    expect(String(error)).not.toContain("secret")
+    expect(history.current).toBe(initialized.entry)
+    history.commitProposal(proposal)
+    expect(history.current).toBe(proposal.entry)
+  })
+
+  test("rejects invalid, reused, and failed generated identifiers without mutation", () => {
+    for (const next of [
+      () => " ",
+      () => "current",
+      () => {
+        throw new Error("identifier generation failed")
+      },
+    ]) {
+      const history = new DocumentHistory({ next })
+      const initialized = history.initialize({
+        entry: {
+          restorationIdentifier: "current",
+          restorationIndex: 3,
+          url: "https://example.test/current",
+        },
+        kind: "managed",
+      })
+
+      expect(() => history.proposeAdvance("https://example.test/next")).toThrow()
+      expect(history.current).toBe(initialized.entry)
+      expect(history.getRestorationData("current")).toEqual({})
+    }
+  })
+
   test("binds identifiers without treating a shared restoration index as a collision", () => {
     const history = new DocumentHistory(identifiers("initial"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/initial" })
