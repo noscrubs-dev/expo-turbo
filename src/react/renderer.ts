@@ -656,7 +656,20 @@ export function useExpoTurboFormControl(
     [nodeKey, registry],
   )
   const submissionState = useSyncExternalStore(subscribe, snapshot, snapshot)
-  const disabled = descriptor.disabled === true || submissionState.pending
+  const subscribeInheritedDisabled = useCallback(
+    (listener: () => void) => registry.subscribeControlInheritedDisabled(nodeKey, listener),
+    [nodeKey, registry],
+  )
+  const inheritedDisabledSnapshot = useCallback(
+    () => registry.controlInheritedDisabled(nodeKey),
+    [nodeKey, registry],
+  )
+  const inheritedDisabled = useSyncExternalStore(
+    subscribeInheritedDisabled,
+    inheritedDisabledSnapshot,
+    inheritedDisabledSnapshot,
+  )
+  const disabled = descriptor.disabled === true || inheritedDisabled || submissionState.pending
 
   useLayoutEffect(() => {
     descriptorRef.current = descriptor

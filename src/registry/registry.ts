@@ -2,6 +2,7 @@ import type { ComponentType, ReactNode } from "react"
 import type { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
+import type { FormContainerRole } from "../core/forms"
 import {
   attributeValue,
   isElement,
@@ -39,6 +40,7 @@ export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodO
   readonly attributes: Readonly<Record<string, AttributeBinding<z.input<Schema>>>>
   readonly children: ComponentChildren
   readonly component: ComponentRenderer<z.output<Schema>>
+  readonly formContainer?: FormContainerRole
   readonly formOwner?: boolean
   readonly schema: Schema
   readonly tag: Tag
@@ -55,6 +57,7 @@ export interface RegistryComponent {
   readonly attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   readonly children: ComponentChildren
   readonly component: unknown
+  readonly formContainer?: FormContainerRole
   readonly formOwner: boolean
   readonly tag: string
   decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
@@ -78,6 +81,15 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
   config: DefineComponentConfig<Tag, Schema>,
 ): DefinedComponent<Tag, Schema> {
   validateTag(config.tag)
+  if (
+    config.formContainer !== undefined &&
+    config.formContainer !== "fieldset" &&
+    config.formContainer !== "legend"
+  ) {
+    throw new RegistryError("Component form container must be fieldset or legend", {
+      target: config.tag,
+    })
+  }
   const aliases = [...new Set(config.aliases ?? [])]
   for (const alias of aliases) validateTag(alias)
   if (aliases.includes(config.tag)) {
@@ -107,6 +119,7 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
       return config.schema.parse(attributes)
     },
+    ...(config.formContainer !== undefined ? { formContainer: config.formContainer } : {}),
     formOwner: config.formOwner === true,
     schema: config.schema,
     tag: config.tag,
@@ -162,6 +175,7 @@ export interface ComponentCapability {
     prop: string
   }>[]
   readonly children: ComponentChildren
+  readonly formContainer?: FormContainerRole
   readonly formOwner: boolean
   readonly tag: string
 }
@@ -265,6 +279,7 @@ function decodeChildren(
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
   readonly capabilities: RegistryCapabilityManifest
   decode(element: ProtocolElement): DecodedComponent<Component>
+  formContainerRole(element: ProtocolElement): FormContainerRole | undefined
   get<Tag extends Component["tag"]>(tag: Tag): Extract<Component, { readonly tag: Tag }> | undefined
   resolve(tagOrAlias: string): Component | undefined
   use<Next extends readonly RegistryComponent[]>(
@@ -315,6 +330,9 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
           aliases: Object.freeze([...component.aliases].sort()),
           attributes: Object.freeze(attributes),
           children: component.children,
+          ...(component.formContainer !== undefined
+            ? { formContainer: component.formContainer }
+            : {}),
           formOwner: component.formOwner,
           tag: component.tag,
         })
@@ -392,6 +410,10 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
     return component?.tag === tag
       ? (component as Extract<Component, { readonly tag: Tag }>)
       : undefined
+  }
+
+  formContainerRole(element: ProtocolElement): FormContainerRole | undefined {
+    return this.resolve(element.tagName)?.formContainer
   }
 
   resolve(tagOrAlias: string): Component | undefined {

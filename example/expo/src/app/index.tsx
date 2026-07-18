@@ -221,7 +221,11 @@ export default function HomeScreen() {
     [refresh, session],
   );
   const forms = useMemo(
-    () => new DocumentFormControls(session, { submissionController: formController }),
+    () =>
+      new DocumentFormControls(session, {
+        formSemantics: DEMO_REGISTRY,
+        submissionController: formController,
+      }),
     [formController, session],
   );
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);

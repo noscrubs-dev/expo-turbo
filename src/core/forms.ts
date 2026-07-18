@@ -108,7 +108,14 @@ export interface ActiveFormRetryOptions {
 
 export type FormMode = "off" | "on" | "optin"
 
+export type FormContainerRole = "fieldset" | "legend"
+
+export interface FormControlSemantics {
+  formContainerRole(element: ProtocolElement): FormContainerRole | undefined
+}
+
 export interface FormControlRegistryOptions {
+  readonly formSemantics?: FormControlSemantics
   readonly formMode?: FormMode
   readonly submissionController?: FormSubmissionController
 }
@@ -468,6 +475,7 @@ function normalizeDescriptor(
 export class FormControlRegistry {
   private disposed = false
   private readonly form: ProtocolElement
+  private readonly formSemantics: FormControlSemantics | undefined
   private readonly formMode: FormMode
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
   private readonly selections = new WeakMap<FormControlSelection, FormControlRecord>()
@@ -486,6 +494,13 @@ export class FormControlRegistry {
       })
     }
     this.form = form
+    this.formSemantics = options.formSemantics
+    if (
+      this.formSemantics !== undefined &&
+      (!this.formSemantics || typeof this.formSemantics.formContainerRole !== "function")
+    ) {
+      throw new PropsError("Form semantics must provide formContainerRole")
+    }
     this.formMode = normalizeFormMode(options.formMode ?? "on")
     this.submissionActivity = formSubmissionActivity(session, form)
     this.unregisterFormDisposal = session.registerDisposal(formNodeKey, () => {
@@ -537,6 +552,27 @@ export class FormControlRegistry {
   ): () => void {
     const node = this.activeControlOrUndefined(nodeKey)
     return node ? this.submissionActivity.subscribeSubmitter(node, listener) : () => undefined
+  }
+
+  controlInheritedDisabled(nodeKey: string): boolean {
+    const node = this.activeControlOrUndefined(nodeKey)
+    return node ? this.disabledByFieldset(node) : false
+  }
+
+  subscribeControlInheritedDisabled(nodeKey: string, listener: () => void): () => void {
+    const node = this.activeControlOrUndefined(nodeKey)
+    if (!node || !this.formSemantics) return () => undefined
+    const subscriptions: (() => void)[] = []
+    let parent = node.parent
+    while (parent && parent.kind !== "document") {
+      if (isElement(parent) && this.formContainerRole(parent) === "fieldset") {
+        subscriptions.push(this.session.subscribe(parent.key, listener))
+      }
+      parent = parent.parent
+    }
+    return () => {
+      for (const unsubscribe of subscriptions) unsubscribe()
+    }
   }
 
   register(nodeKey: string, descriptor: FormControlDescriptor): FormControlRegistration {
@@ -754,8 +790,11 @@ export class FormControlRegistry {
   ): readonly SuccessfulFormEntry[] {
     const entries: SuccessfulFormEntry[] = []
 
-    const append = (descriptor: FormControlDescriptor) => {
-      if (descriptor.disabled || descriptor.name === undefined || descriptor.name === "") return
+    const append = (record: FormControlRecord) => {
+      const descriptor = record.descriptor
+      if (this.recordDisabled(record) || descriptor.name === undefined || descriptor.name === "") {
+        return
+      }
       switch (descriptor.kind) {
         case "charset":
           entries.push(Object.freeze({ name: descriptor.name, value: "UTF-8" }))
@@ -801,7 +840,7 @@ export class FormControlRegistry {
       const record = this.records.get(node)
       if (record && record !== submitter && record.descriptor.kind !== "submitter") {
         this.assertRecordActive(record)
-        append(record.descriptor)
+        append(record)
       }
       if (node.kind === "document" || isElement(node)) {
         for (const child of node.children) visit(child)
@@ -810,7 +849,7 @@ export class FormControlRegistry {
     visit(this.session.tree.document)
     if (submitter) {
       this.assertRecordActive(submitter)
-      append(submitter.descriptor)
+      append(submitter)
     }
     return Object.freeze(entries)
   }
@@ -892,7 +931,7 @@ export class FormControlRegistry {
         target: record.node.key,
       })
     }
-    if (record.descriptor.disabled) {
+    if (this.recordDisabled(record)) {
       throw new TargetError(`Form submitter ${JSON.stringify(record.node.key)} is disabled`, {
         target: record.node.key,
       })
@@ -937,6 +976,49 @@ export class FormControlRegistry {
         target: record.node.key,
       })
     }
+  }
+
+  private disabledByFieldset(node: ProtocolElement): boolean {
+    if (!this.formSemantics) return false
+    let fieldset = node.parent
+    while (fieldset && fieldset.kind !== "document") {
+      if (
+        isElement(fieldset) &&
+        this.formContainerRole(fieldset) === "fieldset" &&
+        hasAttribute(fieldset, "disabled")
+      ) {
+        const firstLegend = fieldset.children.find(
+          (child): child is ProtocolElement =>
+            isElement(child) && this.formContainerRole(child) === "legend",
+        )
+        let insideFirstLegend = false
+        let parent: ProtocolNode | null = node
+        while (parent && parent !== fieldset) {
+          if (parent === firstLegend) {
+            insideFirstLegend = true
+            break
+          }
+          parent = parent.parent
+        }
+        if (!insideFirstLegend) return true
+      }
+      fieldset = fieldset.parent
+    }
+    return false
+  }
+
+  private recordDisabled(record: FormControlRecord): boolean {
+    return record.descriptor.disabled === true || this.disabledByFieldset(record.node)
+  }
+
+  private formContainerRole(element: ProtocolElement): FormContainerRole | undefined {
+    const role = this.formSemantics?.formContainerRole(element)
+    if (role !== undefined && role !== "fieldset" && role !== "legend") {
+      throw new PropsError("Form container role must be fieldset or legend", {
+        target: element.key,
+      })
+    }
+    return role
   }
 
   private disposeRegistry(unregisterDisposal: boolean): void {

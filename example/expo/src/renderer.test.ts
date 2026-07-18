@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
 import { describe, expect, mock, test } from "bun:test"
-import { createElement, type ReactNode, StrictMode, useEffect, useState } from "react"
+import { createElement, Fragment, type ReactNode, StrictMode, useEffect, useState } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
@@ -1573,6 +1573,169 @@ describe("React protocol renderer", () => {
     if (!updatedControl) throw new Error("updated native select was not rendered")
     expect(updatedControl.props.selection()).toBe(selection)
     expect(binding.successfulEntries()).toEqual([{ name: "choice[]", value: "two" }])
+
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
+    forms.dispose()
+  })
+
+  test("projects live disabled fieldset inheritance through the first legend exception", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+
+    function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function FormContainer(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(Fragment, null, props.children)
+    }
+    function CaptureForm(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("fieldset-form-capture")
+    }
+    function NativeValue({ name, value }: { name: string; value: string }): ReactNode {
+      const binding = useExpoTurboFormControl({ kind: "value", name, value })
+      return createElement("fieldset-value", {
+        accessibilityState: binding.accessibilityState,
+        disabled: binding.disabled,
+        nodeKey: binding.nodeKey,
+      })
+    }
+    function NativeSubmitter({ name, value }: { name: string; value: string }): ReactNode {
+      const binding = useExpoTurboFormControl({ kind: "submitter", name, value })
+      return createElement("fieldset-submitter", {
+        accessibilityState: binding.accessibilityState,
+        disabled: binding.disabled,
+        selection: binding.selection,
+      })
+    }
+
+    const form = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: NativeForm,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "FieldsetForm",
+    })
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureForm,
+      schema: z.object({}),
+      tag: "CaptureFieldsetForm",
+    })
+    const fieldset = defineComponent({
+      attributes: { disabled: { codec: presenceCodec, prop: "disabled" } },
+      children: "nodes",
+      component: FormContainer,
+      formContainer: "fieldset",
+      schema: z.object({ disabled: z.boolean().default(false) }),
+      tag: "NativeFieldset",
+    })
+    const legend = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: FormContainer,
+      formContainer: "legend",
+      schema: z.object({}),
+      tag: "NativeLegend",
+    })
+    const value = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeValue,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "FieldsetValue",
+    })
+    const submitter = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeSubmitter,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "FieldsetSubmitter",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, fieldset, legend, value, submitter],
+        name: "native-fieldset-semantics",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FieldsetForm id="form"><CaptureFieldsetForm/><NativeFieldset id="fieldset" disabled=""><FieldsetValue id="blocked" name="blocked" value="no"/><NativeLegend><FieldsetValue id="exempt" name="exempt" value="yes"/><FieldsetSubmitter id="save" name="commit" value="save"/></NativeLegend></NativeFieldset></FieldsetForm></Gallery>',
+        { url: "https://example.test/fieldset" },
+      ),
+    )
+    const forms = new DocumentFormControls(session, { formSemantics: componentRegistry })
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            { forms, registry: componentRegistry, session },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+    if (!renderer || !captured) throw new Error("fieldset form fixture was not captured")
+    const activeRenderer = renderer
+    const binding = captured
+    const control = (nodeKey: string) =>
+      activeRenderer.root.findAll(
+        (node) => String(node.type) === "fieldset-value" && node.props.nodeKey === nodeKey,
+      )[0]
+    const submitterNode = () =>
+      activeRenderer.root.findAll((node) => String(node.type) === "fieldset-submitter")[0]
+
+    expect(control("id:blocked")?.props).toMatchObject({
+      accessibilityState: { disabled: true },
+      disabled: true,
+    })
+    expect(control("id:exempt")?.props).toMatchObject({
+      accessibilityState: { disabled: false },
+      disabled: false,
+    })
+    expect(submitterNode()?.props.disabled).toBe(false)
+    const selection = submitterNode()?.props.selection()
+    expect(binding.successfulEntries({ submitter: selection })).toEqual([
+      { name: "exempt", value: "yes" },
+      { name: "commit", value: "save" },
+    ])
+
+    act(() => session.removeAttribute("id:fieldset", "disabled"))
+    expect(control("id:blocked")?.props).toMatchObject({
+      accessibilityState: { disabled: false },
+      disabled: false,
+    })
+    expect(binding.successfulEntries({ submitter: selection })).toEqual([
+      { name: "blocked", value: "no" },
+      { name: "exempt", value: "yes" },
+      { name: "commit", value: "save" },
+    ])
+
+    act(() => session.setAttribute("id:fieldset", "disabled", "false"))
+    expect(control("id:blocked")?.props.disabled).toBe(true)
+    expect(submitterNode()?.props.disabled).toBe(false)
 
     await act(async () => {
       activeRenderer.unmount()
