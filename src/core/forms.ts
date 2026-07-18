@@ -106,7 +106,10 @@ export interface ActiveFormRetryOptions {
   readonly protocol: ActiveFormRequestProtocolOptions
 }
 
+export type FormMode = "off" | "on" | "optin"
+
 export interface FormControlRegistryOptions {
+  readonly formMode?: FormMode
   readonly submissionController?: FormSubmissionController
 }
 
@@ -163,6 +166,34 @@ const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
+}
+
+function normalizeFormMode(value: unknown): FormMode {
+  if (value !== "off" && value !== "on" && value !== "optin") {
+    throw new PropsError("Form mode must be off, on, or optin")
+  }
+  return value
+}
+
+function closestTurboSetting(node: ProtocolElement): string | undefined {
+  let current: ProtocolNode | null = node
+  while (current && current.kind !== "document") {
+    if (isElement(current)) {
+      const setting = attributeValue(current, "data-turbo")
+      if (setting !== undefined) return setting
+    }
+    current = current.parent
+  }
+  return undefined
+}
+
+function formHasTurboOptIn(form: ProtocolElement): boolean {
+  let current: ProtocolNode | null = form
+  while (current && current.kind !== "document") {
+    if (isElement(current) && attributeValue(current, "data-turbo") === "true") return true
+    current = current.parent
+  }
+  return false
 }
 
 function activeProtocolOptions(
@@ -437,6 +468,7 @@ function normalizeDescriptor(
 export class FormControlRegistry {
   private disposed = false
   private readonly form: ProtocolElement
+  private readonly formMode: FormMode
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
   private readonly selections = new WeakMap<FormControlSelection, FormControlRecord>()
   private readonly submissionActivity: ExactFormSubmissionActivity
@@ -454,6 +486,7 @@ export class FormControlRegistry {
       })
     }
     this.form = form
+    this.formMode = normalizeFormMode(options.formMode ?? "on")
     this.submissionActivity = formSubmissionActivity(session, form)
     this.unregisterFormDisposal = session.registerDisposal(formNodeKey, () => {
       this.disposeRegistry(false)
@@ -546,6 +579,17 @@ export class FormControlRegistry {
     this.assertActive()
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
     return this.collectSuccessfulEntries(submitter)
+  }
+
+  shouldInterceptSubmission(options: SuccessfulFormEntriesOptions = {}): boolean {
+    this.assertActive()
+    if (this.formMode === "off") return false
+    const selection = submitterSelectionOption(options)
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    if (submitter && closestTurboSetting(submitter.node) === "false") return false
+    return this.formMode === "optin"
+      ? formHasTurboOptIn(this.form)
+      : closestTurboSetting(this.form) !== "false"
   }
 
   requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {

@@ -1581,6 +1581,118 @@ describe("React protocol renderer", () => {
     forms.dispose()
   })
 
+  test("exposes form interception modes without gating explicit request planning", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+
+    function NativeForm(
+      props: Readonly<{ action?: string; children?: ReactNode }>,
+    ): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function CaptureForm(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("mode-form-capture")
+    }
+    function NativeSubmitter(props: Readonly<{ name: string; value: string }>): ReactNode {
+      const binding = useExpoTurboFormControl({
+        kind: "submitter",
+        name: props.name,
+        value: props.value,
+      })
+      return createElement("mode-submitter", { selection: binding.selection })
+    }
+
+    const form = defineComponent({
+      attributes: { action: { codec: stringCodec, prop: "action" } },
+      children: "nodes",
+      component: NativeForm,
+      formOwner: true,
+      schema: z.object({ action: z.string().optional() }),
+      tag: "ModeForm",
+    })
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureForm,
+      schema: z.object({}),
+      tag: "CaptureModeForm",
+    })
+    const submitter = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: NativeSubmitter,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "ModeSubmitter",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, submitter],
+        name: "form-interception-mode",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="mode-root"><ModeForm id="form" action="/save"><CaptureModeForm/><ModeSubmitter id="save" name="commit" value="save"/></ModeForm></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const forms = new DocumentFormControls(session, { formMode: "optin" })
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            { forms, registry: componentRegistry, session },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+    if (!renderer || !captured) throw new Error("form mode fixture was not captured")
+    const activeRenderer = renderer
+    const binding = captured
+    const submitterNode = activeRenderer.root.findAll(
+      (node) => String(node.type) === "mode-submitter",
+    )[0]
+    if (!submitterNode) throw new Error("form mode submitter was not rendered")
+    const selected = submitterNode.props.selection()
+
+    expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(false)
+    expect(
+      binding.requestPlan({
+        protocol: { requestId: "explicit-plan" },
+        submitter: selected,
+      }),
+    ).toMatchObject({
+      entries: [{ name: "commit", value: "save" }],
+      request: { method: "GET", url: "https://example.test/save?commit=save" },
+    })
+    act(() => session.setAttribute("id:mode-root", "data-turbo", "true"))
+    expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(true)
+    act(() => session.setAttribute("id:save", "data-turbo", "false"))
+    expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(false)
+
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
+    forms.dispose()
+  })
+
   test("binds explicit form owners in document order and rebinds after same-id replacement", async () => {
     function NativeForm(
       props: Readonly<{ action?: string; children?: ReactNode; method?: string }>,
