@@ -11,6 +11,10 @@ export interface DocumentHistoryEntry {
 
 export type DocumentHistoryWriteMethod = "push" | "replace"
 
+export interface DocumentHistoryHostAdapter {
+  write(method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry): undefined
+}
+
 declare const DOCUMENT_HISTORY_PROPOSAL: unique symbol
 
 export interface DocumentHistoryProposal {
@@ -34,7 +38,7 @@ export interface DocumentRestorationData {
 
 export interface DocumentHistoryInitialization {
   readonly entry: DocumentHistoryEntry
-  readonly hostReplacementRequired: boolean
+  readonly hostState: "adopted" | "replaced"
 }
 
 interface DocumentHistoryProposalIdentity {
@@ -127,96 +131,124 @@ function normalizeRestorationPatch(value: unknown): DocumentScrollPosition | und
 }
 
 /**
- * Host-neutral history identity and restoration-data ledger. It intentionally
- * performs no host-router writes and does not enable visit actions.
+ * Host-neutral history identity/restoration ledger plus synchronous host-write
+ * boundary. It does not subscribe to traversal or enable visit actions.
  */
 export class DocumentHistory {
   private readonly boundIdentifiers = new Set<string>()
   private currentEntry: DocumentHistoryEntry | undefined
+  private mutationActive = false
   private readonly proposals = new WeakMap<object, DocumentHistoryProposalIdentity>()
   private readonly restorationData = new Map<string, DocumentRestorationData>()
 
-  constructor(private readonly identifiers: RestorationIdentifierAdapter) {}
+  constructor(
+    private readonly identifiers: RestorationIdentifierAdapter,
+    private readonly host: DocumentHistoryHostAdapter,
+  ) {}
 
   get current(): DocumentHistoryEntry | undefined {
     return this.currentEntry
   }
 
   initialize(state: DocumentHistoryState): DocumentHistoryInitialization {
-    if (this.currentEntry) {
-      throw new StateError("Document history is already initialized")
-    }
-    if (typeof state !== "object" || state === null || Array.isArray(state)) {
-      throw new StateError("Document history state must be an object")
-    }
-
-    const record = state as unknown as Record<string, unknown>
-    let entry: DocumentHistoryEntry
-    let hostReplacementRequired: boolean
-    if (record.kind === "managed") {
-      if (Object.keys(record).some((key) => key !== "kind" && key !== "entry")) {
-        throw new StateError("Managed document history state contains unsupported fields")
+    return this.mutate(() => {
+      if (this.currentEntry) {
+        throw new StateError("Document history is already initialized")
       }
-      entry = normalizeEntry(record.entry)
-      hostReplacementRequired = false
-    } else if (record.kind === "unmanaged") {
-      if (Object.keys(record).some((key) => key !== "kind" && key !== "url")) {
-        throw new StateError("Unmanaged document history state contains unsupported fields")
+      if (typeof state !== "object" || state === null || Array.isArray(state)) {
+        throw new StateError("Document history state must be an object")
       }
-      const url = normalizeUrl(record.url)
-      entry = normalizeEntry({
-        restorationIdentifier: this.identifiers.next(),
-        restorationIndex: 0,
-        url,
-      })
-      hostReplacementRequired = true
-    } else {
-      throw new StateError("Document history state kind is invalid")
-    }
 
-    const canonical = this.bind(entry)
-    this.currentEntry = canonical
-    return Object.freeze({ entry: canonical, hostReplacementRequired })
+      const record = state as unknown as Record<string, unknown>
+      let entry: DocumentHistoryEntry
+      let hostState: DocumentHistoryInitialization["hostState"]
+      if (record.kind === "managed") {
+        if (Object.keys(record).some((key) => key !== "kind" && key !== "entry")) {
+          throw new StateError("Managed document history state contains unsupported fields")
+        }
+        entry = normalizeEntry(record.entry)
+        hostState = "adopted"
+      } else if (record.kind === "unmanaged") {
+        if (Object.keys(record).some((key) => key !== "kind" && key !== "url")) {
+          throw new StateError("Unmanaged document history state contains unsupported fields")
+        }
+        const url = normalizeUrl(record.url)
+        entry = normalizeEntry({
+          restorationIdentifier: this.identifiers.next(),
+          restorationIndex: 0,
+          url,
+        })
+        hostState = "replaced"
+      } else {
+        throw new StateError("Document history state kind is invalid")
+      }
+
+      if (hostState === "replaced") {
+        return this.commitHostWrite("replace", entry, () => {
+          const canonical = this.bind(entry)
+          this.currentEntry = canonical
+          return Object.freeze({ entry: canonical, hostState })
+        })
+      }
+      const canonical = this.bind(entry)
+      this.currentEntry = canonical
+      return Object.freeze({ entry: canonical, hostState })
+    })
   }
 
   adoptTraversal(entry: DocumentHistoryEntry): DocumentHistoryTraversalDirection {
-    const current = this.currentEntry
-    if (!current) throw new StateError("Document history is not initialized")
-    const canonical = this.bind(normalizeEntry(entry))
-    const direction = canonical.restorationIndex > current.restorationIndex ? "forward" : "back"
-    this.currentEntry = canonical
-    return direction
+    return this.mutate(() => {
+      const current = this.currentEntry
+      if (!current) throw new StateError("Document history is not initialized")
+      const canonical = this.bind(normalizeEntry(entry))
+      const direction = canonical.restorationIndex > current.restorationIndex ? "forward" : "back"
+      this.currentEntry = canonical
+      return direction
+    })
   }
 
   proposeAdvance(requestedUrl: string): DocumentHistoryProposal {
-    const current = this.currentEntry
-    if (!current) throw new StateError("Document history is not initialized")
-    const url = normalizeUrl(requestedUrl)
-    return this.propose(current, url, url === current.url ? "replace" : "push")
+    return this.mutate(() => {
+      const current = this.currentEntry
+      if (!current) throw new StateError("Document history is not initialized")
+      const url = normalizeUrl(requestedUrl)
+      return this.propose(current, url, url === current.url ? "replace" : "push")
+    })
   }
 
   proposeReplace(url: string): DocumentHistoryProposal {
-    const current = this.currentEntry
-    if (!current) throw new StateError("Document history is not initialized")
-    return this.propose(current, normalizeUrl(url), "replace")
+    return this.mutate(() => {
+      const current = this.currentEntry
+      if (!current) throw new StateError("Document history is not initialized")
+      return this.propose(current, normalizeUrl(url), "replace")
+    })
   }
 
   retargetProposal(proposal: DocumentHistoryProposal, finalUrl: string): DocumentHistoryProposal {
-    const identity = this.proposalIdentity(proposal)
-    const entry = normalizeEntry({ ...identity.entry, url: finalUrl })
-    this.proposals.delete(proposal)
-    return this.admitProposal(identity.base, entry, identity.method)
+    return this.mutate(() => {
+      const identity = this.proposalIdentity(proposal)
+      const entry = normalizeEntry({ ...identity.entry, url: finalUrl })
+      this.proposals.delete(proposal)
+      return this.admitProposal(identity.base, entry, identity.method)
+    })
   }
 
   commitProposal(proposal: DocumentHistoryProposal): DocumentHistoryEntry {
-    const identity = this.proposalIdentity(proposal)
-    this.proposals.delete(proposal)
-    if (this.currentEntry !== identity.base) {
-      throw new StateError("Document history proposal is stale")
-    }
-    const canonical = this.bind(identity.entry)
-    this.currentEntry = canonical
-    return canonical
+    return this.mutate(() => {
+      const identity = this.proposalIdentity(proposal)
+      if (this.currentEntry !== identity.base) {
+        throw new StateError("Document history proposal is stale")
+      }
+      if (this.boundIdentifiers.has(identity.entry.restorationIdentifier)) {
+        throw new StateError("Document history proposal identifier is already bound")
+      }
+      return this.commitHostWrite(identity.method, identity.entry, () => {
+        this.proposals.delete(proposal)
+        this.boundIdentifiers.add(identity.entry.restorationIdentifier)
+        this.currentEntry = identity.entry
+        return identity.entry
+      })
+    })
   }
 
   getRestorationData(restorationIdentifier: string): DocumentRestorationData {
@@ -228,13 +260,40 @@ export class DocumentHistory {
     restorationIdentifier: string,
     patch: DocumentRestorationData,
   ): DocumentRestorationData {
-    const identifier = this.boundIdentifier(restorationIdentifier)
-    const scrollPosition = normalizeRestorationPatch(patch)
-    const current = this.restorationData.get(identifier) ?? emptyRestorationData
-    if (!scrollPosition) return current
-    const next = Object.freeze({ ...current, scrollPosition })
-    this.restorationData.set(identifier, next)
-    return next
+    return this.mutate(() => {
+      const identifier = this.boundIdentifier(restorationIdentifier)
+      const scrollPosition = normalizeRestorationPatch(patch)
+      const current = this.restorationData.get(identifier) ?? emptyRestorationData
+      if (!scrollPosition) return current
+      const next = Object.freeze({ ...current, scrollPosition })
+      this.restorationData.set(identifier, next)
+      return next
+    })
+  }
+
+  private mutate<T>(mutation: () => T): T {
+    if (this.mutationActive) {
+      throw new StateError("Document history cannot mutate during another mutation")
+    }
+    this.mutationActive = true
+    try {
+      return mutation()
+    } finally {
+      this.mutationActive = false
+    }
+  }
+
+  private commitHostWrite<T>(
+    method: DocumentHistoryWriteMethod,
+    entry: DocumentHistoryEntry,
+    commit: () => T,
+  ): T {
+    try {
+      this.host.write(method, entry)
+    } catch {
+      throw new StateError("Document history host write failed")
+    }
+    return commit()
   }
 
   private bind(entry: DocumentHistoryEntry): DocumentHistoryEntry {
