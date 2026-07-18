@@ -64,6 +64,10 @@ export class DocumentSnapshotCache {
       throw new PropsError("Document snapshot cache entries must be document trees")
     }
     const key = cacheKey(url)
+    const documentUrl = tree.document.url
+    if (documentUrl === undefined || cacheKey(documentUrl) !== key) {
+      throw new TargetError("Document snapshot tree URL must match its cache key")
+    }
     const snapshot = tree.clone({ omitTemporaryElements: true })
     this.entries.delete(key)
     this.entries.set(key, snapshot)

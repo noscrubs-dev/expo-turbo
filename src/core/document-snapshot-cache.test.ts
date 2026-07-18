@@ -5,7 +5,7 @@ import { PropsError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { attributeValue, type DocumentTree, nodeTextContent } from "./tree"
 
-function snapshot(label: string) {
+function snapshot(label: string, url: string = `https://example.test/${label}`) {
   return parseExpoTurboDocument(
     `<Gallery>
       <DemoText id="kept" data-label="${label}">${label}</DemoText>
@@ -13,14 +13,14 @@ function snapshot(label: string) {
         <DemoText id="temporary-child">Discarded</DemoText>
       </DemoCard>
     </Gallery>`,
-    { url: `https://example.test/${label}` },
+    { url },
   )
 }
 
 describe("document snapshot cache", () => {
   test("stores and restores independent trees while pruning temporary subtrees", () => {
     const cache = new DocumentSnapshotCache()
-    const source = snapshot("first")
+    const source = snapshot("first", "https://example.test/gallery?filter=active#source")
     const sourceKept = source.getElementById("kept")
     if (!sourceKept) throw new Error("fixture lost its retained node")
 
@@ -46,12 +46,15 @@ describe("document snapshot cache", () => {
 
   test("uses normalized fragment-free keys while retaining query identity", () => {
     const cache = new DocumentSnapshotCache()
-    cache.put("https://example.test:443/gallery?filter=one#first", snapshot("one"))
+    cache.put(
+      "https://example.test:443/gallery?filter=one#first",
+      snapshot("one", "https://example.test/gallery?filter=one#source"),
+    )
 
     expect(cache.has("https://example.test/gallery?filter=one#second")).toBe(true)
     expect(cache.has("https://example.test/gallery?filter=two#first")).toBe(false)
     expect(cache.get("https://example.test/gallery?filter=one#")?.document.url).toBe(
-      "https://example.test/one",
+      "https://example.test/gallery?filter=one#source",
     )
   })
 
@@ -66,7 +69,10 @@ describe("document snapshot cache", () => {
     expect(cache.has("https://example.test/b")).toBe(false)
     expect(cache.has("https://example.test/c")).toBe(true)
 
-    cache.put("https://example.test/a#replacement", snapshot("replacement"))
+    cache.put(
+      "https://example.test/a#replacement",
+      snapshot("replacement", "https://example.test/a#source"),
+    )
     cache.put("https://example.test/d", snapshot("d"))
     expect(cache.has("https://example.test/a")).toBe(true)
     expect(cache.has("https://example.test/c")).toBe(false)
@@ -102,7 +108,19 @@ describe("document snapshot cache", () => {
     expect(cache.size).toBe(0)
   })
 
-  test("rejects invalid capacities, URLs, credentials, and entry forgeries", () => {
+  test("keeps the admitted snapshot when a mismatched replacement is rejected", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put("https://example.test/key", snapshot("original", "https://example.test/key"))
+
+    expect(() =>
+      cache.put("https://example.test/key", snapshot("replacement", "https://example.test/other")),
+    ).toThrow(TargetError)
+
+    const restored = cache.get("https://example.test/key")?.getElementById("kept")
+    expect(restored ? nodeTextContent(restored) : undefined).toBe("original")
+  })
+
+  test("rejects invalid capacities, URLs, credentials, entry forgeries, and URL mismatches", () => {
     for (const capacity of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
       expect(() => new DocumentSnapshotCache(capacity)).toThrow(PropsError)
     }
@@ -117,5 +135,15 @@ describe("document snapshot cache", () => {
       expect(() => cache.get(url)).toThrow(TargetError)
     }
     expect(() => cache.put("https://example.test/forged", {} as DocumentTree)).toThrow(PropsError)
+    expect(() =>
+      cache.put(
+        "https://example.test/key",
+        parseExpoTurboDocument("<Gallery />", { url: "https://example.test/other" }),
+      ),
+    ).toThrow(TargetError)
+    expect(() =>
+      cache.put("https://example.test/key", parseExpoTurboDocument("<Gallery />")),
+    ).toThrow(TargetError)
+    expect(cache.size).toBe(0)
   })
 })
