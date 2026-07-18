@@ -105,6 +105,52 @@ describe("Turbo Stream dispatcher", () => {
     expect(notifications).toBe(2)
   })
 
+  test("isolates exact structural morph methods until native morph support exists", () => {
+    const document = session(
+      '<Gallery><Panel id="replace"><Old id="old-replace"/></Panel><Panel id="update"><Old id="old-update"/></Panel><Later id="later"/></Gallery>',
+    )
+    const originalReplace = document.tree.getElementById("replace")
+    const originalUpdate = document.tree.getElementById("update")
+    const reports = dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="replace" target="replace" method="morph"><template><Panel id="replace"><New id="new-replace"/></Panel></template></turbo-stream>
+       <turbo-stream action="update" target="update" method="morph"><template><New id="new-update"/></template></turbo-stream>
+       <turbo-stream action="remove" target="later"/>`,
+    ).actions
+
+    expect(reports.map((report) => report.status)).toEqual(["error", "error", "applied"])
+    expect(reports[0]?.error?.message).toContain("morph method")
+    expect(reports[1]?.error?.message).toContain("morph method")
+    expect(document.tree.getElementById("replace")).toBe(originalReplace)
+    expect(document.tree.getElementById("update")).toBe(originalUpdate)
+    expect(document.tree.getElementById("old-replace")).toBeDefined()
+    expect(document.tree.getElementById("old-update")).toBeDefined()
+    expect(document.tree.getElementById("new-replace")).toBeUndefined()
+    expect(document.tree.getElementById("new-update")).toBeUndefined()
+    expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("uses plain structural semantics for every non-morph method value", () => {
+    const document = session(
+      '<Gallery><Panel id="replace"><Old /></Panel><Panel id="update"><Old /></Panel></Gallery>',
+    )
+    const originalUpdate = document.tree.getElementById("update")
+    const reports = dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="replace" target="replace" method="MORPH"><template><Panel id="replace"><Final id="replaced"/></Panel></template></turbo-stream>
+       <turbo-stream action="update" target="update" method=""><template><Final id="updated"/></template></turbo-stream>`,
+    ).actions
+
+    expect(reports.map((report) => report.status)).toEqual(["applied", "applied"])
+    expect(document.tree.getElementById("replace")?.children.find(isElement)).toBe(
+      document.tree.getElementById("replaced"),
+    )
+    expect(document.tree.getElementById("update")).toBe(originalUpdate)
+    expect(document.tree.getElementById("update")?.children.find(isElement)).toBe(
+      document.tree.getElementById("updated"),
+    )
+  })
+
   test("rejects duplicate payload ids before compound collision mutations", () => {
     for (const action of ["append", "prepend", "before", "after"] as const) {
       const isChildAction = action === "append" || action === "prepend"

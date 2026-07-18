@@ -49,8 +49,8 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
   request(request: DocumentRefreshRequest): void {
     if (this.disposed) throw new StateError("Document refresh controller is disposed")
     const baseUrl = this.admitBaseUrl(request.baseUrl)
-    if (request.method !== undefined && request.method !== "replace") {
-      throw new RequestError("Native document refresh currently supports only replace method")
+    if (request.method === "morph") {
+      throw new RequestError("Native document refresh morph method requires morph support")
     }
     if (request.scroll !== undefined) {
       throw new RequestError("Native document refresh scroll policy requires a scroll adapter")
