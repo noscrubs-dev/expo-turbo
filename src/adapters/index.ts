@@ -2,6 +2,7 @@ import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-act
 import type { ProtocolInspectorAdapter } from "../core/inspector"
 import type { StyleAdapter } from "./styles"
 
+export type { DocumentHistoryHostAdapter } from "../core/document-history"
 export * from "./styles"
 
 export type Unsubscribe = () => void

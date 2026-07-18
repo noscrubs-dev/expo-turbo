@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
 
 import type { RestorationIdentifierAdapter } from "../adapters"
-import { DocumentHistory } from "./document-history"
+import {
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryHostAdapter,
+  type DocumentHistoryWriteMethod,
+} from "./document-history"
 import { PropsError, StateError } from "./errors"
 
 function identifiers(
@@ -21,10 +26,42 @@ function identifiers(
   }
 }
 
+function historyHost(
+  write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
+    undefined,
+): DocumentHistoryHostAdapter & {
+  readonly calls: ReadonlyArray<
+    Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
+  >
+} {
+  const calls: Array<
+    Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
+  > = []
+  return {
+    calls,
+    write(method, entry) {
+      calls.push(Object.freeze({ entry, method }))
+      return write(method, entry)
+    },
+  }
+}
+
+function createHistory(
+  ids: RestorationIdentifierAdapter,
+  host: DocumentHistoryHostAdapter = historyHost(),
+): DocumentHistory {
+  return new DocumentHistory(ids, host)
+}
+
 describe("document history", () => {
   test("initializes unmanaged host state with a normalized frozen replacement entry", () => {
     const ids = identifiers("restoration-1")
-    const history = new DocumentHistory(ids)
+    let history: DocumentHistory
+    const host = historyHost((_method, entry) => {
+      expect(history.current).toBeUndefined()
+      expect(Object.isFrozen(entry)).toBe(true)
+    })
+    history = createHistory(ids, host)
 
     const initialized = history.initialize({
       kind: "unmanaged",
@@ -37,8 +74,9 @@ describe("document history", () => {
         restorationIndex: 0,
         url: "https://example.test/gallery?filter=active#details",
       },
-      hostReplacementRequired: true,
+      hostState: "replaced",
     })
+    expect(host.calls).toEqual([{ entry: initialized.entry, method: "replace" }])
     expect(history.current).toBe(initialized.entry)
     expect(ids.calls).toBe(1)
     expect(Object.isFrozen(initialized)).toBe(true)
@@ -47,7 +85,8 @@ describe("document history", () => {
 
   test("adopts managed host state without consuming an identifier", () => {
     const ids = identifiers("unused")
-    const history = new DocumentHistory(ids)
+    const host = historyHost()
+    const history = createHistory(ids, host)
     const source = {
       restorationIdentifier: "persisted",
       restorationIndex: 7,
@@ -62,8 +101,9 @@ describe("document history", () => {
         restorationIndex: 7,
         url: "https://example.test/current#section",
       },
-      hostReplacementRequired: false,
+      hostState: "adopted",
     })
+    expect(host.calls).toEqual([])
     expect(initialized.entry).not.toBe(source)
     expect(ids.calls).toBe(0)
     source.url = "https://example.test/mutated"
@@ -72,7 +112,7 @@ describe("document history", () => {
 
   test("initializes exactly once and leaves the original entry current", () => {
     const ids = identifiers("first", "unused")
-    const history = new DocumentHistory(ids)
+    const history = createHistory(ids)
     const first = history.initialize({ kind: "unmanaged", url: "https://example.test/first" })
 
     expect(() =>
@@ -82,9 +122,87 @@ describe("document history", () => {
     expect(ids.calls).toBe(1)
   })
 
+  test("blocks reentrant initialization while generating an unmanaged identifier", () => {
+    let history: DocumentHistory
+    const reentrantErrors: unknown[] = []
+    const host = historyHost((_method, entry) => {
+      expect(history.current).toBeUndefined()
+      expect(entry.restorationIdentifier).toBe("outer")
+    })
+    history = createHistory(
+      {
+        next() {
+          try {
+            history.initialize({
+              entry: {
+                restorationIdentifier: "nested",
+                restorationIndex: 9,
+                url: "https://example.test/nested",
+              },
+              kind: "managed",
+            })
+          } catch (error) {
+            reentrantErrors.push(error)
+          }
+          return "outer"
+        },
+      },
+      host,
+    )
+
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+
+    expect(reentrantErrors).toHaveLength(1)
+    expect(reentrantErrors[0]).toBeInstanceOf(StateError)
+    expect(String(reentrantErrors[0])).toContain(
+      "Document history cannot mutate during another mutation",
+    )
+    expect(host.calls).toEqual([{ entry: initialized.entry, method: "replace" }])
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("nested")).toThrow(StateError)
+  })
+
+  test("keeps unmanaged initialization retryable until the host replacement succeeds", () => {
+    const ids = identifiers("failed", "retry")
+    let attempts = 0
+    const host = historyHost(() => {
+      attempts += 1
+      if (attempts === 1) throw new Error("host replacement failed with secret-token")
+    })
+    const history = createHistory(ids, host)
+
+    try {
+      history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
+      throw new Error("expected host replacement to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+    expect(history.current).toBeUndefined()
+    expect(ids.calls).toBe(1)
+
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    expect(initialized.entry.restorationIdentifier).toBe("retry")
+    expect(initialized.hostState).toBe("replaced")
+    expect(history.current).toBe(initialized.entry)
+    expect(ids.calls).toBe(2)
+    expect(host.calls.map(({ entry }) => entry.restorationIdentifier)).toEqual(["failed", "retry"])
+  })
+
   test("proposes and commits a different-location advance as a frozen push", () => {
     const ids = identifiers("initial", "pushed")
-    const history = new DocumentHistory(ids)
+    const observedCurrent: Array<DocumentHistoryEntry | undefined> = []
+    let history: DocumentHistory
+    const host = historyHost(() => {
+      observedCurrent.push(history.current)
+    })
+    history = createHistory(ids, host)
     const initialized = history.initialize({
       kind: "unmanaged",
       url: "https://example.test/current",
@@ -106,12 +224,50 @@ describe("document history", () => {
     expect(history.commitProposal(proposal)).toBe(proposal.entry)
     expect(history.current).toBe(proposal.entry)
     expect(history.getRestorationData("pushed")).toEqual({})
+    expect(host.calls).toEqual([
+      { entry: initialized.entry, method: "replace" },
+      { entry: proposal.entry, method: "push" },
+    ])
+    expect(observedCurrent).toEqual([undefined, initialized.entry])
+  })
+
+  test("keeps a host-rejected proposal exact, unbound, and retryable", () => {
+    let proposalWrites = 0
+    const host = historyHost((method) => {
+      if (method !== "push") return
+      proposalWrites += 1
+      if (proposalWrites === 1) throw new Error("host proposal failed with secret-token")
+    })
+    const history = createHistory(identifiers("initial", "next"), host)
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    const proposal = history.proposeAdvance("https://example.test/next")
+
+    try {
+      history.commitProposal(proposal)
+      throw new Error("expected host proposal write to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("next")).toThrow(StateError)
+
+    expect(history.commitProposal(proposal)).toBe(proposal.entry)
+    expect(history.current).toBe(proposal.entry)
+    expect(host.calls.slice(1)).toEqual([
+      { entry: proposal.entry, method: "push" },
+      { entry: proposal.entry, method: "push" },
+    ])
   })
 
   test("uses replace for a same-location advance and an explicit replacement", () => {
     const ids = identifiers("initial", "same-location", "explicit-replace")
-    const history = new DocumentHistory(ids)
-    history.initialize({
+    const host = historyHost()
+    const history = createHistory(ids, host)
+    const initialized = history.initialize({
       kind: "unmanaged",
       url: "https://example.test/current?filter=active#details",
     })
@@ -136,11 +292,16 @@ describe("document history", () => {
     expect(explicit.method).toBe("replace")
     history.commitProposal(explicit)
     expect(history.current).toBe(explicit.entry)
+    expect(host.calls).toEqual([
+      { entry: initialized.entry, method: "replace" },
+      { entry: sameLocation.entry, method: "replace" },
+      { entry: explicit.entry, method: "replace" },
+    ])
   })
 
   test("retargets redirects without changing the requested-location history method", () => {
     const ids = identifiers("initial", "advance", "same-location")
-    const history = new DocumentHistory(ids)
+    const history = createHistory(ids)
     history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
 
     const advance = history.proposeAdvance("https://example.test/start")
@@ -168,7 +329,8 @@ describe("document history", () => {
   })
 
   test("rejects forged, stale, and already-settled proposals atomically", () => {
-    const history = new DocumentHistory(identifiers("initial", "first", "second"))
+    const host = historyHost()
+    const history = createHistory(identifiers("initial", "first", "second"), host)
     history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
     const first = history.proposeAdvance("https://example.test/first")
     const second = history.proposeAdvance("https://example.test/second")
@@ -181,11 +343,57 @@ describe("document history", () => {
     ).toThrow(StateError)
     expect(history.current).toBe(second.entry)
     expect(() => history.getRestorationData("first")).toThrow(StateError)
+    expect(host.calls).toHaveLength(2)
+  })
+
+  test("blocks every history mutation while the host writer is active", () => {
+    const ids = identifiers("initial", "primary", "secondary", "unused")
+    let history: DocumentHistory
+    let initialEntry: DocumentHistoryEntry
+    let secondary: ReturnType<DocumentHistory["proposeAdvance"]>
+    let inspectReentrancy = false
+    const host = historyHost(() => {
+      if (!inspectReentrancy) return
+      const mutations = [
+        () => history.initialize({ kind: "unmanaged", url: "https://example.test/reentrant" }),
+        () =>
+          history.adoptTraversal({
+            restorationIdentifier: "traversal",
+            restorationIndex: 9,
+            url: "https://example.test/traversal",
+          }),
+        () => history.proposeAdvance("https://example.test/reentrant-advance"),
+        () => history.proposeReplace("https://example.test/reentrant-replace"),
+        () => history.retargetProposal(secondary, "https://example.test/retargeted"),
+        () => history.commitProposal(secondary),
+        () => history.updateRestorationData("initial", { scrollPosition: { x: 1, y: 2 } }),
+      ]
+
+      expect(history.current).toBe(initialEntry)
+      expect(history.getRestorationData("initial")).toEqual({})
+      for (const mutate of mutations) {
+        expect(mutate).toThrow("Document history cannot mutate during another mutation")
+      }
+    })
+    history = createHistory(ids, host)
+    initialEntry = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    }).entry
+    const primary = history.proposeAdvance("https://example.test/primary")
+    secondary = history.proposeAdvance("https://example.test/secondary")
+
+    inspectReentrancy = true
+    expect(history.commitProposal(primary)).toBe(primary.entry)
+    expect(history.current).toBe(primary.entry)
+    expect(ids.calls).toBe(3)
+    expect(host.calls).toHaveLength(2)
+    expect(() => history.getRestorationData("secondary")).toThrow(StateError)
   })
 
   test("rejects push overflow before consuming an identifier", () => {
     const ids = identifiers("replacement")
-    const history = new DocumentHistory(ids)
+    const history = createHistory(ids)
     history.initialize({
       entry: {
         restorationIdentifier: "current",
@@ -205,7 +413,7 @@ describe("document history", () => {
   })
 
   test("keeps the ledger and original proposal intact when retargeting fails", () => {
-    const history = new DocumentHistory(identifiers("initial", "advance"))
+    const history = createHistory(identifiers("initial", "advance"))
     const initialized = history.initialize({
       kind: "unmanaged",
       url: "https://example.test/current",
@@ -234,7 +442,7 @@ describe("document history", () => {
         throw new Error("identifier generation failed")
       },
     ]) {
-      const history = new DocumentHistory({ next })
+      const history = createHistory({ next })
       const initialized = history.initialize({
         entry: {
           restorationIdentifier: "current",
@@ -251,7 +459,7 @@ describe("document history", () => {
   })
 
   test("binds identifiers without treating a shared restoration index as a collision", () => {
-    const history = new DocumentHistory(identifiers("initial"))
+    const history = createHistory(identifiers("initial"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/initial" })
 
     expect(
@@ -269,7 +477,7 @@ describe("document history", () => {
   })
 
   test("derives Turbo traversal direction across normalized entries", () => {
-    const history = new DocumentHistory(identifiers("current"))
+    const history = createHistory(identifiers("current"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
 
     expect(
@@ -297,7 +505,7 @@ describe("document history", () => {
   })
 
   test("shares restoration data when a promoted Frame reuses one identifier", () => {
-    const history = new DocumentHistory(identifiers("current"))
+    const history = createHistory(identifiers("current"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
     history.updateRestorationData("current", { scrollPosition: { x: 3, y: 9 } })
 
@@ -325,7 +533,7 @@ describe("document history", () => {
   })
 
   test("keeps frozen restoration data independent per bound identifier", () => {
-    const history = new DocumentHistory(identifiers("first"))
+    const history = createHistory(identifiers("first"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/shared" })
     history.adoptTraversal({
       restorationIdentifier: "second",
@@ -353,7 +561,7 @@ describe("document history", () => {
   })
 
   test("rejects unbound identifiers and invalid restoration patches atomically", () => {
-    const history = new DocumentHistory(identifiers("current"))
+    const history = createHistory(identifiers("current"))
     history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
 
     expect(() => history.getRestorationData("missing")).toThrow(StateError)
@@ -414,7 +622,7 @@ describe("document history", () => {
     ]
 
     for (const state of invalidStates) {
-      const history = new DocumentHistory(identifiers("generated"))
+      const history = createHistory(identifiers("generated"))
       let error: unknown
       try {
         history.initialize(state as never)
@@ -428,7 +636,7 @@ describe("document history", () => {
   })
 
   test("rejects untrusted traversal entries atomically before binding them", () => {
-    const history = new DocumentHistory(identifiers("current"))
+    const history = createHistory(identifiers("current"))
     const initialized = history.initialize({
       kind: "unmanaged",
       url: "https://example.test/current",
@@ -488,7 +696,7 @@ describe("document history", () => {
   })
 
   test("rejects an invalid generated restoration identifier atomically", () => {
-    const history = new DocumentHistory(identifiers("  "))
+    const history = createHistory(identifiers("  "))
 
     expect(() =>
       history.initialize({ kind: "unmanaged", url: "https://example.test/current" }),
@@ -497,7 +705,7 @@ describe("document history", () => {
   })
 
   test("leaves unmanaged initialization untouched when identifier generation fails", () => {
-    const history = new DocumentHistory({
+    const history = createHistory({
       next() {
         throw new Error("identifier generation failed")
       },
@@ -510,7 +718,7 @@ describe("document history", () => {
   })
 
   test("requires initialization before traversal", () => {
-    const history = new DocumentHistory(identifiers("unused"))
+    const history = createHistory(identifiers("unused"))
     expect(() =>
       history.adoptTraversal({
         restorationIdentifier: "target",
