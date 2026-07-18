@@ -18,6 +18,19 @@ export interface ProtocolUrlResolution {
   readonly urlOrigin: string
 }
 
+export type ExternalDocumentLinkScheme = "mailto" | "tel"
+
+export type DocumentLinkUrlResolution =
+  | Readonly<{
+      kind: "external"
+      scheme: ExternalDocumentLinkScheme
+      url: string
+    }>
+  | Readonly<{
+      kind: "protocol"
+      resolution: ProtocolUrlResolution
+    }>
+
 function requestHeaderValue(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -95,6 +108,56 @@ export function resolveProtocolUrl(
   } catch (error) {
     if (error instanceof TargetError) throw error
     throw new TargetError("Protocol URL is invalid", context)
+  }
+}
+
+export function resolveDocumentLinkUrl(
+  source: string,
+  documentUrl: string,
+  context: ExpoTurboErrorContext = {},
+): DocumentLinkUrlResolution {
+  if (
+    typeof source !== "string" ||
+    source.trim() === "" ||
+    [...source].some((character) => {
+      const codePoint = character.codePointAt(0)
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+    })
+  ) {
+    throw new TargetError("Document link URL is invalid", context)
+  }
+
+  try {
+    const document = resolveProtocolUrl(documentUrl, documentUrl, documentUrl, context)
+    const resolved = new URL(source, document.url)
+    const url = resolved.toString()
+    if (url.includes("#")) {
+      throw new TargetError("Document link fragments require navigation support", context)
+    }
+    if (resolved.username !== "" || resolved.password !== "") {
+      throw new TargetError("Document link URLs cannot contain credentials", context)
+    }
+    if (resolved.protocol === "mailto:" || resolved.protocol === "tel:") {
+      if (
+        url.slice(resolved.protocol.length).startsWith("//") ||
+        resolved.host !== "" ||
+        (resolved.protocol === "tel:" && resolved.pathname === "")
+      ) {
+        throw new TargetError("Document link URL is invalid", context)
+      }
+      return Object.freeze({
+        kind: "external",
+        scheme: resolved.protocol.slice(0, -1) as ExternalDocumentLinkScheme,
+        url,
+      })
+    }
+    return Object.freeze({
+      kind: "protocol",
+      resolution: resolveProtocolUrl(source, document.url, document.url, context),
+    })
+  } catch (error) {
+    if (error instanceof TargetError) throw error
+    throw new TargetError("Document link URL is invalid", context)
   }
 }
 
