@@ -475,6 +475,7 @@ function renderDocumentLinks(
   }: {
     confirm?: string
     disabled: boolean
+    download: boolean
     href: string
     target?: string
   }): ReactNode {
@@ -486,6 +487,7 @@ function renderDocumentLinks(
     attributes: {
       confirm: { codec: stringCodec, prop: "confirm" },
       disabled: { codec: presenceCodec, prop: "disabled" },
+      download: { codec: presenceCodec, prop: "download" },
       href: { codec: stringCodec, prop: "href" },
       target: { codec: stringCodec, prop: "target" },
     },
@@ -494,6 +496,7 @@ function renderDocumentLinks(
     schema: z.object({
       confirm: z.string().optional(),
       disabled: z.boolean().default(false),
+      download: z.boolean().default(false),
       href: z.string().trim().min(1),
       target: z.string().optional(),
     }),
@@ -3441,6 +3444,38 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("admits empty and exact _self browser targets as current-context links", async () => {
+    for (const { href, target } of [
+      { href: "/empty-target", target: "" },
+      { href: "/self-target", target: "_self" },
+    ]) {
+      const requests: TurboRequest[] = []
+      const harness = renderDocumentLinks(
+        `<Gallery><DocumentLink href="${href}" target="${target}" /></Gallery>`,
+        async (request) => {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => "<Gallery />",
+            url: request.url,
+          }
+        },
+      )
+
+      let result: unknown
+      await act(async () => {
+        result = await harness.activation(href)()
+      })
+
+      expect(result).toMatchObject({ status: "committed", url: `https://example.test${href}` })
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.headers).not.toHaveProperty("Turbo-Frame")
+      act(() => harness.renderer.unmount())
+    }
+  })
+
   test("projects authored disabled link presence through the Expo Pressable", async () => {
     mock.module("react-native", () => ({
       Platform: { OS: "web" },
@@ -3502,8 +3537,8 @@ describe("React protocol renderer", () => {
     const harness = renderDocumentLinks(
       `<Gallery>
         <DocumentLink href="/pending" />
-        <DocumentLink href="https://outside.test/path" data-turbo-confirm="Continue?" />
-        <Gallery data-turbo="false"><DocumentLink href="/opted-out" data-turbo-confirm="Continue?" /></Gallery>
+        <DocumentLink href="https://outside.test/path" target="_self" data-turbo-confirm="Continue?" />
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" target="" data-turbo-confirm="Continue?" /></Gallery>
         <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" data-turbo-confirm="Continue?" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
@@ -3577,8 +3612,8 @@ describe("React protocol renderer", () => {
     }
     const harness = renderDocumentLinks(
       `<Gallery>
-        <DocumentLink href="MAILTO:help@example.com?subject=Hello World" />
-        <turbo-frame id="frame"><DocumentLink href="tel:+15551234567;ext=9" /></turbo-frame>
+        <DocumentLink href="MAILTO:help@example.com?subject=Hello World" target="_self" />
+        <turbo-frame id="frame"><DocumentLink href="tel:+15551234567;ext=9" target="" /></turbo-frame>
         <turbo-frame id="named" />
         <DocumentLink href="mailto:named@example.com" data-turbo-frame="named" />
         <Gallery data-turbo="false"><DocumentLink href="tel:+18005550199" /></Gallery>
@@ -3852,7 +3887,7 @@ describe("React protocol renderer", () => {
         <turbo-frame id="outer" target="named">
           <DocumentLink href="/default" />
           <DocumentLink href="/self" data-turbo-frame="_self" />
-          <turbo-frame id="inner"><DocumentLink href="/nearest" data-turbo-confirm="Continue?" /></turbo-frame>
+          <turbo-frame id="inner"><DocumentLink href="/nearest" target="_self" data-turbo-confirm="Continue?" /></turbo-frame>
         </turbo-frame>
       </Gallery>`,
       async (request) => {
@@ -4337,7 +4372,10 @@ describe("React protocol renderer", () => {
         <DocumentLink href="/empty-fragment#" />
         <DocumentLink href="/method" data-turbo-confirm="Continue?" data-turbo-method="get" />
         <DocumentLink href="/stream" data-turbo-confirm="Continue?" data-turbo-stream="" />
+        <DocumentLink href="/download" download="" />
+        <DocumentLink href="/named-download" download="report.xml" />
         <DocumentLink href="/target" target="_blank" />
+        <DocumentLink href="/case-target" target="_SELF" />
         <DocumentLink href="/action" data-turbo-action="replace" />
         <DocumentLink href="/confirm-alias" confirm="Continue?" />
         <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
@@ -4365,7 +4403,10 @@ describe("React protocol renderer", () => {
     for (const href of [
       "/method",
       "/stream",
+      "/download",
+      "/named-download",
       "/target",
+      "/case-target",
       "/action",
       "/confirm-alias",
       "/opted-out",
@@ -4397,7 +4438,7 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink id="dynamic" href="/dynamic" data-turbo-confirm="Continue?" />
-        <DocumentLink disabled="" href="/disabled" data-turbo-confirm="Continue?" />
+        <DocumentLink disabled="" download="" href="/disabled" target="_blank" data-turbo-confirm="Continue?" />
         <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" data-turbo-confirm="Continue?" /></turbo-frame>
         <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" data-turbo-confirm="Continue?" /></Gallery>
       </Gallery>`,
