@@ -289,6 +289,90 @@ describe("Document visit controller", () => {
     expect(history.current).toBe(fixture.writes[0]?.entry)
   })
 
+  test("captures and replaces top-level history for an explicit replace visit", async () => {
+    const order: string[] = []
+    const snapshotCache = new DocumentSnapshotCache()
+    let history: DocumentHistory
+    let session: DocumentSession
+    const fixture = historyFixture((method, entry) => {
+      expect(method).toBe("replace")
+      expect(entry).toMatchObject({
+        restorationIndex: 0,
+        url: "https://example.test/replacement",
+      })
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(history.current?.restorationIdentifier).toBe("history-current")
+      expect(session.tree.getElementById("old")).toBeDefined()
+      expect(session.tree.getElementById("replacement")).toBeUndefined()
+      order.push("history")
+    })
+    history = fixture.history
+    const current = harness({
+      documentXml: '<Gallery><Old id="old" data-state="initial" /></Gallery>',
+      history,
+      snapshotCache,
+    })
+    const { controller, pending } = current
+    session = current.session
+    const visit = controller.visit("/replacement", { action: "replace" })
+    session.setAttribute("id:old", "data-state", "latest")
+    session.subscribe("id:old", () => {
+      expect(history.current?.url).toBe("https://example.test/replacement")
+      expect(session.tree.getElementById("old")).toBeUndefined()
+      expect(session.tree.getElementById("replacement")).toBeDefined()
+      order.push("tree")
+    })
+    pending[0]?.resolve(
+      response('<Gallery><Replacement id="replacement" /></Gallery>', {
+        url: "https://example.test/replacement",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    const cached = snapshotCache.get("https://example.test/current")
+    const old = cached?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+    expect(order).toEqual(["history", "tree"])
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/replacement",
+        },
+        method: "replace",
+      },
+    ])
+    expect(fixture.history.current).toBe(fixture.writes[0]?.entry)
+    expect(session.tree.getElementById("replacement")?.tagName).toBe("Replacement")
+  })
+
+  test("retargets an explicit replace redirect without changing its history method or index", async () => {
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({ history: fixture.history })
+
+    const visit = controller.visit("/requested", { action: "replace" })
+    pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ redirected: true, status: "committed" })
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/final",
+        },
+        method: "replace",
+      },
+    ])
+    expect(session.tree.document.url).toBe("https://example.test/final")
+  })
+
   test("aligns canonical-equivalent active and history URLs for an advance", async () => {
     const documentUrl = "https://example.test:443/current"
     const fixture = historyFixture(undefined, documentUrl)
@@ -369,6 +453,32 @@ describe("Document visit controller", () => {
     )
 
     expect(await empty).toMatchObject({ status: "empty" })
+    expect(fixture.writes).toEqual([])
+    expect(fixture.history.current).toBe(historyEntry)
+    expect(session.tree).toBe(tree)
+  })
+
+  test("keeps an explicit replace no-tree response out of cache and history", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    const tree = session.tree
+    const historyEntry = fixture.history.current
+
+    const visit = controller.visit("/empty-replacement", { action: "replace" })
+    pending[0]?.resolve(
+      response("unused", {
+        headers: {},
+        status: 204,
+        url: "https://example.test/empty-replacement",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "empty" })
+    expect(snapshotCache.size).toBe(0)
     expect(fixture.writes).toEqual([])
     expect(fixture.history.current).toBe(historyEntry)
     expect(session.tree).toBe(tree)
@@ -1035,7 +1145,7 @@ describe("Document visit controller", () => {
     expect(controller.state.status).toBe("completed")
   })
 
-  test("rejects replace and restore before changing document ownership", async () => {
+  test("rejects a historyless replace, restore, and forged actions before ownership", async () => {
     const navigationCalls: string[] = []
     const navigation: NavigationAdapter = {
       back() {},
@@ -1047,11 +1157,15 @@ describe("Document visit controller", () => {
     const active = controller.visit("/pending")
     const started = controller.state
 
-    for (const action of ["replace", "restore"] as const) {
-      await expect(controller.visit("/other", { action, navigation })).rejects.toBeInstanceOf(
-        TargetError,
-      )
-    }
+    await expect(
+      controller.visit("/other", { action: "replace", navigation }),
+    ).rejects.toBeInstanceOf(TargetError)
+    await expect(
+      controller.visit("https://outside.test/restore", { action: "restore", navigation }),
+    ).rejects.toBeInstanceOf(TargetError)
+    await expect(
+      controller.visit("/archive.pdf", { action: "bogus" as never, navigation }),
+    ).rejects.toBeInstanceOf(TargetError)
 
     expect(navigationCalls).toEqual([])
     expect(pending).toHaveLength(1)
@@ -1066,7 +1180,7 @@ describe("Document visit controller", () => {
     expect(await active).toMatchObject({ status: "committed" })
   })
 
-  test("refreshes exact current truth without exposing general replace-history visits", async () => {
+  test("refreshes exact current truth without snapshot or history writes", async () => {
     const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
@@ -1175,6 +1289,10 @@ describe("Document visit controller", () => {
 
     const outside = await controller.visit("/application", { navigation })
     const extension = await controller.visit("/app/archive.pdf", { navigation })
+    const replacement = await controller.visit("/outside-replacement", {
+      action: "replace",
+      navigation,
+    })
     const external = await controller.visit("https://outside.test/app", { navigation })
 
     expect(outside).toEqual({
@@ -1191,6 +1309,13 @@ describe("Document visit controller", () => {
       status: "delegated",
       url: "https://example.test/app/archive.pdf",
     })
+    expect(replacement).toEqual({
+      action: "replace",
+      kind: "navigation",
+      reason: "outside-root",
+      status: "delegated",
+      url: "https://example.test/outside-replacement",
+    })
     expect(external).toEqual({
       kind: "external",
       reason: "external",
@@ -1203,6 +1328,7 @@ describe("Document visit controller", () => {
     expect(navigationCalls).toEqual([
       { action: "advance", url: "https://example.test/application" },
       { action: "advance", url: "https://example.test/app/archive.pdf" },
+      { action: "replace", url: "https://example.test/outside-replacement" },
     ])
     expect(externalCalls).toEqual(["https://outside.test/app"])
     expect(pending).toHaveLength(1)

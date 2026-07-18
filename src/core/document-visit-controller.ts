@@ -108,17 +108,15 @@ export class DocumentVisitController {
 
   visit(source: string, options: DocumentVisitOptions = {}): Promise<DocumentVisitResult> {
     const action = options.action ?? "advance"
-    if (action !== "advance") {
-      return Promise.reject(
-        new TargetError("Document replace and restore visits require explicit action support"),
-      )
+    if (action !== "advance" && action !== "replace") {
+      return Promise.reject(new TargetError("Document visit action is unsupported"))
     }
     let admission: TopLevelLocationDisposition
     let historyPlan: DocumentVisitHistoryPlan | undefined
     try {
       admission = this.loader.classifyTopLevelSource(source)
       if (admission.classification === "visitable") {
-        historyPlan = this.proposeHistoryAdvance(admission.url)
+        historyPlan = this.proposeHistory(action, admission.url)
       }
     } catch (error) {
       return Promise.reject(error)
@@ -294,10 +292,19 @@ export class DocumentVisitController {
     )
   }
 
-  private proposeHistoryAdvance(url: string): DocumentVisitHistoryPlan | undefined {
+  private proposeHistory(
+    action: Exclude<VisitAction, "restore">,
+    url: string,
+  ): DocumentVisitHistoryPlan | undefined {
     const guard = this.captureHistoryGuard(this.loader.currentUrl)
-    if (!guard) return undefined
-    const proposal = guard.history.proposeAdvance(url)
+    if (!guard) {
+      if (action === "replace") {
+        throw new TargetError("Document replace visits require configured history")
+      }
+      return undefined
+    }
+    const proposal =
+      action === "replace" ? guard.history.proposeReplace(url) : guard.history.proposeAdvance(url)
     if (
       guard.history.current !== guard.entry ||
       this.canonicalDocumentUrl(this.loader.currentUrl) !== guard.entry.url
