@@ -5,6 +5,7 @@ import {
   DocumentRefreshController,
   DocumentFormControls,
   DocumentSession,
+  FormLinkSubmissionController,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
 import type { NavigationAdapter } from "expo-turbo/adapters";
@@ -228,6 +229,12 @@ export default function HomeScreen() {
       }),
     [formController, session],
   );
+  const formLinks = useMemo(() => {
+    let requestId = 0;
+    return new FormLinkSubmissionController(session, formController, {
+      next: () => `demo-generated-form-link-${++requestId}`,
+    });
+  }, [formController, session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
   const navigation = useMemo<NavigationAdapter>(
     () => ({
@@ -304,6 +311,7 @@ export default function HomeScreen() {
         frameComponent={DemoFrameBoundary}
         formComponent={DemoFormBoundary}
         formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
+        formLinks={formLinks}
         frames={frames}
         forms={forms}
         navigation={navigation}

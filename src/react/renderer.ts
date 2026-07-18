@@ -33,6 +33,7 @@ import type {
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
 import { RegistryError, StateError, TargetError } from "../core/errors"
+import type { FormLinkSubmissionController } from "../core/form-link-submission"
 import type { FormRequestPlan } from "../core/form-request"
 import type {
   FormSubmissionActivitySnapshot,
@@ -177,6 +178,7 @@ interface RendererContextValue {
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
   readonly formAnnouncements: FormSubmissionAnnouncementAdapter | undefined
+  readonly formLinks: FormLinkSubmissionController | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
@@ -204,8 +206,6 @@ const announcedFormTerminalRevisions = new WeakMap<
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
   "confirm",
-  "data-turbo-method",
-  "data-turbo-stream",
   "download",
   "method",
   "stream",
@@ -229,6 +229,7 @@ export interface ExpoTurboProviderProps {
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
+  readonly formLinks?: FormLinkSubmissionController
   readonly frames?: FrameControllerCollection
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
@@ -268,6 +269,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       frameComponent: props.frameComponent,
       formComponent: props.formComponent,
       formAnnouncements: props.formAnnouncements,
+      formLinks: props.formLinks,
       frames: props.frames,
       forms: props.forms,
       onError: props.onError,
@@ -285,6 +287,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.frameComponent,
       props.formComponent,
       props.formAnnouncements,
+      props.formLinks,
       props.frames,
       props.forms,
       props.onError,
@@ -783,6 +786,7 @@ export type ExpoTurboDocumentLinkDelegation =
 export type ExpoTurboDocumentLinkResult =
   | DocumentVisitResult
   | ExpoTurboDocumentLinkDelegation
+  | FormSubmissionReport
   | Readonly<{
       kind: "disabled"
       status: "ignored"
@@ -792,7 +796,7 @@ export type ExpoTurboDocumentLinkResult =
 export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
 
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
-  const { documentController, frames, session } = useRenderer()
+  const { documentController, formLinks, frames, session } = useRenderer()
   const navigation = useContext(NavigationContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
@@ -854,6 +858,19 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     if (!optedOut && classifyTopLevelLocation(session.tree, href).classification !== "visitable") {
       return documentController.visit(href, documentVisitOptions)
     }
+    if (
+      !optedOut &&
+      (attributeValue(node, "data-turbo-method") !== undefined ||
+        attributeValue(node, "data-turbo-stream") !== undefined)
+    ) {
+      if (!formLinks) {
+        throw new TargetError("Generated form links require provider form-link submissions")
+      }
+      if (!formLinks.shouldInterceptSubmission(node.key)) {
+        throw new TargetError("Generated form-link submission is disabled")
+      }
+      return formLinks.submit(node.key, href)
+    }
     if (!optedOut && nearestFrameId !== undefined) {
       if (!nearestFrameId) {
         throw new TargetError("Frame-scoped document links require an identified Frame")
@@ -910,7 +927,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       ...(action !== undefined ? { action } : {}),
       ...documentVisitOptions,
     })
-  }, [documentController, frames, href, navigation, node, nodeKey, session])
+  }, [documentController, formLinks, frames, href, navigation, node, nodeKey, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
   }
