@@ -15,6 +15,13 @@ export type FormSubmissionEncoding =
 
 export type FormSubmissionMethod = "DELETE" | "GET" | "PATCH" | "POST" | "PUT"
 
+/**
+ * Registered Rails forms use POST plus `_method`; Turbo-generated form links
+ * use the authored unsafe HTTP verb directly and keep `_method` as ordinary
+ * ordered form data.
+ */
+export type UnsafeFormMethodTransport = "direct" | "rails"
+
 export interface FormRequestAttributes {
   readonly action?: string
   readonly enctype?: string
@@ -41,6 +48,7 @@ export interface BuildFormRequestOptions {
   readonly protocol: FormRequestProtocolOptions
   readonly signal?: AbortSignal
   readonly submitter?: ActivatedFormSubmitter
+  readonly unsafeMethodTransport?: UnsafeFormMethodTransport
 }
 
 declare const FORM_REQUEST_PLAN: unique symbol
@@ -245,6 +253,12 @@ function requestSignal(value: unknown): AbortSignal | undefined {
   return value as AbortSignal
 }
 
+function unsafeMethodTransport(value: unknown): UnsafeFormMethodTransport {
+  if (value === undefined || value === "rails") return "rails"
+  if (value === "direct") return value
+  throw new RequestError("Form request unsafe method transport is unsupported")
+}
+
 /**
  * Builds one immutable transport plan from raw form/submitter attributes and
  * successful string entries. Fetch ownership, multipart uploads, constraint
@@ -260,6 +274,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   const form = attributes(options.form, "form") as FormRequestAttributes
   const submitter = activatedSubmitter(options.submitter)
   const signal = requestSignal(options.signal)
+  const unsafeTransport = unsafeMethodTransport(options.unsafeMethodTransport)
   if (
     !options.protocol ||
     typeof options.protocol !== "object" ||
@@ -289,10 +304,11 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
 
   const admitted = admittedEntries(options.entries)
   validateSubmitterEntry(submitter, admitted)
-  const effective = effectiveMethod(source, admitted, submitter)
+  const effective =
+    unsafeTransport === "direct" ? source : effectiveMethod(source, admitted, submitter)
   const encoding = canonicalEncoding(form, submitter)
   let requestEntries = admitted
-  if (source !== "GET") {
+  if (source !== "GET" && unsafeTransport === "rails") {
     if (effective === "GET") {
       throw new RequestError("Unsafe form requests require an unsafe effective method", {
         method: source,
@@ -337,7 +353,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
     request = Object.freeze({
       body,
       headers,
-      method: "POST",
+      method: unsafeTransport === "direct" ? source : "POST",
       ...(signal ? { signal } : {}),
       url: url.toString(),
     })

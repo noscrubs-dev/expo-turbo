@@ -4,6 +4,7 @@ export * from "./document-refresh-controller"
 export * from "./document-visit-controller"
 export * from "./errors"
 export * from "./events"
+export * from "./form-link-submission"
 export * from "./form-request"
 export * from "./form-request-executor"
 export type {

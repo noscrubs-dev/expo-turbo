@@ -132,6 +132,40 @@ describe("form request construction", () => {
     }
   })
 
+  test("sends Turbo-generated unsafe link methods directly without interpreting _method", () => {
+    for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+      const built = plan({
+        entries: [
+          { name: "alpha", value: "1" },
+          { name: "_method", value: "post" },
+          { name: "alpha", value: "2" },
+          { name: "_method", value: "delete" },
+        ],
+        form: { method },
+        unsafeMethodTransport: "direct",
+      })
+
+      expect(built).toMatchObject({ effectiveMethod: method, sourceMethod: method })
+      expect(built.entries).toEqual([
+        { name: "alpha", value: "1" },
+        { name: "_method", value: "post" },
+        { name: "alpha", value: "2" },
+        { name: "_method", value: "delete" },
+      ])
+      expect(built.request.method).toBe(method)
+      expect(built.request.body?.value).toBe("alpha=1&_method=post&alpha=2&_method=delete")
+    }
+
+    const post = plan({
+      entries: [{ name: "_method", value: "delete" }],
+      form: { method: "POST" },
+      unsafeMethodTransport: "direct",
+    })
+    expect(post.effectiveMethod).toBe("POST")
+    expect(post.request.method).toBe("POST")
+    expect(post.request.body?.value).toBe("_method=delete")
+  })
+
   test("uses turbo-rails submitter and _method precedence and collapses duplicates", () => {
     const entryOverride = plan({
       entries: [
@@ -278,6 +312,7 @@ describe("form request construction", () => {
       plan({ entries: [{ name: "count", value: 3 } as unknown as SuccessfulFormEntry] }),
     ).toThrow(RequestError)
     expect(() => plan({ entries: [{ name: "", value: "empty-name" }] })).toThrow(RequestError)
+    expect(() => plan({ unsafeMethodTransport: "browser" as never })).toThrow(RequestError)
     expect(() => plan({ entries: Array(1) as unknown as readonly SuccessfulFormEntry[] })).toThrow(
       RequestError,
     )

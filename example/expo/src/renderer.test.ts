@@ -25,6 +25,7 @@ import {
   DocumentSession,
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
+  FormLinkSubmissionController,
   FormSubmissionController,
   type FormRequestPlan,
   type FormRequestProtocolOptions,
@@ -35,6 +36,7 @@ import {
   FrameMissingError,
   FrameRequestLoader,
   parseExpoTurboDocument,
+  renderedNodeTextContent,
   StateError,
   TargetError,
 } from "expo-turbo/core"
@@ -79,6 +81,7 @@ const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean
 }
 globalWithAct.IS_REACT_ACT_ENVIRONMENT = true
+const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html"
 
 function host(type: string, props: Readonly<{ children?: ReactNode }>): ReactNode {
   return createElement(type, null, props.children)
@@ -134,6 +137,7 @@ function render(
   options: Readonly<{
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
+    formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
     forms?: ExpoTurboProviderProps["forms"]
@@ -466,6 +470,7 @@ function renderDocumentLinks(
   url = "https://example.test/gallery",
   navigation?: NavigationAdapter,
   frameFetch?: (request: TurboRequest) => Promise<TurboResponse>,
+  createFormLinks?: (session: DocumentSession) => FormLinkSubmissionController,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
   let renders = 0
@@ -503,6 +508,7 @@ function renderDocumentLinks(
     tag: "DocumentLink",
   })
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
+  const formLinks = createFormLinks?.(session)
   const controller = new DocumentVisitController(
     new DocumentRequestLoader(session, { fetch }, { next: () => "request-link" }),
     {
@@ -532,7 +538,7 @@ function renderDocumentLinks(
         version: "0.1.0",
       }),
     ),
-    { documentController: controller, frames, navigation },
+    { documentController: controller, formLinks, frames, navigation },
   )
   return {
     activation(href: string) {
@@ -541,6 +547,7 @@ function renderDocumentLinks(
       return activation
     },
     controller,
+    formLinks,
     frames,
     renderCount: () => renders,
     renderer,
@@ -3795,6 +3802,207 @@ describe("React protocol renderer", () => {
     act(() => promoted.renderer.unmount())
   })
 
+  test("submits method and Stream links through the generated-form controller", async () => {
+    const documentRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    let requestId = 0
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/generated-method?item=one&amp;item=two" data-turbo-method="delete" />
+        <DocumentLink href="/generated-stream?filter=active" data-turbo-stream="" />
+        <DemoText id="generated-status">Before</DemoText>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("generated form links must not use the document loader")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request): Promise<TurboResponse> {
+              generatedRequests.push(request)
+              if (request.url === "https://example.test/generated-stream?filter=active") {
+                return {
+                  headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+                  redirected: false,
+                  status: 200,
+                  text: async () =>
+                    '<turbo-stream action="update" target="generated-status"><template>Updated</template></turbo-stream>',
+                  url: request.url,
+                }
+              }
+              return {
+                headers: {},
+                redirected: false,
+                status: 204,
+                text: async () => "",
+                url: request.url,
+              }
+            },
+          }),
+          { next: () => `generated-link-${++requestId}` },
+        ),
+    )
+
+    await act(async () => {
+      await expect(
+        harness.activation("/generated-method?item=one&item=two")(),
+      ).resolves.toMatchObject({
+        destination: { kind: "document" },
+        effectiveMethod: "DELETE",
+        status: "empty",
+      })
+      await expect(harness.activation("/generated-stream?filter=active")()).resolves.toMatchObject({
+        application: "stream",
+        destination: { kind: "document" },
+        status: "applied",
+      })
+    })
+
+    expect(documentRequests).toHaveLength(0)
+    expect(generatedRequests).toHaveLength(2)
+    expect(generatedRequests[0]).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "item=one&item=two",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "X-Turbo-Request-Id": "generated-link-1",
+      },
+      method: "DELETE",
+      url: "https://example.test/generated-method",
+    })
+    expect(generatedRequests[1]).toMatchObject({
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "X-Turbo-Request-Id": "generated-link-2",
+      },
+      method: "GET",
+      url: "https://example.test/generated-stream?filter=active",
+    })
+    expect(renderedNodeTextContent(harness.session.tree.getElementById("generated-status")!)).toBe(
+      "Updated",
+    )
+    act(() => harness.renderer.unmount())
+  })
+
+  test("uses Turbo Frame destinations for generated form links without the Frame loader", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    let requestId = 0
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="source">
+          <DocumentLink href="/generated-source" data-turbo-method="post" />
+        </turbo-frame>
+        <turbo-frame id="default-source" target="destination">
+          <DocumentLink href="/generated-default" data-turbo-stream="" />
+        </turbo-frame>
+        <turbo-frame id="destination" />
+        <DocumentLink href="/generated-named" data-turbo-method="post" data-turbo-frame="destination" />
+        <turbo-frame id="top-source">
+          <DocumentLink href="/generated-top" data-turbo-method="post" data-turbo-frame="_top" />
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("generated form links must not use the document loader")
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("generated form links must not use the Frame GET loader")
+      },
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request) {
+              generatedRequests.push(request)
+              return {
+                headers: {},
+                redirected: false,
+                status: 204,
+                text: async () => "",
+                url: request.url,
+              }
+            },
+          }),
+          { next: () => `generated-frame-link-${++requestId}` },
+        ),
+    )
+
+    const results: unknown[] = []
+    for (const href of [
+      "/generated-source",
+      "/generated-default",
+      "/generated-named",
+      "/generated-top",
+    ]) {
+      await act(async () => {
+        results.push(await harness.activation(href)())
+      })
+    }
+
+    expect(
+      results.map((result) => (result as { destination: unknown }).destination),
+    ).toEqual([
+      { frameId: "source", kind: "frame" },
+      { frameId: "destination", kind: "frame", requestedTarget: "destination" },
+      { frameId: "destination", kind: "frame", requestedTarget: "destination" },
+      { kind: "document", requestedTarget: "_top" },
+    ])
+    expect(
+      generatedRequests.slice(0, 3).map((request) => request.headers["Turbo-Frame"]),
+    ).toEqual(["source", "destination", "destination"])
+    expect(generatedRequests[3]?.headers).not.toHaveProperty("Turbo-Frame")
+    expect(documentRequests).toHaveLength(0)
+    expect(frameRequests).toHaveLength(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when generated form-link interception is disabled", async () => {
+    const documentRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    let requestIds = 0
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/generated-disabled" data-turbo-method="post" /></Gallery>',
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("disabled generated form links must not become document GETs")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request) {
+              generatedRequests.push(request)
+              throw new Error("disabled generated form links must not fetch")
+            },
+          }),
+          { next: () => `disabled-generated-link-${++requestIds}` },
+          { formMode: "off" },
+        ),
+    )
+
+    await expect(harness.activation("/generated-disabled")()).rejects.toBeInstanceOf(TargetError)
+    expect(requestIds).toBe(0)
+    expect(documentRequests).toHaveLength(0)
+    expect(generatedRequests).toHaveLength(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
   test("projects authored disabled link presence through the Expo Pressable", async () => {
     mock.module("react-native", () => ({
       Platform: { OS: "web" },
@@ -3857,8 +4065,8 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink href="https://outside.test/path" target="_self" data-turbo-confirm="Continue?" />
-        <Gallery data-turbo="false"><DocumentLink href="/opted-out" target="" data-turbo-confirm="Continue?" /></Gallery>
-        <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" data-turbo-confirm="Continue?" /></Gallery>
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" target="" data-turbo-confirm="Continue?" data-turbo-method="delete" /></Gallery>
+        <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" data-turbo-confirm="Continue?" data-turbo-stream="" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
       "https://example.test/gallery",
@@ -3952,6 +4160,7 @@ describe("React protocol renderer", () => {
       harness.activation("tel:+15551234567;ext=9")(),
       harness.activation("mailto:named@example.com")(),
       harness.activation("tel:+18005550199")(),
+      harness.activation("mailto:metadata@example.com")(),
     ])
 
     expect(results).toEqual([
@@ -3983,20 +4192,25 @@ describe("React protocol renderer", () => {
         status: "delegated",
         url: "tel:+18005550199",
       },
+      {
+        kind: "external",
+        reason: "scheme",
+        scheme: "mailto",
+        status: "delegated",
+        url: "mailto:metadata@example.com",
+      },
     ])
     expect(results.every(Object.isFrozen)).toBe(true)
     expect(await harness.activation("mailto:disabled@example.com")()).toEqual({
       kind: "disabled",
       status: "ignored",
     })
-    await expect(harness.activation("mailto:metadata@example.com")()).rejects.toBeInstanceOf(
-      TargetError,
-    )
     expect(external).toEqual([
       "mailto:help@example.com?subject=Hello%20World",
       "tel:+15551234567;ext=9",
       "mailto:named@example.com",
       "tel:+18005550199",
+      "mailto:metadata@example.com",
     ])
     expect(requests).toHaveLength(0)
     expect(harness.controller.state.status).toBe("initialized")
@@ -4012,8 +4226,8 @@ describe("React protocol renderer", () => {
     const harness = renderDocumentLinks(
       `<Gallery data-turbo-root="/app">
         <DocumentLink href="/app/pending" />
-        <DocumentLink href="/application" />
-        <DocumentLink href="/app/archive.pdf" />
+        <DocumentLink href="/application" data-turbo-method="delete" />
+        <DocumentLink href="/app/archive.pdf" data-turbo-stream="" />
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
       "https://example.test/app/gallery",
@@ -4759,9 +4973,9 @@ describe("React protocol renderer", () => {
       `<Gallery>
         <DocumentLink href="/pending" />
         <DocumentLink id="dynamic" href="/dynamic" data-turbo-confirm="Continue?" />
-        <DocumentLink disabled="" download="" href="/disabled" target="_blank" data-turbo-action="replace" data-turbo-confirm="Continue?" />
-        <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" data-turbo-confirm="Continue?" /></turbo-frame>
-        <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" data-turbo-confirm="Continue?" /></Gallery>
+        <DocumentLink disabled="" download="" href="/disabled" target="_blank" data-turbo-action="replace" data-turbo-confirm="Continue?" data-turbo-method="delete" />
+        <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" data-turbo-confirm="Continue?" data-turbo-stream="" /></turbo-frame>
+        <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" data-turbo-confirm="Continue?" data-turbo-method="post" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
     )
