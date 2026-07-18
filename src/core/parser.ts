@@ -281,7 +281,13 @@ function convertNode(
       tagName: xmlElement.tagName,
       ...(location ? { location } : {}),
     }
-    element.children = convertChildren(node, element, key, depth + 1, state)
+    ;(element as { children: readonly ProtocolNode[] }).children = convertChildren(
+      node,
+      element,
+      key,
+      depth + 1,
+      state,
+    )
     return element
   }
 
@@ -359,7 +365,13 @@ function parse(xml: string, options: ParseOptions, fragment: boolean): DocumentT
 
   const sourceNode = fragment ? parsed.documentElement : parsed
   if (!sourceNode) throw parseError("Expo Turbo XML requires a document element")
-  document.children = convertChildren(sourceNode, document, "path", 1, state)
+  ;(document as { children: readonly ProtocolNode[] }).children = convertChildren(
+    sourceNode,
+    document,
+    "path",
+    1,
+    state,
+  )
   const roots = document.children.filter((node) => isProtocolElement(node))
   if (!fragment && roots.length !== 1)
     throw parseError("Expo Turbo documents require one root element")

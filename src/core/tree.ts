@@ -1,4 +1,5 @@
 import { ParseError, TargetError } from "./errors"
+import { assertDocumentTreeMutationAllowed } from "./tree-mutation-guard"
 
 export interface SourceLocation {
   readonly column: number
@@ -8,11 +9,11 @@ export interface SourceLocation {
 interface ProtocolNodeBase {
   readonly key: string
   readonly location?: SourceLocation
-  parent: ProtocolParentNode | null
+  readonly parent: ProtocolParentNode | null
 }
 
 export interface ProtocolDocument extends ProtocolNodeBase {
-  children: ProtocolNode[]
+  readonly children: readonly ProtocolNode[]
   readonly kind: "document"
   readonly url?: string
 }
@@ -29,7 +30,7 @@ export type ProtocolElementKind = "element" | "frame" | "stream" | "stream-sourc
 
 export interface ProtocolElement extends ProtocolNodeBase {
   readonly attributes: readonly ProtocolAttribute[]
-  children: ProtocolNode[]
+  readonly children: readonly ProtocolNode[]
   readonly kind: ProtocolElementKind
   readonly localName: string
   readonly namespaceUri: string | null
@@ -50,6 +51,85 @@ export interface ProtocolComment extends ProtocolNodeBase {
 
 export type ProtocolNode = ProtocolComment | ProtocolDocument | ProtocolElement | ProtocolText
 export type ProtocolParentNode = ProtocolDocument | ProtocolElement
+
+const protectedProtocolNodes = new WeakSet<ProtocolNode>()
+const protocolNodeParents = new WeakMap<ProtocolNode, ProtocolParentNode | null>()
+const protocolNodeChildren = new WeakMap<ProtocolParentNode, readonly ProtocolNode[]>()
+const protocolElementAttributes = new WeakMap<ProtocolElement, readonly ProtocolAttribute[]>()
+const protocolDocumentUrls = new WeakMap<ProtocolDocument, string | undefined>()
+
+function freezeAttributes(attributes: readonly ProtocolAttribute[]): readonly ProtocolAttribute[] {
+  return Object.freeze(
+    attributes.map((attribute) =>
+      Object.isFrozen(attribute) ? attribute : Object.freeze(attribute),
+    ),
+  )
+}
+
+function protectProtocolNode(node: ProtocolNode): void {
+  if (protectedProtocolNodes.has(node)) return
+  protocolNodeParents.set(node, node.parent)
+  Object.defineProperty(node, "parent", {
+    configurable: false,
+    enumerable: true,
+    get: () => protocolNodeParents.get(node) ?? null,
+  })
+  if (node.kind === "document" || isElement(node)) {
+    protocolNodeChildren.set(node, Object.freeze([...node.children]))
+    Object.defineProperty(node, "children", {
+      configurable: false,
+      enumerable: true,
+      get: () => protocolNodeChildren.get(node) ?? Object.freeze([]),
+    })
+  }
+  if (isElement(node)) {
+    protocolElementAttributes.set(node, freezeAttributes(node.attributes))
+    Object.defineProperty(node, "attributes", {
+      configurable: false,
+      enumerable: true,
+      get: () => protocolElementAttributes.get(node) ?? Object.freeze([]),
+    })
+  }
+  if (node.kind === "document") {
+    protocolDocumentUrls.set(node, node.url)
+    Object.defineProperty(node, "url", {
+      configurable: false,
+      enumerable: true,
+      get: () => protocolDocumentUrls.get(node),
+    })
+  }
+  if (node.location) Object.freeze(node.location)
+  protectedProtocolNodes.add(node)
+  Object.freeze(node)
+}
+
+function setProtocolNodeParent(node: ProtocolNode, parent: ProtocolParentNode | null): void {
+  if (protectedProtocolNodes.has(node)) protocolNodeParents.set(node, parent)
+  else (node as { parent: ProtocolParentNode | null }).parent = parent
+}
+
+function setProtocolNodeChildren(
+  node: ProtocolParentNode,
+  children: readonly ProtocolNode[],
+): void {
+  const frozen = Object.freeze([...children])
+  if (protectedProtocolNodes.has(node)) protocolNodeChildren.set(node, frozen)
+  else (node as { children: readonly ProtocolNode[] }).children = frozen
+}
+
+function setProtocolElementAttributes(
+  element: ProtocolElement,
+  attributes: readonly ProtocolAttribute[],
+): void {
+  const frozen = freezeAttributes(attributes)
+  if (protectedProtocolNodes.has(element)) protocolElementAttributes.set(element, frozen)
+  else (element as { attributes: readonly ProtocolAttribute[] }).attributes = frozen
+}
+
+function setProtocolDocumentUrl(document: ProtocolDocument, url: string): void {
+  if (protectedProtocolNodes.has(document)) protocolDocumentUrls.set(document, url)
+  else (document as { url?: string }).url = url
+}
 
 export interface DocumentTreeOptions {
   readonly allowDuplicateIds?: boolean
@@ -132,6 +212,12 @@ export class DocumentTree {
 
   constructor(document: ProtocolDocument, options: DocumentTreeOptions = {}) {
     this.document = document
+    Object.defineProperty(this, "document", {
+      configurable: false,
+      enumerable: true,
+      value: document,
+      writable: false,
+    })
     this.allowDuplicateIds = options.allowDuplicateIds ?? false
     this.rebuildIndexes()
   }
@@ -143,13 +229,13 @@ export class DocumentTree {
     this.nodes.clear()
     this.streamSources.length = 0
     walk(this.document, (node) => {
+      protectProtocolNode(node)
       this.nodes.add(node)
       if (this.keyIndex.has(node.key) && !this.allowDuplicateIds) {
         throw new ParseError(`Duplicate internal key ${JSON.stringify(node.key)}`)
       }
       if (!this.keyIndex.has(node.key)) this.keyIndex.set(node.key, node)
       if (!isElement(node)) return
-
       const id = attributeValue(node, "id")
       if (id !== undefined && id.trim() === "") {
         throw new ParseError(
@@ -175,7 +261,7 @@ export class DocumentTree {
   }
 
   getFrames(): readonly ProtocolElement[] {
-    return this.frames
+    return Object.freeze([...this.frames])
   }
 
   getNodeByKey(key: string): ProtocolNode | undefined {
@@ -183,7 +269,7 @@ export class DocumentTree {
   }
 
   getStreamSources(): readonly ProtocolElement[] {
-    return this.streamSources
+    return Object.freeze([...this.streamSources])
   }
 
   contains(node: ProtocolNode): boolean {
@@ -219,10 +305,13 @@ export class DocumentTree {
           ? { url: this.document.url }
           : {}),
     }
-    document.children = this.document.children.flatMap((child) => {
-      const clone = this.cloneDocumentNode(child, document, options)
-      return clone ? [clone] : []
-    })
+    setProtocolNodeChildren(
+      document,
+      this.document.children.flatMap((child) => {
+        const clone = this.cloneDocumentNode(child, document, options)
+        return clone ? [clone] : []
+      }),
+    )
 
     const clone = new DocumentTree(document, { allowDuplicateIds: this.allowDuplicateIds })
     clone.mutationKey = this.mutationKey
@@ -234,6 +323,7 @@ export class DocumentTree {
     index: number,
     sources: readonly ProtocolNode[],
   ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(parent)
     if (!Number.isInteger(index) || index < 0 || index > parent.children.length) {
       throw new TargetError("Insertion index is outside the active parent")
@@ -248,6 +338,7 @@ export class DocumentTree {
   }
 
   removeNode(node: ProtocolNode): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(node) || node.kind === "document" || !node.parent) {
       throw new TargetError("Node is outside the active document")
     }
@@ -259,7 +350,7 @@ export class DocumentTree {
       ...parent.children.slice(0, index),
       ...parent.children.slice(index + 1),
     ])
-    node.parent = null
+    setProtocolNodeParent(node, null)
     return [parent.key, ...removedKeys]
   }
 
@@ -267,16 +358,18 @@ export class DocumentTree {
     parent: ProtocolParentNode,
     sources: readonly ProtocolNode[],
   ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(parent)
     const previous = [...parent.children]
     const removed = previous.flatMap(subtreeKeys)
     const clones = sources.map((source) => this.cloneNode(source, parent))
     this.replaceChildren(parent, clones)
-    for (const child of previous) child.parent = null
+    for (const child of previous) setProtocolNodeParent(child, null)
     return [parent.key, ...removed, ...clones.flatMap(subtreeKeys)]
   }
 
   replaceNodeWithClones(node: ProtocolNode, sources: readonly ProtocolNode[]): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(node) || node.kind === "document" || !node.parent) {
       throw new TargetError("Node is outside the active document")
     }
@@ -290,11 +383,12 @@ export class DocumentTree {
       ...clones,
       ...parent.children.slice(index + 1),
     ])
-    node.parent = null
+    setProtocolNodeParent(node, null)
     return [parent.key, ...removed, ...clones.flatMap(subtreeKeys)]
   }
 
   setAttribute(element: ProtocolElement, name: string, value: string): void {
+    assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(element)) throw new TargetError("Element is outside the active document")
     if (name === "xmlns" || name.includes(":")) {
       throw new TargetError("Namespaced attributes require a declared codec")
@@ -307,7 +401,7 @@ export class DocumentTree {
         ...(current ? { target: current } : {}),
       })
     }
-    const attributes = element.attributes as ProtocolAttribute[]
+    const attributes = [...element.attributes]
     const index = attributes.findIndex((attribute) => attribute.name === name)
     const attribute: ProtocolAttribute = {
       localName: name,
@@ -318,6 +412,7 @@ export class DocumentTree {
     }
     if (index === -1) attributes.push(attribute)
     else attributes[index] = attribute
+    setProtocolElementAttributes(element, attributes)
 
     if (name === "id") {
       if (current !== undefined) this.idIndex.delete(current)
@@ -326,6 +421,7 @@ export class DocumentTree {
   }
 
   removeAttribute(element: ProtocolElement, name: string): void {
+    assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(element)) throw new TargetError("Element is outside the active document")
     if (name === "id")
       throw new TargetError("Element ids cannot be removed without replacing the element")
@@ -333,16 +429,20 @@ export class DocumentTree {
       throw new TargetError("Namespaced attributes require a declared codec")
     }
 
-    const attributes = element.attributes as ProtocolAttribute[]
+    const attributes = [...element.attributes]
     const index = attributes.findIndex((attribute) => attribute.name === name)
-    if (index !== -1) attributes.splice(index, 1)
+    if (index !== -1) {
+      attributes.splice(index, 1)
+      setProtocolElementAttributes(element, attributes)
+    }
   }
 
   retargetDocumentUrl(url: string): void {
+    assertDocumentTreeMutationAllowed(this)
     if (typeof url !== "string" || url.trim() === "") {
       throw new TargetError("Document URL must be a nonblank string")
     }
-    ;(this.document as { url?: string }).url = url
+    setProtocolDocumentUrl(this.document, url)
   }
 
   private assertActiveParent(parent: ProtocolParentNode): void {
@@ -396,10 +496,13 @@ export class DocumentTree {
       tagName: source.tagName,
       ...(source.location ? { location: { ...source.location } } : {}),
     }
-    clone.children = source.children.flatMap((child) => {
-      const childClone = this.cloneDocumentNode(child, clone, options)
-      return childClone ? [childClone] : []
-    })
+    setProtocolNodeChildren(
+      clone,
+      source.children.flatMap((child) => {
+        const childClone = this.cloneDocumentNode(child, clone, options)
+        return childClone ? [childClone] : []
+      }),
+    )
     return clone
   }
 
@@ -441,19 +544,22 @@ export class DocumentTree {
       tagName: source.tagName,
       ...(source.location ? { location: source.location } : {}),
     }
-    clone.children = source.children.map((child) => this.cloneNode(child, clone))
+    setProtocolNodeChildren(
+      clone,
+      source.children.map((child) => this.cloneNode(child, clone)),
+    )
     return clone
   }
 
   private replaceChildren(parent: ProtocolParentNode, children: ProtocolNode[]): void {
     const previous = parent.children
-    parent.children = children
-    for (const child of children) child.parent = parent
+    setProtocolNodeChildren(parent, children)
+    for (const child of children) setProtocolNodeParent(child, parent)
     try {
       this.rebuildIndexes()
     } catch (error) {
-      parent.children = previous
-      for (const child of previous) child.parent = parent
+      setProtocolNodeChildren(parent, previous)
+      for (const child of previous) setProtocolNodeParent(child, parent)
       this.rebuildIndexes()
       throw error
     }

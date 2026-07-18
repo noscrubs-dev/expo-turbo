@@ -38,6 +38,45 @@ describe("Expo Turbo XML tree", () => {
     expect(alpha?.children.some((node) => node.kind === "text" && node.cdata)).toBe(true)
   })
 
+  test("protects active protocol relationships while keeping guarded tree mutations available", () => {
+    const tree = parseExpoTurboDocument(documentXml, { url: "https://example.test/demo" })
+    const details = tree.getElementById("details")
+    if (!details) throw new Error("fixture lost the details frame")
+    const frames = tree.getFrames()
+    const sources = tree.getStreamSources()
+
+    expect(Object.isFrozen(tree.document)).toBe(true)
+    expect(Object.isFrozen(details)).toBe(true)
+    expect(Object.isFrozen(details.children)).toBe(true)
+    expect(Object.isFrozen(details.attributes)).toBe(true)
+    expect(Object.isFrozen(frames)).toBe(true)
+    expect(Object.isFrozen(sources)).toBe(true)
+    expect(() => {
+      ;(tree.document as unknown as { url: string }).url = "https://invalid.test"
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(details as unknown as { parent: null }).parent = null
+    }).toThrow(TypeError)
+    expect(() => {
+      ;(details as unknown as { children: readonly never[] }).children = []
+    }).toThrow(TypeError)
+    expect(() => (frames as unknown as unknown[]).splice(0, 1)).toThrow(TypeError)
+    expect(() => (sources as unknown as unknown[]).splice(0, 1)).toThrow(TypeError)
+    const id = details.attributes.find((attribute) => attribute.name === "id")
+    if (!id) throw new Error("fixture Frame id is missing")
+    expect(() => {
+      ;(id as { value: string }).value = "corrupt"
+    }).toThrow(TypeError)
+
+    tree.setAttribute(details, "data-state", "ready")
+    tree.retargetDocumentUrl("https://example.test/retargeted")
+    expect(attributeValue(details, "data-state")).toBe("ready")
+    expect(tree.document.url).toBe("https://example.test/retargeted")
+    tree.removeNode(details)
+    expect(details.parent).toBeNull()
+    expect(tree.getFrames()).toEqual([])
+  })
+
   test("queries the case-sensitive mutable tree without stale selector results", () => {
     const tree = parseExpoTurboDocument(documentXml)
     const details = tree.getElementById("details")

@@ -299,6 +299,175 @@ describe("document history", () => {
     ])
   })
 
+  test("reuses one exact Frame scope identifier while preserving promoted history semantics", () => {
+    const ids = identifiers("initial", "frame-one", "frame-two")
+    const host = historyHost()
+    const history = createHistory(ids, host)
+    const firstFrame = {}
+    const secondFrame = {}
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+
+    const sameLocationAdvance = history.proposeFrameAdvance(
+      firstFrame,
+      "https://example.test:443/current",
+    )
+    expect(sameLocationAdvance.entry).toEqual({
+      restorationIdentifier: "frame-one",
+      restorationIndex: 1,
+      url: "https://example.test/current",
+    })
+    expect(sameLocationAdvance.method).toBe("push")
+    history.commitProposal(sameLocationAdvance)
+
+    const replacement = history.proposeFrameReplace(
+      firstFrame,
+      "https://example.test/frame/replaced",
+    )
+    expect(replacement.entry).toEqual({
+      restorationIdentifier: "frame-one",
+      restorationIndex: 1,
+      url: "https://example.test/frame/replaced",
+    })
+    expect(replacement.method).toBe("replace")
+    history.commitProposal(replacement)
+
+    const advance = history.proposeFrameAdvance(firstFrame, "https://example.test/frame/requested")
+    const redirected = history.retargetProposal(advance, "https://example.test/frame/final")
+    expect(redirected.entry).toEqual({
+      restorationIdentifier: "frame-one",
+      restorationIndex: 2,
+      url: "https://example.test/frame/final",
+    })
+    expect(redirected.method).toBe("push")
+    expect(() => history.commitProposal(advance)).toThrow(StateError)
+    history.commitProposal(redirected)
+
+    const distinctScope = history.proposeFrameReplace(
+      secondFrame,
+      "https://example.test/frame/second",
+    )
+    expect(distinctScope.entry).toEqual({
+      restorationIdentifier: "frame-two",
+      restorationIndex: 2,
+      url: "https://example.test/frame/second",
+    })
+    history.commitProposal(distinctScope)
+
+    expect(ids.calls).toBe(3)
+    expect(host.calls).toEqual([
+      { entry: initialized.entry, method: "replace" },
+      { entry: sameLocationAdvance.entry, method: "push" },
+      { entry: replacement.entry, method: "replace" },
+      { entry: redirected.entry, method: "push" },
+      { entry: distinctScope.entry, method: "replace" },
+    ])
+  })
+
+  test("prevents normal proposals from consuming an identifier reserved by a Frame scope", () => {
+    const ids = identifiers("initial", "frame", "frame")
+    const history = createHistory(ids)
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    const frameProposal = history.proposeFrameAdvance({}, "https://example.test/frame")
+
+    expect(() => history.proposeAdvance("https://example.test/normal")).toThrow(
+      "Generated document restoration identifier is already bound",
+    )
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("frame")).toThrow(StateError)
+    expect(ids.calls).toBe(3)
+
+    history.commitProposal(frameProposal)
+    expect(history.current).toBe(frameProposal.entry)
+    expect(history.getRestorationData("frame")).toEqual({})
+  })
+
+  test("keeps a host-rejected Frame proposal exact, reserved, and retryable", () => {
+    let frameWrites = 0
+    const host = historyHost((method) => {
+      if (method !== "push") return
+      frameWrites += 1
+      if (frameWrites === 1) throw new Error("host Frame write failed with secret-token")
+    })
+    const ids = identifiers("initial", "frame")
+    const history = createHistory(ids, host)
+    const frameScope = {}
+    const initialized = history.initialize({
+      kind: "unmanaged",
+      url: "https://example.test/current",
+    })
+    const proposal = history.proposeFrameAdvance(frameScope, "https://example.test/frame")
+
+    try {
+      history.commitProposal(proposal)
+      throw new Error("expected host Frame write to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+    expect(history.current).toBe(initialized.entry)
+    expect(() => history.getRestorationData("frame")).toThrow(StateError)
+
+    expect(history.commitProposal(proposal)).toBe(proposal.entry)
+    expect(history.current).toBe(proposal.entry)
+    expect(history.proposeFrameReplace(frameScope, "https://example.test/replaced").entry).toEqual({
+      restorationIdentifier: "frame",
+      restorationIndex: 1,
+      url: "https://example.test/replaced",
+    })
+    expect(ids.calls).toBe(2)
+    expect(host.calls.slice(1)).toEqual([
+      { entry: proposal.entry, method: "push" },
+      { entry: proposal.entry, method: "push" },
+    ])
+  })
+
+  test("rejects forged and stale Frame proposals without losing the scoped identifier", () => {
+    const host = historyHost()
+    const history = createHistory(identifiers("initial", "frame", "document"), host)
+    const frameScope = {}
+    history.initialize({ kind: "unmanaged", url: "https://example.test/current" })
+    const stale = history.proposeFrameAdvance(frameScope, "https://example.test/frame/stale")
+    const document = history.proposeAdvance("https://example.test/document")
+
+    expect(() =>
+      history.commitProposal({ entry: stale.entry, method: stale.method } as never),
+    ).toThrow(StateError)
+    history.commitProposal(document)
+    expect(() => history.commitProposal(stale)).toThrow("Document history proposal is stale")
+
+    const current = history.proposeFrameAdvance(frameScope, "https://example.test/frame/current")
+    expect(current.entry.restorationIdentifier).toBe("frame")
+    expect(current.entry.restorationIndex).toBe(2)
+    history.commitProposal(current)
+    expect(history.current).toBe(current.entry)
+    expect(host.calls).toHaveLength(3)
+  })
+
+  test("rejects invalid Frame scopes and advance overflow before reserving an identifier", () => {
+    const ids = identifiers("unused")
+    const history = createHistory(ids)
+    history.initialize({
+      entry: {
+        restorationIdentifier: "current",
+        restorationIndex: Number.MAX_SAFE_INTEGER,
+        url: "https://example.test/current",
+      },
+      kind: "managed",
+    })
+
+    expect(() =>
+      history.proposeFrameReplace(null as never, "https://example.test/replaced"),
+    ).toThrow("Document Frame history scopes must be objects")
+    expect(() => history.proposeFrameAdvance({}, "https://example.test/next")).toThrow(StateError)
+    expect(ids.calls).toBe(0)
+  })
+
   test("retargets redirects without changing the requested-location history method", () => {
     const ids = identifiers("initial", "advance", "same-location")
     const history = createHistory(ids)

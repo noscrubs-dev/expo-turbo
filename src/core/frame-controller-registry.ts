@@ -2,6 +2,8 @@ import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapt
 import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller"
 import { FrameMissingError, TargetError } from "./errors"
 import { FrameController } from "./frame-controller"
+import { type FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
+import { visitFrameWithHistory } from "./frame-history-internal"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
 import {
   type ResolvedFrameTarget,
@@ -24,9 +26,14 @@ export interface FrameVisitOptions extends ResolveFrameTargetOptions {
   readonly frame: string
 }
 
+export interface FrameControllerRegistryOptions {
+  readonly frameHistory?: FrameHistoryCoordinator
+}
+
 export type FrameVisitResult =
   | Readonly<{
       frameId: string
+      action?: Exclude<VisitAction, "restore">
       kind: "frame"
       load: FrameLoadReport | undefined
       target: Extract<ResolvedFrameTarget, { kind: "frame" }>
@@ -64,6 +71,7 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     private readonly visibility?: VisibilityAdapter,
     private readonly navigation?: NavigationAdapter,
     private readonly topLevelVisits?: Pick<DocumentVisitController, "visit">,
+    private readonly options: FrameControllerRegistryOptions = {},
   ) {}
 
   get(frameId: string): FrameController {
@@ -118,12 +126,6 @@ export class FrameControllerRegistry implements FrameControllerCollection {
         ? exactVisitAction(attributeValue(targetFrame, "data-turbo-action"))
         : undefined
     const action = options.action === null ? undefined : (options.action ?? inheritedAction)
-    if (action !== undefined && target.kind === "frame") {
-      throw new TargetError("Frame action visits require history support", {
-        frameId: target.frameId,
-      })
-    }
-
     if (resolved.urlOrigin !== resolved.documentOrigin) {
       if (!this.navigation) throw new TargetError("External Frame visits require navigation")
       await this.navigation.openExternal(resolved.url)
@@ -144,8 +146,38 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       return Object.freeze({ action: topAction, kind: "top", target, url: resolved.url })
     }
 
-    const load = await this.get(target.frameId).visit(resolved.url)
+    const controller = this.get(target.frameId)
+    let load: FrameLoadReport | undefined
+    if (action === "restore") {
+      throw new TargetError("Frame restore visits require whole-document traversal", {
+        frameId: target.frameId,
+      })
+    }
+    if (action) {
+      const frameHistory = this.options.frameHistory
+      if (!frameHistory) {
+        throw new TargetError("Frame action visits require history coordination", {
+          frameId: target.frameId,
+        })
+      }
+      if (targetFrame?.kind !== "frame") {
+        throw new FrameMissingError(`Active frame ${JSON.stringify(target.frameId)} is missing`, {
+          frameId: target.frameId,
+        })
+      }
+      const plan = prepareFrameHistoryCommit(
+        frameHistory,
+        controller,
+        targetFrame,
+        resolved.url,
+        action,
+      )
+      load = await visitFrameWithHistory(controller, resolved.url, plan)
+    } else {
+      load = await controller.visit(resolved.url)
+    }
     return Object.freeze({
+      ...(action ? { action } : {}),
       frameId: target.frameId,
       kind: "frame",
       load,

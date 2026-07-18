@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import type { TurboRequest, TurboResponse } from "../adapters"
 import { DocumentRequestLoader } from "./document-loader"
 import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
+import { FRAME_HISTORY_PLAN_OPTION } from "./frame-history"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -737,6 +738,11 @@ describe("Frame request loader", () => {
     await expect(loader.load("details", "/proxy", proxyOptions)).rejects.toMatchObject({
       message: "Frame load options could not be read",
     })
+    await expect(
+      loader.load("details", "/forged-history", {
+        [FRAME_HISTORY_PLAN_OPTION]: Object.freeze({}),
+      } as never),
+    ).rejects.toMatchObject({ message: "Frame history commit plan is invalid" })
     expect(pending?.request.signal?.aborted).toBe(false)
     pending?.resolve(response('<turbo-frame id="details"><Admitted /></turbo-frame>'))
     expect(await admitted).toMatchObject({ status: "completed" })
