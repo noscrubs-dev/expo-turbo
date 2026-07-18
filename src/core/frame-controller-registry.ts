@@ -90,6 +90,7 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       this.loader,
       this.visibility,
       frame,
+      this.options.frameHistory,
     )
     const record: FrameControllerRecord = {
       controller,
