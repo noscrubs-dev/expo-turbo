@@ -1,6 +1,7 @@
 import type { ClockAdapter, TurboResponse } from "expo-turbo/adapters";
 import {
   DocumentHistory,
+  type DocumentHistoryHostAdapter,
   DocumentRequestLoader,
   type DocumentSession,
   DocumentSnapshotCache,
@@ -9,6 +10,8 @@ import {
 } from "expo-turbo/core";
 
 import { DEMO_DOCUMENT } from "./demo-registry";
+
+let demoHistoryRuntime = 0;
 
 const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="linked-document" title="Document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
@@ -33,23 +36,17 @@ export interface DemoDocumentRuntime {
 
 export function createDemoDocumentRuntime(
   session: DocumentSession,
+  historyHost: DocumentHistoryHostAdapter,
 ): DemoDocumentRuntime {
   let requestId = 0;
   let restorationIdentifier = 0;
+  const restorationNamespace = `demo-history-${Date.now().toString(36)}-${++demoHistoryRuntime}`;
   const documentUrl = session.tree.document.url;
   if (!documentUrl) throw new Error("The Expo Turbo demo requires an active document URL");
   const history = new DocumentHistory(
-    { next: () => `demo-history-${++restorationIdentifier}` },
-    { write: () => undefined },
+    { next: () => `${restorationNamespace}-${++restorationIdentifier}` },
+    historyHost,
   );
-  history.initialize({
-    entry: {
-      restorationIdentifier: "demo-history-current",
-      restorationIndex: 0,
-      url: documentUrl,
-    },
-    kind: "managed",
-  });
   const snapshotCache = new DocumentSnapshotCache();
   return Object.freeze({
     controller: new DocumentVisitController(

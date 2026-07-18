@@ -1,5 +1,11 @@
 import { Stack } from "expo-router/stack"
 
+import { DemoRuntimeProvider } from "../demo-runtime"
+
 export default function RootLayout() {
-  return <Stack />
+  return (
+    <DemoRuntimeProvider>
+      <Stack />
+    </DemoRuntimeProvider>
+  )
 }

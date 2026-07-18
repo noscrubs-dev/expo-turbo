@@ -15,7 +15,13 @@ import {
   encodeDemoRouterHistoryEntry,
 } from "./demo-router-history";
 
-type WriteBehavior = "commit" | "commit-throw" | "noop" | "partial" | "throw";
+type WriteBehavior =
+  | "collateral"
+  | "commit"
+  | "commit-throw"
+  | "noop"
+  | "partial"
+  | "throw";
 
 class FakeNavigation implements DemoRouterNavigation {
   private deferred: (() => void)[] = [];
@@ -29,12 +35,19 @@ class FakeNavigation implements DemoRouterNavigation {
 
   constructor(params?: Readonly<Record<string, unknown>>) {
     this.state = Object.freeze({
+      stale: false,
+      type: "stack",
+      key: "stack-1",
       index: 0,
+      history: Object.freeze([Object.freeze({ key: "index-1", type: "route" })]),
+      routeNames: Object.freeze(["index"]),
+      preloadedRoutes: Object.freeze([]),
       routes: Object.freeze([
         Object.freeze({
           key: "index-1",
           name: "index",
           path: "/",
+          state: Object.freeze({ index: 0, routes: Object.freeze([]) }),
           ...(params ? { params } : {}),
         }),
       ]),
@@ -61,6 +74,7 @@ class FakeNavigation implements DemoRouterNavigation {
     if (!this.canGoBack()) throw new Error("cannot go back");
     const routes = this.state.routes.slice(0, this.state.index);
     this.state = Object.freeze({
+      ...this.state,
       index: routes.length - 1,
       routes: Object.freeze(routes),
     });
@@ -77,11 +91,33 @@ class FakeNavigation implements DemoRouterNavigation {
             [DEMO_ROUTER_HISTORY_PARAMS.url]: "https://example.test/wrong",
           })
         : params;
-    const routes = [
-      ...this.state.routes.slice(0, this.state.index + 1),
-      Object.freeze({ key: `${name}-${++this.key}`, name, params: committedParams }),
-    ];
-    this.state = Object.freeze({ index: routes.length - 1, routes: Object.freeze(routes) });
+    const retainedRoutes = this.state.routes.slice(0, this.state.index + 1);
+    if (this.pushBehavior === "collateral" && retainedRoutes[0]) {
+      retainedRoutes[0] = Object.freeze({
+        ...retainedRoutes[0],
+        path: "/corrupt",
+        state: Object.freeze({ index: 1, routes: Object.freeze([]) }),
+      });
+    }
+    const preloaded = this.state.preloadedRoutes.find((route) => route.name === name);
+    const pushed = preloaded
+      ? Object.freeze({ ...preloaded, path: preloaded.path, params: committedParams })
+      : Object.freeze({
+          key: `${name}-${++this.key}`,
+          name,
+          path: undefined,
+          params: committedParams,
+        });
+    const routes = [...retainedRoutes, pushed];
+    this.state = Object.freeze({
+      ...this.state,
+      ...(this.pushBehavior === "collateral" ? { key: "stack-corrupt" } : {}),
+      index: routes.length - 1,
+      preloadedRoutes: Object.freeze(
+        this.state.preloadedRoutes.filter((route) => route.key !== pushed.key),
+      ),
+      routes: Object.freeze(routes),
+    });
     this.emit();
     if (this.pushBehavior === "commit-throw") throw new Error("secret late push failure");
   }
@@ -100,9 +136,18 @@ class FakeNavigation implements DemoRouterNavigation {
         : params;
     routes[this.state.index] = Object.freeze({
       ...route,
+      ...(this.setParamsBehavior === "collateral"
+        ? { state: Object.freeze({ index: 1, routes: Object.freeze([]) }) }
+        : {}),
       params: Object.freeze({ ...(route.params ?? {}), ...committedParams }),
     });
-    this.state = Object.freeze({ index: this.state.index, routes: Object.freeze(routes) });
+    this.state = Object.freeze({
+      ...this.state,
+      ...(this.setParamsBehavior === "collateral"
+        ? { routeNames: Object.freeze(["index", "corrupt"]) }
+        : {}),
+      routes: Object.freeze(routes),
+    });
     this.emit();
     if (this.setParamsBehavior === "commit-throw") {
       throw new Error("secret late setParams failure");
@@ -116,7 +161,7 @@ class FakeNavigation implements DemoRouterNavigation {
       const routes = state.routes.map((route, index) =>
         index === state.index ? Object.freeze({ ...route, path: "/wrong" }) : route,
       );
-      this.state = Object.freeze({ index: state.index, routes: Object.freeze(routes) });
+      this.state = Object.freeze({ ...state, routes: Object.freeze(routes) });
       this.emit();
       return;
     }
@@ -125,7 +170,7 @@ class FakeNavigation implements DemoRouterNavigation {
   }
 
   focus(index: number): void {
-    this.state = Object.freeze({ index, routes: this.state.routes });
+    this.state = Object.freeze({ ...this.state, index });
     this.emit();
   }
 
@@ -133,8 +178,15 @@ class FakeNavigation implements DemoRouterNavigation {
     const route = this.state.routes[this.state.index] as DemoRouterRoute;
     const routes = [...this.state.routes];
     routes[this.state.index] = Object.freeze({ ...route, params: Object.freeze({ ...params }) });
-    this.state = Object.freeze({ index: this.state.index, routes: Object.freeze(routes) });
+    this.state = Object.freeze({ ...this.state, routes: Object.freeze(routes) });
     this.emit();
+  }
+
+  preload(route: DemoRouterRoute): void {
+    this.state = Object.freeze({
+      ...this.state,
+      preloadedRoutes: Object.freeze([...this.state.preloadedRoutes, route]),
+    });
   }
 
   flush(): void {
@@ -289,6 +341,35 @@ describe("demo Expo Router history bridge", () => {
     expect(traversals).toEqual([]);
   });
 
+  test("reuses the first matching Expo Router preload without changing its native state", () => {
+    const fixture = harness({ source: "gallery" });
+    initialize(fixture);
+    const nestedState = Object.freeze({ index: 0, routes: Object.freeze([]) });
+    fixture.navigation.preload(
+      Object.freeze({
+        key: "index-preloaded",
+        name: "index",
+        path: "/preview",
+        params: Object.freeze({ preview: "discarded" }),
+        state: nestedState,
+      }),
+    );
+    const proposal = fixture.history.proposeAdvance("https://example.test/linked");
+
+    fixture.history.commitProposal(proposal);
+
+    const pushed = fixture.navigation.state.routes[1] as DemoRouterRoute & {
+      readonly state?: unknown;
+    };
+    expect(pushed.key).toBe("index-preloaded");
+    expect(pushed.path).toBe("/preview");
+    expect(pushed.state).toBe(nestedState);
+    expect(pushed.params?.preview).toBeUndefined();
+    expect(pushed.params?.source).toBe("gallery");
+    expect(decodeDemoRouterHistoryEntry(pushed.params)).toEqual(proposal.entry);
+    expect(fixture.navigation.state.preloadedRoutes).toEqual([]);
+  });
+
   test("preserves the focused route identity for replacement and deferred own events", () => {
     const fixture = harness({ source: "gallery" });
     initialize(fixture);
@@ -412,6 +493,28 @@ describe("demo Expo Router history bridge", () => {
         decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params),
       ).toEqual(initial);
       fixture.navigation.setParamsBehavior = "commit";
+      expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
+    }
+  });
+
+  test("rolls back collateral Stack state changes before committing history", () => {
+    for (const method of ["push", "replace"] as const) {
+      const fixture = harness();
+      initialize(fixture);
+      const before = fixture.navigation.state;
+      const proposal =
+        method === "push"
+          ? fixture.history.proposeAdvance("https://example.test/linked")
+          : fixture.history.proposeReplace("https://example.test/replaced");
+      if (method === "push") fixture.navigation.pushBehavior = "collateral";
+      else fixture.navigation.setParamsBehavior = "collateral";
+
+      expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
+
+      expect(fixture.navigation.state).toBe(before);
+      expect(fixture.history.current?.url).toBe("https://example.test/demo");
+      if (method === "push") fixture.navigation.pushBehavior = "commit";
+      else fixture.navigation.setParamsBehavior = "commit";
       expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
     }
   });

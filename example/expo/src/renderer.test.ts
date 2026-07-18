@@ -4096,6 +4096,9 @@ describe("React protocol renderer", () => {
 
   test("projects authored disabled link presence through the Expo Pressable", async () => {
     mock.module("react-native", () => ({
+      AccessibilityInfo: { announceForAccessibility: () => undefined },
+      Alert: { alert: () => undefined },
+      Linking: { openURL: async () => undefined },
       Platform: { OS: "web" },
       Pressable: (props: Readonly<Record<string, unknown>>) => createElement("pressable", props),
       Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),

@@ -27,8 +27,13 @@ export interface DemoRouterRoute {
 }
 
 export interface DemoRouterState {
+  readonly key: string;
   readonly index: number;
+  readonly preloadedRoutes: readonly DemoRouterRoute[];
+  readonly routeNames: readonly string[];
   readonly routes: readonly DemoRouterRoute[];
+  readonly stale: false;
+  readonly type: "stack";
 }
 
 export interface DemoRouterNavigation {
@@ -145,25 +150,44 @@ function routeState(navigation: DemoRouterNavigation): Readonly<{
     if (
       !state ||
       !Array.isArray(state.routes) ||
+      !Array.isArray(state.preloadedRoutes) ||
+      !Array.isArray(state.routeNames) ||
+      state.stale !== false ||
+      state.type !== "stack" ||
+      typeof state.key !== "string" ||
+      state.key.trim() === "" ||
       !Number.isSafeInteger(state.index) ||
       state.index < 0 ||
       state.index >= state.routes.length
     ) {
       throw new StateError("Demo Router history requires a focused stack route");
     }
-    const route = state.routes[state.index];
-    if (
-      !route ||
-      typeof route !== "object" ||
-      Array.isArray(route) ||
-      typeof route.key !== "string" ||
-      route.key.trim() === "" ||
-      typeof route.name !== "string" ||
-      route.name.trim() === ""
-    ) {
-      throw new StateError("Demo Router history requires a valid focused route");
+    const routeKeys = new Set<string>();
+    const routeNames = new Set<string>();
+    for (const name of state.routeNames) {
+      if (typeof name !== "string" || name.trim() === "" || routeNames.has(name)) {
+        throw new StateError("Demo Router history state is unavailable");
+      }
+      routeNames.add(name);
     }
-    paramsRecord(route.params);
+    for (const candidate of [...state.routes, ...state.preloadedRoutes]) {
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate) ||
+        typeof candidate.key !== "string" ||
+        candidate.key.trim() === "" ||
+        routeKeys.has(candidate.key) ||
+        typeof candidate.name !== "string" ||
+        !routeNames.has(candidate.name)
+      ) {
+        throw new StateError("Demo Router history state is unavailable");
+      }
+      routeKeys.add(candidate.key);
+      paramsRecord(candidate.params);
+    }
+    const route = state.routes[state.index];
+    if (!route) throw new StateError("Demo Router history requires a valid focused route");
     return Object.freeze({ route, state });
   } catch {
     throw new StateError("Demo Router history state is unavailable");
@@ -181,36 +205,60 @@ function unmanagedParams(route: DemoRouterRoute): Readonly<Record<string, unknow
   );
 }
 
-function sameParamValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-  return left.every((value, index) => Object.is(value, right[index]));
-}
-
-function sameParams(
-  left: Readonly<Record<string, unknown>>,
-  right: Readonly<Record<string, unknown>>,
-): boolean {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key) => Object.hasOwn(right, key) && sameParamValue(left[key], right[key]),
-    )
-  );
-}
-
-function sameRouteIdentity(left: DemoRouterRoute, right: DemoRouterRoute): boolean {
-  return (
-    left.key === right.key &&
-    left.name === right.name &&
-    sameParams(paramsRecord(left.params), paramsRecord(right.params))
-  );
-}
-
 function sameStackState(left: DemoRouterState, right: DemoRouterState): boolean {
   return sameNavigationValue(left, right);
+}
+
+function stackStateRecord(state: DemoRouterState): Readonly<Record<string, unknown>> {
+  return state as DemoRouterState & Readonly<Record<string, unknown>>;
+}
+
+function expectedPushState(
+  before: DemoRouterState,
+  pushed: DemoRouterRoute,
+  routeName: string,
+  params: Readonly<Record<string, unknown>>,
+): DemoRouterState {
+  const reused = before.preloadedRoutes.find((route) => route.name === routeName);
+  if (reused ? pushed.key !== reused.key : !pushed.key.startsWith(`${routeName}-`)) {
+    throw new StateError("Demo Router history push did not commit exactly");
+  }
+  if (
+    !reused &&
+    [...before.routes, ...before.preloadedRoutes].some((route) => route.key === pushed.key)
+  ) {
+    throw new StateError("Demo Router history push did not commit exactly");
+  }
+  const nextRoute = reused
+    ? Object.freeze({ ...reused, path: reused.path, params })
+    : Object.freeze({ key: pushed.key, name: routeName, path: undefined, params });
+  const routes = Object.freeze([...before.routes, nextRoute]);
+  const expected: Record<string, unknown> = {
+    ...stackStateRecord(before),
+    index: routes.length - 1,
+    routes,
+  };
+  expected.preloadedRoutes = Object.freeze(
+    before.preloadedRoutes.filter((route) => route.key !== nextRoute.key),
+  );
+  return Object.freeze(expected) as unknown as DemoRouterState;
+}
+
+function expectedReplaceState(
+  before: DemoRouterState,
+  params: Readonly<Record<string, unknown>>,
+): DemoRouterState {
+  const routes = Object.freeze(
+    before.routes.map((route, index) =>
+      index === before.index
+        ? Object.freeze({
+            ...route,
+            params: Object.freeze({ ...paramsRecord(route.params), ...params }),
+          })
+        : route,
+    ),
+  );
+  return Object.freeze({ ...stackStateRecord(before), routes }) as unknown as DemoRouterState;
 }
 
 function sameNavigationValue(
@@ -476,17 +524,16 @@ export class DemoRouterHistoryBridge
     attachment: DemoRouterAttachment,
     entry: DocumentHistoryEntry,
   ): void {
+    const expected = expectedPushState(
+      before.state,
+      after.route,
+      attachment.routeName,
+      mergedParams(before.route, entry),
+    );
     if (
       before.state.index !== before.state.routes.length - 1 ||
-      after.state.index !== before.state.index + 1 ||
-      after.state.routes.length !== before.state.routes.length + 1 ||
       after.route.key === before.route.key ||
-      after.route.name !== attachment.routeName ||
-      !entriesEqual(decodeDemoRouterHistoryEntry(after.route.params), entry) ||
-      !sameParams(unmanagedParams(after.route), unmanagedParams(before.route)) ||
-      !before.state.routes.every((route, index) =>
-        sameRouteIdentity(route, after.state.routes[index] as DemoRouterRoute),
-      )
+      !sameStackState(expected, after.state)
     ) {
       throw new StateError("Demo Router history push did not commit exactly");
     }
@@ -498,18 +545,10 @@ export class DemoRouterHistoryBridge
     attachment: DemoRouterAttachment,
     entry: DocumentHistoryEntry,
   ): void {
+    const expected = expectedReplaceState(before.state, mergedParams(before.route, entry));
     if (
-      after.state.index !== before.state.index ||
-      after.state.routes.length !== before.state.routes.length ||
       after.route.key !== attachment.routeKey ||
-      !entriesEqual(decodeDemoRouterHistoryEntry(after.route.params), entry) ||
-      !sameParams(unmanagedParams(after.route), unmanagedParams(before.route)) ||
-      !before.state.routes.every((route, index) => {
-        const current = after.state.routes[index] as DemoRouterRoute;
-        return index === before.state.index
-          ? route.key === current.key && route.name === current.name
-          : sameRouteIdentity(route, current);
-      })
+      !sameStackState(expected, after.state)
     ) {
       throw new StateError("Demo Router history replacement did not commit exactly");
     }
