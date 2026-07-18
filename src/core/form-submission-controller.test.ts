@@ -182,7 +182,7 @@ describe("FormSubmissionController", () => {
       const loader = new FrameRequestLoader(session, transport.adapter, requestIds("frame"))
       const controller = new FormSubmissionController(session, transport.adapter)
       const getOwner = Object.freeze({})
-      const loading = loader.load("frame-a", "/frame-get", getOwner)
+      const loading = loader.load("frame-a", "/frame-get", { owner: getOwner })
       const getRequest = transport.pending[0]
       if (!getRequest) throw new Error("Frame GET was not captured")
 
@@ -1454,9 +1454,9 @@ describe("FormSubmissionController", () => {
       const transport = pendingFetch()
       const loader = new FrameRequestLoader(session, transport.adapter, requestIds("frame"))
       const owner = Object.freeze({})
-      const loadingA = loader.load("frame-a", "/frame-a-next", owner)
+      const loadingA = loader.load("frame-a", "/frame-a-next", { owner })
       const requestA = transport.pending[0]
-      const loadingB = loader.load("frame-b", "/frame-b-next", owner)
+      const loadingB = loader.load("frame-b", "/frame-b-next", { owner })
       const requestB = transport.pending[1]
       if (!requestA || !requestB) throw new Error("Frame GET requests were not captured")
 
@@ -1484,7 +1484,7 @@ describe("FormSubmissionController", () => {
       const owner = Object.freeze({})
       const loadingDocument = documentLoader.load("/next-document", owner)
       const documentRequest = transport.pending[0]
-      const loadingFrame = frameLoader.load("frame-a", "/next-frame", owner)
+      const loadingFrame = frameLoader.load("frame-a", "/next-frame", { owner })
       const frameRequest = transport.pending[1]
       if (!documentRequest || !frameRequest)
         throw new Error("document and Frame GET requests were not captured")
@@ -1988,14 +1988,14 @@ describe("FormSubmissionController", () => {
     const loader = new FrameRequestLoader(session, transport.adapter, requestIds("origin-transfer"))
     const oldOwner = Object.freeze({})
     const newOwner = Object.freeze({})
-    const oldLoading = loader.load("frame-a", "/old-origin", oldOwner)
+    const oldLoading = loader.load("frame-a", "/old-origin", { owner: oldOwner })
     const oldRequest = transport.pending[0]
     if (!oldRequest) throw new Error("old origin Frame request was not captured")
     let newestLoading: ReturnType<FrameRequestLoader["load"]> | undefined
     oldRequest.request.signal?.addEventListener(
       "abort",
       () => {
-        newestLoading = loader.load("frame-a", "/newest-origin", newOwner)
+        newestLoading = loader.load("frame-a", "/newest-origin", { owner: newOwner })
       },
       { once: true },
     )

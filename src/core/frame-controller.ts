@@ -214,7 +214,7 @@ export class FrameController {
     this.needsLoad = false
     this.status = "loading"
     this.publish()
-    const loaded = this.loader.load(this.frameId, source, this.requestOwner).then(
+    const loaded = this.loader.load(this.frameId, source, { owner: this.requestOwner }).then(
       (report) => {
         if (epoch !== this.loadEpoch) return report
         this.status = report.status
