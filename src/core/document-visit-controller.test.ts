@@ -6,6 +6,7 @@ import type {
   NavigationAdapter,
   TurboRequest,
   TurboResponse,
+  VisitAction,
 } from "../adapters"
 import {
   DocumentHistory,
@@ -97,6 +98,7 @@ function historyFixture(
   restorationIndex = 0,
 ): Readonly<{
   history: DocumentHistory
+  restorationIdCount: () => number
   writes: ReadonlyArray<
     Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
   >
@@ -120,7 +122,7 @@ function historyFixture(
     },
     kind: "managed",
   })
-  return Object.freeze({ history, writes })
+  return Object.freeze({ history, restorationIdCount: () => identifier, writes })
 }
 
 function response(xml: string, options: Partial<TurboResponse> = {}): TurboResponse {
@@ -140,6 +142,7 @@ function harness(
     documentUrl?: string
     documentXml?: string
     fetch?: FetchAdapter["fetch"]
+    onRequestId?: () => void
     onObserverError?: (error: AggregateError) => void
     progressDelayMs?: number
     snapshotCache?: DocumentSnapshotCache
@@ -163,7 +166,13 @@ function harness(
             pending.push({ request, resolve })
           })),
     },
-    { next: () => `request-${++requestId}` },
+    {
+      next: () => {
+        const nextRequestId = ++requestId
+        options.onRequestId?.()
+        return `request-${nextRequestId}`
+      },
+    },
   )
   const clock = options.clock ?? new ManualClock()
   const controller = new DocumentVisitController(loader, clock, {
@@ -172,7 +181,7 @@ function harness(
     ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
     ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
   })
-  return { clock, controller, loader, pending, session }
+  return { clock, controller, loader, pending, requestIdCount: () => requestId, session }
 }
 
 describe("Document visit controller", () => {
@@ -785,6 +794,553 @@ describe("Document visit controller", () => {
     expect(errors[0]).toBeInstanceOf(DocumentSnapshotRestoreCommitError)
   })
 
+  test("restores an explicit no-preview snapshot without fetching and commits snapshot before history before tree", async () => {
+    const order: string[] = []
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Restored id="restored" /></Gallery>',
+        { url: "https://example.test/restored" },
+      ),
+    )
+    let history: DocumentHistory
+    let session: DocumentSession
+    const fixture = historyFixture((method, entry) => {
+      expect(method).toBe("push")
+      expect(entry.url).toBe("https://example.test/restored")
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(history.current?.restorationIdentifier).toBe("history-current")
+      expect(session.tree.getElementById("old")).toBeDefined()
+      expect(session.tree.getElementById("restored")).toBeUndefined()
+      order.push("history")
+    })
+    history = fixture.history
+    const current = harness({
+      documentXml: '<Gallery><Old id="old" data-state="initial" /></Gallery>',
+      fetch: async () => {
+        throw new Error("cached restore must not fetch")
+      },
+      history,
+      snapshotCache,
+    })
+    session = current.session
+    session.setAttribute("id:old", "data-state", "latest")
+    session.subscribe("id:old", () => {
+      expect(history.current?.url).toBe("https://example.test/restored")
+      expect(session.tree.getElementById("old")).toBeUndefined()
+      expect(session.tree.getElementById("restored")).toBeDefined()
+      order.push("tree")
+    })
+
+    const result = await current.controller.visit("/restored", { action: "restore" })
+
+    expect(result).toEqual({
+      source: "snapshot",
+      status: "restored",
+      url: "https://example.test/restored",
+    })
+    expect(order).toEqual(["history", "tree"])
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.controller.state.status).toBe("completed")
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 1,
+          url: "https://example.test/restored",
+        },
+        method: "push",
+      },
+    ])
+    const outgoing = snapshotCache.get("https://example.test/current")
+    const old = outgoing?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+  })
+
+  test("replaces same-location history while restoring an older cached snapshot", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/current",
+      parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const fixture = historyFixture()
+    const current = harness({
+      fetch: async () => {
+        throw new Error("same-location cached restore must not fetch")
+      },
+      history: fixture.history,
+      snapshotCache,
+    })
+
+    expect(
+      await current.controller.visit("https://example.test/current", { action: "restore" }),
+    ).toEqual({
+      source: "snapshot",
+      status: "restored",
+      url: "https://example.test/current",
+    })
+
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
+    expect(current.session.tree.getElementById("cached")).toBeDefined()
+    expect(snapshotCache.get("https://example.test/current")?.getElementById("old")).toBeDefined()
+  })
+
+  test("falls back to one guarded GET for an explicit restore cache miss and retargets history", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    const fixture = historyFixture()
+    const current = harness({
+      documentXml: '<Gallery><Old id="old" data-state="initial" /></Gallery>',
+      history: fixture.history,
+      snapshotCache,
+    })
+
+    const visit = current.controller.visit("/requested", { action: "restore" })
+    expect(current.pending).toHaveLength(1)
+    expect(current.requestIdCount()).toBe(1)
+    current.session.setAttribute("id:old", "data-state", "latest")
+    current.pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await visit).toMatchObject({
+      redirected: true,
+      status: "committed",
+      url: "https://example.test/final",
+    })
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 1,
+          url: "https://example.test/final",
+        },
+        method: "push",
+      },
+    ])
+    const outgoing = snapshotCache.get("https://example.test/current")
+    const old = outgoing?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+    expect(current.session.tree.getElementById("final")).toBeDefined()
+  })
+
+  test("fails explicit restore cache-miss redirects closed when the final location is not visitable", async () => {
+    for (const fixture of [
+      {
+        document: '<Gallery data-turbo-root="/other"><Discarded id="outside-root" /></Gallery>',
+        url: "https://example.test/app/final",
+      },
+      {
+        document: '<Gallery data-turbo-root="/app"><Discarded id="excluded-extension" /></Gallery>',
+        url: "https://example.test/app/archive.pdf",
+      },
+    ]) {
+      const navigationCalls: Array<{ action: VisitAction; url: string }> = []
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        visit: (url, action) => navigationCalls.push({ action, url }),
+      }
+      const snapshotCache = new DocumentSnapshotCache()
+      const history = historyFixture(undefined, "https://example.test/app/current")
+      const current = harness({
+        documentUrl: "https://example.test/app/current",
+        documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+        history: history.history,
+        snapshotCache,
+      })
+      const entry = history.history.current
+      const tree = current.session.tree
+
+      const restoring = current.controller.visit("/app/requested", {
+        action: "restore",
+        navigation,
+      })
+      current.pending[0]?.resolve(
+        response(fixture.document, {
+          redirected: true,
+          url: fixture.url,
+        }),
+      )
+
+      await expect(restoring).rejects.toBeInstanceOf(TargetError)
+      expect(navigationCalls).toEqual([])
+      expect(current.controller.state.status).toBe("failed")
+      expect(current.requestIdCount()).toBe(1)
+      expect(current.session.tree).toBe(tree)
+      expect(current.session.tree.getElementById("outside-root")).toBeUndefined()
+      expect(current.session.tree.getElementById("excluded-extension")).toBeUndefined()
+      expect(snapshotCache.size).toBe(0)
+      expect(history.history.current).toBe(entry)
+      expect(history.writes).toEqual([])
+    }
+  })
+
+  test("rejects a fragment-bearing explicit restore final URL before history or tree commit", async () => {
+    for (const fragment of ["#anchor", "#"]) {
+      const navigationCalls: Array<{ action: VisitAction; url: string }> = []
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        visit: (url, action) => navigationCalls.push({ action, url }),
+      }
+      const snapshotCache = new DocumentSnapshotCache()
+      const history = historyFixture()
+      const current = harness({
+        history: history.history,
+        snapshotCache,
+      })
+      const entry = history.history.current
+      const tree = current.session.tree
+
+      const restoring = current.controller.visit("/requested", {
+        action: "restore",
+        navigation,
+      })
+      current.pending[0]?.resolve(
+        response('<Gallery><Discarded id="discarded" /></Gallery>', {
+          redirected: true,
+          url: `https://example.test/final${fragment}`,
+        }),
+      )
+
+      await expect(restoring).rejects.toThrow("anchor restoration support")
+      expect(navigationCalls).toEqual([])
+      expect(current.controller.state.status).toBe("failed")
+      expect(current.session.tree).toBe(tree)
+      expect(current.session.tree.getElementById("discarded")).toBeUndefined()
+      expect(snapshotCache.size).toBe(0)
+      expect(history.history.current).toBe(entry)
+      expect(history.writes).toEqual([])
+    }
+  })
+
+  test("rejects explicit restore after cache lookup history drift without claiming or fetching", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    const fixture = historyFixture()
+    snapshotCache.onGet = () => {
+      fixture.history.commitProposal(fixture.history.proposeAdvance("https://example.test/manual"))
+    }
+    const current = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    const tree = current.session.tree
+
+    await expect(
+      current.controller.visit("/restored", { action: "restore" }),
+    ).rejects.toBeInstanceOf(StateError)
+
+    expect(current.controller.state.status).toBe("initialized")
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.session.tree).toBe(tree)
+    expect(fixture.history.current?.url).toBe("https://example.test/manual")
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-2",
+          restorationIndex: 1,
+          url: "https://example.test/manual",
+        },
+        method: "push",
+      },
+    ])
+  })
+
+  test("does not let stale explicit restore cache lookup reclaim ownership or start a miss fallback", async () => {
+    for (const cached of [true, false]) {
+      const target = `https://example.test/restored-${cached ? "hit" : "miss"}`
+      const newerUrl = `https://example.test/newer-${cached ? "hit" : "miss"}`
+      const snapshotCache = new ReentrantSnapshotCache()
+      if (cached) {
+        snapshotCache.put(
+          target,
+          parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+            url: target,
+          }),
+        )
+      }
+      const history = historyFixture()
+      const current = harness({ history: history.history, snapshotCache })
+      let newer: Promise<unknown> | undefined
+      snapshotCache.onGet = () => {
+        newer = current.controller.visit(newerUrl)
+      }
+
+      const stale = current.controller.visit(target, { action: "restore" })
+
+      await expect(stale).rejects.toThrow("superseded before ownership")
+      if (!newer) throw new Error("newer visit was not started")
+      expect(current.controller.state.status).toBe("started")
+      expect(current.pending).toHaveLength(1)
+      expect(current.pending[0]?.request.url).toBe(newerUrl)
+      expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+      expect(current.requestIdCount()).toBe(1)
+      expect(history.writes).toEqual([])
+      expect(current.session.tree.getElementById("restored")).toBeUndefined()
+
+      current.pending[0]?.resolve(
+        response('<Gallery><Newer id="newer" /></Gallery>', {
+          url: newerUrl,
+        }),
+      )
+      expect(await newer).toMatchObject({ status: "committed" })
+      expect(current.controller.state.status).toBe("completed")
+      expect(current.session.tree.getElementById("newer")).toBeDefined()
+      expect(history.history.current).toEqual({
+        restorationIdentifier: "history-2",
+        restorationIndex: 1,
+        url: newerUrl,
+      })
+      expect(history.writes).toHaveLength(1)
+    }
+  })
+
+  test("does not let restore request-ID reentrancy displace newer work on cache-miss or no-cache paths", async () => {
+    for (const snapshotCache of [new DocumentSnapshotCache(), undefined]) {
+      const history = historyFixture()
+      let current: ReturnType<typeof harness>
+      let newer: Promise<unknown> | undefined
+      let reenter = true
+      current = harness({
+        history: history.history,
+        onRequestId: () => {
+          if (!reenter) return
+          reenter = false
+          newer = current.controller.visit("/newer")
+        },
+        ...(snapshotCache ? { snapshotCache } : {}),
+      })
+
+      const stale = current.controller.visit("/restored", { action: "restore" })
+
+      await expect(stale).rejects.toThrow("superseded before ownership")
+      if (!newer) throw new Error("newer visit was not started")
+      expect(current.controller.state.status).toBe("started")
+      expect(current.pending).toHaveLength(1)
+      expect(current.pending[0]?.request.url).toBe("https://example.test/newer")
+      expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+      expect(current.requestIdCount()).toBe(2)
+      expect(history.writes).toEqual([])
+
+      current.pending[0]?.resolve(
+        response('<Gallery><Newer id="newer" /></Gallery>', {
+          url: "https://example.test/newer",
+        }),
+      )
+      expect(await newer).toMatchObject({ status: "committed" })
+      expect(current.controller.state.status).toBe("completed")
+      expect(current.session.tree.getElementById("newer")).toBeDefined()
+      expect(history.history.current).toEqual({
+        restorationIdentifier: "history-2",
+        restorationIndex: 1,
+        url: "https://example.test/newer",
+      })
+      expect(history.writes).toHaveLength(1)
+    }
+  })
+
+  test("rechecks explicit restore history after outgoing snapshot capture", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    const fixture = historyFixture()
+    snapshotCache.onPut = () => {
+      fixture.history.commitProposal(fixture.history.proposeAdvance("https://example.test/manual"))
+    }
+    const current = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    const tree = current.session.tree
+
+    await expect(
+      current.controller.visit("/restored", { action: "restore" }),
+    ).rejects.toBeInstanceOf(StateError)
+
+    expect(current.controller.state.status).toBe("failed")
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.session.tree).toBe(tree)
+    expect(current.session.tree.getElementById("restored")).toBeUndefined()
+    expect(snapshotCache.has("https://example.test/current")).toBe(true)
+    expect(fixture.history.current?.url).toBe("https://example.test/manual")
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-2",
+          restorationIndex: 1,
+          url: "https://example.test/manual",
+        },
+        method: "push",
+      },
+    ])
+  })
+
+  test("lets a newer visit supersede an explicit cached restore before history or tree commit", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    const fixture = historyFixture()
+    const current = harness({ history: fixture.history, snapshotCache })
+    let newer: Promise<unknown> | undefined
+    let started = false
+    const unsubscribe = current.controller.subscribe(() => {
+      if (started || current.controller.state.status !== "started") return
+      started = true
+      unsubscribe()
+      newer = current.controller.visit("/newer")
+    })
+
+    expect(await current.controller.visit("/restored", { action: "restore" })).toEqual({
+      source: "snapshot",
+      status: "canceled",
+      url: "https://example.test/restored",
+    })
+    expect(current.pending).toHaveLength(1)
+    expect(current.session.tree.getElementById("restored")).toBeUndefined()
+    expect(fixture.writes).toEqual([])
+
+    current.pending[0]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(fixture.history.current).toEqual({
+      restorationIdentifier: "history-2",
+      restorationIndex: 1,
+      url: "https://example.test/newer",
+    })
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("keeps cached explicit restore history and tree atomic across host and finalization failure", async () => {
+    const hostFailureCache = new DocumentSnapshotCache()
+    hostFailureCache.put(
+      "https://example.test/host-failure",
+      parseExpoTurboDocument('<Gallery><Failed id="failed" /></Gallery>', {
+        url: "https://example.test/host-failure",
+      }),
+    )
+    const hostFailureHistory = historyFixture(() => {
+      throw new Error("history host failed with secret-token")
+    })
+    const hostFailure = harness({
+      history: hostFailureHistory.history,
+      snapshotCache: hostFailureCache,
+    })
+    const oldTree = hostFailure.session.tree
+    const oldEntry = hostFailureHistory.history.current
+
+    await expect(
+      hostFailure.controller.visit("/host-failure", { action: "restore" }),
+    ).rejects.toBeInstanceOf(StateError)
+
+    expect(hostFailure.controller.state.status).toBe("failed")
+    expect(hostFailure.requestIdCount()).toBe(0)
+    expect(hostFailure.session.tree).toBe(oldTree)
+    expect(hostFailureHistory.history.current).toBe(oldEntry)
+    expect(hostFailureCache.has("https://example.test/current")).toBe(true)
+
+    const finalizationCache = new DocumentSnapshotCache()
+    finalizationCache.put(
+      "https://example.test/finalization",
+      parseExpoTurboDocument('<Gallery><Final id="final" /></Gallery>', {
+        url: "https://example.test/finalization",
+      }),
+    )
+    const finalizationHistory = historyFixture()
+    const finalization = harness({
+      history: finalizationHistory.history,
+      snapshotCache: finalizationCache,
+    })
+    const errors: Error[] = []
+    finalization.controller.subscribeErrors((error) => errors.push(error))
+    finalization.session.registerDisposal("id:old", () => {
+      throw new Error("finalization failed")
+    })
+
+    await expect(
+      finalization.controller.visit("/finalization", { action: "restore" }),
+    ).rejects.toBeInstanceOf(DocumentSnapshotRestoreCommitError)
+
+    expect(finalization.controller.state.status).toBe("completed")
+    expect(finalizationHistory.history.current?.url).toBe("https://example.test/finalization")
+    expect(finalization.session.tree.getElementById("final")).toBeDefined()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(DocumentSnapshotRestoreCommitError)
+  })
+
+  test("rejects fragment-bearing explicit restores before history planning, cache, or ownership", async () => {
+    for (const fragment of ["#anchor", "#"]) {
+      for (const cached of [true, false]) {
+        const snapshotCache = new ReentrantSnapshotCache()
+        if (cached) {
+          snapshotCache.put(
+            "https://example.test/restored",
+            parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+              url: "https://example.test/restored",
+            }),
+          )
+        }
+        let cacheRead = false
+        snapshotCache.onGet = () => {
+          cacheRead = true
+        }
+        const history = historyFixture()
+        const current = harness({ history: history.history, snapshotCache })
+        const entry = history.history.current
+        const initial = current.controller.state
+        const tree = current.session.tree
+
+        await expect(
+          current.controller.visit(`/restored${fragment}`, { action: "restore" }),
+        ).rejects.toThrow("anchor restoration support")
+
+        expect(cacheRead).toBe(false)
+        expect(history.restorationIdCount()).toBe(0)
+        expect(history.history.current).toBe(entry)
+        expect(history.writes).toEqual([])
+        expect(current.controller.state).toBe(initial)
+        expect(current.pending).toHaveLength(0)
+        expect(current.requestIdCount()).toBe(0)
+        expect(current.session.tree).toBe(tree)
+      }
+    }
+  })
+
   test("captures the latest outgoing truth immediately before an advance commit", async () => {
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
@@ -1081,6 +1637,40 @@ describe("Document visit controller", () => {
     expect(pending).toHaveLength(0)
     expect(fixture.writes).toEqual([])
     expect(fixture.history.current?.url).toBe("https://example.test/other")
+  })
+
+  test("rejects historyless and misaligned explicit restore before reading cache or allocating a request", async () => {
+    for (const fixture of [
+      { history: undefined },
+      { history: historyFixture(undefined, "https://example.test/other").history },
+    ]) {
+      const snapshotCache = new ReentrantSnapshotCache()
+      snapshotCache.put(
+        "https://example.test/restored",
+        parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+          url: "https://example.test/restored",
+        }),
+      )
+      let cacheRead = false
+      snapshotCache.onGet = () => {
+        cacheRead = true
+      }
+      const current = harness({
+        ...(fixture.history ? { history: fixture.history } : {}),
+        snapshotCache,
+      })
+      const initial = current.controller.state
+
+      await expect(
+        current.controller.visit("/restored", { action: "restore" }),
+      ).rejects.toBeInstanceOf(fixture.history ? StateError : TargetError)
+
+      expect(cacheRead).toBe(false)
+      expect(current.controller.state).toBe(initial)
+      expect(current.pending).toHaveLength(0)
+      expect(current.requestIdCount()).toBe(0)
+      expect(current.session.tree.getElementById("old")).toBeDefined()
+    }
   })
 
   test("rechecks active document alignment after injected history planning", async () => {
@@ -1747,7 +2337,7 @@ describe("Document visit controller", () => {
       controller.visit("/other", { action: "replace", navigation }),
     ).rejects.toBeInstanceOf(TargetError)
     await expect(
-      controller.visit("https://outside.test/restore", { action: "restore", navigation }),
+      controller.visit("/restore", { action: "restore", navigation }),
     ).rejects.toBeInstanceOf(TargetError)
     await expect(
       controller.visit("/archive.pdf", { action: "bogus" as never, navigation }),
@@ -2016,6 +2606,12 @@ describe("Document visit controller", () => {
       navigation,
     })
     const external = await controller.visit("https://outside.test/app", { navigation })
+    await expect(
+      controller.visit("/outside-restore", { action: "restore", navigation }),
+    ).rejects.toBeInstanceOf(TargetError)
+    await expect(
+      controller.visit("https://outside.test/restore", { action: "restore", navigation }),
+    ).rejects.toBeInstanceOf(TargetError)
 
     expect(outside).toEqual({
       action: "advance",

@@ -60,7 +60,16 @@ export type DocumentVisitDelegation =
       url: string
     }>
 
-export type DocumentVisitResult = DocumentLoadReport | DocumentVisitDelegation
+export type DocumentCachedVisitResult = Readonly<{
+  source: "snapshot"
+  status: "canceled" | "restored"
+  url: string
+}>
+
+export type DocumentVisitResult =
+  | DocumentCachedVisitResult
+  | DocumentLoadReport
+  | DocumentVisitDelegation
 
 export type DocumentTraversalRestoreResult =
   | Readonly<{
@@ -82,6 +91,7 @@ export type DocumentVisitListener = () => void
 export type DocumentVisitErrorListener = (error: Error) => void
 
 interface DocumentVisitHistoryPlan {
+  readonly base: DocumentHistoryEntry
   readonly history: DocumentHistory
   readonly proposal: DocumentHistoryProposal
 }
@@ -131,13 +141,16 @@ export class DocumentVisitController {
 
   visit(source: string, options: DocumentVisitOptions = {}): Promise<DocumentVisitResult> {
     const action = options.action ?? "advance"
-    if (action !== "advance" && action !== "replace") {
+    if (action !== "advance" && action !== "replace" && action !== "restore") {
       return Promise.reject(new TargetError("Document visit action is unsupported"))
     }
     let admission: TopLevelLocationDisposition
     let historyPlan: DocumentVisitHistoryPlan | undefined
     try {
       admission = this.loader.classifyTopLevelSource(source)
+      if (action === "restore" && admission.url.includes("#")) {
+        throw new TargetError("Document restore fragments require anchor restoration support")
+      }
       if (admission.classification === "visitable") {
         historyPlan = this.proposeHistory(action, admission.url)
       }
@@ -145,10 +158,28 @@ export class DocumentVisitController {
       return Promise.reject(error)
     }
     if (admission.classification !== "visitable") {
+      if (action === "restore") {
+        return Promise.reject(
+          new TargetError("Document restore visits require a root-visitable location"),
+        )
+      }
       return this.delegateInitial(admission, action, options.navigation)
     }
 
-    return this.startVisit(admission.url, options.navigation, this.snapshotCache, historyPlan)
+    if (action === "restore") {
+      if (!historyPlan) {
+        return Promise.reject(new TargetError("Document restore visits require configured history"))
+      }
+      return this.startRestoreVisit(admission.url, options.navigation, historyPlan)
+    }
+    return this.startVisit(
+      admission.url,
+      options.navigation,
+      this.snapshotCache,
+      historyPlan,
+      undefined,
+      action,
+    )
   }
 
   /**
@@ -170,7 +201,7 @@ export class DocumentVisitController {
     } catch (error) {
       return Promise.reject(error)
     }
-    return this.startVisit(currentUrl, undefined, undefined, historyPlan)
+    return this.startVisit(currentUrl, undefined, undefined, historyPlan, undefined, "replace")
   }
 
   /**
@@ -341,26 +372,112 @@ export class DocumentVisitController {
     return () => this.errorListeners.delete(listener)
   }
 
+  private startRestoreVisit(
+    source: string,
+    navigation: NavigationAdapter | undefined,
+    historyPlan: DocumentVisitHistoryPlan,
+  ): Promise<DocumentVisitResult> {
+    const restoreEpoch = this.visitEpoch
+    const cache = this.snapshotCache
+    if (!cache) {
+      return this.startVisit(
+        source,
+        navigation,
+        undefined,
+        historyPlan,
+        undefined,
+        "restore",
+        restoreEpoch,
+      )
+    }
+
+    let epoch: number | undefined
+    try {
+      const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
+        beforeClaim: () => {
+          this.assertRestoreEpoch(restoreEpoch)
+          this.assertHistoryPlan(historyPlan)
+          return undefined
+        },
+        beforeTreeCommit: () => {
+          this.assertHistoryPlan(historyPlan)
+          this.loader.captureCurrentSnapshot(cache)
+          this.assertHistoryPlan(historyPlan)
+          historyPlan.history.commitProposal(historyPlan.proposal)
+        },
+        onRestoreStart: () => {
+          this.assertRestoreEpoch(restoreEpoch)
+          this.assertHistoryPlan(historyPlan)
+          epoch = ++this.visitEpoch
+          this.progressVisible = false
+          this.status = "started"
+          this.publish()
+          return undefined
+        },
+      })
+      if (report.status === "miss") {
+        this.assertRestoreEpoch(restoreEpoch)
+        return this.startVisit(
+          source,
+          navigation,
+          cache,
+          historyPlan,
+          undefined,
+          "restore",
+          restoreEpoch,
+        )
+      }
+      if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+        this.finish(report.status === "committed" ? "completed" : "canceled")
+      }
+      return Promise.resolve(
+        Object.freeze({
+          source: "snapshot" as const,
+          status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
+          url: report.url,
+        }),
+      )
+    } catch (error) {
+      const reported =
+        error instanceof Error ? error : new StateError("Document restore visit failed")
+      if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+        this.finish(error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed")
+        this.notifyError(reported)
+      }
+      return Promise.reject(reported)
+    }
+  }
+
   private startVisit(
     source: string,
     navigation?: NavigationAdapter,
     snapshotCache?: DocumentSnapshotCache,
     initialHistoryPlan?: DocumentVisitHistoryPlan,
     historyGuard?: DocumentVisitHistoryGuard,
+    action: VisitAction = "advance",
+    restoreEpoch?: number,
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined
     let historyPlan = initialHistoryPlan
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
-      ...(historyGuard?.kind === "traversal" && {
+      ...((historyGuard?.kind === "traversal" || historyPlan) && {
         beforeClaim: () => {
-          if (historyGuard.traversalEpoch !== this.traversalEpoch) {
+          if (restoreEpoch !== undefined) this.assertRestoreEpoch(restoreEpoch)
+          if (
+            historyGuard?.kind === "traversal" &&
+            historyGuard.traversalEpoch !== this.traversalEpoch
+          ) {
             throw new StateError("Document traversal request was superseded before ownership")
           }
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
           return undefined
         },
       }),
       beforeCommit: (candidate) => {
+        if (action === "restore" && candidate.url.includes("#")) {
+          throw new TargetError("Document restore fragments require anchor restoration support")
+        }
         if (
           historyGuard?.kind === "traversal" &&
           historyGuard.traversalEpoch !== this.traversalEpoch
@@ -378,6 +495,9 @@ export class DocumentVisitController {
         if (candidate.redirected && candidate.classification === "success") {
           const disposition = this.redirectDisposition(candidate)
           if (disposition.classification !== "visitable") {
+            if (action === "restore") {
+              throw new TargetError("Document restore redirects require a root-visitable location")
+            }
             redirect = disposition
             return "discard"
           }
@@ -388,6 +508,7 @@ export class DocumentVisitController {
           candidate.url !== historyPlan.proposal.entry.url
         ) {
           historyPlan = {
+            base: historyPlan.base,
             history: historyPlan.history,
             proposal: historyPlan.history.retargetProposal(historyPlan.proposal, candidate.url),
           }
@@ -409,6 +530,7 @@ export class DocumentVisitController {
           ) {
             throw new StateError("Document history changed during the current-document refresh")
           }
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
           if (historyPlan && historyPlan.proposal.entry.url !== candidate.url) {
             throw new StateError("Document history proposal no longer matches the commit candidate")
           }
@@ -426,6 +548,7 @@ export class DocumentVisitController {
                 : "Document history changed during the current-document refresh",
             )
           }
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
           if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
         },
       }),
@@ -511,14 +634,14 @@ export class DocumentVisitController {
     )
   }
 
-  private proposeHistory(
-    action: Exclude<VisitAction, "restore">,
-    url: string,
-  ): DocumentVisitHistoryPlan | undefined {
+  private proposeHistory(action: VisitAction, url: string): DocumentVisitHistoryPlan | undefined {
     const guard = this.captureHistoryGuard(this.loader.currentUrl, "refresh")
     if (!guard) {
       if (action === "replace") {
         throw new TargetError("Document replace visits require configured history")
+      }
+      if (action === "restore") {
+        throw new TargetError("Document restore visits require configured history")
       }
       return undefined
     }
@@ -530,7 +653,22 @@ export class DocumentVisitController {
     ) {
       throw new StateError("Document history or the active document changed during visit planning")
     }
-    return { history: guard.history, proposal }
+    return { base: guard.entry, history: guard.history, proposal }
+  }
+
+  private assertHistoryPlan(plan: DocumentVisitHistoryPlan): void {
+    if (
+      plan.history.current !== plan.base ||
+      this.canonicalDocumentUrl(this.loader.currentUrl) !== plan.base.url
+    ) {
+      throw new StateError("Document history or the active document changed during the visit")
+    }
+  }
+
+  private assertRestoreEpoch(epoch: number): void {
+    if (epoch !== this.visitEpoch) {
+      throw new StateError("Document restore visit was superseded before ownership")
+    }
   }
 
   private captureHistoryGuard(
