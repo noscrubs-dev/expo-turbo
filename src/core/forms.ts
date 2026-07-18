@@ -35,6 +35,21 @@ export interface FormControlDirectionality {
   readonly value: "ltr" | "rtl"
 }
 
+export interface FormSelectOption {
+  readonly disabled?: boolean
+  readonly kind: "option"
+  readonly selected: boolean
+  readonly value: string
+}
+
+export interface FormSelectOptionGroup {
+  readonly disabled?: boolean
+  readonly kind: "group"
+  readonly options: readonly FormSelectOption[]
+}
+
+export type FormSelectItem = FormSelectOption | FormSelectOptionGroup
+
 export type FormControlDescriptor =
   | (Omit<FormControlBase, "name"> & {
       readonly kind: "charset"
@@ -48,6 +63,10 @@ export type FormControlDescriptor =
   | (FormControlBase & {
       readonly kind: "multiple"
       readonly values: readonly string[]
+    })
+  | (FormControlBase & {
+      readonly kind: "select"
+      readonly options: readonly FormSelectItem[]
     })
   | (FormControlBase & {
       readonly kind: "submitter"
@@ -275,6 +294,80 @@ function normalizeDescriptor(
         ...base,
         kind: descriptor.kind,
         values: Object.freeze(values),
+      })
+    }
+    case "select": {
+      if (!Array.isArray(descriptor.options)) {
+        throw new PropsError("Select form control options must be an array", {
+          target: nodeKey,
+        })
+      }
+      const normalizeOption = (value: unknown): FormSelectOption => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new PropsError("Select form control options must be objects", {
+            target: nodeKey,
+          })
+        }
+        const option = value as Partial<FormSelectOption>
+        if (option.kind !== "option") {
+          throw new PropsError("Select option groups cannot contain nested groups", {
+            target: nodeKey,
+          })
+        }
+        if (typeof option.value !== "string") {
+          throw new PropsError("Select form control option values must be strings", {
+            target: nodeKey,
+          })
+        }
+        if (typeof option.selected !== "boolean") {
+          throw new PropsError("Select form control selectedness must be a boolean", {
+            target: nodeKey,
+          })
+        }
+        if (option.disabled !== undefined && typeof option.disabled !== "boolean") {
+          throw new PropsError("Select form control option disabledness must be a boolean", {
+            target: nodeKey,
+          })
+        }
+        return Object.freeze({
+          ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
+          kind: option.kind,
+          selected: option.selected,
+          value: option.value,
+        })
+      }
+      const options = Array.from(descriptor.options, (value): FormSelectItem => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new PropsError("Select form control items must be objects", {
+            target: nodeKey,
+          })
+        }
+        if (value.kind === "option") return normalizeOption(value)
+        if (value.kind !== "group") {
+          throw new PropsError("Select form control item kind is unsupported", {
+            target: nodeKey,
+          })
+        }
+        if (value.disabled !== undefined && typeof value.disabled !== "boolean") {
+          throw new PropsError("Select option-group disabledness must be a boolean", {
+            target: nodeKey,
+          })
+        }
+        if (!Array.isArray(value.options)) {
+          throw new PropsError("Select option-group options must be an array", {
+            target: nodeKey,
+          })
+        }
+        return Object.freeze({
+          ...(value.disabled !== undefined ? { disabled: value.disabled } : {}),
+          kind: value.kind,
+          options: Object.freeze(Array.from(value.options, normalizeOption)),
+        })
+      })
+      return Object.freeze({
+        ...base,
+        kind: descriptor.kind,
+        options: Object.freeze(options),
       })
     }
     case "submitter":
@@ -631,6 +724,17 @@ export class FormControlRegistry {
         case "multiple":
           for (const value of descriptor.values) {
             entries.push(Object.freeze({ name: descriptor.name, value }))
+          }
+          return
+        case "select":
+          for (const item of descriptor.options) {
+            const options = item.kind === "group" ? item.options : [item]
+            if (item.kind === "group" && item.disabled) continue
+            for (const option of options) {
+              if (option.selected && !option.disabled) {
+                entries.push(Object.freeze({ name: descriptor.name, value: option.value }))
+              }
+            }
           }
           return
         case "submitter":

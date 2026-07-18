@@ -9,6 +9,7 @@ import {
   type FormControlRegistration,
   FormControlRegistry,
   type FormControlSelection,
+  type FormSelectItem,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -181,6 +182,91 @@ describe("native form control registry", () => {
     expect(() =>
       registry.register("id:outside", { kind: "value", name: "outside", value: "outside" }),
     ).toThrow(/another form/)
+  })
+
+  test("collects selected enabled options in authored order and inherits disabled groups", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const enabledOption = { kind: "option" as const, selected: true, value: "enabled" }
+    const disabledGroupOption = {
+      disabled: false,
+      kind: "option" as const,
+      selected: true,
+      value: "group-disabled",
+    }
+    const options: FormSelectItem[] = [
+      { kind: "option", selected: true, value: "first" },
+      {
+        disabled: true,
+        kind: "group",
+        options: [disabledGroupOption],
+      },
+      {
+        kind: "group",
+        options: [
+          enabledOption,
+          { disabled: true, kind: "option", selected: true, value: "option-disabled" },
+          { kind: "option", selected: false, value: "unselected" },
+          { kind: "option", selected: true, value: "" },
+          { kind: "option", selected: true, value: "enabled" },
+        ],
+      },
+    ]
+
+    const submitter = registry.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    registry.register("id:first", { kind: "value", name: "before", value: "A" })
+    registry.register("id:second", { kind: "value", name: "inside", value: "B" })
+    const select = registry.register("id:multiple", {
+      kind: "select",
+      name: "choices[]",
+      options,
+    })
+
+    enabledOption.value = "mutated"
+    enabledOption.selected = false
+    disabledGroupOption.value = "mutated-disabled"
+    options.push({ kind: "option", selected: true, value: "late" })
+
+    expect(registry.successfulEntries({ submitter: submitter.selection })).toEqual([
+      { name: "before", value: "A" },
+      { name: "inside", value: "B" },
+      { name: "choices[]", value: "first" },
+      { name: "choices[]", value: "enabled" },
+      { name: "choices[]", value: "" },
+      { name: "choices[]", value: "enabled" },
+      { name: "commit", value: "save" },
+    ])
+
+    const updatedOption = { kind: "option" as const, selected: true, value: "updated" }
+    select.update({
+      kind: "select",
+      name: "choice",
+      options: [
+        { kind: "option", selected: false, value: "ignored" },
+        { kind: "group", options: [updatedOption] },
+      ],
+    })
+    updatedOption.value = "mutated-after-update"
+    expect(registry.successfulEntries()).toEqual([
+      { name: "before", value: "A" },
+      { name: "inside", value: "B" },
+      { name: "choice", value: "updated" },
+    ])
+
+    select.update({
+      disabled: true,
+      kind: "select",
+      name: "choice",
+      options: [{ kind: "option", selected: true, value: "suppressed" }],
+    })
+    expect(registry.successfulEntries()).toEqual([
+      { name: "before", value: "A" },
+      { name: "inside", value: "B" },
+    ])
   })
 
   test("requires headless controls to re-register after explicit owner changes", () => {
@@ -385,6 +471,106 @@ describe("native form control registry", () => {
         PropsError,
       )
     }
+  })
+
+  test("rejects malformed select option snapshots", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const sparseOptions = new Array<FormSelectItem>(1)
+    const sparseGroupOptions = new Array<{
+      kind: "option"
+      selected: boolean
+      value: string
+    }>(1)
+    const malformed: unknown[] = [
+      { kind: "select", name: "choice" },
+      { kind: "select", name: "choice", options: null },
+      { kind: "select", name: "choice", options: [null] },
+      { kind: "select", name: "choice", options: sparseOptions },
+      { kind: "select", name: "choice", options: [{ kind: "unknown" }] },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "option", selected: "true", value: "one" }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "option", selected: true, value: 1 }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ disabled: "false", kind: "option", selected: true, value: "one" }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "group", options: null }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "group", options: sparseGroupOptions }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ disabled: "true", kind: "group", options: [] }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [
+          {
+            kind: "group",
+            options: [{ kind: "group", options: [] }],
+          },
+        ],
+      },
+    ]
+
+    for (const descriptor of malformed) {
+      expect(() => registry.register("id:multiple", descriptor as FormControlDescriptor)).toThrow(
+        PropsError,
+      )
+    }
+  })
+
+  test("preserves selected option entries through GET and URL-encoded request planning", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoForm id="form" action="/search?stale=1"><DemoSelect id="select" /></DemoForm></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    registry.register("id:select", {
+      kind: "select",
+      name: "choice[]",
+      options: [
+        { kind: "option", selected: true, value: "one" },
+        { disabled: true, kind: "option", selected: true, value: "ignored" },
+        { kind: "option", selected: true, value: "" },
+      ],
+    })
+
+    const get = registry.requestPlan({ protocol: { requestId: "select-get" } })
+    expect(get.entries).toEqual([
+      { name: "choice[]", value: "one" },
+      { name: "choice[]", value: "" },
+    ])
+    expect(get.request.url).toBe("https://example.test/search?choice%5B%5D=one&choice%5B%5D=")
+
+    session.setAttribute("id:form", "method", "post")
+    expect(registry.requestPlan({ protocol: { requestId: "select-post" } }).request).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "choice%5B%5D=one&choice%5B%5D=",
+      },
+      method: "POST",
+      url: "https://example.test/search?stale=1",
+    })
   })
 
   test("composes live entries and raw form/submitter attributes into one request plan", () => {
