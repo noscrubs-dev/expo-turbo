@@ -1460,6 +1460,127 @@ describe("React protocol renderer", () => {
     expect(() => replacement.successfulEntries()).toThrow(/disposed/)
   })
 
+  test("updates selected option snapshots without re-registering through StrictMode replay", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+
+    function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function CaptureForm(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("select-form-capture")
+    }
+    function NativeSelect({ name }: { name: string }): ReactNode {
+      const [alternate, setAlternate] = useState(false)
+      const binding = useExpoTurboFormControl({
+        kind: "select",
+        name,
+        options: [
+          { kind: "option", selected: !alternate, value: "one" },
+          {
+            kind: "group",
+            options: [
+              { kind: "option", selected: alternate, value: "two" },
+              { disabled: true, kind: "option", selected: true, value: "option-disabled" },
+            ],
+          },
+          {
+            disabled: true,
+            kind: "group",
+            options: [{ kind: "option", selected: true, value: "group-disabled" }],
+          },
+        ],
+      })
+      return createElement("native-select", {
+        nodeKey: binding.nodeKey,
+        onChange: () => setAlternate((current) => !current),
+        selection: binding.selection,
+        value: alternate ? "two" : "one",
+      })
+    }
+
+    const form = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: NativeForm,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "SelectForm",
+    })
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureForm,
+      schema: z.object({}),
+      tag: "CaptureSelectForm",
+    })
+    const select = defineComponent({
+      attributes: { name: { codec: stringCodec, prop: "name" } },
+      children: "none",
+      component: NativeSelect,
+      schema: z.object({ name: z.string() }),
+      tag: "NativeSelectSnapshot",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, select],
+        name: "native-select-snapshot",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><SelectForm id="form"><CaptureSelectForm/><NativeSelectSnapshot id="select" name="choice[]"/></SelectForm></Gallery>',
+        { url: "https://example.test/select" },
+      ),
+    )
+    const forms = new DocumentFormControls(session)
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            { forms, registry: componentRegistry, session },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+    if (!renderer || !captured) throw new Error("select form fixture was not captured")
+    const activeRenderer = renderer
+    const binding = captured
+
+    expect(binding.successfulEntries()).toEqual([{ name: "choice[]", value: "one" }])
+    const control = activeRenderer.root.findAll(
+      (node) => String(node.type) === "native-select",
+    )[0]
+    if (!control) throw new Error("native select was not rendered")
+    const selection = control.props.selection()
+    act(() => control.props.onChange())
+    const updatedControl = activeRenderer.root.findAll(
+      (node) => String(node.type) === "native-select",
+    )[0]
+    if (!updatedControl) throw new Error("updated native select was not rendered")
+    expect(updatedControl.props.selection()).toBe(selection)
+    expect(binding.successfulEntries()).toEqual([{ name: "choice[]", value: "two" }])
+
+    await act(async () => {
+      activeRenderer.unmount()
+      await Promise.resolve()
+    })
+    forms.dispose()
+  })
+
   test("binds explicit form owners in document order and rebinds after same-id replacement", async () => {
     function NativeForm(
       props: Readonly<{ action?: string; children?: ReactNode; method?: string }>,
