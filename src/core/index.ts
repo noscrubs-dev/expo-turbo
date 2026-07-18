@@ -1,4 +1,5 @@
 export * from "./custom-stream-actions"
+export * from "./document-history"
 export * from "./document-loader"
 export * from "./document-metadata"
 export * from "./document-refresh-controller"

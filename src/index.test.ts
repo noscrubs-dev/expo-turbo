@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test"
 
-import { EXPO_TURBO_STATUS, FormSubmissionController, type FormSubmissionReport } from "./index"
+import {
+  DocumentHistory,
+  EXPO_TURBO_STATUS,
+  FormSubmissionController,
+  type FormSubmissionReport,
+} from "./index"
 
 describe("package status", () => {
   test("does not claim runtime compatibility", () => {
     expect(EXPO_TURBO_STATUS).toBe("foundation")
     expect(FormSubmissionController).toBeFunction()
+    expect(DocumentHistory).toBeFunction()
   })
 })
 
