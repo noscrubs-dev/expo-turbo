@@ -49,8 +49,10 @@ import type {
   ActiveFormRequestPlanOptions,
   ActiveFormRetryOptions,
   ActiveFormSubmissionProposalOptions,
+  ActiveFormSubmissionReport,
   ActiveFormSubmitOptions,
   DocumentFormControls,
+  FormConstraintValidationReport,
   FormControlDescriptor,
   FormControlRegistration,
   FormControlRegistry,
@@ -127,6 +129,7 @@ export interface ExpoTurboFormAccessibilityState {
 export interface ExpoTurboFormBinding {
   readonly accessibilityState: ExpoTurboFormAccessibilityState
   cancelSubmission(): void
+  checkValidity(): FormConstraintValidationReport
   dismissTerminal(): void
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
@@ -142,11 +145,12 @@ export interface ExpoTurboFormBinding {
   retryFailure(
     options: ActiveFormRetryOptions,
     controllerOptions?: FormSubmissionControllerSubmitOptions,
-  ): Promise<FormSubmissionReport>
+  ): Promise<ActiveFormSubmissionReport>
+  reportValidity(): FormConstraintValidationReport
   submit(
     options: ActiveFormSubmitOptions,
     controllerOptions?: FormSubmissionControllerSubmitOptions,
-  ): Promise<FormSubmissionReport>
+  ): Promise<ActiveFormSubmissionReport>
 }
 
 export interface ExpoTurboFormBoundaryProps extends ExpoTurboFormBinding {
@@ -459,6 +463,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
       Object.freeze({
         accessibilityState: Object.freeze({ busy: state.busy }),
         cancelSubmission: () => registry.cancelSubmission(),
+        checkValidity: () => registry.checkValidity(),
         dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
@@ -466,6 +471,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
           options: ActiveFormRetryOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
         ) => registry.retryFailure(options, controllerOptions),
+        reportValidity: () => registry.reportValidity(),
         state,
         shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
           registry.shouldInterceptSubmission(options),

@@ -21,6 +21,7 @@ import {
   useExpoTurboFormControl,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
+import { useDemoFocusHandle } from "./demo-focus";
 import { useDemoComponentStyle } from "./demo-style-runtime";
 import {
   DEMO_CARD_BASE_STYLE,
@@ -298,25 +299,48 @@ const form = defineComponent({
 function DemoFormInputComponent({
   label,
   name,
+  required,
   value,
 }: {
   label: string;
   name: string;
+  required: boolean;
   value: string;
 }) {
   const [current, setCurrent] = useState(value);
-  const control = useExpoTurboFormControl({ kind: "value", name, value: current });
+  const inputRef = useRef<TextInput>(null);
+  const validation = required
+    ? z.string().trim().min(1, `${label} is required`).safeParse(current)
+    : undefined;
+  const validity =
+    validation === undefined || validation.success
+      ? ({ valid: true } as const)
+      : ({
+          message: validation.error.issues[0]?.message ?? `${label} is invalid`,
+          valid: false,
+        } as const);
+  const control = useExpoTurboFormControl({
+    kind: "value",
+    name,
+    value: current,
+    ...(required ? { validity } : {}),
+  });
+  const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
   return (
     <View style={{ gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
       <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
       <TextInput
+        accessibilityHint={!validity.valid ? validity.message : undefined}
         accessibilityLabel={label}
         accessibilityState={control.accessibilityState}
         editable={!control.disabled}
+        onBlur={focusHandlers.onBlur}
         onChangeText={setCurrent}
+        onFocus={focusHandlers.onFocus}
+        ref={inputRef}
         style={{
           backgroundColor: "white",
-          borderColor: "#9eb0c3",
+          borderColor: validity.valid ? "#9eb0c3" : "#a62525",
           borderRadius: 10,
           borderWidth: 1,
           color: "#172230",
@@ -325,6 +349,11 @@ function DemoFormInputComponent({
         }}
         value={current}
       />
+      {!validity.valid ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
+          {validity.message}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -333,11 +362,17 @@ const formInput = defineComponent({
   attributes: {
     label: { codec: stringCodec, prop: "label" },
     name: { codec: stringCodec, prop: "name" },
+    required: { codec: presenceCodec, prop: "required" },
     value: { codec: stringCodec, prop: "value" },
   },
   children: "none",
   component: DemoFormInputComponent,
-  schema: z.object({ label: z.string(), name: z.string(), value: z.string() }),
+  schema: z.object({
+    label: z.string(),
+    name: z.string(),
+    required: z.boolean().default(false),
+    value: z.string(),
+  }),
   tag: "DemoFormInput",
 });
 
@@ -426,9 +461,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
-    <DemoText>Edit either native value, approve the host-owned native confirmation, then submit once through the exact-form activity guard. The fixture fails its first safe GET so the registered form boundary can retry from current values with a fresh request ID.</DemoText>
+    <DemoText>Clear the required first name to block submission and focus the first invalid native field. Restore a value, approve the host-owned native confirmation, then submit through the exact-form activity guard. The fixture fails its first safe GET so the registered form boundary can retry from current values with a fresh request ID.</DemoText>
     <DemoForm id="native-form" action="/demo/profile" method="post">
-      <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
+      <DemoFormInput id="first-name" label="First name" name="profile[first_name]" required="" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
       <DemoFormFieldset id="disabled-profile-group" disabled="false">
         <DemoFormLegend>

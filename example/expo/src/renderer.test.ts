@@ -3021,6 +3021,181 @@ describe("React protocol renderer", () => {
     expect(announcements).toEqual([])
   })
 
+  test("validates live React control snapshots and focuses before form submission lifecycle", async () => {
+    let formBinding: ExpoTurboFormBinding | undefined
+    let submit: (() => Promise<unknown>) | undefined
+    let confirmations = 0
+    let fetches = 0
+    const focused: string[] = []
+
+    function ValidationForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function ValidationCapture(): ReactNode {
+      formBinding = useExpoTurboForm()
+      return createElement("validation-capture")
+    }
+    function ValidationInput({ value }: { value: string }): ReactNode {
+      const [current, setCurrent] = useState(value)
+      const binding = useExpoTurboFormControl({
+        kind: "value",
+        name: "profile[name]",
+        value: current,
+        validity:
+          current.trim() === ""
+            ? { message: "Name is required", valid: false }
+            : { valid: true },
+      })
+      return createElement("validation-input", {
+        invalid: current.trim() === "",
+        nodeKey: binding.nodeKey,
+        onChange: setCurrent,
+        testId: "validation-input",
+        value: current,
+      })
+    }
+    function ValidationSubmitter(): ReactNode {
+      const form = useExpoTurboForm()
+      const binding = useExpoTurboFormControl({
+        kind: "submitter",
+        name: "commit",
+        value: "save",
+      })
+      submit = () =>
+        form.submit({
+          protocol: { requestId: "react-validation" },
+          submitter: binding.selection(),
+        })
+      return createElement("validation-submitter")
+    }
+
+    const form = defineComponent({
+      attributes: { action: { codec: stringCodec, prop: "action" } },
+      children: "nodes",
+      component: ValidationForm,
+      formOwner: true,
+      schema: z.object({ action: z.string().optional() }),
+      tag: "ValidationForm",
+    })
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: ValidationCapture,
+      schema: z.object({}),
+      tag: "ValidationCapture",
+    })
+    const input = defineComponent({
+      attributes: { value: { codec: stringCodec, prop: "value" } },
+      children: "none",
+      component: ValidationInput,
+      schema: z.object({ value: z.string() }),
+      tag: "ValidationInput",
+    })
+    const submitter = defineComponent({
+      attributes: {},
+      children: "none",
+      component: ValidationSubmitter,
+      schema: z.object({}),
+      tag: "ValidationSubmitter",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture, input, submitter],
+        name: "validation-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><ValidationForm id="form" action="/submit" data-turbo-confirm="Confirm"><ValidationCapture/><ValidationInput id="name" value=""/><ValidationSubmitter id="save"/></ValidationForm></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          fetches += 1
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
+      },
+      {
+        confirmation: {
+          confirm: async () => {
+            confirmations += 1
+            return true
+          },
+        },
+      },
+    )
+    const forms = new DocumentFormControls(session, {
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+      submissionController: controller,
+    })
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            { forms, registry, session },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+    })
+    if (!renderer || !formBinding || !submit) {
+      throw new Error("validation bindings were not captured")
+    }
+
+    expect(formBinding.checkValidity()).toMatchObject({
+      firstInvalid: { nodeKey: "id:name" },
+      valid: false,
+    })
+    let invalidReport: unknown
+    await act(async () => {
+      invalidReport = await submit?.()
+    })
+    expect(invalidReport).toMatchObject({
+      requestId: "react-validation",
+      status: "invalid",
+    })
+    expect(focused).toEqual(["id:name"])
+    expect(confirmations).toBe(0)
+    expect(fetches).toBe(0)
+    expect(formBinding.state).toMatchObject({ busy: false, status: "idle" })
+    expect(formBinding.terminalState).toEqual({ revision: 0, status: "none" })
+
+    act(() => {
+      renderer?.root.findByProps({ testId: "validation-input" }).props.onChange("Ada")
+    })
+    expect(formBinding.checkValidity()).toEqual({ invalidControls: [], valid: true })
+    let validReport: unknown
+    await act(async () => {
+      validReport = await submit?.()
+    })
+    expect(validReport).toMatchObject({
+      requestId: "react-validation",
+      status: "empty",
+    })
+    expect(confirmations).toBe(1)
+    expect(fetches).toBe(1)
+  })
+
   test("reports a form control without an active nearest or explicit owner", () => {
     function OrphanControl(): ReactNode {
       useExpoTurboFormControl({ kind: "value", name: "orphan", value: "value" })

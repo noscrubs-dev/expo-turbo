@@ -1,4 +1,4 @@
-import type { VisitAction } from "../adapters"
+import type { FocusAdapter, VisitAction } from "../adapters"
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
 import {
   buildFormRequest,
@@ -23,12 +23,21 @@ import {
   type FormSubmissionProposal,
 } from "./form-submission-proposal"
 import { resolveFormSubmissionDestination } from "./frames"
+import { protocolRequestHeaders } from "./protocol-request"
 import type { DocumentSession } from "./session"
 import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
 
 interface FormControlBase {
   readonly disabled?: boolean
   readonly name?: string
+}
+
+export type FormControlValidity =
+  | Readonly<{ readonly valid: true }>
+  | Readonly<{ readonly message: string; readonly valid: false }>
+
+interface ValidatableFormControlBase extends FormControlBase {
+  readonly validity?: FormControlValidity
 }
 
 export interface FormControlDirectionality {
@@ -61,7 +70,7 @@ export interface FormSelectOptionGroup {
 export type FormSelectItem = FormSelectOption | FormSelectOptionGroup
 
 export type FormControlDescriptor =
-  | (FormControlBase & {
+  | (ValidatableFormControlBase & {
       readonly kind: "checkable"
       readonly checked: boolean
       readonly value?: string
@@ -71,11 +80,11 @@ export type FormControlDescriptor =
       readonly kind: "hidden"
       readonly value?: string
     })
-  | (FormControlBase & {
+  | (ValidatableFormControlBase & {
       readonly kind: "multiple"
       readonly values: readonly string[]
     })
-  | (FormControlBase & {
+  | (ValidatableFormControlBase & {
       readonly kind: "select"
       readonly options: readonly FormSelectItem[]
     })
@@ -83,7 +92,7 @@ export type FormControlDescriptor =
       readonly kind: "submitter"
       readonly value?: string
     })
-  | (FormControlBase & {
+  | (ValidatableFormControlBase & {
       readonly directionality?: FormControlDirectionality
       readonly kind: "value"
       readonly value: string
@@ -103,7 +112,7 @@ type NormalizedFormSelectItem = NormalizedFormSelectOption | NormalizedFormSelec
 
 type NormalizedFormControlDescriptor =
   | Exclude<FormControlDescriptor, { readonly kind: "select" }>
-  | (FormControlBase & {
+  | (ValidatableFormControlBase & {
       readonly kind: "select"
       readonly options: readonly NormalizedFormSelectItem[]
     })
@@ -132,6 +141,34 @@ export type ActiveFormSubmitOptions = Omit<ActiveFormSubmissionProposalOptions, 
   readonly signal?: never
 }
 
+export interface InvalidFormControl {
+  readonly message: string
+  readonly nodeKey: string
+}
+
+export type FormConstraintValidationReport =
+  | Readonly<{
+      readonly invalidControls: readonly []
+      readonly valid: true
+    }>
+  | Readonly<{
+      readonly firstInvalid: InvalidFormControl
+      readonly invalidControls: readonly InvalidFormControl[]
+      readonly valid: false
+    }>
+
+export interface FormConstraintValidationSubmissionReport {
+  readonly firstInvalid: InvalidFormControl
+  readonly invalidControls: readonly InvalidFormControl[]
+  readonly requestId: string
+  readonly status: "invalid"
+  readonly submitterNodeKey?: string
+}
+
+export type ActiveFormSubmissionReport =
+  | FormConstraintValidationSubmissionReport
+  | FormSubmissionReport
+
 export interface ActiveFormRetryOptions {
   readonly protocol: ActiveFormRequestProtocolOptions
 }
@@ -145,6 +182,7 @@ export interface FormControlSemantics {
 }
 
 export interface FormControlRegistryOptions {
+  readonly focus?: FocusAdapter
   readonly formSemantics?: FormControlSemantics
   readonly formMode?: FormMode
   readonly submissionController?: FormSubmissionController
@@ -219,6 +257,7 @@ const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
   pending: false,
   revision: 0,
 })
+const VALID_FORM_CONTROL: FormControlValidity = Object.freeze({ valid: true })
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
@@ -267,10 +306,51 @@ function activeProtocolOptions(
   }
   const requestId = value.requestId
   const capabilityHash = value.capabilityHash
-  return Object.freeze({
+  if (typeof requestId !== "string") {
+    throw new RequestError("Active form request ID must be a string")
+  }
+  if (capabilityHash !== undefined && typeof capabilityHash !== "string") {
+    throw new RequestError("Active form capability hash must be a string")
+  }
+  const admitted = Object.freeze({
     ...(capabilityHash !== undefined ? { capabilityHash } : {}),
     requestId,
   })
+  protocolRequestHeaders(admitted)
+  return admitted
+}
+
+function normalizeValidity(validity: unknown, nodeKey: string): FormControlValidity | undefined {
+  if (validity === undefined) return undefined
+  if (!validity || typeof validity !== "object" || Array.isArray(validity)) {
+    throw new PropsError("Form control validity must be an object", { target: nodeKey })
+  }
+  const keys = Object.keys(validity)
+  if (keys.some((key) => key !== "message" && key !== "valid")) {
+    throw new PropsError("Form control validity contains unsupported fields", {
+      target: nodeKey,
+    })
+  }
+  const candidate = validity as Partial<FormControlValidity>
+  if (candidate.valid === true) {
+    if ("message" in candidate) {
+      throw new PropsError("Valid form controls must not provide a validation message", {
+        target: nodeKey,
+      })
+    }
+    return Object.freeze({ valid: true })
+  }
+  if (candidate.valid !== false) {
+    throw new PropsError("Form control validity must provide a boolean valid value", {
+      target: nodeKey,
+    })
+  }
+  if (typeof candidate.message !== "string" || candidate.message.trim() === "") {
+    throw new PropsError("Invalid form controls require a non-empty validation message", {
+      target: nodeKey,
+    })
+  }
+  return Object.freeze({ message: candidate.message, valid: false })
 }
 
 function assertNativeTargetAttributes(
@@ -369,7 +449,7 @@ function normalizeDescriptor(
     ...(descriptor.disabled !== undefined ? { disabled: descriptor.disabled } : {}),
   }
   switch (descriptor.kind) {
-    case "checkable":
+    case "checkable": {
       if (typeof descriptor.checked !== "boolean") {
         throw new PropsError("Checkable form control checked must be a boolean", {
           target: nodeKey,
@@ -380,13 +460,21 @@ function normalizeDescriptor(
           target: nodeKey,
         })
       }
+      const checkableValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
         checked: descriptor.checked,
         kind: descriptor.kind,
+        ...(checkableValidity ? { validity: checkableValidity } : {}),
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
+    }
     case "hidden": {
+      if ("validity" in descriptor) {
+        throw new PropsError("Hidden form controls cannot provide constraint validity", {
+          target: nodeKey,
+        })
+      }
       if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
         throw new PropsError("Hidden form control value must be a string", {
           target: nodeKey,
@@ -412,9 +500,11 @@ function normalizeDescriptor(
           target: nodeKey,
         })
       }
+      const multipleValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
         kind: descriptor.kind,
+        ...(multipleValidity ? { validity: multipleValidity } : {}),
         values: Object.freeze(values),
       })
     }
@@ -501,13 +591,20 @@ function normalizeDescriptor(
           options: Object.freeze(Array.from(value.options, normalizeOption)),
         })
       })
+      const selectValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
         kind: descriptor.kind,
         options: Object.freeze(options),
+        ...(selectValidity ? { validity: selectValidity } : {}),
       })
     }
     case "submitter":
+      if ("validity" in descriptor) {
+        throw new PropsError("Submitter form controls cannot provide constraint validity", {
+          target: nodeKey,
+        })
+      }
       if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
         throw new PropsError("Submitter form control value must be a string", {
           target: nodeKey,
@@ -525,10 +622,12 @@ function normalizeDescriptor(
         })
       }
       const admittedDirectionality = normalizeDirectionality(descriptor.directionality, nodeKey)
+      const valueValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
         ...(admittedDirectionality ? { directionality: admittedDirectionality } : {}),
         kind: descriptor.kind,
+        ...(valueValidity ? { validity: valueValidity } : {}),
         value: descriptor.value,
       })
     }
@@ -565,6 +664,15 @@ export class FormControlRegistry {
       })
     }
     this.form = form
+    if (
+      options.focus !== undefined &&
+      (!options.focus ||
+        typeof options.focus.blur !== "function" ||
+        typeof options.focus.focus !== "function" ||
+        typeof options.focus.getFocusedId !== "function")
+    ) {
+      throw new PropsError("Form focus adapter must provide blur, focus, and getFocusedId")
+    }
     this.formSemantics = options.formSemantics
     if (
       this.formSemantics !== undefined &&
@@ -628,6 +736,12 @@ export class FormControlRegistry {
   controlInheritedDisabled(nodeKey: string): boolean {
     const node = this.activeControlOrUndefined(nodeKey)
     return node ? this.disabledByFieldset(node) : false
+  }
+
+  controlValidity(nodeKey: string): FormControlValidity {
+    const node = this.activeControlOrUndefined(nodeKey)
+    const record = node ? this.records.get(node) : undefined
+    return record ? this.effectiveValidity(record) : VALID_FORM_CONTROL
   }
 
   subscribeControlInheritedDisabled(nodeKey: string, listener: () => void): () => void {
@@ -697,6 +811,68 @@ export class FormControlRegistry {
     return this.formMode === "optin"
       ? formHasTurboOptIn(this.form)
       : closestTurboSetting(this.form) !== "false"
+  }
+
+  checkValidity(): FormConstraintValidationReport {
+    this.assertActive()
+    const invalidControls: InvalidFormControl[] = []
+    const visit = (node: ProtocolNode) => {
+      const record = this.records.get(node)
+      if (record) {
+        this.assertRecordActive(record)
+        const validity = this.effectiveValidity(record)
+        if (!validity.valid) {
+          invalidControls.push(
+            Object.freeze({ message: validity.message, nodeKey: record.node.key }),
+          )
+        }
+      }
+      if (node.kind === "document" || isElement(node)) {
+        for (const child of node.children) visit(child)
+      }
+    }
+    visit(this.session.tree.document)
+    if (invalidControls.length === 0) {
+      return Object.freeze({ invalidControls: Object.freeze([]) as readonly [], valid: true })
+    }
+    const admitted = Object.freeze(invalidControls)
+    return Object.freeze({
+      firstInvalid: admitted[0] as InvalidFormControl,
+      invalidControls: admitted,
+      valid: false,
+    })
+  }
+
+  reportValidity(): FormConstraintValidationReport {
+    const report = this.checkValidity()
+    if (report.valid) return report
+    const focus = this.options.focus
+    if (!focus || typeof focus.focus !== "function") {
+      throw new StateError("Invalid form submission requires a configured focus adapter", {
+        target: report.firstInvalid.nodeKey,
+      })
+    }
+    let result: unknown
+    try {
+      result = focus.focus(report.firstInvalid.nodeKey)
+    } catch {
+      throw new StateError("Form validation could not focus the first invalid control", {
+        target: report.firstInvalid.nodeKey,
+      })
+    }
+    if (result !== undefined) {
+      if ((typeof result === "object" && result !== null) || typeof result === "function") {
+        try {
+          void Promise.resolve(result).catch(() => undefined)
+        } catch {
+          // The protocol error below is the only exposed host failure.
+        }
+      }
+      throw new StateError("Form validation could not focus the first invalid control", {
+        target: report.firstInvalid.nodeKey,
+      })
+    }
+    return report
   }
 
   requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
@@ -815,26 +991,44 @@ export class FormControlRegistry {
   submit(
     options: ActiveFormSubmitOptions,
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
-  ): Promise<FormSubmissionReport> {
+  ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
-    const submissionController = this.options.submissionController
-    if (!submissionController) {
-      throw new StateError("Active form submission requires a configured submission controller")
-    }
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw new RequestError("Active form submit options must be an object")
     }
     if ("signal" in options) {
       throw new RequestError("Active form submission owns its abort signal")
     }
-    const protocol = options.protocol
-    const submitter = submitterSelectionOption(options)
+    const protocol = activeProtocolOptions(options.protocol)
+    const selection = submitterSelectionOption(options)
+    const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    if (
+      !hasAttribute(this.form, "novalidate") &&
+      !(submitter && hasAttribute(submitter.node, "formnovalidate"))
+    ) {
+      const validation = this.reportValidity()
+      if (!validation.valid) {
+        return Promise.resolve(
+          Object.freeze({
+            firstInvalid: validation.firstInvalid,
+            invalidControls: validation.invalidControls,
+            requestId: protocol.requestId,
+            status: "invalid",
+            ...(submitter ? { submitterNodeKey: submitter.node.key } : {}),
+          }),
+        )
+      }
+    }
+    const submissionController = this.options.submissionController
+    if (!submissionController) {
+      throw new StateError("Active form submission requires a configured submission controller")
+    }
     return submissionController.submit(
       (signal) =>
         this.submissionProposal({
           protocol,
           signal,
-          ...(submitter ? { submitter } : {}),
+          ...(selection ? { submitter: selection } : {}),
         }),
       controllerOptions,
     )
@@ -843,7 +1037,7 @@ export class FormControlRegistry {
   retryFailure(
     options: ActiveFormRetryOptions,
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
-  ): Promise<FormSubmissionReport> {
+  ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw new RequestError("Active form retry options must be an object")
@@ -1110,6 +1304,18 @@ export class FormControlRegistry {
 
   private recordDisabled(record: FormControlRecord): boolean {
     return record.descriptor.disabled === true || this.disabledByFieldset(record.node)
+  }
+
+  private effectiveValidity(record: FormControlRecord): FormControlValidity {
+    if (
+      this.recordDisabled(record) ||
+      this.barredByDatalist(record.node) ||
+      record.descriptor.kind === "hidden" ||
+      record.descriptor.kind === "submitter"
+    ) {
+      return VALID_FORM_CONTROL
+    }
+    return record.descriptor.validity ?? VALID_FORM_CONTROL
   }
 
   private barredByDatalist(node: ProtocolElement): boolean {

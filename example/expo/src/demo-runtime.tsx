@@ -31,6 +31,7 @@ import {
   type DemoDocumentRuntime,
 } from "./demo-document-controller";
 import { createDemoFrameControllers } from "./demo-frame-controllers";
+import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
 import { DEMO_FORM_ANNOUNCEMENTS } from "./demo-form-announcement-runtime";
 import { createDemoFormController } from "./demo-form-controller";
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "./demo-registry";
@@ -46,6 +47,7 @@ export interface DemoRuntime {
   readonly formController: FormSubmissionController;
   readonly formLinks: FormLinkSubmissionController;
   readonly forms: DocumentFormControls;
+  readonly focus: DemoFocusRegistry;
   readonly frames: FrameControllerRegistry;
   readonly navigation: DemoRouterHistoryBridge;
   readonly refresh: DocumentRefreshController;
@@ -84,6 +86,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     DEMO_CLOCK,
   );
   const actionRuntime = createDemoActionRuntime();
+  const focus = new DemoFocusRegistry();
   const visibility = new DemoVisibilityRegistry();
   const frames = createDemoFrameControllers(
     session,
@@ -101,6 +104,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     documentRuntime.snapshotCache,
   );
   const forms = new DocumentFormControls(session, {
+    focus,
     formSemantics: DEMO_REGISTRY,
     submissionController: formController,
   });
@@ -124,6 +128,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     formController,
     formLinks,
     forms,
+    focus,
     frames,
     navigation,
     refresh,
@@ -135,6 +140,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       unsubscribeTraversal();
       navigation.dispose();
       forms.dispose();
+      focus.dispose();
       frames.dispose();
       refresh.dispose();
       documentRuntime.dispose();
@@ -171,31 +177,33 @@ export function DemoRuntimeProvider({
   useDemoRuntimeOwner(runtime);
   return (
     <DemoRuntimeContext.Provider value={runtime}>
-      <DemoVisibilityProvider visibility={runtime.visibility}>
-        <ExpoTurboProvider
-          actions={runtime.actionRuntime.actions}
-          documentComponent={DemoDocumentBoundary}
-          documentController={runtime.documentRuntime.controller}
-          frameComponent={DemoFrameBoundary}
-          formComponent={DemoFormBoundary}
-          formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
-          formLinks={runtime.formLinks}
-          frames={runtime.frames}
-          forms={runtime.forms}
-          navigation={runtime.navigation}
-          registry={DEMO_REGISTRY}
-          renderError={({ error }) => (
-            <Text selectable style={{ color: "#a62525" }}>
-              {error.name}: {error.message}
-            </Text>
-          )}
-          session={runtime.session}
-          state={runtime.actionRuntime.state}
-          styles={DEMO_STYLE_ADAPTER}
-        >
-          {children}
-        </ExpoTurboProvider>
-      </DemoVisibilityProvider>
+      <DemoFocusProvider focus={runtime.focus}>
+        <DemoVisibilityProvider visibility={runtime.visibility}>
+          <ExpoTurboProvider
+            actions={runtime.actionRuntime.actions}
+            documentComponent={DemoDocumentBoundary}
+            documentController={runtime.documentRuntime.controller}
+            frameComponent={DemoFrameBoundary}
+            formComponent={DemoFormBoundary}
+            formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
+            formLinks={runtime.formLinks}
+            frames={runtime.frames}
+            forms={runtime.forms}
+            navigation={runtime.navigation}
+            registry={DEMO_REGISTRY}
+            renderError={({ error }) => (
+              <Text selectable style={{ color: "#a62525" }}>
+                {error.name}: {error.message}
+              </Text>
+            )}
+            session={runtime.session}
+            state={runtime.actionRuntime.state}
+            styles={DEMO_STYLE_ADAPTER}
+          >
+            {children}
+          </ExpoTurboProvider>
+        </DemoVisibilityProvider>
+      </DemoFocusProvider>
     </DemoRuntimeContext.Provider>
   );
 }
