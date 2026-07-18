@@ -17,8 +17,16 @@ import {
   ExpoTurboRoot,
 } from "expo-turbo/react";
 import { type Href, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef } from "react";
-import { Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import {
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
@@ -34,16 +42,39 @@ import {
   demoFormLiveRegion,
 } from "../demo-form-announcements";
 import { DEMO_STYLE_ADAPTER } from "../demo-style-runtime";
+import { DemoVisibilityRegistry } from "../demo-visibility";
 import { PROTOCOL_SMOKE } from "../protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "../registry-smoke";
+
+const DemoVisibilityContext = createContext<DemoVisibilityRegistry | undefined>(undefined);
+
+function useDemoVisibility(): DemoVisibilityRegistry {
+  const visibility = useContext(DemoVisibilityContext);
+  if (!visibility) throw new Error("Demo Frame visibility is not configured");
+  return visibility;
+}
 
 function DemoFrameBoundary({
   accessibilityState,
   children,
   state,
 }: ExpoTurboFrameBoundaryProps) {
+  const visibility = useDemoVisibility();
+  const boundary = useRef<View>(null);
+  useEffect(
+    () =>
+      visibility.register(state.frameId, (listener) => {
+        boundary.current?.measureInWindow(listener);
+      }),
+    [state.frameId, visibility],
+  );
   return (
-    <View style={{ gap: 8 }}>
+    <View
+      collapsable={false}
+      onLayout={() => visibility.remeasure(state.frameId)}
+      ref={boundary}
+      style={{ gap: 8 }}
+    >
       <View
         accessibilityLabel={`Frame ${state.frameId}: ${state.status}`}
         accessibilityState={accessibilityState}
@@ -200,6 +231,8 @@ function DemoFormBoundary({
 
 export default function HomeScreen() {
   const router = useRouter();
+  const window = useWindowDimensions();
+  const scrollView = useRef<ScrollView>(null);
   const session = useMemo(
     () =>
       new DocumentSession(
@@ -219,6 +252,12 @@ export default function HomeScreen() {
     [documentController, session],
   );
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
+  const visibility = useMemo(() => new DemoVisibilityRegistry(), []);
+  const measureViewport = useCallback(() => {
+    visibility.measureViewport((listener) => {
+      scrollView.current?.getNativeScrollRef()?.measureInWindow(listener);
+    });
+  }, [visibility]);
   const navigation = useMemo<NavigationAdapter>(
     () => ({
       back: () => router.back(),
@@ -245,6 +284,7 @@ export default function HomeScreen() {
         refresh,
         documentRuntime.history,
         documentRuntime.snapshotCache,
+        visibility,
       ),
     [
       documentController,
@@ -253,6 +293,7 @@ export default function HomeScreen() {
       navigation,
       refresh,
       session,
+      visibility,
     ],
   );
   const formController = useMemo(
@@ -286,11 +327,19 @@ export default function HomeScreen() {
     },
     [documentController, refresh],
   );
+  useEffect(() => {
+    measureViewport();
+  }, [measureViewport, window.height, window.width]);
 
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
+      onContentSizeChange={() => visibility.remeasure()}
+      onLayout={measureViewport}
+      onScroll={() => visibility.remeasure()}
+      ref={scrollView}
+      scrollEventThrottle={32}
     >
       <Stack.Screen options={{ title: "Expo Turbo" }} />
       <View style={{ gap: 8 }}>
@@ -326,29 +375,31 @@ export default function HomeScreen() {
           Registry capability: {REGISTRY_CAPABILITY_SMOKE}
         </Text>
       </View>
-      <ExpoTurboProvider
-        actions={actionRuntime.actions}
-        documentComponent={DemoDocumentBoundary}
-        documentController={documentController}
-        frameComponent={DemoFrameBoundary}
-        formComponent={DemoFormBoundary}
-        formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
-        formLinks={formLinks}
-        frames={frames}
-        forms={forms}
-        navigation={navigation}
-        registry={DEMO_REGISTRY}
-        renderError={({ error }) => (
-          <Text selectable style={{ color: "#a62525" }}>
-            {error.name}: {error.message}
-          </Text>
-        )}
-        session={session}
-        state={actionRuntime.state}
-        styles={DEMO_STYLE_ADAPTER}
-      >
-        <ExpoTurboRoot />
-      </ExpoTurboProvider>
+      <DemoVisibilityContext.Provider value={visibility}>
+        <ExpoTurboProvider
+          actions={actionRuntime.actions}
+          documentComponent={DemoDocumentBoundary}
+          documentController={documentController}
+          frameComponent={DemoFrameBoundary}
+          formComponent={DemoFormBoundary}
+          formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
+          formLinks={formLinks}
+          frames={frames}
+          forms={forms}
+          navigation={navigation}
+          registry={DEMO_REGISTRY}
+          renderError={({ error }) => (
+            <Text selectable style={{ color: "#a62525" }}>
+              {error.name}: {error.message}
+            </Text>
+          )}
+          session={session}
+          state={actionRuntime.state}
+          styles={DEMO_STYLE_ADAPTER}
+        >
+          <ExpoTurboRoot />
+        </ExpoTurboProvider>
+      </DemoVisibilityContext.Provider>
       <Pressable
         accessibilityRole="button"
         onPress={() =>
