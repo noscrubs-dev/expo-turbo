@@ -20,12 +20,9 @@ export function createDemoFrameControllers(
   refresh: DocumentRefreshRequester,
   history: DocumentHistory,
   snapshotCache: DocumentSnapshotCache,
+  visibility: VisibilityAdapter,
 ): FrameControllerRegistry {
   let requestId = 0;
-  const visibility: VisibilityAdapter = {
-    isVisible: () => true,
-    subscribe: () => () => {},
-  };
   return new FrameControllerRegistry(
     session,
     new FrameRequestLoader(
