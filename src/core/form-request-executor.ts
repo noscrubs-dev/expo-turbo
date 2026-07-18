@@ -6,6 +6,7 @@ import {
   executeAdmittedFormRequest,
   type FormRequestExecutionReport,
 } from "./form-request-transport"
+import type { RecentRequestIds } from "./recent-request-ids"
 
 export type {
   FormRequestExecutionReport,
@@ -19,6 +20,10 @@ interface ActiveFormRequest {
   readonly controller: AbortController
 }
 
+export interface FormRequestExecutorOptions {
+  readonly recentRequestIds?: RecentRequestIds
+}
+
 /**
  * Owns one caller-scoped form transport lane. Each admitted execution
  * supersedes the previous execution in this instance, while separate instances
@@ -26,8 +31,14 @@ interface ActiveFormRequest {
  */
 export class FormRequestExecutor {
   private active: ActiveFormRequest | undefined
+  private readonly recentRequestIds: RecentRequestIds | undefined
 
-  constructor(private readonly fetchAdapter: FetchAdapter) {}
+  constructor(
+    private readonly fetchAdapter: FetchAdapter,
+    options: FormRequestExecutorOptions = {},
+  ) {
+    this.recentRequestIds = options.recentRequestIds
+  }
 
   cancel(): void {
     const active = this.active
@@ -57,6 +68,9 @@ export class FormRequestExecutor {
     // Install this execution before aborting the displaced one. An abort
     // listener may synchronously start newer work, which must remain current.
     previous?.controller.abort()
+    if (this.active === active && !controller.signal.aborted) {
+      this.recentRequestIds?.add(plan.request.headers["X-Turbo-Request-Id"] as string)
+    }
     return executeAdmittedFormRequest(this.fetchAdapter, plan, {
       controller,
       owns: () => this.active === active && !controller.signal.aborted,

@@ -1,5 +1,6 @@
 import type { TurboResponse } from "expo-turbo/adapters";
 import {
+  type DocumentRefreshRequester,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
   type DocumentSession,
@@ -10,6 +11,7 @@ import { createDemoFormConfirmationAdapter } from "./demo-form-confirmation";
 
 export function createDemoFormController(
   session: DocumentSession,
+  refresh: DocumentRefreshRequester,
 ): FormSubmissionController {
   let failedOnce = false;
   return new FormSubmissionController(
@@ -43,6 +45,7 @@ export function createDemoFormController(
           Alert.alert(title, message, [...buttons], options),
         webConfirm: (message) => globalThis.confirm(message),
       }),
+      refresh,
     },
   );
 }

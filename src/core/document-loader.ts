@@ -123,6 +123,10 @@ export class DocumentRequestLoader {
     return classifyTopLevelLocation(this.session.tree, source)
   }
 
+  get currentUrl(): string | undefined {
+    return this.session.tree.document.url
+  }
+
   cancel(owner?: object): void {
     const active = this.active
     if (!active || (owner && active.owner !== owner)) return
@@ -184,6 +188,7 @@ export class DocumentRequestLoader {
 
     try {
       if (!this.owns(active)) return this.canceled(active)
+      this.session.recentRequestIds.add(requestId)
       const response = await this.fetchAdapter.fetch(request)
       if (!this.owns(active)) return this.canceled(active)
 

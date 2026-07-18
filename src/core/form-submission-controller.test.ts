@@ -117,6 +117,8 @@ describe("FormSubmissionController", () => {
       const formRequest = transport.pending[1]
       if (!formRequest || !admitted) throw new Error("document form request was not captured")
       expect(formRequest.request).toBe(admitted.plan.request)
+      expect(session.recentRequestIds.has("document-1")).toBe(true)
+      expect(session.recentRequestIds.has("form-1")).toBe(true)
       expect(getRequest.request.signal?.aborted).toBe(true)
       expect(formRequest.request.signal?.aborted).toBe(false)
       loader.cancel(getOwner)
@@ -2139,6 +2141,35 @@ describe("FormSubmissionController", () => {
       })
       expect(session.tree.getElementById("frame-stream-result")).toBeDefined()
       expect(frame && attributeValue(frame, "src")).toBe(frameSrc)
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      const refreshes: unknown[] = []
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<turbo-stream action="refresh" request-id="form-refresh"/>', {
+              headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+            }),
+        },
+        { refresh: { request: (request) => refreshes.push(request) } },
+      )
+
+      const result = await controller.submit(
+        proposal(registry(session, "document-form"), "form-refresh"),
+      )
+
+      expect(result).toMatchObject({
+        application: "stream",
+        streams: { actions: [{ action: "refresh", status: "applied" }] },
+      })
+      expect(session.recentRequestIds.has("form-refresh")).toBe(true)
+      expect(refreshes).toEqual([
+        { baseUrl: "https://example.test/current", requestId: "form-refresh" },
+      ])
     }
   })
 

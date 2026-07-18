@@ -17,7 +17,7 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
 </Gallery>`;
 
-const clock: ClockAdapter = {
+export const DEMO_CLOCK: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   now: Date.now,
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -45,6 +45,6 @@ export function createDemoDocumentController(
       },
       { next: () => `demo-document-${++requestId}` },
     ),
-    clock,
+    DEMO_CLOCK,
   );
 }

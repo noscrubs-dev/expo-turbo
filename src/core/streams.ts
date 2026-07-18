@@ -3,6 +3,7 @@ import type {
   CustomStreamActionResult,
   DefinedStreamAction,
 } from "./custom-stream-actions"
+import type { DocumentRefreshRequester } from "./document-refresh-controller"
 import { ActionError, ExpoTurboError } from "./errors"
 import { type ParseOptions, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
@@ -21,6 +22,7 @@ const BUILT_IN_ACTIONS = new Set([
   "append",
   "before",
   "prepend",
+  "refresh",
   "remove",
   "replace",
   "update",
@@ -40,6 +42,7 @@ export interface StreamActionReport {
 export interface StreamActionDispatchOptions {
   readonly customActions?: CustomStreamActionRegistry<DefinedStreamAction>
   readonly onActionError?: (report: StreamActionReport) => void
+  readonly refresh?: DocumentRefreshRequester
 }
 
 export interface StreamDispatchOptions extends ParseOptions, StreamActionDispatchOptions {}
@@ -290,6 +293,32 @@ function dispatchAction(
   let appliedTargets = 0
   try {
     if (!action) throw actionError("Turbo Stream action must not be blank", action)
+    if (action === "refresh") {
+      if (!options.refresh) {
+        throw actionError("Turbo Stream refresh requires a document refresh controller", action)
+      }
+      const baseUrl = session.tree.document.url
+      if (!baseUrl)
+        throw actionError("Turbo Stream refresh requires an active document URL", action)
+      const method = attributeValue(stream, "method")
+      const requestId = attributeValue(stream, "request-id")
+      const scroll = attributeValue(stream, "scroll")
+      options.refresh.request(
+        Object.freeze({
+          baseUrl,
+          ...(method !== undefined ? { method } : {}),
+          ...(requestId !== undefined ? { requestId } : {}),
+          ...(scroll !== undefined ? { scroll } : {}),
+        }),
+      )
+      return Object.freeze({
+        action,
+        appliedTargets: 0,
+        index,
+        matchedTargets: 0,
+        status: "applied",
+      })
+    }
     if (!BUILT_IN_ACTIONS.has(action)) {
       const customAction = options.customActions?.resolve(action)
       if (!customAction) {

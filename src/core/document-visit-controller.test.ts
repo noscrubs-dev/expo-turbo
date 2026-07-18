@@ -505,6 +505,29 @@ describe("Document visit controller", () => {
     expect(await active).toMatchObject({ status: "committed" })
   })
 
+  test("refreshes exact current truth without exposing general replace-history visits", async () => {
+    const { controller, pending, session } = harness({
+      documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+    })
+
+    expect(await controller.refreshCurrent("https://example.test/stale")).toBeUndefined()
+    expect(pending).toHaveLength(0)
+
+    const refreshing = controller.refreshCurrent("https://example.test/current")
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/current")
+    expect(await controller.refreshCurrent("https://example.test/current")).toBeUndefined()
+    expect(pending).toHaveLength(1)
+
+    pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/app"><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("fresh")).toBeDefined()
+  })
+
   test("delegates root-external, excluded-extension, and cross-origin proposals without disturbing the current visit", async () => {
     const navigationCalls: { action: string; url: string }[] = []
     const externalCalls: string[] = []

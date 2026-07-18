@@ -99,13 +99,45 @@ export class DocumentVisitController {
       return this.delegateInitial(admission, action, options.navigation)
     }
 
+    return this.startVisit(admission.url, options.navigation)
+  }
+
+  /**
+   * Refreshes only when the captured URL still owns the idle active document.
+   * This bypasses initial root visitability because Turbo refreshes current truth.
+   */
+  refreshCurrent(baseUrl: string): Promise<DocumentVisitResult | undefined> {
+    if (this.status === "started" || this.loader.currentUrl !== baseUrl) {
+      return Promise.resolve(undefined)
+    }
+    return this.startVisit(baseUrl)
+  }
+
+  cancel(): void {
+    if (this.status !== "started") return
+    this.visitEpoch += 1
+    this.loader.cancel(this.requestOwner)
+    this.finish("canceled")
+  }
+
+  subscribe(listener: DocumentVisitListener): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  subscribeErrors(listener: DocumentVisitErrorListener): () => void {
+    this.errorListeners.add(listener)
+    return () => this.errorListeners.delete(listener)
+  }
+
+  private startVisit(source: string, navigation?: NavigationAdapter): Promise<DocumentVisitResult> {
     const epoch = ++this.visitEpoch
     this.loader.cancel(this.requestOwner)
     this.clearProgress()
     this.progressVisible = false
     this.status = "started"
     let redirect: TopLevelLocationDisposition | undefined
-    const loaded = this.loader.load(admission.url, this.requestOwner, {
+    const loaded = this.loader.load(source, this.requestOwner, {
       beforeCommit: (candidate) => {
         if (!candidate.redirected || candidate.classification !== "success") return "commit"
         const disposition = this.redirectDisposition(candidate)
@@ -142,7 +174,7 @@ export class DocumentVisitController {
             throw error
           }
           try {
-            const result = await this.delegateNavigation(redirect, "replace", options.navigation)
+            const result = await this.delegateNavigation(redirect, "replace", navigation)
             if (epoch === this.visitEpoch) this.finish("completed")
             return result
           } catch (error) {
@@ -174,23 +206,6 @@ export class DocumentVisitController {
         throw reported
       },
     )
-  }
-
-  cancel(): void {
-    if (this.status !== "started") return
-    this.visitEpoch += 1
-    this.loader.cancel(this.requestOwner)
-    this.finish("canceled")
-  }
-
-  subscribe(listener: DocumentVisitListener): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  subscribeErrors(listener: DocumentVisitErrorListener): () => void {
-    this.errorListeners.add(listener)
-    return () => this.errorListeners.delete(listener)
   }
 
   private delegateInitial(

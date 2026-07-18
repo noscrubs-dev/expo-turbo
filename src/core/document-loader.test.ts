@@ -67,6 +67,7 @@ describe("Document request loader", () => {
     })
     expect(requests[0]?.headers).not.toHaveProperty("Turbo-Frame")
     expect(requests[0]).not.toHaveProperty("body")
+    expect(session.recentRequestIds.has("request-1")).toBe(true)
     expect(report).toEqual({
       classification: "success",
       redirected: true,

@@ -1,4 +1,5 @@
 import { DisposalError, TargetError } from "./errors"
+import { RecentRequestIds } from "./recent-request-ids"
 import { type DocumentTree, isElement, type ProtocolNode } from "./tree"
 
 export type SessionListener = () => void
@@ -25,6 +26,7 @@ export class SessionCommitError extends AggregateError {
 let nextSessionIdentity = 0
 
 export class DocumentSession {
+  readonly recentRequestIds = new RecentRequestIds()
   private readonly disposals = new Map<ProtocolNode, Set<DisposalHook>>()
   private readonly identities = new WeakMap<ProtocolNode, string>()
   private readonly listeners = new Map<string, Set<SessionListener>>()

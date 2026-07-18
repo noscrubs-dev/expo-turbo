@@ -9,6 +9,7 @@ import {
 } from "./form-request"
 import { FormRequestExecutor } from "./form-request-executor"
 import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
+import { RecentRequestIds } from "./recent-request-ids"
 
 function deferred<T>() {
   let reject!: (reason?: unknown) => void
@@ -48,20 +49,24 @@ describe("FormRequestExecutor", () => {
     let built: ReturnType<typeof buildFormRequest> | undefined
     let fetched: TurboRequest | undefined
     let reads = 0
-    const executor = new FormRequestExecutor({
-      async fetch(request) {
-        fetched = request
-        return response("<FormResult />", {
-          redirected: true,
-          status: 422,
-          text: async () => {
-            reads += 1
-            return "<FormResult />"
-          },
-          url: "https://example.test/final",
-        })
+    const recentRequestIds = new RecentRequestIds()
+    const executor = new FormRequestExecutor(
+      {
+        async fetch(request) {
+          fetched = request
+          return response("<FormResult />", {
+            redirected: true,
+            status: 422,
+            text: async () => {
+              reads += 1
+              return "<FormResult />"
+            },
+            url: "https://example.test/final",
+          })
+        },
       },
-    })
+      { recentRequestIds },
+    )
 
     const result = await executor.execute((signal) => {
       built = buildFormRequest({
@@ -75,6 +80,7 @@ describe("FormRequestExecutor", () => {
     })
 
     expect(fetched).toBe(built?.request)
+    expect(recentRequestIds.has("request-patch")).toBe(true)
     expect(fetched).toMatchObject({
       body: {
         contentType: "application/x-www-form-urlencoded;charset=UTF-8",
