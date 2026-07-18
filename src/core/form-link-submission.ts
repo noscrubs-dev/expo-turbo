@@ -35,6 +35,7 @@ interface GeneratedFormLinkMetadata {
   readonly link: ProtocolElement
   readonly method?: string
   readonly streamAttributePresent: boolean
+  readonly visitAction?: VisitAction
 }
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
@@ -192,6 +193,7 @@ export class FormLinkSubmissionController {
       session: this.session,
       submissionActivity: formSubmissionActivity(this.session, metadata.link),
       treeGeneration: this.session.treeGeneration,
+      ...(metadata.visitAction ? { visitAction: metadata.visitAction } : {}),
     })
   }
 
@@ -267,9 +269,14 @@ export class FormLinkSubmissionController {
       explicitAction === undefined && destinationFrame?.kind === "frame"
         ? exactVisitAction(attributeValue(destinationFrame, "data-turbo-action"))
         : undefined
-    if (explicitAction || inheritedAction) {
+    if (destination.kind === "document" && explicitAction === "restore") {
+      throw new TargetError("Generated form-link restore actions require restoration support", {
+        target: link.key,
+      })
+    }
+    if (destination.kind === "frame" && (explicitAction || inheritedAction)) {
       throw new TargetError("Generated form-link actions require history support", {
-        ...(destination.kind === "frame" ? { frameId: destination.frameId } : {}),
+        frameId: destination.frameId,
         target: link.key,
       })
     }
@@ -304,6 +311,7 @@ export class FormLinkSubmissionController {
       link,
       ...(method !== undefined ? { method } : {}),
       streamAttributePresent,
+      ...(destination.kind === "document" && explicitAction ? { visitAction: explicitAction } : {}),
     })
   }
 

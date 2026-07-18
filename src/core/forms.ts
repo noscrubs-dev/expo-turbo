@@ -1,3 +1,4 @@
+import type { VisitAction } from "../adapters"
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
 import {
   buildFormRequest,
@@ -221,6 +222,10 @@ const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
+}
+
+function exactVisitAction(value: string | undefined): VisitAction | undefined {
+  return value === "advance" || value === "replace" || value === "restore" ? value : undefined
 }
 
 function normalizeFormMode(value: unknown): FormMode {
@@ -741,6 +746,11 @@ export class FormControlRegistry {
       : undefined
     const formConfirmation = attributeValue(this.form, "data-turbo-confirm")
     const confirmationMessage = submitterConfirmation ?? formConfirmation
+    const submitterAction = submitter
+      ? attributeValue(submitter.node, "data-turbo-action")
+      : undefined
+    const formAction = attributeValue(this.form, "data-turbo-action")
+    const authoredAction = submitterAction ?? formAction
     const destination = resolveFormSubmissionDestination(this.session.tree, this.form, {
       ...(formTarget !== undefined ? { formTarget } : {}),
       ...(submitterTarget !== undefined ? { submitterTarget } : {}),
@@ -765,6 +775,12 @@ export class FormControlRegistry {
         frameId: destination.frameId,
       })
     }
+    const visitAction = exactVisitAction(
+      authoredAction ??
+        (destinationFrame?.kind === "frame"
+          ? attributeValue(destinationFrame, "data-turbo-action")
+          : undefined),
+    )
     let originParent = this.form.parent
     while (originParent && originParent.kind !== "document" && originParent.kind !== "frame") {
       originParent = originParent.parent
@@ -792,6 +808,7 @@ export class FormControlRegistry {
       session: this.session,
       ...(submitter ? { submitter: submitter.node } : {}),
       treeGeneration: this.session.treeGeneration,
+      ...(visitAction ? { visitAction } : {}),
     })
   }
 

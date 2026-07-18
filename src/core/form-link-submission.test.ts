@@ -6,12 +6,20 @@ import type {
   TurboRequest,
   TurboResponse,
 } from "../adapters"
+import {
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryWriteMethod,
+} from "./document-history"
 import { StateError, TargetError } from "./errors"
 import {
   FormLinkSubmissionController,
   type FormLinkSubmissionControllerOptions,
 } from "./form-link-submission"
-import { FormSubmissionController } from "./form-submission-controller"
+import {
+  FormSubmissionController,
+  type FormSubmissionControllerOptions,
+} from "./form-submission-controller"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import { DocumentSession } from "./session"
@@ -38,6 +46,7 @@ function harness(
     controller?: FormLinkSubmissionControllerOptions
     requestIds?: RequestIdAdapter
     response?: (request: TurboRequest) => TurboResponse | Promise<TurboResponse>
+    submission?: FormSubmissionControllerOptions
   } = {},
 ) {
   const requests: TurboRequest[] = []
@@ -55,13 +64,40 @@ function harness(
         return (await options.response?.(request)) ?? emptyResponse(request)
       },
     },
-    options.confirmation ? { confirmation: options.confirmation } : {},
+    {
+      ...options.submission,
+      ...(options.confirmation ? { confirmation: options.confirmation } : {}),
+    },
   )
   return {
     allocated: () => allocated,
     links: new FormLinkSubmissionController(document, submissions, requestIds, options.controller),
     requests,
   }
+}
+
+function history(document: DocumentSession) {
+  let identifier = 0
+  const writes: Array<
+    Readonly<{ entry: DocumentHistoryEntry; method: DocumentHistoryWriteMethod }>
+  > = []
+  const history = new DocumentHistory(
+    { next: () => `link-history-${++identifier}` },
+    {
+      write(method, entry) {
+        writes.push(Object.freeze({ entry, method }))
+      },
+    },
+  )
+  history.initialize({
+    entry: {
+      restorationIdentifier: "link-history-current",
+      restorationIndex: 2,
+      url: document.tree.document.url as string,
+    },
+    kind: "managed",
+  })
+  return { history, writes }
 }
 
 describe("FormLinkSubmissionController", () => {
@@ -281,28 +317,65 @@ describe("FormLinkSubmissionController", () => {
     expect(requests).toHaveLength(2)
   })
 
-  test("rejects exact link or inherited Frame actions before allocating a request ID", async () => {
+  test("admits document actions while keeping restore and Frame actions fail-closed", async () => {
     let allocations = 0
     const requestIds = { next: () => `request-${++allocations}` }
     const document = session(
       `<Gallery>
         <DemoLink id="document-link" data-turbo-method="post" data-turbo-action="advance" />
+        <DemoLink id="replace-link" data-turbo-method="post" data-turbo-action="replace" />
+        <DemoLink id="restore-link" data-turbo-method="post" data-turbo-action="restore" />
         <DemoLink id="frame-link" data-turbo-method="post" data-turbo-frame="destination" data-turbo-action="Advance" />
         <turbo-frame id="destination" data-turbo-action="replace" />
       </Gallery>`,
     )
     const { links, requests } = harness(document, { requestIds })
 
-    await expect(links.submit("id:document-link", "/save")).rejects.toThrow(/history support/)
+    expect(await links.submit("id:document-link", "/save")).toMatchObject({ status: "empty" })
+    await expect(links.submit("id:replace-link", "/save")).rejects.toThrow(/configured history/)
+    await expect(links.submit("id:restore-link", "/save")).rejects.toThrow(/restoration support/)
     await expect(links.submit("id:frame-link", "/save")).rejects.toThrow(/history support/)
-    expect(allocations).toBe(0)
-    expect(requests).toHaveLength(0)
+    expect(allocations).toBe(2)
+    expect(requests).toHaveLength(1)
 
     document.setAttribute("id:destination", "data-turbo-action", "Replace")
     const result = await links.submit("id:frame-link", "/save")
     expect(result).toMatchObject({ status: "empty" })
-    expect(allocations).toBe(1)
-    expect(requests).toHaveLength(1)
+    expect(allocations).toBe(3)
+    expect(requests).toHaveLength(2)
+  })
+
+  test("routes generated document replace through shared form history", async () => {
+    const document = session(
+      '<Gallery><DemoLink id="link" data-turbo-method="post" data-turbo-action="replace" /></Gallery>',
+    )
+    const fixture = history(document)
+    const { links } = harness(document, {
+      response: (_request) => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: true,
+        status: 200,
+        text: async () => '<Gallery><Saved id="saved" /></Gallery>',
+        url: "https://example.test/saved",
+      }),
+      submission: { history: fixture.history },
+    })
+
+    expect(await links.submit("id:link", "/save")).toMatchObject({
+      application: "document",
+      status: "applied",
+    })
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "link-history-1",
+          restorationIndex: 2,
+          url: "https://example.test/saved",
+        },
+        method: "replace",
+      },
+    ])
+    expect(document.tree.getElementById("saved")).toBeDefined()
   })
 
   test("rejects dialog, missing generated metadata, and stale exact link ownership", async () => {
