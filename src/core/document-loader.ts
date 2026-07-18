@@ -66,6 +66,7 @@ export type DocumentCommitDisposition = "commit" | "discard"
 export interface DocumentLoadOptions {
   readonly beforeCommit?: (candidate: DocumentCommitCandidate) => DocumentCommitDisposition
   readonly beforeTreeCommit?: (candidate: DocumentTreeCommitCandidate) => undefined
+  readonly onRequestStart?: () => undefined
 }
 
 export interface DocumentRequestLoaderOptions {
@@ -200,6 +201,16 @@ export class DocumentRequestLoader {
 
     try {
       if (!this.owns(active)) return this.canceled(active)
+      if (options.onRequestStart) {
+        const result = options.onRequestStart()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new RequestError("Document request start callback must not return a value", {
+            method: "GET",
+          })
+        }
+        if (!this.owns(active)) return this.canceled(active)
+      }
       this.session.recentRequestIds.add(requestId)
       const response = await this.fetchAdapter.fetch(request)
       if (!this.owns(active)) return this.canceled(active)

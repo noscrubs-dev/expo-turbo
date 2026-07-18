@@ -1,12 +1,19 @@
 import type { ClockAdapter, NavigationAdapter, VisitAction } from "../adapters"
+import type {
+  DocumentHistory,
+  DocumentHistoryEntry,
+  DocumentHistoryProposal,
+} from "./document-history"
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
   type DocumentLoadReport,
   type DocumentRequestLoader,
+  type DocumentTreeCommitCandidate,
 } from "./document-loader"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { RequestError, TargetError } from "./errors"
+import { RequestError, StateError, TargetError } from "./errors"
+import { resolveProtocolUrl } from "./protocol-request"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
@@ -24,6 +31,7 @@ export interface DocumentVisitSnapshot {
 }
 
 export interface DocumentVisitControllerOptions {
+  readonly history?: DocumentHistory
   readonly onObserverError?: (error: AggregateError) => void
   readonly progressDelayMs?: number
   readonly snapshotCache?: DocumentSnapshotCache
@@ -54,8 +62,19 @@ export type DocumentVisitResult = DocumentLoadReport | DocumentVisitDelegation
 export type DocumentVisitListener = () => void
 export type DocumentVisitErrorListener = (error: Error) => void
 
+interface DocumentVisitHistoryPlan {
+  readonly history: DocumentHistory
+  readonly proposal: DocumentHistoryProposal
+}
+
+interface DocumentVisitHistoryGuard {
+  readonly entry: DocumentHistoryEntry
+  readonly history: DocumentHistory
+}
+
 export class DocumentVisitController {
   private readonly errorListeners = new Set<DocumentVisitErrorListener>()
+  private readonly history: DocumentHistory | undefined
   private readonly listeners = new Set<DocumentVisitListener>()
   private readonly onObserverError: ((error: AggregateError) => void) | undefined
   private readonly progressDelayMs: number
@@ -73,6 +92,7 @@ export class DocumentVisitController {
     private readonly clock: ClockAdapter,
     options: DocumentVisitControllerOptions = {},
   ) {
+    this.history = options.history
     this.onObserverError = options.onObserverError
     this.progressDelayMs = options.progressDelayMs ?? DOCUMENT_VISIT_PROGRESS_DELAY_MS
     this.snapshotCache = options.snapshotCache
@@ -90,12 +110,16 @@ export class DocumentVisitController {
     const action = options.action ?? "advance"
     if (action !== "advance") {
       return Promise.reject(
-        new TargetError("Document replace and restore visits require history support"),
+        new TargetError("Document replace and restore visits require explicit action support"),
       )
     }
     let admission: TopLevelLocationDisposition
+    let historyPlan: DocumentVisitHistoryPlan | undefined
     try {
       admission = this.loader.classifyTopLevelSource(source)
+      if (admission.classification === "visitable") {
+        historyPlan = this.proposeHistoryAdvance(admission.url)
+      }
     } catch (error) {
       return Promise.reject(error)
     }
@@ -103,7 +127,7 @@ export class DocumentVisitController {
       return this.delegateInitial(admission, action, options.navigation)
     }
 
-    return this.startVisit(admission.url, options.navigation, this.snapshotCache)
+    return this.startVisit(admission.url, options.navigation, this.snapshotCache, historyPlan)
   }
 
   /**
@@ -111,16 +135,29 @@ export class DocumentVisitController {
    * This bypasses initial root visitability because Turbo refreshes current truth.
    */
   refreshCurrent(baseUrl: string): Promise<DocumentVisitResult | undefined> {
-    if (this.status === "started" || this.loader.currentUrl !== baseUrl) {
+    if (this.status === "started") {
       return Promise.resolve(undefined)
     }
-    return this.startVisit(baseUrl)
+    let currentUrl: string | undefined
+    let historyGuard: DocumentVisitHistoryGuard | undefined
+    try {
+      currentUrl = this.canonicalDocumentUrl(this.loader.currentUrl)
+      if (!currentUrl || this.canonicalDocumentUrl(baseUrl) !== currentUrl) {
+        return Promise.resolve(undefined)
+      }
+      historyGuard = this.captureHistoryGuard(currentUrl)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return this.startVisit(currentUrl, undefined, undefined, undefined, historyGuard)
   }
 
   cancel(): void {
     if (this.status !== "started") return
+    const epoch = this.visitEpoch
+    if (!this.loader.cancel(this.requestOwner)) return
+    if (epoch !== this.visitEpoch || this.status !== "started") return
     this.visitEpoch += 1
-    this.loader.cancel(this.requestOwner)
     this.finish("canceled")
   }
 
@@ -138,12 +175,11 @@ export class DocumentVisitController {
     source: string,
     navigation?: NavigationAdapter,
     snapshotCache?: DocumentSnapshotCache,
+    initialHistoryPlan?: DocumentVisitHistoryPlan,
+    historyGuard?: DocumentVisitHistoryGuard,
   ): Promise<DocumentVisitResult> {
-    const epoch = ++this.visitEpoch
-    this.loader.cancel(this.requestOwner)
-    this.clearProgress()
-    this.progressVisible = false
-    this.status = "started"
+    let epoch: number | undefined
+    let historyPlan = initialHistoryPlan
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
       beforeCommit: (candidate) => {
@@ -154,25 +190,61 @@ export class DocumentVisitController {
             return "discard"
           }
         }
-        if (candidate.status === "committed" && snapshotCache) {
-          this.loader.captureCurrentSnapshot(snapshotCache)
+        if (
+          candidate.status === "committed" &&
+          historyPlan &&
+          candidate.url !== historyPlan.proposal.entry.url
+        ) {
+          historyPlan = {
+            history: historyPlan.history,
+            proposal: historyPlan.history.retargetProposal(historyPlan.proposal, candidate.url),
+          }
         }
         return "commit"
       },
+      ...((snapshotCache || historyPlan || historyGuard) && {
+        beforeTreeCommit: (candidate: DocumentTreeCommitCandidate) => {
+          if (
+            historyGuard &&
+            (historyGuard.history.current !== historyGuard.entry ||
+              candidate.url !== historyGuard.entry.url)
+          ) {
+            throw new StateError("Document history changed during the current-document refresh")
+          }
+          if (historyPlan && historyPlan.proposal.entry.url !== candidate.url) {
+            throw new StateError("Document history proposal no longer matches the commit candidate")
+          }
+          if (snapshotCache) this.loader.captureCurrentSnapshot(snapshotCache)
+          if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
+        },
+      }),
+      onRequestStart: () => {
+        epoch = ++this.visitEpoch
+        this.progressVisible = false
+        this.status = "started"
+      },
     })
-    if (epoch === this.visitEpoch && this.status === "started") {
-      this.progressHandle = this.clock.setTimeout(() => {
+    if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+      this.clearProgress()
+    }
+    if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+      const progressHandle = this.clock.setTimeout(() => {
         if (epoch !== this.visitEpoch || this.status !== "started") return
         this.progressHandle = undefined
         this.progressVisible = true
         this.publish()
       }, this.progressDelayMs)
-      this.publish()
+      if (epoch !== this.visitEpoch || this.status !== "started") {
+        this.clock.clearTimeout(progressHandle)
+      } else {
+        this.progressHandle = progressHandle
+        this.publish()
+      }
     }
 
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
-        if (epoch !== this.visitEpoch) return report
+        if (epoch === undefined || epoch !== this.visitEpoch) return report
         if (report.status === "discarded") {
           if (
             !redirect ||
@@ -209,7 +281,7 @@ export class DocumentVisitController {
       },
       (error: unknown) => {
         const reported = error instanceof Error ? error : new RequestError("Document visit failed")
-        if (epoch === this.visitEpoch) {
+        if (epoch !== undefined && epoch === this.visitEpoch) {
           const status =
             error instanceof DocumentCommitError && error.outcome.classification === "success"
               ? "completed"
@@ -220,6 +292,38 @@ export class DocumentVisitController {
         throw reported
       },
     )
+  }
+
+  private proposeHistoryAdvance(url: string): DocumentVisitHistoryPlan | undefined {
+    const guard = this.captureHistoryGuard(this.loader.currentUrl)
+    if (!guard) return undefined
+    const proposal = guard.history.proposeAdvance(url)
+    if (
+      guard.history.current !== guard.entry ||
+      this.canonicalDocumentUrl(this.loader.currentUrl) !== guard.entry.url
+    ) {
+      throw new StateError("Document history or the active document changed during visit planning")
+    }
+    return { history: guard.history, proposal }
+  }
+
+  private captureHistoryGuard(url: string | undefined): DocumentVisitHistoryGuard | undefined {
+    const history = this.history
+    if (!history) return undefined
+    const entry = history.current
+    if (!entry || this.canonicalDocumentUrl(url) !== entry.url) {
+      throw new StateError("Document history must match the active document before a visit")
+    }
+    return { entry, history }
+  }
+
+  private canonicalDocumentUrl(url: string | undefined): string | undefined {
+    if (!url) return undefined
+    try {
+      return resolveProtocolUrl(url, url).url
+    } catch {
+      throw new StateError("Active document history requires a valid credential-free HTTP(S) URL")
+    }
   }
 
   private delegateInitial(
@@ -274,8 +378,9 @@ export class DocumentVisitController {
   }
 
   private clearProgress(): void {
-    if (this.progressHandle !== undefined) this.clock.clearTimeout(this.progressHandle)
+    const handle = this.progressHandle
     this.progressHandle = undefined
+    if (handle !== undefined) this.clock.clearTimeout(handle)
   }
 
   private createSnapshot(): DocumentVisitSnapshot {
@@ -289,7 +394,9 @@ export class DocumentVisitController {
 
   private finish(status: Extract<DocumentVisitStatus, "canceled" | "completed" | "failed">): void {
     if (this.status !== "started") return
+    const epoch = this.visitEpoch
     this.clearProgress()
+    if (epoch !== this.visitEpoch || this.status !== "started") return
     this.progressVisible = false
     this.status = status
     this.publish()
