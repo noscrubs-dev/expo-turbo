@@ -63,6 +63,25 @@ function externalFormFixture(): DocumentSession {
   )
 }
 
+function formModeFixture(): DocumentSession {
+  return new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery id="root">
+        <Gallery id="form-outer">
+          <Gallery id="form-inner">
+            <DemoForm id="form">
+              <Gallery id="submitter-outer"><DemoButton id="save" /></Gallery>
+            </DemoForm>
+          </Gallery>
+        </Gallery>
+        <Gallery id="external-outer"><DemoButton id="external-submit" form="form" /></Gallery>
+        <DemoForm id="other-form"><DemoButton id="foreign" /></DemoForm>
+      </Gallery>`,
+      { url: "https://example.test/current" },
+    ),
+  )
+}
+
 function registryFor(session: DocumentSession): FormControlRegistry {
   const form = session.tree.getElementById("form")
   if (!form) throw new Error("form fixture is missing")
@@ -182,6 +201,85 @@ describe("native form control registry", () => {
     expect(() =>
       registry.register("id:outside", { kind: "value", name: "outside", value: "outside" }),
     ).toThrow(/another form/)
+  })
+
+  test("matches Turbo form modes across independent form and submitter ancestry", () => {
+    const session = formModeFixture()
+    const on = new FormControlRegistry(session, "id:form")
+    const save = on.register("id:save", { kind: "submitter", name: "commit", value: "save" })
+    const external = on.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "external",
+    })
+
+    expect(on.shouldInterceptSubmission()).toBe(true)
+    expect(on.shouldInterceptSubmission({ submitter: save.selection })).toBe(true)
+    session.setAttribute("id:form-inner", "data-turbo", "false")
+    expect(on.shouldInterceptSubmission()).toBe(false)
+    expect(on.shouldInterceptSubmission({ submitter: save.selection })).toBe(false)
+    session.setAttribute("id:form", "data-turbo", "true")
+    expect(on.shouldInterceptSubmission()).toBe(true)
+    expect(on.shouldInterceptSubmission({ submitter: save.selection })).toBe(true)
+    session.setAttribute("id:save", "data-turbo", "false")
+    expect(on.shouldInterceptSubmission({ submitter: save.selection })).toBe(false)
+    session.setAttribute("id:save", "data-turbo", "FALSE")
+    expect(on.shouldInterceptSubmission({ submitter: save.selection })).toBe(true)
+    session.setAttribute("id:external-outer", "data-turbo", "false")
+    expect(on.shouldInterceptSubmission({ submitter: external.selection })).toBe(false)
+    session.setAttribute("id:external-submit", "data-turbo", "true")
+    expect(on.shouldInterceptSubmission({ submitter: external.selection })).toBe(true)
+
+    session.removeAttribute("id:form", "data-turbo")
+    session.removeAttribute("id:form-inner", "data-turbo")
+    session.removeAttribute("id:save", "data-turbo")
+    session.removeAttribute("id:external-submit", "data-turbo")
+    session.removeAttribute("id:external-outer", "data-turbo")
+    const optin = new FormControlRegistry(session, "id:form", { formMode: "optin" })
+    const optinSave = optin.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    const optinExternal = optin.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "external",
+    })
+
+    expect(optin.shouldInterceptSubmission()).toBe(false)
+    session.setAttribute("id:external-submit", "data-turbo", "true")
+    expect(optin.shouldInterceptSubmission({ submitter: optinExternal.selection })).toBe(false)
+    session.setAttribute("id:form-outer", "data-turbo", "true")
+    session.setAttribute("id:form-inner", "data-turbo", "false")
+    expect(optin.shouldInterceptSubmission()).toBe(true)
+    expect(optin.shouldInterceptSubmission({ submitter: optinSave.selection })).toBe(false)
+    session.setAttribute("id:save", "data-turbo", "true")
+    expect(optin.shouldInterceptSubmission({ submitter: optinSave.selection })).toBe(true)
+    expect(optin.shouldInterceptSubmission({ submitter: optinExternal.selection })).toBe(true)
+    session.setAttribute("id:external-submit", "data-turbo", "false")
+    expect(optin.shouldInterceptSubmission({ submitter: optinExternal.selection })).toBe(false)
+  })
+
+  test("keeps form mode off as an interaction short-circuit and rejects invalid modes", () => {
+    const session = formModeFixture()
+    const off = new FormControlRegistry(session, "id:form", { formMode: "off" })
+    const initialState = off.submissionState
+    const initialTerminalState = off.submissionTerminalState
+
+    expect(off.shouldInterceptSubmission()).toBe(false)
+    expect(off.shouldInterceptSubmission({ submitter: { nodeKey: "missing" } as never })).toBe(
+      false,
+    )
+    expect(off.submissionState).toBe(initialState)
+    expect(off.submissionTerminalState).toBe(initialTerminalState)
+    expect(
+      () => new FormControlRegistry(session, "id:form", { formMode: "invalid" as never }),
+    ).toThrow(PropsError)
+    const invalidDocumentControls = new DocumentFormControls(session, {
+      formMode: "invalid" as never,
+    })
+    expect(() => invalidDocumentControls.controlsFor("id:form")).toThrow(PropsError)
   })
 
   test("collects selected enabled options in authored order and inherits disabled groups", () => {

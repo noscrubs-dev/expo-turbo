@@ -313,10 +313,12 @@ function DemoFormSubmitterComponent(props: {
       accessibilityState={control.accessibilityState}
       disabled={control.disabled}
       onPress={() => {
+        const submitter = control.selection();
+        if (!formBinding.shouldInterceptSubmission({ submitter })) return;
         void formBinding
           .submit({
             protocol: { requestId: `demo-form-${++requestId.current}` },
-            submitter: control.selection(),
+            submitter,
           })
           .catch(() => undefined);
       }}

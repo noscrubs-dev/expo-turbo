@@ -128,6 +128,7 @@ export interface ExpoTurboFormBinding {
   dismissTerminal(): void
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
+  readonly shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) => boolean
   readonly submissionProposal: (
     options: ActiveFormSubmissionProposalOptions,
   ) => FormSubmissionProposal
@@ -455,6 +456,8 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
           controllerOptions?: FormSubmissionControllerSubmitOptions,
         ) => registry.retryFailure(options, controllerOptions),
         state,
+        shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
+          registry.shouldInterceptSubmission(options),
         submit: (
           options: ActiveFormSubmitOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
