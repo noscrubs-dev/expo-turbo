@@ -206,9 +206,9 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "data-turbo-action",
   "data-turbo-method",
   "data-turbo-stream",
+  "download",
   "method",
   "stream",
-  "target",
 ] as const
 const MISSING_FORM_OWNER_KEY = "__expo-turbo-missing-form-owner__"
 
@@ -796,6 +796,10 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     if (attributeValue(node, "disabled") !== undefined) {
       return Object.freeze({ kind: "disabled", status: "ignored" })
+    }
+    const browserTarget = attributeValue(node, "target")
+    if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
+      throw new TargetError("Document link metadata requires unsupported navigation behavior")
     }
     for (const name of UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES) {
       if (attributeValue(node, name) !== undefined) {
