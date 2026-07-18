@@ -76,6 +76,38 @@ describe("Expo Turbo XML tree", () => {
     expect(renderedNodeTextContent(cdata)).toBe("  raw\n  text  ")
   })
 
+  test("deep-clones active trees without sharing nodes or reusing mutation keys", () => {
+    const tree = parseExpoTurboDocument("<Gallery><DemoText>One</DemoText></Gallery>", {
+      url: "https://example.test/gallery",
+    })
+    const root = tree.document.children.find(isElement)
+    const source = root?.children.find(isElement)
+    if (!root || !source) throw new Error("fixture lost its root or source")
+    tree.insertClones(root, root.children.length, [source])
+
+    const clone = tree.clone()
+    const clonedRoot = clone.document.children.find(isElement)
+    const clonedMutation = clone.getNodeByKey("mutation:0")
+    const originalMutation = tree.getNodeByKey("mutation:0")
+    if (!clonedRoot || !clonedMutation || !originalMutation || !isElement(clonedMutation)) {
+      throw new Error("clone lost its mutation fixture")
+    }
+
+    expect(clone.document).not.toBe(tree.document)
+    expect(clone.document.url).toBe(tree.document.url)
+    expect(clonedMutation).not.toBe(originalMutation)
+    expect(clonedMutation.parent).not.toBe(originalMutation.parent)
+    clone.setAttribute(clonedMutation, "data-state", "changed")
+    expect(attributeValue(clonedMutation, "data-state")).toBe("changed")
+    expect(
+      isElement(originalMutation) ? attributeValue(originalMutation, "data-state") : undefined,
+    ).toBeUndefined()
+
+    clone.insertClones(clonedRoot, clonedRoot.children.length, [source])
+    expect(clone.getNodeByKey("mutation:2")).toBeDefined()
+    expect(tree.getNodeByKey("mutation:2")).toBeUndefined()
+  })
+
   test("parses ordered multi-root Turbo Stream fragments behind a private wrapper", () => {
     const tree = parseTurboStreamFragment(`
       <turbo-stream action="append" target="items"><template><DemoText id="one" /></template></turbo-stream>

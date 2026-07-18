@@ -120,6 +120,14 @@ Explicit cancellation, supersession by a newer document GET or document-destinat
 
 The raw loader does not decide navigation actions, root visitability, lifecycle events, snapshot/history restoration, preload/prefetch, or form submission. The separate visit controller below owns the currently supported root policy plus loading and accessibility state.
 
+## Document snapshot cache foundation
+
+`DocumentTree.clone()` is the production deep-copy boundary for history and cache work. It preserves the document URL, exact deterministic/internal keys, node kinds, ordered children, attributes, namespace metadata, source locations, indexes, and the source tree's next safe mutation-key sequence while allocating independent document, node, attribute, location, parent, and child records. Mutating either tree cannot affect the other. The optional temporary-element policy omits every subtree whose root has `data-turbo-temporary` by attribute presence; it never removes that subtree from the live source tree.
+
+`DocumentSnapshotCache` defaults to Turbo 8.0.23's ten-entry LRU. It accepts normalized credential-free absolute HTTP(S) locations, removes the fragment from the cache key, and retains path plus query identity. `has` does not affect recency; both `get` and `put` move an entry to the newest position. `put` stores a temporary-pruned clone, and every successful `get` returns another fresh clone, so a restored document cannot mutate the retained snapshot or the document that produced it. Replacing a key updates its bytes and recency; capacity eviction removes the least recently touched entry; `size` and `clear` expose bounded host-neutral management.
+
+This is a cache primitive, not active Drive history. The visit controller does not yet capture outgoing trees, render previews, consume restored snapshots, interpret native `no-cache`/`no-preview` metadata, retain restoration identifiers or scroll positions, synchronize a host router, or admit general `replace`/`restore` visits. Those gates remain explicit rather than treating the existence of an LRU as navigation parity.
+
 ## Document visit lifecycle and native accessibility
 
 `DocumentVisitController` gives one mounted document session an identity-safe observable GET lifecycle. Its immutable snapshot moves from `initialized` to `started`, then to exactly one of `completed`, `failed`, or `canceled`. `busy` becomes true immediately at `started`. `progressVisible` becomes true only after the injected clock reaches `DOCUMENT_VISIT_PROGRESS_DELAY_MS` (500 ms) and is cleared on every terminal path.
