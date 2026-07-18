@@ -1581,7 +1581,7 @@ describe("React protocol renderer", () => {
     forms.dispose()
   })
 
-  test("projects live disabled fieldset inheritance through the first legend exception", async () => {
+  test("projects fieldset disabledness while datalist ancestry only bars submission", async () => {
     let captured: ExpoTurboFormBinding | undefined
 
     function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
@@ -1640,6 +1640,14 @@ describe("React protocol renderer", () => {
       schema: z.object({ disabled: z.boolean().default(false) }),
       tag: "NativeFieldset",
     })
+    const datalist = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: FormContainer,
+      formContainer: "datalist",
+      schema: z.object({}),
+      tag: "NativeDatalist",
+    })
     const legend = defineComponent({
       attributes: {},
       children: "nodes",
@@ -1670,14 +1678,14 @@ describe("React protocol renderer", () => {
     })
     const componentRegistry = registryWithCounters().use(
       defineComponentModule({
-        components: [form, capture, fieldset, legend, value, submitter],
+        components: [form, capture, datalist, fieldset, legend, value, submitter],
         name: "native-fieldset-semantics",
         version: "0.1.0",
       }),
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><FieldsetForm id="form"><CaptureFieldsetForm/><NativeFieldset id="fieldset" disabled=""><FieldsetValue id="blocked" name="blocked" value="no"/><NativeLegend><FieldsetValue id="exempt" name="exempt" value="yes"/><FieldsetSubmitter id="save" name="commit" value="save"/></NativeLegend></NativeFieldset></FieldsetForm></Gallery>',
+        '<Gallery><FieldsetForm id="form"><CaptureFieldsetForm/><NativeFieldset id="fieldset" disabled=""><FieldsetValue id="blocked" name="blocked" value="no"/><NativeLegend><FieldsetValue id="exempt" name="exempt" value="yes"/><FieldsetSubmitter id="save" name="commit" value="save"/></NativeLegend></NativeFieldset><NativeDatalist><FieldsetValue id="datalist-value" name="datalist" value="omitted"/></NativeDatalist></FieldsetForm></Gallery>',
         { url: "https://example.test/fieldset" },
       ),
     )
@@ -1712,6 +1720,10 @@ describe("React protocol renderer", () => {
       disabled: true,
     })
     expect(control("id:exempt")?.props).toMatchObject({
+      accessibilityState: { disabled: false },
+      disabled: false,
+    })
+    expect(control("id:datalist-value")?.props).toMatchObject({
       accessibilityState: { disabled: false },
       disabled: false,
     })

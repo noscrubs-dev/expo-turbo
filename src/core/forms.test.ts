@@ -130,8 +130,42 @@ function fieldsetFixture(): DocumentSession {
   )
 }
 
+function datalistFixture(): DocumentSession {
+  return new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery>
+        <DemoDatalist id="external-list">
+          <DemoGroup><DemoInput id="external-barred" form="form" /></DemoGroup>
+          <DemoButton id="external-submit" form="form" />
+        </DemoDatalist>
+        <DemoInput id="external-enabled" form="form" />
+        <DemoForm id="form" action="/submit" method="post">
+          <DemoInput id="before" />
+          <DemoDatalist id="list">
+            <DemoInput id="value" />
+            <DemoInput id="checkable" />
+            <DemoSelect id="select" />
+            <DemoInput id="charset" />
+            <DemoGroup>
+              <DemoDatalist id="nested-list">
+                <DemoInput id="directional" />
+              </DemoDatalist>
+            </DemoGroup>
+          </DemoDatalist>
+          <DemoFieldset id="fieldset" disabled="">
+            <DemoLegend><DemoInput id="fieldset-exempt" /></DemoLegend>
+          </DemoFieldset>
+          <DemoInput id="after" />
+        </DemoForm>
+      </Gallery>`,
+      { url: "https://example.test/current" },
+    ),
+  )
+}
+
 const FORM_SEMANTICS = Object.freeze({
   formContainerRole: (element: { readonly tagName: string }) => {
+    if (element.tagName === "DemoDatalist") return "datalist" as const
     if (element.tagName === "DemoFieldset") return "fieldset" as const
     if (element.tagName === "DemoLegend") return "legend" as const
     return undefined
@@ -457,6 +491,98 @@ describe("native form control registry", () => {
       { name: "live", value: "enabled" },
       { name: "commit", value: "live" },
     ])
+  })
+
+  test("bars controls under semantic datalist ancestry without disabling them", () => {
+    const session = datalistFixture()
+    const registry = new FormControlRegistry(session, "id:form", {
+      formSemantics: FORM_SEMANTICS,
+    })
+    registry.register("id:external-barred", {
+      kind: "value",
+      name: "external_barred",
+      value: "ignored",
+    })
+    const externalSubmitter = registry.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "ignored",
+    })
+    registry.register("id:external-enabled", {
+      kind: "value",
+      name: "external_enabled",
+      value: "outside",
+    })
+    registry.register("id:before", { kind: "value", name: "before", value: "A" })
+    registry.register("id:value", { kind: "value", name: "value", value: "ignored" })
+    registry.register("id:checkable", {
+      checked: true,
+      kind: "checkable",
+      name: "checkable",
+      value: "ignored",
+    })
+    registry.register("id:select", {
+      kind: "select",
+      name: "select",
+      options: [{ kind: "option", selected: true, value: "ignored" }],
+    })
+    registry.register("id:charset", { kind: "charset", name: "_charset_" })
+    registry.register("id:directional", {
+      directionality: { name: "directional.dir", value: "ltr" },
+      kind: "value",
+      name: "directional",
+      value: "ignored",
+    })
+    registry.register("id:fieldset-exempt", {
+      kind: "value",
+      name: "fieldset_exempt",
+      value: "legend",
+    })
+    registry.register("id:after", { kind: "value", name: "after", value: "Z" })
+
+    expect(registry.controlInheritedDisabled("id:value")).toBe(false)
+    expect(registry.successfulEntries()).toEqual([
+      { name: "external_enabled", value: "outside" },
+      { name: "before", value: "A" },
+      { name: "fieldset_exempt", value: "legend" },
+      { name: "after", value: "Z" },
+    ])
+    expect(registry.requestPlan({ protocol: { requestId: "datalist" } })).toMatchObject({
+      entries: [
+        { name: "external_enabled", value: "outside" },
+        { name: "before", value: "A" },
+        { name: "fieldset_exempt", value: "legend" },
+        { name: "after", value: "Z" },
+      ],
+      request: {
+        body: {
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          value: "external_enabled=outside&before=A&fieldset_exempt=legend&after=Z",
+        },
+        method: "POST",
+        url: "https://example.test/submit",
+      },
+    })
+    expect(
+      registry.requestPlan({
+        protocol: { requestId: "datalist-submitter" },
+        submitter: externalSubmitter.selection,
+      }),
+    ).toMatchObject({
+      entries: [
+        { name: "external_enabled", value: "outside" },
+        { name: "before", value: "A" },
+        { name: "fieldset_exempt", value: "legend" },
+        { name: "after", value: "Z" },
+        { name: "commit", value: "ignored" },
+      ],
+      request: {
+        body: {
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          value: "external_enabled=outside&before=A&fieldset_exempt=legend&after=Z&commit=ignored",
+        },
+      },
+    })
   })
 
   test("rejects malformed form semantics and forged container roles", () => {
