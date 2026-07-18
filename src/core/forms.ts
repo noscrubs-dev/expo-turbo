@@ -51,13 +51,13 @@ export interface FormSelectOptionGroup {
 export type FormSelectItem = FormSelectOption | FormSelectOptionGroup
 
 export type FormControlDescriptor =
-  | (Omit<FormControlBase, "name"> & {
-      readonly kind: "charset"
-      readonly name: string
-    })
   | (FormControlBase & {
       readonly kind: "checkable"
       readonly checked: boolean
+      readonly value?: string
+    })
+  | (FormControlBase & {
+      readonly kind: "hidden"
       readonly value?: string
     })
   | (FormControlBase & {
@@ -164,6 +164,18 @@ interface DocumentFormControlRecord {
   readonly node: ProtocolElement
   readonly registry: FormControlRegistry
   unregisterDisposal: () => void
+}
+
+const CHARSET_CONTROL_NAME = "_charset_"
+
+function isCharsetControlName(name: string): boolean {
+  if (name.length !== CHARSET_CONTROL_NAME.length) return false
+  for (let index = 0; index < name.length; index += 1) {
+    const code = name.charCodeAt(index)
+    const normalized = code >= 65 && code <= 90 ? code + 32 : code
+    if (normalized !== CHARSET_CONTROL_NAME.charCodeAt(index)) return false
+  }
+  return true
 }
 
 const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
@@ -292,13 +304,6 @@ function normalizeDescriptor(
     ...(descriptor.disabled !== undefined ? { disabled: descriptor.disabled } : {}),
   }
   switch (descriptor.kind) {
-    case "charset":
-      if (descriptor.name === undefined || descriptor.name.toLowerCase() !== "_charset_") {
-        throw new PropsError("Charset form control name must be _charset_ ignoring ASCII case", {
-          target: nodeKey,
-        })
-      }
-      return Object.freeze({ ...base, kind: descriptor.kind, name: descriptor.name })
     case "checkable":
       if (typeof descriptor.checked !== "boolean") {
         throw new PropsError("Checkable form control checked must be a boolean", {
@@ -313,6 +318,17 @@ function normalizeDescriptor(
       return Object.freeze({
         ...base,
         checked: descriptor.checked,
+        kind: descriptor.kind,
+        ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
+      })
+    case "hidden":
+      if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
+        throw new PropsError("Hidden form control value must be a string", {
+          target: nodeKey,
+        })
+      }
+      return Object.freeze({
+        ...base,
         kind: descriptor.kind,
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
@@ -801,13 +817,18 @@ export class FormControlRegistry {
         return
       }
       switch (descriptor.kind) {
-        case "charset":
-          entries.push(Object.freeze({ name: descriptor.name, value: "UTF-8" }))
-          return
         case "checkable":
           if (descriptor.checked) {
             entries.push(Object.freeze({ name: descriptor.name, value: descriptor.value ?? "on" }))
           }
+          return
+        case "hidden":
+          entries.push(
+            Object.freeze({
+              name: descriptor.name,
+              value: isCharsetControlName(descriptor.name) ? "UTF-8" : (descriptor.value ?? ""),
+            }),
+          )
           return
         case "multiple":
           for (const value of descriptor.values) {

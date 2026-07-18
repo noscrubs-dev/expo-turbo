@@ -957,9 +957,13 @@ describe("React protocol renderer", () => {
       })
       return createElement("native-value", { nodeKey: binding.nodeKey, value })
     }
-    function NativeCharset({ name }: { name: string }): ReactNode {
-      useExpoTurboFormControl({ kind: "charset", name })
-      return createElement("native-charset", { name })
+    function NativeHidden({ name, value }: { name?: string; value?: string }): ReactNode {
+      useExpoTurboFormControl({
+        kind: "hidden",
+        ...(name !== undefined ? { name } : {}),
+        ...(value !== undefined ? { value } : {}),
+      })
+      return createElement("native-hidden", { name, value })
     }
     function NativeLiveValue({ name, value }: { name: string; value: string }): ReactNode {
       const [current, setCurrent] = useState(value)
@@ -1065,12 +1069,15 @@ describe("React protocol renderer", () => {
       }),
       tag: "NativeValue",
     })
-    const charset = defineComponent({
-      attributes: { name: { codec: stringCodec, prop: "name" } },
+    const hidden = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
       children: "none",
-      component: NativeCharset,
-      schema: z.object({ name: z.string() }),
-      tag: "NativeCharset",
+      component: NativeHidden,
+      schema: z.object({ name: z.string().optional(), value: z.string().optional() }),
+      tag: "NativeHidden",
     })
     const liveValue = defineComponent({
       attributes: {
@@ -1134,7 +1141,16 @@ describe("React protocol renderer", () => {
     })
     const componentRegistry = registryWithCounters().use(
       defineComponentModule({
-        components: [form, capture, charset, value, liveValue, checkable, multiple, submitter],
+        components: [
+          form,
+          capture,
+          hidden,
+          value,
+          liveValue,
+          checkable,
+          multiple,
+          submitter,
+        ],
         name: "native-form-components",
         version: "0.1.0",
       }),
@@ -1144,7 +1160,8 @@ describe("React protocol renderer", () => {
         <NativeForm id="form" action="/profile" method="post" data-turbo-frame="profile-frame">
           <CaptureForm slot="primary" />
           <NativeValue id="first" name="item" value="" />
-          <NativeCharset id="charset" name="_CHARSET_" />
+          <NativeHidden id="hidden-token" name="authenticity_token" value="token" />
+          <NativeHidden id="hidden-charset" name="_CHARSET_" value="ignored" />
           <NativeValue id="directional" name="comment" value="مرحبا" direction-name="comment.dir" direction-value="rtl" />
           <NativeLiveValue id="local" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
@@ -1214,6 +1231,7 @@ describe("React protocol renderer", () => {
     const selectedSubmitter = submitterSelection()
     expect(primary.successfulEntries({ submitter: selectedSubmitter })).toEqual([
       { name: "item", value: "" },
+      { name: "authenticity_token", value: "token" },
       { name: "_CHARSET_", value: "UTF-8" },
       { name: "comment", value: "مرحبا" },
       { name: "comment.dir", value: "rtl" },
@@ -1239,6 +1257,7 @@ describe("React protocol renderer", () => {
         effectiveMethod: "PATCH",
         entries: [
           { name: "item", value: "" },
+          { name: "authenticity_token", value: "token" },
           { name: "_CHARSET_", value: "UTF-8" },
           { name: "comment", value: "مرحبا" },
           { name: "comment.dir", value: "rtl" },
@@ -1389,6 +1408,7 @@ describe("React protocol renderer", () => {
     ).toMatchObject({
       entries: [
         { name: "item", value: "" },
+        { name: "authenticity_token", value: "token" },
         { name: "_CHARSET_", value: "UTF-8" },
         { name: "comment", value: "مرحبا" },
         { name: "comment.dir", value: "rtl" },
