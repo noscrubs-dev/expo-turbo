@@ -10,6 +10,7 @@ import {
   FormControlRegistry,
   type FormControlSelection,
   type FormSelectItem,
+  type FormSelectOption,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -606,6 +607,11 @@ describe("native form control registry", () => {
     const session = formFixture()
     const registry = registryFor(session)
     const enabledOption = { kind: "option" as const, selected: true, value: "enabled" }
+    const textOption = {
+      kind: "option" as const,
+      selected: true,
+      textContent: " \tAlpha\n\fBeta\r ",
+    }
     const disabledGroupOption = {
       disabled: false,
       kind: "option" as const,
@@ -623,9 +629,12 @@ describe("native form control registry", () => {
         kind: "group",
         options: [
           enabledOption,
-          { disabled: true, kind: "option", selected: true, value: "option-disabled" },
-          { kind: "option", selected: false, value: "unselected" },
-          { kind: "option", selected: true, value: "" },
+          { disabled: true, kind: "option", selected: true, textContent: "option disabled" },
+          { kind: "option", selected: false, textContent: "unselected" },
+          { kind: "option", selected: true, textContent: "ignored", value: "" },
+          textOption,
+          { kind: "option", selected: true, textContent: " \n\t " },
+          { kind: "option", selected: true, textContent: "\u00a0Alpha\u00a0" },
           { kind: "option", selected: true, value: "enabled" },
         ],
       },
@@ -646,6 +655,7 @@ describe("native form control registry", () => {
 
     enabledOption.value = "mutated"
     enabledOption.selected = false
+    textOption.textContent = "mutated"
     disabledGroupOption.value = "mutated-disabled"
     options.push({ kind: "option", selected: true, value: "late" })
 
@@ -655,6 +665,9 @@ describe("native form control registry", () => {
       { name: "choices[]", value: "first" },
       { name: "choices[]", value: "enabled" },
       { name: "choices[]", value: "" },
+      { name: "choices[]", value: "Alpha Beta" },
+      { name: "choices[]", value: "" },
+      { name: "choices[]", value: "\u00a0Alpha\u00a0" },
       { name: "choices[]", value: "enabled" },
       { name: "commit", value: "save" },
     ])
@@ -954,12 +967,27 @@ describe("native form control registry", () => {
       {
         kind: "select",
         name: "choice",
+        options: [{ kind: "option", selected: true }],
+      },
+      {
+        kind: "select",
+        name: "choice",
         options: [{ kind: "option", selected: "true", value: "one" }],
       },
       {
         kind: "select",
         name: "choice",
         options: [{ kind: "option", selected: true, value: 1 }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "option", selected: true, textContent: 1 }],
+      },
+      {
+        kind: "select",
+        name: "choice",
+        options: [{ kind: "option", selected: true, textContent: 1, value: "one" }],
       },
       {
         kind: "select",
@@ -1012,7 +1040,7 @@ describe("native form control registry", () => {
       kind: "select",
       name: "choice[]",
       options: [
-        { kind: "option", selected: true, value: "one" },
+        { kind: "option", selected: true, textContent: "  one\n " },
         { disabled: true, kind: "option", selected: true, value: "ignored" },
         { kind: "option", selected: true, value: "" },
       ],
@@ -1799,6 +1827,18 @@ const invalidHidden: FormControlDescriptor = {
   value: 7,
 }
 void invalidHidden
+
+// @ts-expect-error Select options require an explicit value or a text snapshot.
+const missingSelectOptionValue: FormSelectOption = { kind: "option", selected: true }
+void missingSelectOptionValue
+
+const invalidSelectOptionText: FormSelectOption = {
+  kind: "option",
+  selected: true,
+  // @ts-expect-error Select option text snapshots must be strings.
+  textContent: 7,
+}
+void invalidSelectOptionText
 
 const automaticDirectionality: FormControlDirectionality = {
   name: "field.dir",

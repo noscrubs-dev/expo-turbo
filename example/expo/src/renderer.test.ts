@@ -1502,7 +1502,7 @@ describe("React protocol renderer", () => {
         kind: "select",
         name,
         options: [
-          { kind: "option", selected: !alternate, value: "one" },
+          { kind: "option", selected: !alternate, textContent: " \tone\n " },
           {
             kind: "group",
             options: [
