@@ -1,13 +1,181 @@
 import { describe, expect, test } from "bun:test"
 
+import type { TurboResponse } from "../adapters"
+import { DocumentRequestLoader } from "./document-loader"
+import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { type DisposalError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
-import { DocumentSession } from "./session"
+import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+import { DocumentSession, SessionCommitError } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
 
 function session(xml: string): DocumentSession {
   return new DocumentSession(parseExpoTurboDocument(xml))
 }
+
+function response(xml: string, url: string): TurboResponse {
+  return {
+    headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+    redirected: false,
+    status: 200,
+    text: async () => xml,
+    url,
+  }
+}
+
+describe("document session snapshots", () => {
+  test("captures an independent tree and restores fresh clones repeatedly", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Panel id="panel" data-state="original" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const cache = new DocumentSnapshotCache()
+    document.captureSnapshot(cache)
+
+    document.setAttribute("id:panel", "data-state", "live-mutated")
+    const first = document.restoreSnapshot(cache, "https://example.test/current#first")
+    expect(first).toEqual({ status: "restored" })
+    expect(Object.isFrozen(first)).toBe(true)
+    expect(document.tree.getElementById("panel")?.attributes).toContainEqual(
+      expect.objectContaining({ name: "data-state", value: "original" }),
+    )
+
+    document.setAttribute("id:panel", "data-state", "restored-mutated")
+    const firstTree = document.tree
+    expect(document.restoreSnapshot(cache, "https://example.test/current#second")).toEqual({
+      status: "restored",
+    })
+    expect(document.tree).not.toBe(firstTree)
+    expect(document.tree.getElementById("panel")?.attributes).toContainEqual(
+      expect.objectContaining({ name: "data-state", value: "original" }),
+    )
+  })
+
+  test("fails capture without an active URL and leaves misses as true no-ops", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/existing",
+      parseExpoTurboDocument("<Gallery><Existing /></Gallery>", {
+        url: "https://example.test/existing",
+      }),
+    )
+    const document = session('<Gallery><Panel id="panel" /></Gallery>')
+    const tree = document.tree
+    const snapshot = document.getNodeSnapshot("id:panel")
+    const disposed: string[] = []
+    document.registerDisposal("id:panel", () => disposed.push("panel"))
+
+    expect(() => document.captureSnapshot(cache)).toThrow(TargetError)
+    expect(cache.size).toBe(1)
+    expect(() => document.restoreSnapshot(cache, "/relative")).toThrow(TargetError)
+    const missed = document.restoreSnapshot(cache, "https://example.test/missing")
+    expect(missed).toEqual({ status: "miss" })
+    expect(Object.isFrozen(missed)).toBe(true)
+    expect(document.tree).toBe(tree)
+    expect(document.treeGeneration).toBe(0)
+    expect(document.revision).toBe(0)
+    expect(document.getNodeSnapshot("id:panel")).toBe(snapshot)
+    expect(disposed).toEqual([])
+  })
+
+  test("restores through one tree replacement with disposal and fresh identities", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
+        url: "https://example.test/cached",
+      }),
+    )
+    const cache = new DocumentSnapshotCache()
+    const initialIdentity = document.getNodeSnapshot("id:cached")?.identity
+    document.captureSnapshot(cache)
+    document.replaceTree(
+      parseExpoTurboDocument(
+        '<Gallery><Outgoing id="outgoing"><Child id="child" /></Outgoing></Gallery>',
+        {
+          url: "https://example.test/outgoing",
+        },
+      ),
+    )
+    const disposed: string[] = []
+    document.registerDisposal("id:outgoing", () => disposed.push("outgoing"))
+    document.registerDisposal("id:child", () => disposed.push("child"))
+    const generation = document.treeGeneration
+    const revision = document.revision
+
+    expect(document.restoreSnapshot(cache, "https://example.test/cached")).toEqual({
+      status: "restored",
+    })
+    expect(document.treeGeneration).toBe(generation + 1)
+    expect(document.revision).toBe(revision + 1)
+    expect(disposed).toEqual(["child", "outgoing"])
+    expect(document.tree.getElementById("cached")?.tagName).toBe("Cached")
+    expect(document.getNodeSnapshot("id:cached")?.identity).not.toBe(initialIdentity)
+  })
+
+  test("keeps the restored tree committed when replacement finalization fails", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
+        url: "https://example.test/cached",
+      }),
+    )
+    const cache = new DocumentSnapshotCache()
+    document.captureSnapshot(cache)
+    document.replaceTree(
+      parseExpoTurboDocument('<Gallery><Outgoing id="outgoing" /></Gallery>', {
+        url: "https://example.test/outgoing",
+      }),
+    )
+    document.registerDisposal("id:outgoing", () => {
+      throw new Error("cleanup failed")
+    })
+    const generation = document.treeGeneration
+    const revision = document.revision
+
+    expect(() => document.restoreSnapshot(cache, "https://example.test/cached")).toThrow(
+      SessionCommitError,
+    )
+    expect(document.treeGeneration).toBe(generation + 1)
+    expect(document.revision).toBe(revision + 1)
+    expect(document.tree.getElementById("cached")?.tagName).toBe("Cached")
+    expect(document.tree.getElementById("outgoing")).toBeUndefined()
+  })
+
+  test("prevents an older in-flight document response from replacing a restored snapshot", async () => {
+    let resolveResponse: (response: TurboResponse) => void = () => undefined
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
+        url: "https://example.test/cached",
+      }),
+    )
+    const cache = new DocumentSnapshotCache()
+    document.captureSnapshot(cache)
+    document.replaceTree(
+      parseExpoTurboDocument('<Gallery><Live id="live" /></Gallery>', {
+        url: "https://example.test/live",
+      }),
+    )
+    const loader = new DocumentRequestLoader(
+      document,
+      {
+        fetch: () =>
+          new Promise<TurboResponse>((resolve) => {
+            resolveResponse = resolve
+          }),
+      },
+      { next: () => "request-1" },
+    )
+
+    const loading = loader.load("/late")
+    expect(document.restoreSnapshot(cache, "https://example.test/cached")).toEqual({
+      status: "restored",
+    })
+    resolveResponse(response('<Gallery><Late id="late" /></Gallery>', "https://example.test/late"))
+
+    expect(await loading).toMatchObject({ status: "canceled" })
+    expect(document.tree.getElementById("cached")?.tagName).toBe("Cached")
+    expect(document.tree.getElementById("late")).toBeUndefined()
+  })
+})
 
 describe("document subtree disposal", () => {
   test("runs descendant hooks before parent hooks exactly once", () => {

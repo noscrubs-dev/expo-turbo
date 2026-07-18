@@ -1,3 +1,4 @@
+import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
 import { type DocumentTree, isElement, type ProtocolNode } from "./tree"
@@ -14,6 +15,11 @@ export interface NodeSnapshot {
   readonly node: ProtocolNode
   readonly revision: number
 }
+
+export type DocumentSnapshotRestoreResult = Readonly<{ status: "miss" } | { status: "restored" }>
+
+const snapshotMiss = Object.freeze({ status: "miss" as const })
+const snapshotRestored = Object.freeze({ status: "restored" as const })
 
 /** A logical mutation committed, but synchronous disposal/listener finalization failed. */
 export class SessionCommitError extends AggregateError {
@@ -69,6 +75,21 @@ export class DocumentSession {
     const snapshot = Object.freeze({ identity, node, revision: this.currentRevision })
     this.snapshots.set(key, snapshot)
     return snapshot
+  }
+
+  captureSnapshot(cache: DocumentSnapshotCache): void {
+    const url = this.currentTree.document.url
+    if (url === undefined) {
+      throw new TargetError("Document snapshot capture requires an active document URL")
+    }
+    cache.put(url, this.currentTree)
+  }
+
+  restoreSnapshot(cache: DocumentSnapshotCache, url: string): DocumentSnapshotRestoreResult {
+    const tree = cache.get(url)
+    if (!tree) return snapshotMiss
+    this.replaceTree(tree)
+    return snapshotRestored
   }
 
   replaceTree(tree: DocumentTree): void {
