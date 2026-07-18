@@ -333,6 +333,12 @@ function dispatchAction(
         status: result.status,
       })
     }
+    if (
+      (action === "replace" || action === "update") &&
+      attributeValue(stream, "method") === "morph"
+    ) {
+      throw actionError("Native Turbo Stream morph method requires morph support", action)
+    }
     const targets = resolveTargets(session.tree, stream, action)
     const payload = action === "remove" ? [] : templatePayload(stream, action)
     matchedTargets = targets.length

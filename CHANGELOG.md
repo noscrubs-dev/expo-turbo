@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Match Turbo 8.0.23's exact Stream `method` selection. Structural `replace`/`update` actions now fail closed before mutation only for lowercase `method="morph"`, while every other value keeps plain semantics; document refresh likewise reserves only exact morph and treats absent, blank, arbitrary, or differently cased methods as ordinary replacement. Native morph and explicit refresh-scroll policies remain unsupported.
 - Treat confirm-only native document-link activation like plain-link activation, matching Turbo 8.0.23: `data-turbo-confirm` alone is inert during activation across document, Frame, delegated, disabled, and request-supersession paths. Method/Stream-generated form links, functional link confirmation, and confirm-based prefetch suppression remain unsupported.
 - Add HTML-compatible select-option value fallback for explicit native snapshots. An authored string value, including `""`, wins; otherwise host-supplied option text is stripped and collapsed using only ASCII whitespace before successful-entry collection and request encoding. Hosts still own live selectedness, option order, group disabledness, and the raw text snapshot.
 - Add explicit native hidden-control successful entries. Hidden values default to `""`; only ASCII-case-insensitive `_charset_` hidden names are replaced with `UTF-8`, while ordinary value descriptors remain unchanged and existing disabled/name/fieldset/datalist admission plus XML ordering still apply.

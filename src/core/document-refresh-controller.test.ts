@@ -138,6 +138,26 @@ describe("document refresh controller", () => {
     expect(session.tree.getElementById("old")).toBeUndefined()
   })
 
+  test("uses replacement refresh semantics for every non-morph method value", () => {
+    const values = [undefined, "replace", "", "unknown", "MORPH"]
+
+    for (const method of values) {
+      const { clock, pending, refresh, session } = harness()
+      const methodAttribute = method === undefined ? "" : ` method=${JSON.stringify(method)}`
+      const report = dispatchTurboStreamFragment(
+        session,
+        `<turbo-stream action="refresh"${methodAttribute}/>`,
+        { refresh },
+      )
+
+      expect(report.actions[0]?.status).toBe("applied")
+      expect(clock.timers).toHaveLength(1)
+      clock.fire(0)
+      expect(pending).toHaveLength(1)
+      expect(pending[0]?.request.url).toBe("https://example.test/current")
+    }
+  })
+
   test("debounces to the latest refresh and suppresses a recent originating request at execution", () => {
     const { clock, pending, refresh, session } = harness()
 
@@ -203,7 +223,7 @@ describe("document refresh controller", () => {
     )
 
     expect(report.actions.map((action) => action.status)).toEqual(["error", "error", "applied"])
-    expect(actionErrors[0]).toContain("only replace method")
+    expect(actionErrors[0]).toContain("morph method")
     expect(actionErrors[1]).toContain("scroll policy")
     expect(session.tree.getElementById("later")).toBeUndefined()
   })
