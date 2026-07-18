@@ -473,6 +473,7 @@ function renderDocumentLinks(
     disabled,
     href,
   }: {
+    confirm?: string
     disabled: boolean
     href: string
     target?: string
@@ -483,6 +484,7 @@ function renderDocumentLinks(
   }
   const link = defineComponent({
     attributes: {
+      confirm: { codec: stringCodec, prop: "confirm" },
       disabled: { codec: presenceCodec, prop: "disabled" },
       href: { codec: stringCodec, prop: "href" },
       target: { codec: stringCodec, prop: "target" },
@@ -490,6 +492,7 @@ function renderDocumentLinks(
     children: "none",
     component: DocumentLink,
     schema: z.object({
+      confirm: z.string().optional(),
       disabled: z.boolean().default(false),
       href: z.string().trim().min(1),
       target: z.string().optional(),
@@ -3394,13 +3397,13 @@ describe("React protocol renderer", () => {
     expect(probeUnmounts).toEqual([1, 2])
   })
 
-  test("activates an active top-level document link without subscribing it to visit ticks", async () => {
+  test("activates a confirm-only top-level document link without subscribing it to visit ticks", async () => {
     const pending: {
       request: TurboRequest
       resolve: (response: TurboResponse) => void
     }[] = []
     const harness = renderDocumentLinks(
-      '<Gallery><DocumentLink id="link" href="../next?tab=details" /><DemoText>Before</DemoText></Gallery>',
+      '<Gallery><DocumentLink id="link" href="../next?tab=details" data-turbo-confirm="Continue?" /><DemoText>Before</DemoText></Gallery>',
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
       "https://example.test/current/gallery",
     )
@@ -3499,9 +3502,9 @@ describe("React protocol renderer", () => {
     const harness = renderDocumentLinks(
       `<Gallery>
         <DocumentLink href="/pending" />
-        <DocumentLink href="https://outside.test/path" />
-        <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
-        <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" /></Gallery>
+        <DocumentLink href="https://outside.test/path" data-turbo-confirm="Continue?" />
+        <Gallery data-turbo="false"><DocumentLink href="/opted-out" data-turbo-confirm="Continue?" /></Gallery>
+        <Gallery data-turbo="false"><DocumentLink href="https://outside.test/opted-out" data-turbo-confirm="Continue?" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
       "https://example.test/gallery",
@@ -3838,7 +3841,7 @@ describe("React protocol renderer", () => {
     const frameRequests: TurboRequest[] = []
     const harness = renderDocumentLinks(
       `<Gallery>
-        <DocumentLink href="/top-named" data-turbo-frame="named" />
+        <DocumentLink href="/top-named" data-turbo-confirm="Continue?" data-turbo-frame="named" />
         <DocumentLink href="/top-underscore" data-turbo-frame="_sidebar" />
         <DocumentLink href="/top-self" data-turbo-frame="_self" />
         <DocumentLink href="/top-parent" data-turbo-frame="_parent" />
@@ -3849,7 +3852,7 @@ describe("React protocol renderer", () => {
         <turbo-frame id="outer" target="named">
           <DocumentLink href="/default" />
           <DocumentLink href="/self" data-turbo-frame="_self" />
-          <turbo-frame id="inner"><DocumentLink href="/nearest" /></turbo-frame>
+          <turbo-frame id="inner"><DocumentLink href="/nearest" data-turbo-confirm="Continue?" /></turbo-frame>
         </turbo-frame>
       </Gallery>`,
       async (request) => {
@@ -4332,11 +4335,11 @@ describe("React protocol renderer", () => {
         <DocumentLink href="/fragment#section" />
         <DocumentLink href="#" />
         <DocumentLink href="/empty-fragment#" />
-        <DocumentLink href="/method" data-turbo-method="get" />
-        <DocumentLink href="/stream" data-turbo-stream="" />
+        <DocumentLink href="/method" data-turbo-confirm="Continue?" data-turbo-method="get" />
+        <DocumentLink href="/stream" data-turbo-confirm="Continue?" data-turbo-stream="" />
         <DocumentLink href="/target" target="_blank" />
         <DocumentLink href="/action" data-turbo-action="replace" />
-        <DocumentLink href="/confirm" data-turbo-confirm="Continue?" />
+        <DocumentLink href="/confirm-alias" confirm="Continue?" />
         <Gallery data-turbo="false"><DocumentLink href="/opted-out" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
@@ -4359,7 +4362,14 @@ describe("React protocol renderer", () => {
     for (const href of ["/fragment#section", "#", "/empty-fragment#"]) {
       await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
     }
-    for (const href of ["/method", "/stream", "/target", "/action", "/confirm", "/opted-out"]) {
+    for (const href of [
+      "/method",
+      "/stream",
+      "/target",
+      "/action",
+      "/confirm-alias",
+      "/opted-out",
+    ]) {
       await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
     }
     expect(pending).toHaveLength(1)
@@ -4386,10 +4396,10 @@ describe("React protocol renderer", () => {
     const harness = renderDocumentLinks(
       `<Gallery>
         <DocumentLink href="/pending" />
-        <DocumentLink id="dynamic" href="/dynamic" />
-        <DocumentLink disabled="" href="/disabled" />
-        <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" /></turbo-frame>
-        <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" /></Gallery>
+        <DocumentLink id="dynamic" href="/dynamic" data-turbo-confirm="Continue?" />
+        <DocumentLink disabled="" href="/disabled" data-turbo-confirm="Continue?" />
+        <turbo-frame id="frame"><DocumentLink disabled="false" href="/frame-disabled" data-turbo-confirm="Continue?" /></turbo-frame>
+        <Gallery data-turbo="false"><DocumentLink disabled="disabled" href="/opted-out-disabled" data-turbo-confirm="Continue?" /></Gallery>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
     )

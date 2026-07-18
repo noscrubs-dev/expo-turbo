@@ -204,7 +204,6 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
   "confirm",
   "data-turbo-action",
-  "data-turbo-confirm",
   "data-turbo-method",
   "data-turbo-stream",
   "method",
