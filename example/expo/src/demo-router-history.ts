@@ -9,6 +9,14 @@ import {
   StateError,
 } from "expo-turbo/core";
 
+import {
+  DEMO_ROUTER_PATH_PARAM,
+  decodeDemoRouterDocumentPath,
+  encodeDemoRouterDocumentPath,
+} from "./demo-router-path";
+
+export const DEMO_ROUTER_ROUTE_NAME = "[...expoTurboPath]";
+
 export const DEMO_ROUTER_HISTORY_PARAMS = Object.freeze({
   restorationIdentifier: "__expo_turbo_restoration_identifier",
   restorationIndex: "__expo_turbo_restoration_index",
@@ -16,7 +24,7 @@ export const DEMO_ROUTER_HISTORY_PARAMS = Object.freeze({
 });
 
 const DEMO_ROUTER_HISTORY_PARAM_NAMES = new Set<string>(
-  Object.values(DEMO_ROUTER_HISTORY_PARAMS),
+  [DEMO_ROUTER_PATH_PARAM, ...Object.values(DEMO_ROUTER_HISTORY_PARAMS)],
 );
 
 export interface DemoRouterRoute {
@@ -55,7 +63,6 @@ interface DemoRouterAttachment {
   active: boolean;
   readonly navigation: DemoRouterNavigation;
   readonly routeKey: string;
-  readonly routeName: string;
   unsubscribe: (() => void) | undefined;
 }
 
@@ -205,6 +212,21 @@ function unmanagedParams(route: DemoRouterRoute): Readonly<Record<string, unknow
   );
 }
 
+function routeDocumentUrl(route: DemoRouterRoute): string {
+  const params = paramsRecord(route.params);
+  return decodeDemoRouterDocumentPath(params[DEMO_ROUTER_PATH_PARAM]).url;
+}
+
+function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined {
+  const documentUrl = routeDocumentUrl(route);
+  const entry = decodeDemoRouterHistoryEntry(route.params);
+  if (!entry) return undefined;
+  if (entry.url !== documentUrl) {
+    throw new StateError("Demo Router history metadata does not match its canonical path");
+  }
+  return entry;
+}
+
 function sameStackState(left: DemoRouterState, right: DemoRouterState): boolean {
   return sameNavigationValue(left, right);
 }
@@ -316,7 +338,11 @@ function mergedParams(
   route: DemoRouterRoute,
   entry: DocumentHistoryEntry,
 ): Readonly<Record<string, unknown>> {
-  return Object.freeze({ ...unmanagedParams(route), ...encodeDemoRouterHistoryEntry(entry) });
+  return Object.freeze({
+    ...unmanagedParams(route),
+    [DEMO_ROUTER_PATH_PARAM]: encodeDemoRouterDocumentPath(entry.url),
+    ...encodeDemoRouterHistoryEntry(entry),
+  });
 }
 
 /** Example-owned synchronous Expo Router history and traversal bridge. */
@@ -349,13 +375,16 @@ export class DemoRouterHistoryBridge
     if (route.key !== routeKey) {
       throw new StateError("Demo Router history attachment must own the focused route");
     }
+    if (route.name !== DEMO_ROUTER_ROUTE_NAME) {
+      throw new StateError("Demo Router history attachment requires its canonical route");
+    }
+    routeDocumentUrl(route);
 
     this.detach(this.attachment);
     const attachment: DemoRouterAttachment = {
       active: true,
       navigation,
       routeKey,
-      routeName: route.name,
       unsubscribe: undefined,
     };
     this.attachment = attachment;
@@ -382,21 +411,24 @@ export class DemoRouterHistoryBridge
   }
 
   readInitialState(documentUrl: string): DocumentHistoryState {
-    const entry = this.readManagedEntry();
+    const state = this.readRouteState();
     const normalizedDocumentUrl = normalizedUrl(documentUrl);
     if (!normalizedDocumentUrl) {
       throw new StateError("Demo Router history requires a valid document URL");
     }
-    if (entry && entry.url !== normalizedDocumentUrl) {
+    const routeUrl = state.kind === "managed" ? state.entry.url : state.url;
+    if (routeUrl !== normalizedDocumentUrl) {
       throw new StateError("Demo Router history does not match the active document");
     }
-    return entry
-      ? Object.freeze({ entry, kind: "managed" })
-      : Object.freeze({ kind: "unmanaged", url: normalizedDocumentUrl });
+    return state;
   }
 
-  readManagedEntry(): DocumentHistoryEntry | undefined {
-    return decodeDemoRouterHistoryEntry(this.focusedAttachment().route.params);
+  readRouteState(): DocumentHistoryState {
+    const route = this.focusedAttachment().route;
+    const entry = managedEntry(route);
+    return entry
+      ? Object.freeze({ entry, kind: "managed" })
+      : Object.freeze({ kind: "unmanaged", url: routeDocumentUrl(route) });
   }
 
   reconcile(): void {
@@ -444,7 +476,7 @@ export class DemoRouterHistoryBridge
     if (!attachment?.active) throw new StateError("Demo Router history is not attached");
     const before = this.focusedAttachment();
     const current = this.currentEntry();
-    const managed = decodeDemoRouterHistoryEntry(before.route.params);
+    const managed = managedEntry(before.route);
     const initialRepair = current === undefined && method === "replace";
     if (!initialRepair && !entriesEqual(managed, current)) {
       throw new StateError("Demo Router history route is not aligned with the package ledger");
@@ -456,11 +488,11 @@ export class DemoRouterHistoryBridge
     try {
       const result =
         method === "push"
-          ? attachment.navigation.push(attachment.routeName, params)
+          ? attachment.navigation.push(DEMO_ROUTER_ROUTE_NAME, params)
           : attachment.navigation.setParams(params);
       assertUndefinedResult(result, "Demo Router history write failed");
       const after = routeState(attachment.navigation);
-      if (method === "push") this.assertPush(before, after, attachment, entry);
+      if (method === "push") this.assertPush(before, after, entry);
       else this.assertReplace(before, after, attachment, entry);
     } catch {
       try {
@@ -524,13 +556,12 @@ export class DemoRouterHistoryBridge
   private assertPush(
     before: Readonly<{ route: DemoRouterRoute; state: DemoRouterState }>,
     after: Readonly<{ route: DemoRouterRoute; state: DemoRouterState }>,
-    attachment: DemoRouterAttachment,
     entry: DocumentHistoryEntry,
   ): void {
     const expected = expectedPushState(
       before.state,
       after.route,
-      attachment.routeName,
+      DEMO_ROUTER_ROUTE_NAME,
       mergedParams(before.route, entry),
     );
     if (
@@ -596,7 +627,21 @@ export class DemoRouterHistoryBridge
       );
       return;
     }
-    const entry = decodeDemoRouterHistoryEntry(focused.route.params);
+    let entry: DocumentHistoryEntry | undefined;
+    try {
+      entry = managedEntry(focused.route);
+    } catch (error) {
+      if (this.malformedRouteKey !== focused.route.key) {
+        this.malformedRouteKey = focused.route.key;
+        const safeError =
+          error instanceof Error
+            ? error
+            : new StateError("Demo Router history traversal metadata is invalid");
+        if (throwOnMalformed) throw safeError;
+        this.reportError(safeError);
+      }
+      return;
+    }
     if (!entry) {
       if (this.malformedRouteKey !== focused.route.key) {
         this.malformedRouteKey = focused.route.key;

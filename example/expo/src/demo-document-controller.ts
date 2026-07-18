@@ -1,8 +1,8 @@
 import type { ClockAdapter, FetchAdapter, TurboResponse } from "expo-turbo/adapters";
 import {
   DocumentHistory,
-  type DocumentHistoryEntry,
   type DocumentHistoryHostAdapter,
+  type DocumentHistoryState,
   type DocumentLoadReport,
   DocumentRequestLoader,
   type DocumentSession,
@@ -32,9 +32,9 @@ export const DEMO_CLOCK: ClockAdapter = {
 };
 
 export interface DemoDocumentRuntime {
-  bootstrapManagedEntry(
-    entry: DocumentHistoryEntry,
-    currentEntry: () => DocumentHistoryEntry | undefined,
+  bootstrapInitialState(
+    state: DocumentHistoryState,
+    currentState: () => DocumentHistoryState,
   ): DemoDocumentBootstrap;
   readonly controller: DocumentVisitController;
   readonly history: DocumentHistory;
@@ -47,14 +47,16 @@ export interface DemoDocumentBootstrap {
   readonly result: Promise<DocumentLoadReport>;
 }
 
-function entriesEqual(
-  left: DocumentHistoryEntry | undefined,
-  right: DocumentHistoryEntry,
-): boolean {
+function statesEqual(left: DocumentHistoryState, right: DocumentHistoryState): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "unmanaged" && right.kind === "unmanaged") {
+    return left.url === right.url;
+  }
+  if (left.kind !== "managed" || right.kind !== "managed") return false;
   return (
-    left?.restorationIdentifier === right.restorationIdentifier &&
-    left.restorationIndex === right.restorationIndex &&
-    left.url === right.url
+    left.entry.restorationIdentifier === right.entry.restorationIdentifier &&
+    left.entry.restorationIndex === right.entry.restorationIndex &&
+    left.entry.url === right.entry.url
   );
 }
 
@@ -95,11 +97,12 @@ export function createDemoDocumentRuntime(
     snapshotCache,
   });
   return Object.freeze({
-    bootstrapManagedEntry(
-      entry: DocumentHistoryEntry,
-      currentEntry: () => DocumentHistoryEntry | undefined,
+    bootstrapInitialState(
+      state: DocumentHistoryState,
+      currentState: () => DocumentHistoryState,
     ): DemoDocumentBootstrap {
-      const disposition = loader.classifyTopLevelSource(entry.url);
+      const targetUrl = state.kind === "managed" ? state.entry.url : state.url;
+      const disposition = loader.classifyTopLevelSource(targetUrl);
       if (
         disposition.classification !== "visitable" ||
         new URL(disposition.url).hash !== ""
@@ -111,23 +114,23 @@ export function createDemoDocumentRuntime(
       const expectedUrl = disposition.url;
       const owner = Object.freeze({});
       let settled = false;
-      const assertCurrentEntry = (): undefined => {
-        let current: DocumentHistoryEntry | undefined;
+      const assertCurrentState = (): undefined => {
+        let current: DocumentHistoryState;
         try {
-          current = currentEntry();
+          current = currentState();
         } catch {
-          throw new StateError("Demo Router cold-start restoration entry is unavailable");
+          throw new StateError("Demo Router cold-start restoration state is unavailable");
         }
-        if (history.current || !entriesEqual(current, entry)) {
-          throw new StateError("Demo Router cold-start restoration entry changed");
+        if (history.current || !statesEqual(current, state)) {
+          throw new StateError("Demo Router cold-start restoration state changed");
         }
         return undefined;
       };
       const result = loader
         .load(expectedUrl, owner, {
-          beforeClaim: assertCurrentEntry,
+          beforeClaim: assertCurrentState,
           beforeCommit(candidate) {
-            assertCurrentEntry();
+            assertCurrentState();
             if (
               candidate.status !== "committed" ||
               candidate.redirected ||
@@ -140,8 +143,8 @@ export function createDemoDocumentRuntime(
             return "commit";
           },
           beforeTreeCommit() {
-            assertCurrentEntry();
-            history.initialize(Object.freeze({ entry, kind: "managed" }));
+            assertCurrentState();
+            history.initialize(state);
             return undefined;
           },
         })

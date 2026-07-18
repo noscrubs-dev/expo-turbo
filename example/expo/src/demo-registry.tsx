@@ -443,6 +443,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked">
     <DemoText>Open a same-origin document through the app-owned native link.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/linked" data-turbo-action="replace">
+    <DemoText>Replace this Router entry with the linked document.</DemoText>
+  </DemoDocumentLink>
   <DemoDocumentLink href="/demo/generated-link?source=gallery" data-turbo-method="post" data-turbo-confirm="Submit this generated form link?">
     <DemoText>Submit ordered link parameters through Turbo's generated-form path.</DemoText>
   </DemoDocumentLink>
