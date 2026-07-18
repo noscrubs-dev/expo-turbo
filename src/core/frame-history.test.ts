@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { ClockAdapter, TurboRequest, TurboResponse } from "../adapters"
+import type { ClockAdapter, TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
 import {
   DocumentHistory,
   type DocumentHistoryEntry,
@@ -41,11 +41,11 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
   }
 }
 
-function frameDocument(child = "Old"): string {
+function frameDocument(child = "Old", frameAttributes = 'src="/old"'): string {
   return `<Gallery data-turbo-root="/">
     <Shell id="shell" phase="initial" />
     <DemoForm id="document-form" action="/submit-document" />
-    <turbo-frame id="details" src="/old"><${child} /></turbo-frame>
+    <turbo-frame id="details" ${frameAttributes}><${child} /></turbo-frame>
   </Gallery>`
 }
 
@@ -53,10 +53,17 @@ function historyHarness(
   fetchFrame: (request: TurboRequest) => Promise<TurboResponse>,
   write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
     undefined,
-  options: Readonly<{ snapshotCache?: boolean }> = {},
+  options: Readonly<{
+    document?: string
+    frameHistory?: boolean
+    snapshotCache?: boolean
+    visibility?: VisibilityAdapter
+  }> = {},
 ) {
   const session = new DocumentSession(
-    parseExpoTurboDocument(frameDocument(), { url: "https://example.test/current" }),
+    parseExpoTurboDocument(options.document ?? frameDocument(), {
+      url: "https://example.test/current",
+    }),
   )
   let identifier = 0
   const writes: Array<{ entry: DocumentHistoryEntry; method: DocumentHistoryWriteMethod }> = []
@@ -94,13 +101,246 @@ function historyHarness(
     history,
     ...(options.snapshotCache === false ? {} : { snapshotCache: cache }),
   })
-  const registry = new FrameControllerRegistry(session, loader, undefined, undefined, undefined, {
-    frameHistory,
-  })
+  const registry = new FrameControllerRegistry(
+    session,
+    loader,
+    options.visibility,
+    undefined,
+    undefined,
+    options.frameHistory === false ? {} : { frameHistory },
+  )
   return { cache, frameHistory, frameRequests, history, initial, registry, session, writes }
 }
 
 describe("promoted Frame history", () => {
+  test("promotes the first delayed lazy appearance using the live Frame action", async () => {
+    let visible = false
+    let appearance: ((visible: boolean) => void) | undefined
+    let unsubscribed = 0
+    let resolveFrame: ((response: TurboResponse) => void) | undefined
+    const visibility: VisibilityAdapter = {
+      isVisible: () => visible,
+      subscribe(frameId, listener) {
+        expect(frameId).toBe("details")
+        appearance = listener
+        return () => {
+          unsubscribed += 1
+        }
+      },
+    }
+    const current = historyHarness(
+      () =>
+        new Promise<TurboResponse>((resolve) => {
+          resolveFrame = resolve
+        }),
+      undefined,
+      {
+        document: frameDocument("Old", 'src="/stale-lazy" loading="lazy"'),
+        visibility,
+      },
+    )
+    const controller = current.registry.get("details")
+
+    expect(await controller.connect()).toBeUndefined()
+    expect(current.frameRequests).toHaveLength(0)
+    expect(current.writes).toHaveLength(0)
+    expect(current.cache.size).toBe(0)
+
+    current.session.setAttribute("id:shell", "phase", "before-visible")
+    current.session.setAttribute("id:details", "src", "/lazy")
+    current.session.setAttribute("id:details", "data-turbo-action", "advance")
+    const firstAppearance = appearance
+    visible = true
+    firstAppearance?.(true)
+
+    expect(current.frameRequests).toHaveLength(1)
+    expect(current.writes).toHaveLength(0)
+    expect(unsubscribed).toBe(1)
+    expect(attributeValue(current.session.tree.getElementById("details") as never, "src")).toBe(
+      "https://example.test/lazy",
+    )
+
+    current.session.setAttribute("id:shell", "phase", "after-visible")
+    const request = current.frameRequests[0]
+    if (!request || !resolveFrame) throw new Error("lazy Frame request was not captured")
+    resolveFrame(
+      response('<turbo-frame id="details"><Visible /></turbo-frame>', { url: request.url }),
+    )
+    expect(await controller.loaded).toMatchObject({ status: "completed" })
+
+    expect(current.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "frame-history-1",
+          restorationIndex: 1,
+          url: "https://example.test/lazy",
+        },
+        method: "push",
+      },
+    ])
+    expect(current.session.tree.document.url).toBe("https://example.test/lazy")
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("Visible")
+    const outgoing = current.cache.get("https://example.test/current")
+    expect(attributeValue(outgoing?.getElementById("shell") as never, "phase")).toBe(
+      "before-visible",
+    )
+    expect(attributeValue(outgoing?.getElementById("details") as never, "src")).toBe("/lazy")
+
+    firstAppearance?.(true)
+    await Promise.resolve()
+    expect(current.frameRequests).toHaveLength(1)
+    expect(current.writes).toHaveLength(1)
+  })
+
+  test("promotes an immediately visible lazy replacement with the mounted Frame scope", async () => {
+    const visibility: VisibilityAdapter = {
+      isVisible: () => false,
+      subscribe(_frameId, listener) {
+        listener(true)
+        return () => undefined
+      },
+    }
+    const current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><Lazy /></turbo-frame>', { url }),
+      undefined,
+      {
+        document: frameDocument("Old", 'src="/lazy" loading="lazy" data-turbo-action="replace"'),
+        visibility,
+      },
+    )
+    const controller = current.registry.get("details")
+
+    expect(await controller.connect()).toMatchObject({ status: "completed" })
+    await current.registry.visit("/explicit", { action: "advance", frame: "details" })
+
+    expect(current.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "frame-history-1",
+          restorationIndex: 0,
+          url: "https://example.test/lazy",
+        },
+        method: "replace",
+      },
+      {
+        entry: {
+          restorationIdentifier: "frame-history-1",
+          restorationIndex: 1,
+          url: "https://example.test/explicit",
+        },
+        method: "push",
+      },
+    ])
+  })
+
+  test("keeps invalid lazy actions history-neutral", async () => {
+    const visibility: VisibilityAdapter = {
+      isVisible: () => true,
+      subscribe: () => () => undefined,
+    }
+    const current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><Ordinary /></turbo-frame>', { url }),
+      undefined,
+      {
+        document: frameDocument(
+          "Old",
+          'src="/ordinary" loading="lazy" data-turbo-action="Advance"',
+        ),
+        visibility,
+      },
+    )
+
+    expect(await current.registry.get("details").connect()).toMatchObject({ status: "completed" })
+    expect(current.frameRequests).toHaveLength(1)
+    expect(current.writes).toHaveLength(0)
+    expect(current.cache.size).toBe(0)
+    expect(current.session.tree.document.url).toBe("https://example.test/current")
+  })
+
+  test("fails unsupported lazy promotions once before request ownership", async () => {
+    for (const fixtureCase of [
+      {
+        action: "restore",
+        error: TargetError,
+        frameHistory: true,
+        name: "restore",
+        source: "/restore",
+      },
+      {
+        action: "advance",
+        error: TargetError,
+        frameHistory: false,
+        name: "missing-coordinator",
+        source: "/missing-coordinator",
+      },
+      {
+        action: "advance",
+        error: TargetError,
+        frameHistory: true,
+        name: "unvisitable",
+        source: "/archive.pdf",
+      },
+      {
+        action: "advance",
+        error: StateError,
+        frameHistory: true,
+        name: "history-drift",
+        source: "/drift",
+      },
+    ] as const) {
+      let appearance: ((visible: boolean) => void) | undefined
+      let unsubscribed = 0
+      const visibility: VisibilityAdapter = {
+        isVisible: () => true,
+        subscribe(_frameId, listener) {
+          appearance = listener
+          return () => {
+            unsubscribed += 1
+          }
+        },
+      }
+      const current = historyHarness(
+        async () => {
+          throw new Error("unsupported lazy promotion fetched")
+        },
+        undefined,
+        {
+          document: frameDocument(
+            "Old",
+            `src="${fixtureCase.source}" loading="lazy" data-turbo-action="${fixtureCase.action}"`,
+          ),
+          frameHistory: fixtureCase.frameHistory,
+          visibility,
+        },
+      )
+      if (fixtureCase.name === "history-drift") {
+        current.history.adoptTraversal({
+          restorationIdentifier: "drifted-history",
+          restorationIndex: 1,
+          url: "https://example.test/drifted",
+        })
+      }
+      const controller = current.registry.get("details")
+      const errors: Error[] = []
+      controller.subscribeErrors((error) => errors.push(error))
+
+      await expect(controller.connect()).rejects.toBeInstanceOf(fixtureCase.error)
+      expect(controller.state).toMatchObject({ connected: true, status: "error" })
+      expect(current.frameRequests).toHaveLength(0)
+      expect(current.writes).toHaveLength(0)
+      expect(current.cache.size).toBe(0)
+      expect(errors).toHaveLength(1)
+      expect(unsubscribed).toBe(1)
+
+      appearance?.(true)
+      await Promise.resolve()
+      expect(current.frameRequests).toHaveLength(0)
+      expect(errors).toHaveLength(1)
+    }
+  })
+
   test("reuses one Frame restoration identifier across push, same-URL push, and replace", async () => {
     let request = 0
     const current = historyHarness(async ({ url }) => {

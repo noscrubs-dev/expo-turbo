@@ -1,9 +1,12 @@
 import type { Unsubscribe, VisibilityAdapter } from "../adapters"
-import { FrameMissingError, StateError } from "./errors"
+import { FrameMissingError, StateError, TargetError } from "./errors"
 import {
   assertFrameHistoryCommitPlan,
   FRAME_HISTORY_PLAN_OPTION,
+  type FrameHistoryAction,
   type FrameHistoryCommitPlan,
+  type FrameHistoryCoordinator,
+  prepareFrameHistoryCommit,
 } from "./frame-history"
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
 import { FrameCommitError, type FrameLoadReport, type FrameRequestLoader } from "./frame-loader"
@@ -40,6 +43,11 @@ function loadingStyle(frame: ProtocolElement): FrameLoadingStyle {
   return attributeValue(frame, "loading")?.toLowerCase() === "lazy" ? "lazy" : "eager"
 }
 
+function appearanceVisitAction(frame: ProtocolElement): FrameHistoryAction | "restore" | undefined {
+  const value = attributeValue(frame, "data-turbo-action")
+  return value === "advance" || value === "replace" || value === "restore" ? value : undefined
+}
+
 export class FrameController {
   private readonly errorListeners = new Set<FrameControllerErrorListener>()
   private readonly frameNode: ProtocolElement
@@ -61,6 +69,7 @@ export class FrameController {
     private readonly loader: FrameRequestLoader,
     private readonly visibility?: VisibilityAdapter,
     frameNode?: ProtocolElement,
+    private readonly frameHistory?: FrameHistoryCoordinator,
   ) {
     const activeFrame = frameNode ?? this.session.tree.getElementById(this.frameId)
     if (
@@ -304,14 +313,63 @@ export class FrameController {
     if (!this.visibilityUnsubscribe) {
       const unsubscribe = this.visibility.subscribe(this.frameId, (visible) => {
         if (!visible) return
-        void this.loadSourceIfNeeded(false).catch(() => undefined)
+        void this.loadLazySourceAfterAppearance().catch(() => undefined)
       })
       this.visibilityUnsubscribe = unsubscribe
-      if (!this.needsLoad) this.stopVisibilityObserver()
+      if (!this.needsLoad) {
+        this.stopVisibilityObserver()
+        return this.loadedPromise
+      }
     }
     return this.visibility.isVisible(this.frameId)
-      ? this.loadSourceIfNeeded(false)
+      ? this.loadLazySourceAfterAppearance()
       : Promise.resolve(undefined)
+  }
+
+  private loadLazySourceAfterAppearance(): Promise<FrameLoadReport | undefined> {
+    const frame = this.frame
+    const source = attributeValue(frame, "src")
+    if (
+      !this.connected ||
+      attributeValue(frame, "disabled") !== undefined ||
+      !source ||
+      !this.needsLoad
+    ) {
+      return Promise.resolve(undefined)
+    }
+
+    const action = appearanceVisitAction(frame)
+    if (!action) return this.startLoad(source)
+
+    try {
+      if (action === "restore") {
+        throw new TargetError("Lazy Frame restore requires whole-document traversal", {
+          frameId: this.frameId,
+        })
+      }
+      if (!this.frameHistory) {
+        throw new TargetError("Lazy Frame action requires history coordination", {
+          frameId: this.frameId,
+        })
+      }
+      const plan = prepareFrameHistoryCommit(this.frameHistory, this, frame, source, action)
+      return this.startLoad(source, plan)
+    } catch (error) {
+      return this.rejectAppearanceLoad(error)
+    }
+  }
+
+  private rejectAppearanceLoad(error: unknown): Promise<FrameLoadReport | undefined> {
+    const reported = error instanceof Error ? error : new Error("Lazy Frame source load failed")
+    this.loadEpoch += 1
+    this.stopVisibilityObserver()
+    this.needsLoad = false
+    this.status = "error"
+    const loaded = Promise.reject<FrameLoadReport | undefined>(reported)
+    this.loadedPromise = loaded
+    this.publish()
+    for (const listener of this.errorListeners) listener(reported)
+    return loaded
   }
 
   private stopVisibilityObserver(): void {
