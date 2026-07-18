@@ -4,6 +4,7 @@ import {
   destinationRequestOwnership,
   type FrameRequestCheckpoint,
 } from "./destination-request-ownership"
+import { beginDocumentNavigation } from "./document-navigation-epoch"
 import { ExpoTurboError, type ExpoTurboErrorCode, RequestError, StateError } from "./errors"
 import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
 import type {
@@ -382,6 +383,7 @@ export class FormSubmissionController {
         identity.submissionActivity.finish(activityLease)
         return settle(this.canceledPlan(plan, proposal.destination))
       }
+      if (proposal.destination.kind === "document") beginDocumentNavigation(this.session)
 
       let response: FormRequestExecutionReport
       try {

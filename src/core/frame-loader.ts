@@ -3,7 +3,24 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
-import { ContentTypeError, FrameMissingError, RequestError, TargetError } from "./errors"
+import {
+  ContentTypeError,
+  ExpoTurboError,
+  FrameMissingError,
+  RequestError,
+  TargetError,
+} from "./errors"
+import {
+  assertFrameHistoryCommitPlan,
+  beginFrameHistoryRequest,
+  commitFrameHistoryPlan,
+  FRAME_HISTORY_PLAN_OPTION,
+  type FrameHistoryCommitPlan,
+  frameHistoryDocumentUrl,
+  frameHistoryPlanCurrent,
+  updateFrameHistoryResponseSource,
+} from "./frame-history"
+import { registerFrameCommitProtection } from "./frame-history-internal"
 import {
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
@@ -57,6 +74,10 @@ export interface FrameLoadOptions {
   readonly owner?: object
 }
 
+interface InternalFrameLoadOptions extends FrameLoadOptions {
+  readonly [FRAME_HISTORY_PLAN_OPTION]?: FrameHistoryCommitPlan
+}
+
 export interface FrameCommittedOutcome extends FrameTreeCommitCandidate {
   readonly status: "completed"
 }
@@ -98,7 +119,7 @@ function recurseFrame(
   })
 }
 
-function frameLoadOptions(options: FrameLoadOptions): FrameLoadOptions {
+function frameLoadOptions(options: FrameLoadOptions): InternalFrameLoadOptions {
   if (!options || typeof options !== "object") {
     throw new RequestError("Frame load options must be an object", { method: "GET" })
   }
@@ -122,7 +143,11 @@ function frameLoadOptions(options: FrameLoadOptions): FrameLoadOptions {
     throw new RequestError("Frame load options could not be read", { method: "GET" })
   }
   const keys = Reflect.ownKeys(descriptors)
-  if (keys.some((key) => key !== "beforeFrameCommit" && key !== "owner")) {
+  if (
+    keys.some(
+      (key) => key !== "beforeFrameCommit" && key !== "owner" && key !== FRAME_HISTORY_PLAN_OPTION,
+    )
+  ) {
     throw new RequestError("Frame load options contain unsupported fields", { method: "GET" })
   }
   if (
@@ -142,9 +167,19 @@ function frameLoadOptions(options: FrameLoadOptions): FrameLoadOptions {
   if (owner !== undefined && (!owner || typeof owner !== "object")) {
     throw new RequestError("Frame load owner must be an object", { method: "GET" })
   }
+  const historyPlan = descriptors[FRAME_HISTORY_PLAN_OPTION]?.value
+  if (historyPlan !== undefined) {
+    assertFrameHistoryCommitPlan(historyPlan)
+  }
+  if (historyPlan && beforeFrameCommit) {
+    throw new RequestError("Frame history plans cannot be combined with commit callbacks", {
+      method: "GET",
+    })
+  }
   return Object.freeze({
     ...(beforeFrameCommit ? { beforeFrameCommit } : {}),
     ...(owner ? { owner } : {}),
+    ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
   })
 }
 
@@ -172,6 +207,12 @@ export class FrameRequestLoader {
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")
     }
+    registerFrameCommitProtection(this, (frameId, owner) => {
+      const active = this.active.get(frameId)
+      return Boolean(
+        active?.owner === owner && active.lease && this.ownership.isCommitting(active.lease),
+      )
+    })
   }
 
   cancel(frameId: string, owner?: object): boolean {
@@ -223,8 +264,15 @@ export class FrameRequestLoader {
       }
       throw error
     }
+    const historyPlan = loadOptions[FRAME_HISTORY_PLAN_OPTION]
 
     try {
+      if (historyPlan) {
+        beginFrameHistoryRequest(historyPlan, this.session, frame, url)
+        if (!this.owns(frameId, active)) {
+          return this.canceled(frameId, [], url, active)
+        }
+      }
       let requestFrameId = frameId
       let requestUrl = url
       let recurseDepth = 0
@@ -237,7 +285,10 @@ export class FrameRequestLoader {
         | undefined = Object.freeze({ headers: firstHeaders, requestId: firstRequestId })
 
       while (true) {
-        if (!this.owns(frameId, active)) {
+        if (
+          !this.owns(frameId, active) ||
+          (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
+        ) {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
         const requestId = preparedRequest?.requestId ?? this.requestIds.next()
@@ -257,7 +308,10 @@ export class FrameRequestLoader {
           signal: active.controller.signal,
           url: requestUrl,
         })
-        if (!this.owns(frameId, active)) {
+        if (
+          !this.owns(frameId, active) ||
+          (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
+        ) {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
 
@@ -267,6 +321,12 @@ export class FrameRequestLoader {
           responseStatus = response.status
           responseUrl = finalUrl
           responseRedirected = response.redirected || finalUrl !== url
+          if (historyPlan && responseRedirected) {
+            updateFrameHistoryResponseSource(historyPlan, this.session, frame, finalUrl)
+            if (!this.owns(frameId, active)) {
+              return this.canceled(frameId, requestIds, responseUrl, active)
+            }
+          }
         }
         if (response.status === 204) {
           if (recurseDepth > 0) {
@@ -287,6 +347,19 @@ export class FrameRequestLoader {
         }
 
         const contentType = responseContentType(response)
+        if (
+          historyPlan &&
+          recurseDepth === 0 &&
+          !response.redirected &&
+          response.status >= 200 &&
+          response.status < 300 &&
+          contentType === EXPO_TURBO_MIME_TYPE
+        ) {
+          updateFrameHistoryResponseSource(historyPlan, this.session, frame, finalUrl)
+          if (!this.owns(frameId, active)) {
+            return this.canceled(frameId, requestIds, responseUrl, active)
+          }
+        }
         if (contentType !== EXPO_TURBO_MIME_TYPE) {
           throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
             contentType: contentType ?? "missing",
@@ -294,7 +367,10 @@ export class FrameRequestLoader {
           })
         }
         const xml = await response.text()
-        if (!this.owns(frameId, active)) {
+        if (
+          !this.owns(frameId, active) ||
+          (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
+        ) {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
         const document = parseExpoTurboDocument(xml, { url: finalUrl })
@@ -303,9 +379,6 @@ export class FrameRequestLoader {
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
           const prepared = prepareFrameResponseTree(frameId, document)
-          const mutation = prepareFrameMutation(this.session, frame, prepared, {
-            finalUrl: responseUrl,
-          })
           const candidate: FrameTreeCommitCandidate = Object.freeze({
             frameId,
             redirected: responseRedirected,
@@ -315,7 +388,14 @@ export class FrameRequestLoader {
             responseStatus: responseStatus ?? response.status,
             url: responseUrl,
           })
-          if (loadOptions.beforeFrameCommit) {
+          const documentUrl = historyPlan
+            ? frameHistoryDocumentUrl(historyPlan, this.session, frame, candidate)
+            : undefined
+          const mutation = prepareFrameMutation(this.session, frame, prepared, {
+            ...(documentUrl ? { documentUrl } : {}),
+            finalUrl: responseUrl,
+          })
+          if (loadOptions.beforeFrameCommit || historyPlan) {
             const lease = active.lease
             if (!lease) {
               throw new RequestError("Frame commit requires active request ownership", {
@@ -329,23 +409,28 @@ export class FrameRequestLoader {
             try {
               const acquired = this.ownership.commitFrame(lease, () => {
                 callbackEntered = true
-                const result = loadOptions.beforeFrameCommit?.(candidate)
+                const result = historyPlan
+                  ? commitFrameHistoryPlan(historyPlan, this.session, frame, candidate)
+                  : loadOptions.beforeFrameCommit?.(candidate)
                 if (result !== undefined) {
-                  void Promise.resolve(result).catch(() => undefined)
-                  callbackContractError = new RequestError(
-                    "Frame commit callback must not return a value",
-                    {
-                      frameId,
-                      method: "GET",
-                      responseStatus: candidate.responseStatus,
-                    },
-                  )
-                  throw callbackContractError
+                  if (!historyPlan) {
+                    void Promise.resolve(result).catch(() => undefined)
+                    callbackContractError = new RequestError(
+                      "Frame commit callback must not return a value",
+                      {
+                        frameId,
+                        method: "GET",
+                        responseStatus: candidate.responseStatus,
+                      },
+                    )
+                    throw callbackContractError
+                  }
                 }
               })
               if (!acquired) return this.canceled(frameId, requestIds, responseUrl, active)
             } catch (error) {
               if (error === callbackContractError) throw error
+              if (historyPlan && error instanceof ExpoTurboError) throw error
               if (callbackEntered) {
                 throw new RequestError("Frame commit callback failed", {
                   frameId,

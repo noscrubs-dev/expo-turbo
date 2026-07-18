@@ -43,7 +43,9 @@ describe("prepared Frame mutations", () => {
     })
     const preparedChild = prepared.responseFrame.children.find(isElement)
     if (!preparedChild) throw new Error("invalid prepared fixture")
-    ;(preparedChild as unknown as { tagName: string }).tagName = "Tampered"
+    expect(() => {
+      ;(preparedChild as unknown as { tagName: string }).tagName = "Tampered"
+    }).toThrow(TypeError)
 
     expect(Object.isFrozen(mutation)).toBe(true)
     expect(session.tree).toBe(tree)

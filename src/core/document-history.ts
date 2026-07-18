@@ -44,6 +44,7 @@ export interface DocumentHistoryInitialization {
 interface DocumentHistoryProposalIdentity {
   readonly base: DocumentHistoryEntry
   readonly entry: DocumentHistoryEntry
+  readonly frameScope?: object
   readonly method: DocumentHistoryWriteMethod
 }
 
@@ -137,6 +138,8 @@ function normalizeRestorationPatch(value: unknown): DocumentScrollPosition | und
 export class DocumentHistory {
   private readonly boundIdentifiers = new Set<string>()
   private currentEntry: DocumentHistoryEntry | undefined
+  private readonly frameIdentifiers = new WeakMap<object, string>()
+  private readonly frameReservedIdentifiers = new Set<string>()
   private mutationActive = false
   private readonly proposals = new WeakMap<object, DocumentHistoryProposalIdentity>()
   private readonly restorationData = new Map<string, DocumentRestorationData>()
@@ -224,12 +227,28 @@ export class DocumentHistory {
     })
   }
 
+  proposeFrameAdvance(frameScope: object, requestedUrl: string): DocumentHistoryProposal {
+    return this.mutate(() => {
+      const current = this.currentEntry
+      if (!current) throw new StateError("Document history is not initialized")
+      return this.proposeFrame(current, normalizeUrl(requestedUrl), "push", frameScope)
+    })
+  }
+
+  proposeFrameReplace(frameScope: object, url: string): DocumentHistoryProposal {
+    return this.mutate(() => {
+      const current = this.currentEntry
+      if (!current) throw new StateError("Document history is not initialized")
+      return this.proposeFrame(current, normalizeUrl(url), "replace", frameScope)
+    })
+  }
+
   retargetProposal(proposal: DocumentHistoryProposal, finalUrl: string): DocumentHistoryProposal {
     return this.mutate(() => {
       const identity = this.proposalIdentity(proposal)
       const entry = normalizeEntry({ ...identity.entry, url: finalUrl })
       this.proposals.delete(proposal)
-      return this.admitProposal(identity.base, entry, identity.method)
+      return this.admitProposal(identity.base, entry, identity.method, identity.frameScope)
     })
   }
 
@@ -239,7 +258,13 @@ export class DocumentHistory {
       if (this.currentEntry !== identity.base) {
         throw new StateError("Document history proposal is stale")
       }
-      if (this.boundIdentifiers.has(identity.entry.restorationIdentifier)) {
+      if (
+        identity.frameScope &&
+        this.frameIdentifiers.get(identity.frameScope) !== identity.entry.restorationIdentifier
+      ) {
+        throw new StateError("Document Frame history proposal scope is invalid")
+      }
+      if (!identity.frameScope && this.boundIdentifiers.has(identity.entry.restorationIdentifier)) {
         throw new StateError("Document history proposal identifier is already bound")
       }
       return this.commitHostWrite(identity.method, identity.entry, () => {
@@ -310,7 +335,10 @@ export class DocumentHistory {
       throw new StateError("Document restoration index cannot advance past the safe integer limit")
     }
     const restorationIdentifier = normalizeIdentifier(this.identifiers.next())
-    if (this.boundIdentifiers.has(restorationIdentifier)) {
+    if (
+      this.boundIdentifiers.has(restorationIdentifier) ||
+      this.frameReservedIdentifiers.has(restorationIdentifier)
+    ) {
       throw new StateError("Generated document restoration identifier is already bound")
     }
     const entry = normalizeEntry({
@@ -321,13 +349,55 @@ export class DocumentHistory {
     return this.admitProposal(base, entry, method)
   }
 
+  private proposeFrame(
+    base: DocumentHistoryEntry,
+    url: string,
+    method: DocumentHistoryWriteMethod,
+    frameScope: object,
+  ): DocumentHistoryProposal {
+    if (
+      (typeof frameScope !== "object" && typeof frameScope !== "function") ||
+      frameScope === null
+    ) {
+      throw new StateError("Document Frame history scopes must be objects")
+    }
+    if (method === "push" && base.restorationIndex === Number.MAX_SAFE_INTEGER) {
+      throw new StateError("Document restoration index cannot advance past the safe integer limit")
+    }
+
+    let restorationIdentifier = this.frameIdentifiers.get(frameScope)
+    if (!restorationIdentifier) {
+      restorationIdentifier = normalizeIdentifier(this.identifiers.next())
+      if (
+        this.boundIdentifiers.has(restorationIdentifier) ||
+        this.frameReservedIdentifiers.has(restorationIdentifier)
+      ) {
+        throw new StateError("Generated Frame restoration identifier is already bound")
+      }
+      this.frameIdentifiers.set(frameScope, restorationIdentifier)
+      this.frameReservedIdentifiers.add(restorationIdentifier)
+    }
+
+    const entry = normalizeEntry({
+      restorationIdentifier,
+      restorationIndex: method === "push" ? base.restorationIndex + 1 : base.restorationIndex,
+      url,
+    })
+    return this.admitProposal(base, entry, method, frameScope)
+  }
+
   private admitProposal(
     base: DocumentHistoryEntry,
     entry: DocumentHistoryEntry,
     method: DocumentHistoryWriteMethod,
+    frameScope?: object,
   ): DocumentHistoryProposal {
     const proposal = Object.freeze({ entry, method }) as DocumentHistoryProposal
-    this.proposals.set(proposal, Object.freeze({ base, entry, method }))
+    const identity =
+      frameScope === undefined
+        ? Object.freeze({ base, entry, method })
+        : Object.freeze({ base, entry, frameScope, method })
+    this.proposals.set(proposal, identity)
     return proposal
   }
 

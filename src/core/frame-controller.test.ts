@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
 import { FrameController } from "./frame-controller"
-import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
+import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
@@ -185,5 +185,31 @@ describe("Frame controller", () => {
     expect(pending[1]?.request.signal?.aborted).toBe(true)
     pending[1]?.resolve(response('<turbo-frame id="details"><AlsoLate/></turbo-frame>'))
     expect(await replacementLoad).toMatchObject({ status: "canceled" })
+  })
+
+  test("publishes committed lifecycle truth when Frame finalization reports an error", async () => {
+    const { controller, pending, session } = harness()
+    const frame = session.tree.getElementById("details")
+    const child = frame?.children[0]
+    if (!child) throw new Error("fixture Frame child is missing")
+    session.registerDisposal(child.key, () => {
+      throw new Error("secret disposal failure")
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+
+    const loaded = controller.connect()
+    pending[0]?.resolve(response('<turbo-frame id="details"><Committed /></turbo-frame>'))
+    await expect(loaded).rejects.toBeInstanceOf(FrameCommitError)
+
+    expect(controller.state).toMatchObject({
+      busy: false,
+      complete: true,
+      hasBeenLoaded: true,
+      status: "completed",
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(FrameCommitError)
+    expect(frame?.children.filter(isElement)[0]?.tagName).toBe("Committed")
   })
 })

@@ -93,6 +93,14 @@ class DestinationRequestOwnership {
     )
   }
 
+  isCommitting(lease: DestinationRequestLease): boolean {
+    return this.documentCommit === lease || this.frameCommit === lease
+  }
+
+  get commitActive(): boolean {
+    return this.documentCommit !== undefined || this.frameCommit !== undefined
+  }
+
   /** Retains staged-application ownership after the owning response changes the tree generation. */
   retains(lease: DestinationRequestLease): boolean {
     if (lease.controller.signal.aborted) return false
@@ -240,4 +248,8 @@ export function destinationRequestOwnership(session: DocumentSession): Destinati
     ownershipBySession.set(session, ownership)
   }
   return ownership
+}
+
+export function destinationCommitActive(session: DocumentSession): boolean {
+  return ownershipBySession.get(session)?.commitActive ?? false
 }

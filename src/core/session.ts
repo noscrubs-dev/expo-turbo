@@ -1,7 +1,9 @@
+import { destinationCommitActive } from "./destination-request-ownership"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { DisposalError, TargetError } from "./errors"
+import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
 import { type DocumentTree, isElement, type ProtocolNode } from "./tree"
+import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
 export type SessionListener = () => void
 export type DisposalHook = () => void
@@ -42,12 +44,14 @@ export class DocumentSession {
   private currentTree: DocumentTree
   private currentTreeGeneration = 0
   private nextIdentity = 0
+  private unregisterTreeMutationGuard: (() => void) | undefined
 
   constructor(
     tree: DocumentTree,
     private readonly options: DocumentSessionOptions = {},
   ) {
     this.currentTree = tree
+    this.guardTree(tree)
   }
 
   get revision(): number {
@@ -93,7 +97,9 @@ export class DocumentSession {
   }
 
   replaceTree(tree: DocumentTree): void {
+    this.assertMutationAllowed()
     this.currentTree = tree
+    this.guardTree(tree)
     this.currentTreeGeneration += 1
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
@@ -119,6 +125,7 @@ export class DocumentSession {
   }
 
   setAttribute(key: string, name: string, value: string): void {
+    this.assertMutationAllowed()
     const node = this.currentTree.getNodeByKey(key)
     if (!node || !isElement(node)) {
       throw new TargetError(`No active element has key ${JSON.stringify(key)}`, { target: key })
@@ -128,6 +135,7 @@ export class DocumentSession {
   }
 
   removeAttribute(key: string, name: string): void {
+    this.assertMutationAllowed()
     const node = this.currentTree.getNodeByKey(key)
     if (!node || !isElement(node)) {
       throw new TargetError(`No active element has key ${JSON.stringify(key)}`, { target: key })
@@ -137,6 +145,7 @@ export class DocumentSession {
   }
 
   mutate(mutator: (tree: DocumentTree) => readonly string[]): void {
+    this.assertMutationAllowed()
     this.commit(mutator(this.currentTree))
   }
 
@@ -159,6 +168,19 @@ export class DocumentSession {
     const uniqueKeys = new Set(keys)
     for (const key of uniqueKeys) this.snapshots.delete(key)
     this.reportErrors(disposalErrors, this.notify(uniqueKeys))
+  }
+
+  private assertMutationAllowed(): void {
+    if (destinationCommitActive(this)) {
+      throw new StateError("Document session cannot mutate during a destination commit transaction")
+    }
+  }
+
+  private guardTree(tree: DocumentTree): void {
+    this.unregisterTreeMutationGuard?.()
+    this.unregisterTreeMutationGuard = registerDocumentTreeMutationGuard(tree, () => {
+      if (this.currentTree === tree) this.assertMutationAllowed()
+    })
   }
 
   private flushDisposals(): DisposalError[] {

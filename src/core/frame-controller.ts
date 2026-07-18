@@ -1,6 +1,12 @@
 import type { Unsubscribe, VisibilityAdapter } from "../adapters"
-import { FrameMissingError } from "./errors"
-import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
+import { FrameMissingError, StateError } from "./errors"
+import {
+  assertFrameHistoryCommitPlan,
+  FRAME_HISTORY_PLAN_OPTION,
+  type FrameHistoryCommitPlan,
+} from "./frame-history"
+import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
+import { FrameCommitError, type FrameLoadReport, type FrameRequestLoader } from "./frame-loader"
 import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
 
@@ -69,6 +75,15 @@ export class FrameController {
     this.frameNode = activeFrame
     this.needsLoad = this.source !== undefined
     this.snapshot = this.createSnapshot()
+    registerFrameHistoryVisit(this, (source, historyPlan) => {
+      assertFrameHistoryCommitPlan(historyPlan)
+      this.assertLoadAdmission()
+      if (!this.connected) {
+        this.connected = true
+        this.publish()
+      }
+      return this.startLoad(source, historyPlan)
+    })
   }
 
   get loaded(): Promise<FrameLoadReport | undefined> {
@@ -88,6 +103,7 @@ export class FrameController {
   }
 
   connect(): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     if (!this.connected) {
       this.connected = true
       this.publish()
@@ -99,16 +115,18 @@ export class FrameController {
 
   disconnect(): void {
     if (!this.connected) return
-    const wasLoading = this.status === "loading"
+    const revision = this.revision
     this.connected = false
     this.stopVisibilityObserver()
     this.cancel()
-    if (!wasLoading) this.publish()
+    if (this.revision === revision) this.publish()
   }
 
   cancel(): void {
+    const epoch = this.loadEpoch
+    if (!this.loader.cancel(this.frameId, this.requestOwner)) return
+    if (epoch !== this.loadEpoch) return
     this.loadEpoch += 1
-    this.loader.cancel(this.frameId, this.requestOwner)
     if (this.status === "loading") {
       this.needsLoad = true
       this.status = "canceled"
@@ -117,10 +135,12 @@ export class FrameController {
   }
 
   load(): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     return this.loadSourceIfNeeded(true)
   }
 
   visit(source: string): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     if (!this.connected) {
       this.connected = true
       this.publish()
@@ -129,11 +149,13 @@ export class FrameController {
   }
 
   reload(): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     this.needsLoad = this.source !== undefined
     return this.loadSourceIfNeeded(true)
   }
 
   setDisabled(disabled: boolean): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     if (disabled) {
       this.session.setAttribute(this.frame.key, "disabled", "")
       this.stopVisibilityObserver()
@@ -150,6 +172,7 @@ export class FrameController {
   }
 
   setLoading(style: FrameLoadingStyle): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     this.session.setAttribute(this.frame.key, "loading", style)
     this.publish()
     if (style === "eager") {
@@ -160,6 +183,7 @@ export class FrameController {
   }
 
   setSource(source?: string | null): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     const nextSource = source || undefined
     if (nextSource === this.source) return this.loadedPromise
 
@@ -209,12 +233,25 @@ export class FrameController {
       return Promise.resolve(undefined)
     }
 
+    return this.startLoad(source)
+  }
+
+  private startLoad(
+    source: string,
+    historyPlan?: FrameHistoryCommitPlan,
+  ): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
     const epoch = ++this.loadEpoch
     this.stopVisibilityObserver()
     this.needsLoad = false
     this.status = "loading"
     this.publish()
-    const loaded = this.loader.load(this.frameId, source, { owner: this.requestOwner }).then(
+    const request = this.loader.load(this.frameId, source, {
+      ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
+      owner: this.requestOwner,
+    })
+    if (historyPlan && epoch === this.loadEpoch) this.publish()
+    const loaded = request.then(
       (report) => {
         if (epoch !== this.loadEpoch) return report
         this.status = report.status
@@ -230,8 +267,10 @@ export class FrameController {
       (error: unknown) => {
         const reported = error instanceof Error ? error : new Error("Frame source load failed")
         if (epoch === this.loadEpoch) {
-          this.needsLoad = true
-          this.status = "error"
+          const committed = error instanceof FrameCommitError
+          this.hasBeenLoaded ||= committed
+          this.needsLoad = !committed
+          this.status = committed ? "completed" : "error"
           this.publish()
           for (const listener of this.errorListeners) listener(reported)
         }
@@ -240,6 +279,14 @@ export class FrameController {
     )
     this.loadedPromise = loaded
     return loaded
+  }
+
+  private assertLoadAdmission(): void {
+    if (isFrameCommitProtected(this.loader, this.frameId, this.requestOwner)) {
+      throw new StateError("Frame controller cannot mutate during its commit transaction", {
+        frameId: this.frameId,
+      })
+    }
   }
 
   private loadLazySourceIfVisible(): Promise<FrameLoadReport | undefined> {

@@ -13,7 +13,7 @@ import {
 type SelectorAdapter = NonNullable<Options<ProtocolNode, ProtocolElement>["adapter"]>
 
 function children(node: ProtocolNode): ProtocolNode[] {
-  return node.kind === "document" || isElement(node) ? node.children : []
+  return node.kind === "document" || isElement(node) ? [...node.children] : []
 }
 
 const adapter: SelectorAdapter = {
@@ -28,7 +28,7 @@ const adapter: SelectorAdapter = {
     return node.parent
   },
   getSiblings(node) {
-    return node.parent ? node.parent.children : [node]
+    return node.parent ? [...node.parent.children] : [node]
   },
   getText: nodeTextContent,
   hasAttrib(element, name) {
@@ -68,7 +68,7 @@ const options: Options<ProtocolNode, ProtocolElement> = {
 
 export function querySelectorAll(tree: DocumentTree, selector: string): readonly ProtocolElement[] {
   try {
-    return selectAll(selector, tree.document.children, options)
+    return selectAll(selector, [...tree.document.children], options)
   } catch (cause) {
     throw new TargetError(
       `Invalid or unsupported selector ${JSON.stringify(selector)}`,

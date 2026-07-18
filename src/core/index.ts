@@ -27,6 +27,11 @@ export type { FormSubmissionProposal } from "./form-submission-proposal"
 export * from "./forms"
 export * from "./frame-controller"
 export * from "./frame-controller-registry"
+export {
+  type FrameHistoryAction,
+  FrameHistoryCoordinator,
+  type FrameHistoryCoordinatorOptions,
+} from "./frame-history"
 export * from "./frame-loader"
 export * from "./frames"
 export * from "./inspector"

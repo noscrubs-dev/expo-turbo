@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import { beginDocumentNavigation } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
@@ -220,6 +221,7 @@ export class DocumentRequestLoader {
           return canceled
         }
       }
+      beginDocumentNavigation(this.session)
       if (options.beforeTreeCommit) {
         const lease = active.lease
         if (!lease) throw new StateError("Document snapshot restore requires active ownership")
@@ -339,6 +341,7 @@ export class DocumentRequestLoader {
         }
         if (!this.owns(active)) return this.canceled(active)
       }
+      beginDocumentNavigation(this.session)
       this.session.recentRequestIds.add(requestId)
       const response = await this.fetchAdapter.fetch(request)
       if (!this.owns(active)) return this.canceled(active)
