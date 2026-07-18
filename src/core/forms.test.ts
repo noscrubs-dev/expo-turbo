@@ -13,6 +13,7 @@ import {
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
+import { isElement } from "./tree"
 
 function formFixture(): DocumentSession {
   return new DocumentSession(
@@ -81,6 +82,61 @@ function formModeFixture(): DocumentSession {
     ),
   )
 }
+
+function fieldsetFixture(): DocumentSession {
+  return new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery>
+        <DemoFieldset id="external-fieldset" disabled="">
+          <DemoLegend id="external-legend">
+            <DemoButton id="external-submit" form="form" />
+          </DemoLegend>
+          <DemoInput id="external-disabled" form="form" />
+        </DemoFieldset>
+        <DemoInput id="external-enabled" form="form" />
+        <DemoFieldset id="owner-only-fieldset" form="form">
+          <DemoInput id="not-associated" />
+        </DemoFieldset>
+        <DemoForm id="form">
+          <DemoFieldset id="outer-fieldset" disabled="false">
+            <DemoGroup id="wrapped-legend">
+              <DemoLegend id="nested-legend">
+                <DemoInput id="nested-legend-value" />
+              </DemoLegend>
+            </DemoGroup>
+            <DemoLegend id="outer-first-legend">
+              <DemoInput id="outer-exempt" />
+              <DemoInput id="direct-disabled" />
+              <DemoFieldset id="inner-fieldset" disabled="">
+                <DemoLegend id="inner-first-legend">
+                  <DemoInput id="inner-exempt" />
+                </DemoLegend>
+                <DemoInput id="inner-disabled" />
+              </DemoFieldset>
+            </DemoLegend>
+            <DemoLegend id="outer-second-legend">
+              <DemoInput id="second-legend-value" />
+            </DemoLegend>
+            <DemoInput id="outer-body" />
+          </DemoFieldset>
+          <DemoFieldset id="live-fieldset">
+            <DemoInput id="live-value" />
+            <DemoButton id="live-submit" />
+          </DemoFieldset>
+        </DemoForm>
+      </Gallery>`,
+      { url: "https://example.test/current" },
+    ),
+  )
+}
+
+const FORM_SEMANTICS = Object.freeze({
+  formContainerRole: (element: { readonly tagName: string }) => {
+    if (element.tagName === "DemoFieldset") return "fieldset" as const
+    if (element.tagName === "DemoLegend") return "legend" as const
+    return undefined
+  },
+})
 
 function registryFor(session: DocumentSession): FormControlRegistry {
   const form = session.tree.getElementById("form")
@@ -280,6 +336,144 @@ describe("native form control registry", () => {
       formMode: "invalid" as never,
     })
     expect(() => invalidDocumentControls.controlsFor("id:form")).toThrow(PropsError)
+  })
+
+  test("inherits live disabled fieldsets with the first direct legend exception", () => {
+    const session = fieldsetFixture()
+    const registry = new FormControlRegistry(session, "id:form", {
+      formSemantics: FORM_SEMANTICS,
+    })
+    registry.register("id:external-disabled", {
+      kind: "value",
+      name: "external_disabled",
+      value: "ignored",
+    })
+    registry.register("id:external-enabled", {
+      kind: "value",
+      name: "external_enabled",
+      value: "outside",
+    })
+    const externalSubmitter = registry.register("id:external-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "external",
+    })
+    registry.register("id:nested-legend-value", {
+      kind: "value",
+      name: "nested_legend",
+      value: "ignored",
+    })
+    registry.register("id:outer-exempt", {
+      kind: "value",
+      name: "outer_exempt",
+      value: "outer",
+    })
+    registry.register("id:direct-disabled", {
+      directionality: { name: "direct_disabled.dir", value: "ltr" },
+      disabled: true,
+      kind: "value",
+      name: "direct_disabled",
+      value: "ignored",
+    })
+    registry.register("id:inner-exempt", {
+      kind: "value",
+      name: "inner_exempt",
+      value: "inner",
+    })
+    registry.register("id:inner-disabled", {
+      kind: "value",
+      name: "inner_disabled",
+      value: "ignored",
+    })
+    registry.register("id:second-legend-value", {
+      kind: "value",
+      name: "second_legend",
+      value: "ignored",
+    })
+    registry.register("id:outer-body", {
+      directionality: { name: "outer_body.dir", value: "rtl" },
+      kind: "value",
+      name: "outer_body",
+      value: "ignored",
+    })
+    registry.register("id:live-value", {
+      kind: "value",
+      name: "live",
+      value: "enabled",
+    })
+    const liveSubmitter = registry.register("id:live-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "live",
+    })
+
+    expect(registry.successfulEntries({ submitter: externalSubmitter.selection })).toEqual([
+      { name: "external_enabled", value: "outside" },
+      { name: "outer_exempt", value: "outer" },
+      { name: "inner_exempt", value: "inner" },
+      { name: "live", value: "enabled" },
+      { name: "commit", value: "external" },
+    ])
+    expect(registry.controlInheritedDisabled("id:outer-exempt")).toBe(false)
+    expect(registry.controlInheritedDisabled("id:outer-body")).toBe(true)
+    expect(() =>
+      registry.register("id:not-associated", {
+        kind: "value",
+        name: "not_associated",
+        value: "ignored",
+      }),
+    ).toThrow(/another form/)
+
+    session.setAttribute("id:live-fieldset", "disabled", "false")
+    expect(registry.controlInheritedDisabled("id:live-value")).toBe(true)
+    expect(registry.successfulEntries()).toEqual([
+      { name: "external_enabled", value: "outside" },
+      { name: "outer_exempt", value: "outer" },
+      { name: "inner_exempt", value: "inner" },
+    ])
+    expect(() =>
+      registry.requestPlan({
+        protocol: { requestId: "disabled-submitter" },
+        submitter: liveSubmitter.selection,
+      }),
+    ).toThrow(/disabled/)
+    session.removeAttribute("id:live-fieldset", "disabled")
+    expect(registry.controlInheritedDisabled("id:live-value")).toBe(false)
+
+    const inserted = parseExpoTurboDocument(
+      '<DemoLegend id="new-first-legend"><DemoInput id="new-first-value" /></DemoLegend>',
+    ).document.children.find(isElement)
+    const outerFieldset = session.tree.getElementById("outer-fieldset")
+    if (!inserted || !outerFieldset) throw new Error("fieldset insertion fixture is missing")
+    session.mutate((tree) => tree.insertClones(outerFieldset, 0, [inserted]))
+    registry.register("id:new-first-value", {
+      kind: "value",
+      name: "new_first",
+      value: "new",
+    })
+    expect(registry.successfulEntries({ submitter: liveSubmitter.selection })).toEqual([
+      { name: "external_enabled", value: "outside" },
+      { name: "new_first", value: "new" },
+      { name: "live", value: "enabled" },
+      { name: "commit", value: "live" },
+    ])
+  })
+
+  test("rejects malformed form semantics and forged container roles", () => {
+    const session = fieldsetFixture()
+    expect(
+      () =>
+        new FormControlRegistry(session, "id:form", {
+          formSemantics: {} as never,
+        }),
+    ).toThrow(PropsError)
+    const forged = new FormControlRegistry(session, "id:form", {
+      formSemantics: {
+        formContainerRole: () => "group" as never,
+      },
+    })
+    forged.register("id:outer-body", { kind: "value", name: "value", value: "value" })
+    expect(() => forged.successfulEntries()).toThrow(PropsError)
   })
 
   test("collects selected enabled options in authored order and inherits disabled groups", () => {

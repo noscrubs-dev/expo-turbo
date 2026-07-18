@@ -240,6 +240,49 @@ function DemoFormSurface({ children }: { children?: ReactNode }) {
   );
 }
 
+function DemoFormFieldsetComponent({
+  children,
+  disabled,
+}: {
+  children?: ReactNode;
+  disabled: boolean;
+}) {
+  return (
+    <View
+      accessibilityState={{ disabled }}
+      style={{
+        borderColor: disabled ? "#c8d1dc" : "#9eb0c3",
+        borderRadius: 10,
+        borderWidth: 1,
+        gap: 8,
+        padding: 10,
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+const formFieldset = defineComponent({
+  attributes: { disabled: { codec: presenceCodec, prop: "disabled" } },
+  children: "nodes",
+  component: DemoFormFieldsetComponent,
+  formContainer: "fieldset",
+  schema: z.object({ disabled: z.boolean().default(false) }),
+  tag: "DemoFormFieldset",
+});
+
+const formLegend = defineComponent({
+  attributes: {},
+  children: "nodes",
+  component: ({ children }: { children?: ReactNode }) => (
+    <View style={{ gap: 8 }}>{children}</View>
+  ),
+  formContainer: "legend",
+  schema: z.object({}),
+  tag: "DemoFormLegend",
+});
+
 const form = defineComponent({
   attributes: {
     action: { codec: stringCodec, prop: "action" },
@@ -262,12 +305,14 @@ function DemoFormInputComponent({
   value: string;
 }) {
   const [current, setCurrent] = useState(value);
-  useExpoTurboFormControl({ kind: "value", name, value: current });
+  const control = useExpoTurboFormControl({ kind: "value", name, value: current });
   return (
-    <View style={{ gap: 6 }}>
+    <View style={{ gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
       <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
       <TextInput
         accessibilityLabel={label}
+        accessibilityState={control.accessibilityState}
+        editable={!control.disabled}
         onChangeText={setCurrent}
         style={{
           backgroundColor: "white",
@@ -365,6 +410,8 @@ export const DEMO_REGISTRY = createRegistry(
       action,
       documentLink,
       form,
+      formFieldset,
+      formLegend,
       formInput,
       formSubmitter,
     ],
@@ -383,6 +430,13 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
     <DemoForm id="native-form" action="/demo/profile" method="post">
       <DemoFormInput id="first-name" label="First name" name="profile[first_name]" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
+      <DemoFormFieldset id="disabled-profile-group" disabled="false">
+        <DemoFormLegend>
+          <DemoText>The first semantic legend remains enabled even when its fieldset is disabled.</DemoText>
+          <DemoFormInput id="legend-note" label="Legend note" name="profile[legend_note]" value="Still included" />
+        </DemoFormLegend>
+        <DemoFormInput id="disabled-note" label="Disabled fieldset note" name="profile[disabled_note]" value="Omitted" />
+      </DemoFormFieldset>
       <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="get" label="Confirm and submit immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>

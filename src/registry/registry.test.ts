@@ -164,7 +164,7 @@ describe("typed component registry", () => {
     )
   })
 
-  test("publishes explicit form-owner capability metadata", () => {
+  test("publishes explicit form ownership and container capability metadata", () => {
     const owner = defineComponent({
       attributes: {},
       children: "nodes",
@@ -173,19 +173,48 @@ describe("typed component registry", () => {
       schema: z.object({}),
       tag: "DemoForm",
     })
+    const fieldset = defineComponent({
+      aliases: ["LegacyFieldset"],
+      attributes: {},
+      children: "nodes",
+      component: () => null,
+      formContainer: "fieldset",
+      schema: z.object({}),
+      tag: "DemoFieldset",
+    })
+    const legend = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: () => null,
+      formContainer: "legend",
+      schema: z.object({}),
+      tag: "DemoLegend",
+    })
     const registry = createRegistry(
       defineComponentModule({
-        components: [owner],
+        components: [owner, fieldset, legend],
         name: "forms",
         version: "0.1.0",
       }),
     )
 
     expect(owner.formOwner).toBe(true)
-    expect(registry.capabilities.components[0]).toMatchObject({
+    expect(fieldset.formContainer).toBe("fieldset")
+    expect(registry.formContainerRole(element("<LegacyFieldset />"))).toBe("fieldset")
+    expect(registry.formContainerRole(element("<DemoLegend />"))).toBe("legend")
+    expect(registry.formContainerRole(element("<DemoForm />"))).toBeUndefined()
+    expect(
+      registry.capabilities.components.find((component) => component.tag === "DemoForm"),
+    ).toMatchObject({
       formOwner: true,
       tag: "DemoForm",
     })
+    expect(
+      registry.capabilities.components.find((component) => component.tag === "DemoFieldset"),
+    ).toMatchObject({ formContainer: "fieldset", tag: "DemoFieldset" })
+    expect(
+      registry.capabilities.components.find((component) => component.tag === "DemoLegend"),
+    ).toMatchObject({ formContainer: "legend", tag: "DemoLegend" })
   })
 
   test("rejects reserved and duplicate ownership with both module names", () => {
@@ -198,6 +227,16 @@ describe("typed component registry", () => {
         tag: "turbo-frame",
       }),
     ).toThrow(/reserved/)
+    expect(() =>
+      defineComponent({
+        attributes: {},
+        children: "nodes",
+        component: () => null,
+        formContainer: "invalid" as never,
+        schema: z.object({}),
+        tag: "InvalidFormContainer",
+      }),
+    ).toThrow(/fieldset or legend/)
 
     const duplicate = defineComponentModule({
       components: [card],
