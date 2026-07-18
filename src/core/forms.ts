@@ -66,6 +66,7 @@ export type FormControlDescriptor =
       readonly value?: string
     })
   | (FormControlBase & {
+      readonly directionality?: FormControlDirectionality
       readonly kind: "hidden"
       readonly value?: string
     })
@@ -318,6 +319,30 @@ function submitterRequestAttributes(record: FormControlRecord) {
   })
 }
 
+function normalizeDirectionality(
+  directionality: unknown,
+  nodeKey: string,
+): FormControlDirectionality | undefined {
+  if (directionality === undefined) return undefined
+  if (!directionality || typeof directionality !== "object" || Array.isArray(directionality)) {
+    throw new PropsError("Form control directionality must be an object", {
+      target: nodeKey,
+    })
+  }
+  const value = directionality as Partial<FormControlDirectionality>
+  if (typeof value.name !== "string" || value.name === "") {
+    throw new PropsError("Form control directionality name must be a non-empty string", {
+      target: nodeKey,
+    })
+  }
+  if (value.value !== "ltr" && value.value !== "rtl") {
+    throw new PropsError("Form control directionality value must be ltr or rtl", {
+      target: nodeKey,
+    })
+  }
+  return Object.freeze({ name: value.name, value: value.value })
+}
+
 function normalizeDescriptor(
   descriptor: FormControlDescriptor,
   nodeKey: string,
@@ -356,17 +381,20 @@ function normalizeDescriptor(
         kind: descriptor.kind,
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
-    case "hidden":
+    case "hidden": {
       if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
         throw new PropsError("Hidden form control value must be a string", {
           target: nodeKey,
         })
       }
+      const hiddenDirectionality = normalizeDirectionality(descriptor.directionality, nodeKey)
       return Object.freeze({
         ...base,
+        ...(hiddenDirectionality ? { directionality: hiddenDirectionality } : {}),
         kind: descriptor.kind,
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
+    }
     case "multiple": {
       if (!Array.isArray(descriptor.values)) {
         throw new PropsError("Multiple form control values must be an array of strings", {
@@ -491,35 +519,7 @@ function normalizeDescriptor(
           target: nodeKey,
         })
       }
-      const directionality = descriptor.directionality
-      let admittedDirectionality: FormControlDirectionality | undefined
-      if (directionality !== undefined) {
-        if (
-          !directionality ||
-          typeof directionality !== "object" ||
-          Array.isArray(directionality)
-        ) {
-          throw new PropsError("Value form control directionality must be an object", {
-            target: nodeKey,
-          })
-        }
-        const name = directionality.name
-        const value = directionality.value
-        if (typeof name !== "string" || name === "") {
-          throw new PropsError(
-            "Value form control directionality name must be a non-empty string",
-            {
-              target: nodeKey,
-            },
-          )
-        }
-        if (value !== "ltr" && value !== "rtl") {
-          throw new PropsError("Value form control directionality value must be ltr or rtl", {
-            target: nodeKey,
-          })
-        }
-        admittedDirectionality = Object.freeze({ name, value })
-      }
+      const admittedDirectionality = normalizeDirectionality(descriptor.directionality, nodeKey)
       return Object.freeze({
         ...base,
         ...(admittedDirectionality ? { directionality: admittedDirectionality } : {}),
@@ -879,6 +879,14 @@ export class FormControlRegistry {
               value: isCharsetControlName(descriptor.name) ? "UTF-8" : (descriptor.value ?? ""),
             }),
           )
+          if (descriptor.directionality) {
+            entries.push(
+              Object.freeze({
+                name: descriptor.directionality.name,
+                value: descriptor.directionality.value,
+              }),
+            )
+          }
           return
         case "multiple":
           for (const value of descriptor.values) {

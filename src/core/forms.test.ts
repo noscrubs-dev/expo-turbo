@@ -238,6 +238,36 @@ describe("native form control registry", () => {
     expect(frozen.every(Object.isFrozen)).toBe(true)
   })
 
+  test("matches Turbo's manual submitter append without browser image or dirname sidecars", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const named = registry.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    const defaultValue = registry.register("id:alternate", {
+      kind: "submitter",
+      name: "default_commit",
+    })
+    const unnamed = registry.register("id:checked", {
+      kind: "submitter",
+      value: "ignored",
+    })
+
+    const namedEntries = registry.successfulEntries({ submitter: named.selection })
+    expect(namedEntries).toEqual([{ name: "commit", value: "save" }])
+    expect(registry.successfulEntries({ submitter: defaultValue.selection })).toEqual([
+      { name: "default_commit", value: "" },
+    ])
+    expect(registry.successfulEntries({ submitter: unnamed.selection })).toEqual([])
+    expect(
+      namedEntries.some(
+        ({ name }) => name === "commit.x" || name === "commit.y" || name === "commit.dir",
+      ),
+    ).toBe(false)
+  })
+
   test("collects explicitly associated controls in document order and lets them override ancestry", () => {
     const session = externalFormFixture()
     const registry = registryFor(session)
@@ -767,15 +797,24 @@ describe("native form control registry", () => {
     ])
   })
 
-  test("emits explicit hidden charset and directionality entries in XML order", () => {
+  test("emits explicit hidden and value directionality entries in XML order", () => {
     const session = formFixture()
     const registry = registryFor(session)
     const directionality: { name: string; value: "ltr" | "rtl" } = {
       name: "comment.dir",
       value: "rtl",
     }
+    const hiddenDirectionality: { name: string; value: "ltr" | "rtl" } = {
+      name: "charset.dir",
+      value: "ltr",
+    }
 
-    registry.register("id:first", { kind: "hidden", name: "_CHARSET_", value: "ignored" })
+    const hidden = registry.register("id:first", {
+      directionality: hiddenDirectionality,
+      kind: "hidden",
+      name: "_CHARSET_",
+      value: "ignored",
+    })
     const directional = registry.register("id:second", {
       directionality,
       kind: "value",
@@ -793,19 +832,27 @@ describe("native form control registry", () => {
       name: "_charset_",
       value: "caller-value",
     })
-    registry.register("id:multiple", { kind: "hidden", name: "_charset_" })
+    registry.register("id:multiple", {
+      directionality: { name: "token.dir", value: "rtl" },
+      kind: "hidden",
+      name: "token",
+    })
 
+    hiddenDirectionality.name = "changed-hidden.dir"
+    hiddenDirectionality.value = "rtl"
     directionality.name = "changed.dir"
     directionality.value = "ltr"
     const entries = registry.successfulEntries()
     expect(entries).toEqual([
       { name: "_CHARSET_", value: "UTF-8" },
+      { name: "charset.dir", value: "ltr" },
       { name: "comment", value: "مرحبا" },
       { name: "comment.dir", value: "rtl" },
       { name: "empty", value: "" },
       { name: "empty.dir", value: "ltr" },
       { name: "_charset_", value: "caller-value" },
-      { name: "_charset_", value: "UTF-8" },
+      { name: "token", value: "" },
+      { name: "token.dir", value: "rtl" },
     ])
     expect(Object.isFrozen(entries)).toBe(true)
     expect(entries.every(Object.isFrozen)).toBe(true)
@@ -816,14 +863,21 @@ describe("native form control registry", () => {
       name: "comment",
       value: "hello",
     })
+    hidden.update({
+      directionality: { name: "charset-direction", value: "rtl" },
+      kind: "hidden",
+      name: "_charset_",
+    })
     expect(registry.successfulEntries()).toEqual([
-      { name: "_CHARSET_", value: "UTF-8" },
+      { name: "_charset_", value: "UTF-8" },
+      { name: "charset-direction", value: "rtl" },
       { name: "comment", value: "hello" },
       { name: "comment-direction", value: "ltr" },
       { name: "empty", value: "" },
       { name: "empty.dir", value: "ltr" },
       { name: "_charset_", value: "caller-value" },
-      { name: "_charset_", value: "UTF-8" },
+      { name: "token", value: "" },
+      { name: "token.dir", value: "rtl" },
     ])
   })
 
@@ -881,6 +935,7 @@ describe("native form control registry", () => {
     const registry = registryFor(session)
 
     registry.register("id:first", {
+      directionality: { name: "disabled.dir", value: "rtl" },
       disabled: true,
       kind: "hidden",
       name: "_charset_",
@@ -913,6 +968,9 @@ describe("native form control registry", () => {
     const registry = registryFor(session)
     const malformed: unknown[] = [
       { kind: "hidden", name: "token", value: 7 },
+      { directionality: null, kind: "hidden", name: "token" },
+      { directionality: { name: "", value: "ltr" }, kind: "hidden", name: "token" },
+      { directionality: { name: "token.dir", value: "auto" }, kind: "hidden", name: "token" },
       { directionality: null, kind: "value", name: "value", value: "value" },
       { directionality: [], kind: "value", name: "value", value: "value" },
       { directionality: {}, kind: "value", name: "value", value: "value" },
@@ -1184,7 +1242,12 @@ describe("native form control registry", () => {
       ),
     )
     const registry = registryFor(session)
-    registry.register("id:charset", { kind: "hidden", name: "_CHARSET_", value: "ignored" })
+    registry.register("id:charset", {
+      directionality: { name: "charset.dir", value: "rtl" },
+      kind: "hidden",
+      name: "_CHARSET_",
+      value: "ignored",
+    })
     registry.register("id:query", {
       directionality: { name: "query.dir", value: "ltr" },
       kind: "value",
@@ -1195,12 +1258,13 @@ describe("native form control registry", () => {
     const plan = registry.requestPlan({ protocol: { requestId: "charset-get" } })
     expect(plan.entries).toEqual([
       { name: "_CHARSET_", value: "UTF-8" },
+      { name: "charset.dir", value: "rtl" },
       { name: "query", value: "hello world" },
       { name: "query.dir", value: "ltr" },
     ])
     expect(plan.request).toMatchObject({
       method: "GET",
-      url: "https://example.test/search?_CHARSET_=UTF-8&query=hello+world&query.dir=ltr",
+      url: "https://example.test/search?_CHARSET_=UTF-8&charset.dir=rtl&query=hello+world&query.dir=ltr",
     })
 
     session.setAttribute("id:form", "method", "post")
@@ -1208,7 +1272,7 @@ describe("native form control registry", () => {
     expect(unsafe.request).toMatchObject({
       body: {
         contentType: "application/x-www-form-urlencoded;charset=UTF-8",
-        value: "_CHARSET_=UTF-8&query=hello+world&query.dir=ltr",
+        value: "_CHARSET_=UTF-8&charset.dir=rtl&query=hello+world&query.dir=ltr",
       },
       method: "POST",
       url: "https://example.test/search?stale=1",
@@ -1827,6 +1891,15 @@ const invalidHidden: FormControlDescriptor = {
   value: 7,
 }
 void invalidHidden
+
+const invalidSubmitterDirectionality: FormControlDescriptor = {
+  // @ts-expect-error Turbo manually appends only the submitter name and value.
+  directionality: { name: "commit.dir", value: "rtl" },
+  kind: "submitter",
+  name: "commit",
+  value: "save",
+}
+void invalidSubmitterDirectionality
 
 // @ts-expect-error Select options require an explicit value or a text snapshot.
 const missingSelectOptionValue: FormSelectOption = { kind: "option", selected: true }
