@@ -1,3 +1,4 @@
+import { documentCachePolicy } from "./document-metadata"
 import { PropsError, TargetError } from "./errors"
 import { DocumentTree } from "./tree"
 
@@ -68,6 +69,7 @@ export class DocumentSnapshotCache {
     if (documentUrl === undefined || cacheKey(documentUrl) !== key) {
       throw new TargetError("Document snapshot tree URL must match its cache key")
     }
+    if (!documentCachePolicy(tree).cacheable) return
     const snapshot = tree.clone({ omitTemporaryElements: true })
     this.entries.delete(key)
     this.entries.set(key, snapshot)

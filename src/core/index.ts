@@ -1,5 +1,6 @@
 export * from "./custom-stream-actions"
 export * from "./document-loader"
+export * from "./document-metadata"
 export * from "./document-refresh-controller"
 export * from "./document-snapshot-cache"
 export * from "./document-visit-controller"
