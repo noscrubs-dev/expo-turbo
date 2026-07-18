@@ -11,6 +11,7 @@ import {
   type DocumentHistoryEntry,
   type DocumentHistoryWriteMethod,
 } from "./document-history"
+import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { StateError, TargetError } from "./errors"
 import {
   FormLinkSubmissionController,
@@ -20,6 +21,9 @@ import {
   FormSubmissionController,
   type FormSubmissionControllerOptions,
 } from "./form-submission-controller"
+import { FrameControllerRegistry } from "./frame-controller-registry"
+import { FrameHistoryCoordinator } from "./frame-history"
+import { FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import { DocumentSession } from "./session"
@@ -98,6 +102,33 @@ function history(document: DocumentSession) {
     kind: "managed",
   })
   return { history, writes }
+}
+
+function mountedFrameHistory(document: DocumentSession, frameId: string) {
+  const ledger = history(document)
+  const cache = new DocumentSnapshotCache()
+  const frameControllers = new FrameControllerRegistry(
+    document,
+    new FrameRequestLoader(
+      document,
+      {
+        fetch: async () =>
+          Promise.reject(new Error("Generated form history must not fetch a Frame")),
+      },
+      { next: () => "unexpected-frame-request" },
+    ),
+    undefined,
+    undefined,
+    undefined,
+    {
+      frameHistory: new FrameHistoryCoordinator(document, {
+        history: ledger.history,
+        snapshotCache: cache,
+      }),
+    },
+  )
+  frameControllers.get(frameId)
+  return { ...ledger, cache, frameControllers }
 }
 
 describe("FormLinkSubmissionController", () => {
@@ -317,7 +348,7 @@ describe("FormLinkSubmissionController", () => {
     expect(requests).toHaveLength(2)
   })
 
-  test("admits document actions while keeping restore and Frame actions fail-closed", async () => {
+  test("admits document actions while unsupported restore and unmounted Frame actions fail closed", async () => {
     let allocations = 0
     const requestIds = { next: () => `request-${++allocations}` }
     const document = session(
@@ -334,15 +365,82 @@ describe("FormLinkSubmissionController", () => {
     expect(await links.submit("id:document-link", "/save")).toMatchObject({ status: "empty" })
     await expect(links.submit("id:replace-link", "/save")).rejects.toThrow(/configured history/)
     await expect(links.submit("id:restore-link", "/save")).rejects.toThrow(/restoration support/)
-    await expect(links.submit("id:frame-link", "/save")).rejects.toThrow(/history support/)
-    expect(allocations).toBe(2)
+    await expect(links.submit("id:frame-link", "/save")).rejects.toThrow(
+      /mounted Frame history coordination/,
+    )
+    expect(allocations).toBe(3)
     expect(requests).toHaveLength(1)
 
     document.setAttribute("id:destination", "data-turbo-action", "Replace")
     const result = await links.submit("id:frame-link", "/save")
     expect(result).toMatchObject({ status: "empty" })
-    expect(allocations).toBe(3)
+    expect(allocations).toBe(4)
     expect(requests).toHaveLength(2)
+  })
+
+  test("routes explicit and inherited Frame actions through the mounted form-history path", async () => {
+    const document = session(
+      `<Gallery>
+        <DemoLink id="link" data-turbo-method="post" data-turbo-frame="destination" data-turbo-action="advance" />
+        <turbo-frame id="destination" src="/old" data-turbo-action="replace"><Old /></turbo-frame>
+      </Gallery>`,
+    )
+    const current = mountedFrameHistory(document, "destination")
+    let responseNumber = 0
+    const { links, requests } = harness(document, {
+      response: (request) => {
+        responseNumber += 1
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () =>
+            `<turbo-frame id="destination"><Saved sequence="${responseNumber}" /></turbo-frame>`,
+          url: request.url,
+        }
+      },
+      submission: {
+        frameControllers: current.frameControllers,
+        snapshotCache: current.cache,
+      },
+    })
+
+    await expect(links.submit("id:link", "/save")).resolves.toMatchObject({
+      application: "frame",
+      status: "applied",
+    })
+    document.setAttribute("id:link", "data-turbo-action", "Advance")
+    await expect(links.submit("id:link", "/replace")).resolves.toMatchObject({
+      application: "frame",
+      status: "applied",
+    })
+
+    expect(requests.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: "POST", url: "https://example.test/save" },
+      { method: "POST", url: "https://example.test/replace" },
+    ])
+    expect(current.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "link-history-1",
+          restorationIndex: 3,
+          url: "https://example.test/save",
+        },
+        method: "push",
+      },
+      {
+        entry: {
+          restorationIdentifier: "link-history-1",
+          restorationIndex: 3,
+          url: "https://example.test/replace",
+        },
+        method: "replace",
+      },
+    ])
+    expect(document.tree.document.url).toBe("https://example.test/replace")
+    expect(
+      document.tree.getElementById("destination")?.children.filter(isElement)[0],
+    ).toMatchObject({ attributes: [{ name: "sequence", value: "2" }], tagName: "Saved" })
   })
 
   test("routes generated document replace through shared form history", async () => {

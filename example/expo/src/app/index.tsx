@@ -23,7 +23,7 @@ import { Linking, Platform, Pressable, ScrollView, Text, View } from "react-nati
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
 import {
-  createDemoDocumentController,
+  createDemoDocumentRuntime,
   DEMO_CLOCK,
 } from "../demo-document-controller";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
@@ -209,32 +209,15 @@ export default function HomeScreen() {
       ),
     [],
   );
-  const documentController = useMemo(
-    () => createDemoDocumentController(session),
+  const documentRuntime = useMemo(
+    () => createDemoDocumentRuntime(session),
     [session],
   );
+  const documentController = documentRuntime.controller;
   const refresh = useMemo(
     () => new DocumentRefreshController(session, documentController, DEMO_CLOCK),
     [documentController, session],
   );
-  const formController = useMemo(
-    () => createDemoFormController(session, refresh),
-    [refresh, session],
-  );
-  const forms = useMemo(
-    () =>
-      new DocumentFormControls(session, {
-        formSemantics: DEMO_REGISTRY,
-        submissionController: formController,
-      }),
-    [formController, session],
-  );
-  const formLinks = useMemo(() => {
-    let requestId = 0;
-    return new FormLinkSubmissionController(session, formController, {
-      next: () => `demo-generated-form-link-${++requestId}`,
-    });
-  }, [formController, session]);
   const actionRuntime = useMemo(() => createDemoActionRuntime(), []);
   const navigation = useMemo<NavigationAdapter>(
     () => ({
@@ -254,9 +237,48 @@ export default function HomeScreen() {
     [router],
   );
   const frames = useMemo(
-    () => createDemoFrameControllers(session, navigation, documentController, refresh),
-    [documentController, navigation, refresh, session],
+    () =>
+      createDemoFrameControllers(
+        session,
+        navigation,
+        documentController,
+        refresh,
+        documentRuntime.history,
+        documentRuntime.snapshotCache,
+      ),
+    [
+      documentController,
+      documentRuntime.history,
+      documentRuntime.snapshotCache,
+      navigation,
+      refresh,
+      session,
+    ],
   );
+  const formController = useMemo(
+    () =>
+      createDemoFormController(
+        session,
+        refresh,
+        frames,
+        documentRuntime.snapshotCache,
+      ),
+    [documentRuntime.snapshotCache, frames, refresh, session],
+  );
+  const forms = useMemo(
+    () =>
+      new DocumentFormControls(session, {
+        formSemantics: DEMO_REGISTRY,
+        submissionController: formController,
+      }),
+    [formController, session],
+  );
+  const formLinks = useMemo(() => {
+    let requestId = 0;
+    return new FormLinkSubmissionController(session, formController, {
+      next: () => `demo-generated-form-link-${++requestId}`,
+    });
+  }, [formController, session]);
   useEffect(
     () => () => {
       refresh.dispose();

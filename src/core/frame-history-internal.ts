@@ -1,7 +1,9 @@
 import { StateError } from "./errors"
 import type { FrameController } from "./frame-controller"
-import type { FrameHistoryCommitPlan } from "./frame-history"
+import type { FrameControllerRegistry } from "./frame-controller-registry"
+import type { FrameHistoryCommitPlan, FrameHistoryCoordinator } from "./frame-history"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
+import type { ProtocolElement } from "./tree"
 
 type FrameHistoryVisit = (
   source: string,
@@ -10,8 +12,23 @@ type FrameHistoryVisit = (
 
 type FrameCommitProtection = (frameId: string, owner: object) => boolean
 
+export interface MountedFrameHistoryBinding {
+  readonly coordinator: FrameHistoryCoordinator
+  readonly scope: object
+  isCurrent(): boolean
+}
+
+type MountedFrameHistoryResolver = (
+  frameId: string,
+  frame: ProtocolElement,
+) => MountedFrameHistoryBinding | undefined
+
 const frameHistoryVisits = new WeakMap<FrameController, FrameHistoryVisit>()
 const frameCommitProtections = new WeakMap<FrameRequestLoader, FrameCommitProtection>()
+const mountedFrameHistoryResolvers = new WeakMap<
+  FrameControllerRegistry,
+  MountedFrameHistoryResolver
+>()
 
 export function registerFrameHistoryVisit(
   controller: FrameController,
@@ -45,4 +62,19 @@ export function isFrameCommitProtected(
   const protection = frameCommitProtections.get(loader)
   if (!protection) throw new StateError("Frame request loader is invalid")
   return protection(frameId, owner)
+}
+
+export function registerMountedFrameHistoryResolver(
+  registry: FrameControllerRegistry,
+  resolver: MountedFrameHistoryResolver,
+): void {
+  mountedFrameHistoryResolvers.set(registry, resolver)
+}
+
+export function resolveMountedFrameHistory(
+  registry: FrameControllerRegistry,
+  frameId: string,
+  frame: ProtocolElement,
+): MountedFrameHistoryBinding | undefined {
+  return mountedFrameHistoryResolvers.get(registry)?.(frameId, frame)
 }

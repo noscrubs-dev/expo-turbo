@@ -410,6 +410,62 @@ describe("promoted Frame history", () => {
     ).toBe("OneAgain")
   })
 
+  test("shares one mounted Frame restoration scope across form and GET promotions", async () => {
+    const current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><AfterGet /></turbo-frame>', { url }),
+      undefined,
+      {
+        document: `<Gallery data-turbo-root="/">
+          <turbo-frame id="details" src="/old">
+            <DemoForm id="frame-form" action="/submit" data-turbo-action="advance" />
+          </turbo-frame>
+        </Gallery>`,
+      },
+    )
+    current.registry.get("details")
+    const form = current.session.tree.getElementById("frame-form")
+    if (!form) throw new Error("fixture Frame form is missing")
+    const controls = new FormControlRegistry(current.session, form.key)
+    const formController = new FormSubmissionController(
+      current.session,
+      {
+        fetch: async (request) =>
+          response('<turbo-frame id="details"><AfterForm /></turbo-frame>', {
+            url: request.url,
+          }),
+      },
+      { frameControllers: current.registry, snapshotCache: current.cache },
+    )
+
+    await expect(
+      formController.submit((signal) =>
+        controls.submissionProposal({ protocol: { requestId: "form-request" }, signal }),
+      ),
+    ).resolves.toMatchObject({ application: "frame", status: "applied" })
+    await expect(
+      current.registry.visit("/after-get", { action: "advance", frame: "details" }),
+    ).resolves.toMatchObject({ action: "advance", kind: "frame" })
+
+    expect(current.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "frame-history-1",
+          restorationIndex: 1,
+          url: "https://example.test/submit",
+        },
+        method: "push",
+      },
+      {
+        entry: {
+          restorationIdentifier: "frame-history-1",
+          restorationIndex: 2,
+          url: "https://example.test/after-get",
+        },
+        method: "push",
+      },
+    ])
+  })
+
   test("commits independent promoted Frames in response-completion order", async () => {
     let resolveOne: ((response: TurboResponse) => void) | undefined
     let resolveTwo: ((response: TurboResponse) => void) | undefined

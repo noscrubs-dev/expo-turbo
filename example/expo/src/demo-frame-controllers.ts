@@ -1,12 +1,15 @@
 import type { NavigationAdapter, VisibilityAdapter } from "expo-turbo/adapters";
 import type {
+  DocumentHistory,
   DocumentRefreshRequester,
   DocumentSession,
+  DocumentSnapshotCache,
   DocumentVisitController,
 } from "expo-turbo/core";
 import {
   EXPO_TURBO_MIME_TYPE,
   FrameControllerRegistry,
+  FrameHistoryCoordinator,
   FrameRequestLoader,
 } from "expo-turbo/core";
 
@@ -15,6 +18,8 @@ export function createDemoFrameControllers(
   navigation: NavigationAdapter,
   documentController: DocumentVisitController,
   refresh: DocumentRefreshRequester,
+  history: DocumentHistory,
+  snapshotCache: DocumentSnapshotCache,
 ): FrameControllerRegistry {
   let requestId = 0;
   const visibility: VisibilityAdapter = {
@@ -56,5 +61,8 @@ export function createDemoFrameControllers(
     visibility,
     navigation,
     documentController,
+    {
+      frameHistory: new FrameHistoryCoordinator(session, { history, snapshotCache }),
+    },
   );
 }

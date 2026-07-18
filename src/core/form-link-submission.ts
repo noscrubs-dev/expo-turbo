@@ -274,11 +274,16 @@ export class FormLinkSubmissionController {
         target: link.key,
       })
     }
-    if (destination.kind === "frame" && (explicitAction || inheritedAction)) {
-      throw new TargetError("Generated form-link actions require history support", {
-        frameId: destination.frameId,
-        target: link.key,
-      })
+    const frameAction =
+      destination.kind === "frame" ? (explicitAction ?? inheritedAction) : undefined
+    if (destination.kind === "frame" && frameAction === "restore") {
+      throw new TargetError(
+        "Generated form-link Frame restore actions require restoration support",
+        {
+          frameId: destination.frameId,
+          target: link.key,
+        },
+      )
     }
 
     const documentUrl = this.session.tree.document.url
@@ -300,6 +305,7 @@ export class FormLinkSubmissionController {
     const confirmationValue = attributeValue(link, "data-turbo-confirm")
     const confirmationMessage =
       confirmationValue === undefined || confirmationValue === "" ? undefined : confirmationValue
+    const visitAction = destination.kind === "document" ? explicitAction : frameAction
     return Object.freeze({
       action: generated.action,
       ...(confirmationMessage !== undefined ? { confirmationMessage } : {}),
@@ -311,7 +317,7 @@ export class FormLinkSubmissionController {
       link,
       ...(method !== undefined ? { method } : {}),
       streamAttributePresent,
-      ...(destination.kind === "document" && explicitAction ? { visitAction: explicitAction } : {}),
+      ...(visitAction ? { visitAction } : {}),
     })
   }
 

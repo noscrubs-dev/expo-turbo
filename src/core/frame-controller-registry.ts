@@ -3,7 +3,11 @@ import type { DocumentVisitController, DocumentVisitResult } from "./document-vi
 import { FrameMissingError, TargetError } from "./errors"
 import { FrameController } from "./frame-controller"
 import { type FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
-import { visitFrameWithHistory } from "./frame-history-internal"
+import {
+  type MountedFrameHistoryBinding,
+  registerMountedFrameHistoryResolver,
+  visitFrameWithHistory,
+} from "./frame-history-internal"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
 import {
   type ResolvedFrameTarget,
@@ -54,6 +58,7 @@ export type FrameVisitResult =
 
 interface FrameControllerRecord {
   readonly controller: FrameController
+  readonly history?: MountedFrameHistoryBinding
   readonly node: ProtocolElement
   unregisterDisposal: () => void
 }
@@ -72,7 +77,12 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     private readonly navigation?: NavigationAdapter,
     private readonly topLevelVisits?: Pick<DocumentVisitController, "visit">,
     private readonly options: FrameControllerRegistryOptions = {},
-  ) {}
+  ) {
+    registerMountedFrameHistoryResolver(this, (frameId, frame) => {
+      const record = this.controllers.get(frameId)
+      return record?.node === frame ? record.history : undefined
+    })
+  }
 
   get(frameId: string): FrameController {
     const frame = this.session.tree.getElementById(frameId)
@@ -92,8 +102,21 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       frame,
       this.options.frameHistory,
     )
-    const record: FrameControllerRecord = {
+    let record!: FrameControllerRecord
+    const frameHistory = this.options.frameHistory
+    record = {
       controller,
+      ...(frameHistory
+        ? {
+            history: Object.freeze({
+              coordinator: frameHistory,
+              isCurrent: () =>
+                this.controllers.get(frameId) === record &&
+                this.session.tree.getElementById(frameId) === frame,
+              scope: controller,
+            }),
+          }
+        : {}),
       node: frame,
       unregisterDisposal: () => undefined,
     }

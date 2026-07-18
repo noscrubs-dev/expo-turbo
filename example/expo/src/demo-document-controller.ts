@@ -25,9 +25,15 @@ export const DEMO_CLOCK: ClockAdapter = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 };
 
-export function createDemoDocumentController(
+export interface DemoDocumentRuntime {
+  readonly controller: DocumentVisitController;
+  readonly history: DocumentHistory;
+  readonly snapshotCache: DocumentSnapshotCache;
+}
+
+export function createDemoDocumentRuntime(
   session: DocumentSession,
-): DocumentVisitController {
+): DemoDocumentRuntime {
   let requestId = 0;
   let restorationIdentifier = 0;
   const documentUrl = session.tree.document.url;
@@ -45,25 +51,29 @@ export function createDemoDocumentController(
     kind: "managed",
   });
   const snapshotCache = new DocumentSnapshotCache();
-  return new DocumentVisitController(
-    new DocumentRequestLoader(
-      session,
-      {
-        async fetch(request): Promise<TurboResponse> {
-          const url = new URL(request.url);
-          const xml = url.pathname === "/demo" ? DEMO_DOCUMENT : LINKED_DOCUMENT;
-          return {
-            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
-            redirected: false,
-            status: 200,
-            text: async () => xml,
-            url: request.url,
-          };
+  return Object.freeze({
+    controller: new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          async fetch(request): Promise<TurboResponse> {
+            const url = new URL(request.url);
+            const xml = url.pathname === "/demo" ? DEMO_DOCUMENT : LINKED_DOCUMENT;
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () => xml,
+              url: request.url,
+            };
+          },
         },
-      },
-      { next: () => `demo-document-${++requestId}` },
+        { next: () => `demo-document-${++requestId}` },
+      ),
+      DEMO_CLOCK,
+      { history, snapshotCache },
     ),
-    DEMO_CLOCK,
-    { history, snapshotCache },
-  );
+    history,
+    snapshotCache,
+  });
 }
