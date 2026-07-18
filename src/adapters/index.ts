@@ -3,6 +3,10 @@ import type { ProtocolInspectorAdapter } from "../core/inspector"
 import type { StyleAdapter } from "./styles"
 
 export type { DocumentHistoryHostAdapter } from "../core/document-history"
+export type {
+  DocumentHistoryTraversalSource,
+  DocumentHistoryTraversalUnsubscribe,
+} from "../core/document-history-traversal"
 export * from "./styles"
 
 export type Unsubscribe = () => void

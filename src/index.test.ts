@@ -5,6 +5,7 @@ import {
   EXPO_TURBO_STATUS,
   FormSubmissionController,
   type FormSubmissionReport,
+  subscribeDocumentHistoryTraversal,
 } from "./index"
 
 describe("package status", () => {
@@ -12,6 +13,7 @@ describe("package status", () => {
     expect(EXPO_TURBO_STATUS).toBe("foundation")
     expect(FormSubmissionController).toBeFunction()
     expect(DocumentHistory).toBeFunction()
+    expect(subscribeDocumentHistoryTraversal).toBeFunction()
   })
 })
 
