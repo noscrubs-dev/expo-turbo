@@ -91,6 +91,150 @@ describe("Document request loader", () => {
     )
   })
 
+  test("acknowledges exact request ownership before bookkeeping and fetch", async () => {
+    const order: string[] = []
+    const session = documentSession()
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          order.push("fetch")
+          return response('<Gallery><Started id="started" /></Gallery>')
+        },
+      },
+      { next: () => "request-started" },
+    )
+
+    const report = await loader.load("/started", undefined, {
+      onRequestStart() {
+        order.push("start")
+        expect(session.recentRequestIds.has("request-started")).toBe(false)
+      },
+    })
+
+    expect(report).toMatchObject({ status: "committed" })
+    expect(order).toEqual(["start", "fetch"])
+    expect(session.recentRequestIds.has("request-started")).toBe(true)
+  })
+
+  test("skips request-start acknowledgement when displaced abort work supersedes the new lease", async () => {
+    const session = documentSession()
+    let oldestRequest: TurboRequest | undefined
+    let resolveOldest: ((response: TurboResponse) => void) | undefined
+    const oldestLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            oldestRequest = request
+            resolveOldest = resolve
+          }),
+      },
+      { next: () => "request-oldest" },
+    )
+    let middleFetches = 0
+    let middleStarts = 0
+    const middleLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          middleFetches += 1
+          return response('<Gallery><Middle id="middle" /></Gallery>')
+        },
+      },
+      { next: () => "request-middle" },
+    )
+    let newestRequest: TurboRequest | undefined
+    let resolveNewest: ((response: TurboResponse) => void) | undefined
+    let newestStarts = 0
+    const newestLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            newestRequest = request
+            resolveNewest = resolve
+          }),
+      },
+      { next: () => "request-newest" },
+    )
+    let newest: Promise<unknown> | undefined
+
+    const oldest = oldestLoader.load("/oldest")
+    if (!oldestRequest) throw new Error("oldest request did not start")
+    oldestRequest.signal?.addEventListener("abort", () => {
+      newest = newestLoader.load("/newest", undefined, {
+        onRequestStart() {
+          newestStarts += 1
+        },
+      })
+    })
+    const middle = middleLoader.load("/middle", undefined, {
+      onRequestStart() {
+        middleStarts += 1
+      },
+    })
+
+    expect(await middle).toMatchObject({ status: "canceled" })
+    expect(middleStarts).toBe(0)
+    expect(middleFetches).toBe(0)
+    expect(newestStarts).toBe(1)
+    expect(newestRequest?.signal?.aborted).toBe(false)
+
+    resolveOldest?.(
+      response('<Gallery><Oldest id="oldest" /></Gallery>', {
+        url: "https://example.test/oldest",
+      }),
+    )
+    expect(await oldest).toMatchObject({ status: "canceled" })
+    resolveNewest?.(
+      response('<Gallery><Newest id="newest" /></Gallery>', {
+        url: "https://example.test/newest",
+      }),
+    )
+    expect(await newest).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newest")).toBeDefined()
+  })
+
+  test("rejects invalid request-start callbacks before fetch and remains retryable", async () => {
+    for (const onRequestStart of [
+      () => {
+        throw new Error("request-start callback failed with secret-token")
+      },
+      () => "invalid" as never,
+      async () => undefined,
+      async () => {
+        throw new Error("async request-start callback failed with secret-token")
+      },
+    ]) {
+      let fetches = 0
+      const session = documentSession()
+      const loader = new DocumentRequestLoader(
+        session,
+        {
+          fetch: async () => {
+            fetches += 1
+            return response(`<Gallery><Result id="result-${fetches}" /></Gallery>`)
+          },
+        },
+        { next: () => `request-${fetches + 1}` },
+      )
+
+      try {
+        await loader.load("/invalid-start", undefined, { onRequestStart: onRequestStart as never })
+        throw new Error("expected request-start callback to fail")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RequestError)
+        expect(String(error)).not.toContain("secret-token")
+      }
+      expect(fetches).toBe(0)
+      expect(session.revision).toBe(0)
+
+      expect(await loader.load("/retry")).toMatchObject({ status: "committed" })
+      expect(fetches).toBe(1)
+    }
+  })
+
   test("commits success and authoritative HTTP error documents with distinct classifications", async () => {
     const fixtures = [
       { classification: "success", status: 200 },
@@ -282,6 +426,7 @@ describe("Document request loader", () => {
     const session = documentSession()
     let outerFetches = 0
     let peerFetches = 0
+    let reentrantStarts = 0
     let requestId = 0
     const loader = new DocumentRequestLoader(
       session,
@@ -310,8 +455,16 @@ describe("Document request loader", () => {
 
     const outer = loader.load("/outer", undefined, {
       beforeTreeCommit() {
-        sameLoader = loader.load("/same-loader")
-        peerLoader = peer.load("/peer-loader")
+        sameLoader = loader.load("/same-loader", undefined, {
+          onRequestStart() {
+            reentrantStarts += 1
+          },
+        })
+        peerLoader = peer.load("/peer-loader", undefined, {
+          onRequestStart() {
+            reentrantStarts += 1
+          },
+        })
       },
     })
 
@@ -321,6 +474,7 @@ describe("Document request loader", () => {
     await expect(peerLoader).rejects.toBeInstanceOf(StateError)
     expect(outerFetches).toBe(1)
     expect(peerFetches).toBe(0)
+    expect(reentrantStarts).toBe(0)
     expect(session.tree.getElementById("outer")).toBeDefined()
     expect(session.tree.getElementById("peer")).toBeUndefined()
   })

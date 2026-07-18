@@ -7,13 +7,19 @@ import type {
   TurboRequest,
   TurboResponse,
 } from "../adapters"
+import {
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryHostAdapter,
+  type DocumentHistoryWriteMethod,
+} from "./document-history"
 import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
   DocumentVisitController,
 } from "./document-visit-controller"
-import { ContentTypeError, ParseError, RequestError, TargetError } from "./errors"
+import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -32,11 +38,15 @@ interface TimerRecord {
 }
 
 class ManualClock implements ClockAdapter {
+  onClear: (() => void) | undefined
   readonly timers: TimerRecord[] = []
 
   clearTimeout(handle: unknown): void {
     const timer = this.timers.find((candidate) => candidate.handle === handle)
     if (timer) timer.cleared = true
+    const onClear = this.onClear
+    this.onClear = undefined
+    onClear?.()
   }
 
   now(): number {
@@ -56,6 +66,38 @@ class ManualClock implements ClockAdapter {
   }
 }
 
+function historyFixture(
+  write: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined = () =>
+    undefined,
+  currentUrl = "https://example.test/current",
+): Readonly<{
+  history: DocumentHistory
+  writes: ReadonlyArray<
+    Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
+  >
+}> {
+  const writes: Array<
+    Readonly<{ readonly entry: DocumentHistoryEntry; readonly method: DocumentHistoryWriteMethod }>
+  > = []
+  let identifier = 0
+  const host: DocumentHistoryHostAdapter = {
+    write(method, entry) {
+      writes.push(Object.freeze({ entry, method }))
+      return write(method, entry)
+    },
+  }
+  const history = new DocumentHistory({ next: () => `history-${++identifier}` }, host)
+  history.initialize({
+    entry: {
+      restorationIdentifier: "history-current",
+      restorationIndex: 0,
+      url: currentUrl,
+    },
+    kind: "managed",
+  })
+  return Object.freeze({ history, writes })
+}
+
 function response(xml: string, options: Partial<TurboResponse> = {}): TurboResponse {
   return {
     headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
@@ -69,17 +111,20 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 
 function harness(
   options: Readonly<{
+    clock?: ManualClock
+    documentUrl?: string
     documentXml?: string
     fetch?: FetchAdapter["fetch"]
     onObserverError?: (error: AggregateError) => void
     progressDelayMs?: number
     snapshotCache?: DocumentSnapshotCache
+    history?: DocumentHistory
   }> = {},
 ) {
   const pending: PendingRequest[] = []
   const session = new DocumentSession(
     parseExpoTurboDocument(options.documentXml ?? '<Gallery><Old id="old" /></Gallery>', {
-      url: "https://example.test/current",
+      url: options.documentUrl ?? "https://example.test/current",
     }),
   )
   let requestId = 0
@@ -95,8 +140,9 @@ function harness(
     },
     { next: () => `request-${++requestId}` },
   )
-  const clock = new ManualClock()
+  const clock = options.clock ?? new ManualClock()
   const controller = new DocumentVisitController(loader, clock, {
+    ...(options.history ? { history: options.history } : {}),
     ...(options.onObserverError ? { onObserverError: options.onObserverError } : {}),
     ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
     ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
@@ -197,6 +243,358 @@ describe("Document visit controller", () => {
     expect(session.tree.getElementById("next")?.tagName).toBe("Next")
   })
 
+  test("captures outgoing truth before committing history and replacing the tree", async () => {
+    const order: string[] = []
+    const snapshotCache = new DocumentSnapshotCache()
+    let history: DocumentHistory
+    let session: DocumentSession
+    const fixture = historyFixture((method, entry) => {
+      expect(method).toBe("push")
+      expect(entry.url).toBe("https://example.test/next")
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(history.current?.restorationIdentifier).toBe("history-current")
+      expect(session.tree.getElementById("old")).toBeDefined()
+      expect(session.tree.getElementById("next")).toBeUndefined()
+      order.push("history")
+    })
+    history = fixture.history
+    const current = harness({ history, snapshotCache })
+    session = current.session
+    session.subscribe("id:old", () => {
+      expect(history.current?.url).toBe("https://example.test/next")
+      expect(session.tree.getElementById("old")).toBeUndefined()
+      expect(session.tree.getElementById("next")).toBeDefined()
+      order.push("tree")
+    })
+
+    const visit = current.controller.visit("/next")
+    current.pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(order).toEqual(["history", "tree"])
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 1,
+          url: "https://example.test/next",
+        },
+        method: "push",
+      },
+    ])
+    expect(history.current).toBe(fixture.writes[0]?.entry)
+  })
+
+  test("aligns canonical-equivalent active and history URLs for an advance", async () => {
+    const documentUrl = "https://example.test:443/current"
+    const fixture = historyFixture(undefined, documentUrl)
+    const { controller, pending, session } = harness({
+      documentUrl,
+      history: fixture.history,
+    })
+
+    const visit = controller.visit("/next")
+    expect(pending[0]?.request.url).toBe("https://example.test/next")
+    pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test:443/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(fixture.writes).toHaveLength(1)
+    expect(fixture.history.current?.url).toBe("https://example.test/next")
+    expect(session.tree.document.url).toBe("https://example.test/next")
+  })
+
+  test("preserves requested-location history method while retargeting redirects", async () => {
+    const fixture = historyFixture()
+    const { controller, pending } = harness({ history: fixture.history })
+
+    const sameLocation = controller.visit("/current")
+    pending[0]?.resolve(
+      response('<Gallery><Same id="same" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    expect(await sameLocation).toMatchObject({ status: "committed" })
+
+    const redirected = controller.visit("/requested")
+    pending[1]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+    expect(await redirected).toMatchObject({ redirected: true, status: "committed" })
+
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+      {
+        entry: {
+          restorationIdentifier: "history-2",
+          restorationIndex: 1,
+          url: "https://example.test/final",
+        },
+        method: "push",
+      },
+    ])
+    expect(fixture.history.current).toBe(fixture.writes[1]?.entry)
+  })
+
+  test("keeps explicit no-tree responses out of document history", async () => {
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({ history: fixture.history })
+    const tree = session.tree
+    const historyEntry = fixture.history.current
+
+    const empty = controller.visit("/empty")
+    pending[0]?.resolve(
+      response("unused", {
+        headers: {},
+        status: 204,
+        url: "https://example.test/empty",
+      }),
+    )
+
+    expect(await empty).toMatchObject({ status: "empty" })
+    expect(fixture.writes).toEqual([])
+    expect(fixture.history.current).toBe(historyEntry)
+    expect(session.tree).toBe(tree)
+  })
+
+  test("rejects misaligned history before request ownership or lifecycle changes", async () => {
+    const fixture = historyFixture(undefined, "https://example.test/other")
+    const { controller, pending } = harness({ history: fixture.history })
+    const initial = controller.state
+
+    await expect(controller.visit("/next")).rejects.toBeInstanceOf(StateError)
+
+    expect(controller.state).toBe(initial)
+    expect(pending).toHaveLength(0)
+    expect(fixture.writes).toEqual([])
+    expect(fixture.history.current?.url).toBe("https://example.test/other")
+  })
+
+  test("rechecks active document alignment after injected history planning", async () => {
+    let session: DocumentSession
+    const writes: DocumentHistoryEntry[] = []
+    const history = new DocumentHistory(
+      {
+        next() {
+          session.replaceTree(
+            parseExpoTurboDocument('<Gallery><Drifted id="drifted" /></Gallery>', {
+              url: "https://example.test/drifted",
+            }),
+          )
+          return "history-drifted"
+        },
+      },
+      {
+        write(_method, entry) {
+          writes.push(entry)
+        },
+      },
+    )
+    history.initialize({
+      entry: {
+        restorationIdentifier: "history-current",
+        restorationIndex: 0,
+        url: "https://example.test/current",
+      },
+      kind: "managed",
+    })
+    const current = harness({ history })
+    session = current.session
+    const initial = current.controller.state
+
+    await expect(current.controller.visit("/next")).rejects.toBeInstanceOf(StateError)
+
+    expect(current.controller.state).toBe(initial)
+    expect(current.pending).toHaveLength(0)
+    expect(writes).toEqual([])
+    expect(history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.document.url).toBe("https://example.test/drifted")
+  })
+
+  test("fails an atomic history-host rejection without replacing the tree and retries fresh", async () => {
+    let attempts = 0
+    const snapshotCache = new DocumentSnapshotCache()
+    const fixture = historyFixture(() => {
+      attempts += 1
+      if (attempts === 1) throw new Error("history host failed with secret-token")
+    })
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    const tree = session.tree
+    const historyEntry = fixture.history.current
+
+    const failed = controller.visit("/failed")
+    pending[0]?.resolve(
+      response('<Gallery><Failed id="failed" /></Gallery>', {
+        url: "https://example.test/failed",
+      }),
+    )
+    try {
+      await failed
+      throw new Error("expected history host write to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+    expect(controller.state.status).toBe("failed")
+    expect(session.tree).toBe(tree)
+    expect(fixture.history.current).toBe(historyEntry)
+    expect(snapshotCache.has("https://example.test/current")).toBe(true)
+
+    const retry = controller.visit("/retry")
+    pending[1]?.resolve(
+      response('<Gallery><Retry id="retry" /></Gallery>', {
+        url: "https://example.test/retry",
+      }),
+    )
+    expect(await retry).toMatchObject({ status: "committed" })
+    expect(fixture.history.current?.restorationIdentifier).toBe("history-2")
+    expect(session.tree.getElementById("retry")).toBeDefined()
+  })
+
+  test("fails snapshot capture before any irreversible history write", async () => {
+    class FailingSnapshotCache extends DocumentSnapshotCache {
+      override put(): void {
+        throw new Error("snapshot failed with secret-token")
+      }
+    }
+
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache: new FailingSnapshotCache(),
+    })
+    const tree = session.tree
+    const historyEntry = fixture.history.current
+
+    const visit = controller.visit("/next")
+    pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    try {
+      await visit
+      throw new Error("expected snapshot capture to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequestError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+
+    expect(fixture.writes).toEqual([])
+    expect(fixture.history.current).toBe(historyEntry)
+    expect(session.tree).toBe(tree)
+    expect(controller.state.status).toBe("failed")
+  })
+
+  test("keeps history-host reentrant visits and cancellation outside the commit", async () => {
+    let controller: DocumentVisitController
+    let peer: DocumentVisitController
+    let sameControllerVisit: Promise<unknown> | undefined
+    let peerVisit: Promise<unknown> | undefined
+    const fixture = historyFixture(() => {
+      sameControllerVisit = controller.visit("/same-controller")
+      peerVisit = peer.visit("/peer")
+      controller.cancel()
+      expect(controller.state.status).toBe("started")
+      expect(peer.state.status).toBe("initialized")
+    })
+    const current = harness({ history: fixture.history })
+    controller = current.controller
+    peer = new DocumentVisitController(current.loader, new ManualClock())
+
+    const outer = controller.visit("/outer")
+    current.pending[0]?.resolve(
+      response('<Gallery><Outer id="outer" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+
+    expect(await outer).toMatchObject({ status: "committed" })
+    if (!sameControllerVisit || !peerVisit) throw new Error("reentrant visits were not captured")
+    await expect(sameControllerVisit).rejects.toBeInstanceOf(StateError)
+    await expect(peerVisit).rejects.toBeInstanceOf(StateError)
+    expect(current.pending).toHaveLength(1)
+    expect(controller.state.status).toBe("completed")
+    expect(peer.state.status).toBe("initialized")
+    expect(current.session.tree.getElementById("outer")).toBeDefined()
+  })
+
+  test("lets tree finalization start a newer visit from aligned history and tree state", async () => {
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({ history: fixture.history })
+    let newer: Promise<unknown> | undefined
+    const unsubscribe = session.subscribe("id:old", () => {
+      unsubscribe()
+      expect(fixture.history.current?.url).toBe("https://example.test/first")
+      expect(session.tree.document.url).toBe("https://example.test/first")
+      newer = controller.visit("/newer")
+    })
+
+    const first = controller.visit("/first")
+    pending[0]?.resolve(
+      response('<Gallery><First id="first" /></Gallery>', {
+        url: "https://example.test/first",
+      }),
+    )
+    expect(await first).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("started")
+    expect(pending[1]?.request.url).toBe("https://example.test/newer")
+
+    pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(fixture.history.current?.url).toBe("https://example.test/newer")
+    expect(session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("ignores cancellation after final ownership release during tree finalization", async () => {
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({ history: fixture.history })
+    let statusDuringFinalization: string | undefined
+    const unsubscribe = session.subscribe("id:old", () => {
+      unsubscribe()
+      controller.cancel()
+      statusDuringFinalization = controller.state.status
+    })
+
+    const visit = controller.visit("/committed")
+    pending[0]?.resolve(
+      response('<Gallery><Committed id="committed" /></Gallery>', {
+        url: "https://example.test/committed",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(statusDuringFinalization).toBe("started")
+    expect(controller.state.status).toBe("completed")
+    expect(fixture.history.current?.url).toBe("https://example.test/committed")
+    expect(session.tree.getElementById("committed")).toBeDefined()
+  })
+
   test("clears fast-visit progress and ignores a manually fired stale timer", async () => {
     const snapshotCache = new DocumentSnapshotCache()
     const { clock, controller, pending, session } = harness({ snapshotCache })
@@ -226,7 +624,11 @@ describe("Document visit controller", () => {
       { classification: "server-error", status: 500 },
     ] as const) {
       const snapshotCache = new DocumentSnapshotCache()
-      const { controller, pending, session } = harness({ snapshotCache })
+      const history = historyFixture()
+      const { controller, pending, session } = harness({
+        history: history.history,
+        snapshotCache,
+      })
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
       const visit = controller.visit(`/error-${fixture.status}`)
@@ -247,6 +649,14 @@ describe("Document visit controller", () => {
       expect(errors).toHaveLength(0)
       expect(session.tree.getElementById(`error-${fixture.status}`)?.tagName).toBe("Error")
       expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(history.writes).toHaveLength(1)
+      expect(history.writes[0]).toMatchObject({
+        entry: {
+          restorationIndex: 1,
+          url: `https://example.test/error-${fixture.status}`,
+        },
+        method: "push",
+      })
     }
   })
 
@@ -270,9 +680,11 @@ describe("Document visit controller", () => {
     ]
 
     for (const fixture of fixtures) {
+      const history = historyFixture()
       const snapshotCache = new DocumentSnapshotCache()
       const { clock, controller, session } = harness({
         fetch: fixture.fetch,
+        history: history.history,
         snapshotCache,
       })
       const tree = session.tree
@@ -290,12 +702,17 @@ describe("Document visit controller", () => {
       expect(clock.timers[0]?.cleared).toBe(true)
       expect(session.tree).toBe(tree)
       expect(snapshotCache.size).toBe(0)
+      expect(history.writes).toEqual([])
     }
   })
 
   test("cancels immediately and ignores every later request and timer callback", async () => {
+    const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
-    const { clock, controller, pending, session } = harness({ snapshotCache })
+    const { clock, controller, pending, session } = harness({
+      history: history.history,
+      snapshotCache,
+    })
     const visit = controller.visit("/pending")
     const loading = controller.state
 
@@ -317,6 +734,7 @@ describe("Document visit controller", () => {
     expect(controller.state).toBe(canceled)
     expect(session.tree.getElementById("late")).toBeUndefined()
     expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toEqual([])
 
     const retry = controller.visit("/retry")
     pending[1]?.resolve(
@@ -326,6 +744,88 @@ describe("Document visit controller", () => {
     )
     expect(await retry).toMatchObject({ status: "committed" })
     expect(controller.state.status).toBe("completed")
+    expect(history.writes).toHaveLength(1)
+  })
+
+  test("preserves newer work started by an abort listener during explicit cancellation", async () => {
+    const pending: PendingRequest[] = []
+    let controller: DocumentVisitController
+    let newer: Promise<unknown> | undefined
+    let requestCount = 0
+    const current = harness({
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => {
+          requestCount += 1
+          pending.push({ request, resolve })
+          if (requestCount === 1) {
+            request.signal?.addEventListener("abort", () => {
+              newer = controller.visit("/newer-from-abort")
+            })
+          }
+        }),
+    })
+    controller = current.controller
+
+    const older = controller.visit("/older")
+    controller.cancel()
+
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.signal?.aborted).toBe(false)
+    expect(controller.state.status).toBe("started")
+
+    pending[0]?.resolve(
+      response('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(controller.state.status).toBe("started")
+
+    pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer-from-abort",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("preserves a newer visit started reentrantly while clearing old progress", async () => {
+    const clock = new ManualClock()
+    const current = harness({ clock })
+    let newer: Promise<unknown> | undefined
+
+    const older = current.controller.visit("/older")
+    clock.onClear = () => {
+      newer = current.controller.visit("/newer-from-clear")
+    }
+    const displaced = current.controller.visit("/displaced")
+
+    expect(current.pending).toHaveLength(3)
+    expect(current.pending[0]?.request.signal?.aborted).toBe(true)
+    expect(current.pending[1]?.request.signal?.aborted).toBe(true)
+    expect(current.pending[2]?.request.signal?.aborted).toBe(false)
+    expect(clock.timers).toHaveLength(2)
+    expect(clock.timers[1]?.cleared).toBe(false)
+    expect(current.controller.state.status).toBe("started")
+
+    current.controller.cancel()
+    expect(current.pending[2]?.request.signal?.aborted).toBe(true)
+    expect(clock.timers[1]?.cleared).toBe(true)
+    expect(current.controller.state.status).toBe("canceled")
+
+    for (const [index, url] of ["older", "displaced", "newer-from-clear"].entries()) {
+      current.pending[index]?.resolve(
+        response(`<Gallery><Late id="late-${index}" /></Gallery>`, {
+          url: `https://example.test/${url}`,
+        }),
+      )
+    }
+    expect(await older).toMatchObject({ status: "canceled" })
+    expect(await displaced).toMatchObject({ status: "canceled" })
+    expect(await newer).toMatchObject({ status: "canceled" })
   })
 
   test("installs request ownership before a started subscriber cancels", async () => {
@@ -567,9 +1067,11 @@ describe("Document visit controller", () => {
   })
 
   test("refreshes exact current truth without exposing general replace-history visits", async () => {
+    const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+      history: history.history,
       snapshotCache,
     })
 
@@ -590,6 +1092,71 @@ describe("Document visit controller", () => {
     expect(await refreshing).toMatchObject({ status: "committed" })
     expect(session.tree.getElementById("fresh")).toBeDefined()
     expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toEqual([])
+    expect(history.history.current?.url).toBe("https://example.test/current")
+  })
+
+  test("refreshes canonical-equivalent current history without a history write", async () => {
+    const documentUrl = "https://example.test:443/current"
+    const history = historyFixture(undefined, documentUrl)
+    const { controller, pending, session } = harness({
+      documentUrl,
+      history: history.history,
+    })
+
+    const refreshing = controller.refreshCurrent("https://example.test/current")
+    expect(pending[0]?.request.url).toBe("https://example.test/current")
+    pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: documentUrl,
+      }),
+    )
+
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(history.writes).toEqual([])
+    expect(history.history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.document.url).toBe("https://example.test/current")
+  })
+
+  test("rejects a redirected refresh before it can drift from current history", async () => {
+    const history = historyFixture()
+    const { controller, pending, session } = harness({ history: history.history })
+    const tree = session.tree
+    const entry = history.history.current
+
+    const refreshing = controller.refreshCurrent("https://example.test/current")
+    pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/"><Redirected id="redirected" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/redirected",
+      }),
+    )
+
+    await expect(refreshing).rejects.toBeInstanceOf(StateError)
+    expect(controller.state.status).toBe("failed")
+    expect(history.writes).toEqual([])
+    expect(history.history.current).toBe(entry)
+    expect(session.tree).toBe(tree)
+  })
+
+  test("rejects a refresh when history changes before the final tree commit", async () => {
+    const history = historyFixture()
+    const { controller, pending, session } = harness({ history: history.history })
+    const tree = session.tree
+
+    const refreshing = controller.refreshCurrent("https://example.test/current")
+    history.history.commitProposal(history.history.proposeAdvance("https://example.test/manual"))
+    pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
+    await expect(refreshing).rejects.toBeInstanceOf(StateError)
+    expect(controller.state.status).toBe("failed")
+    expect(history.writes).toHaveLength(1)
+    expect(history.history.current?.url).toBe("https://example.test/manual")
+    expect(session.tree).toBe(tree)
   })
 
   test("delegates root-external, excluded-extension, and cross-origin proposals without disturbing the current visit", async () => {
@@ -652,6 +1219,7 @@ describe("Document visit controller", () => {
 
   test("reproposes a successful redirect against the response document root before commit", async () => {
     const snapshotCache = new DocumentSnapshotCache()
+    const history = historyFixture()
     const navigationCalls: { action: string; url: string }[] = []
     const navigation: NavigationAdapter = {
       back() {},
@@ -660,6 +1228,7 @@ describe("Document visit controller", () => {
     }
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+      history: history.history,
       snapshotCache,
     })
     const previousTree = session.tree
@@ -683,6 +1252,8 @@ describe("Document visit controller", () => {
     expect(session.tree).toBe(previousTree)
     expect(session.tree.getElementById("discarded")).toBeUndefined()
     expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toEqual([])
+    expect(history.history.current?.restorationIdentifier).toBe("history-current")
     expect(controller.state).toMatchObject({ busy: false, status: "completed" })
   })
 
@@ -953,7 +1524,7 @@ describe("Document visit controller", () => {
 
     expect(pending[0]?.request.signal?.aborted).toBe(true)
     first.cancel()
-    expect(first.state.status).toBe("canceled")
+    expect(first.state.status).toBe("started")
     expect(pending[1]?.request.signal?.aborted).toBe(false)
 
     pending[0]?.resolve(
@@ -962,6 +1533,7 @@ describe("Document visit controller", () => {
       }),
     )
     expect(await firstVisit).toMatchObject({ status: "canceled" })
+    expect(first.state.status).toBe("canceled")
     pending[1]?.resolve(
       response('<Gallery><Second id="second" /></Gallery>', {
         url: "https://example.test/second",
@@ -977,8 +1549,12 @@ describe("Document visit controller", () => {
       { expected: "completed", status: 200 },
       { expected: "failed", status: 422 },
     ] as const) {
+      const history = historyFixture()
       const snapshotCache = new DocumentSnapshotCache()
-      const { controller, pending, session } = harness({ snapshotCache })
+      const { controller, pending, session } = harness({
+        history: history.history,
+        snapshotCache,
+      })
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
       session.registerDisposal("id:old", () => {
@@ -999,6 +1575,12 @@ describe("Document visit controller", () => {
       expect(errors[0]).toBeInstanceOf(DocumentCommitError)
       expect(session.tree.getElementById(`committed-${fixture.status}`)?.tagName).toBe("Committed")
       expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(history.writes).toHaveLength(1)
+      expect(history.writes[0]).toMatchObject({
+        entry: { url: `https://example.test/committed-${fixture.status}` },
+        method: "push",
+      })
+      expect(history.history.current).toBe(history.writes[0]?.entry)
     }
   })
 
