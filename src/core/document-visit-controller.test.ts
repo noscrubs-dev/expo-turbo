@@ -1766,7 +1766,7 @@ describe("Document visit controller", () => {
     expect(await active).toMatchObject({ status: "committed" })
   })
 
-  test("refreshes exact current truth without snapshot or history writes", async () => {
+  test("refreshes exact current truth with replace history and no snapshot", async () => {
     const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
@@ -1792,11 +1792,20 @@ describe("Document visit controller", () => {
     expect(await refreshing).toMatchObject({ status: "committed" })
     expect(session.tree.getElementById("fresh")).toBeDefined()
     expect(snapshotCache.size).toBe(0)
-    expect(history.writes).toEqual([])
-    expect(history.history.current?.url).toBe("https://example.test/current")
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
+    expect(history.history.current).toBe(history.writes[0]?.entry)
   })
 
-  test("refreshes canonical-equivalent current history without a history write", async () => {
+  test("refreshes canonical-equivalent current history with a canonical replace", async () => {
     const documentUrl = "https://example.test:443/current"
     const history = historyFixture(undefined, documentUrl)
     const { controller, pending, session } = harness({
@@ -1813,16 +1822,23 @@ describe("Document visit controller", () => {
     )
 
     expect(await refreshing).toMatchObject({ status: "committed" })
-    expect(history.writes).toEqual([])
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
     expect(history.history.current?.url).toBe("https://example.test/current")
     expect(session.tree.document.url).toBe("https://example.test/current")
   })
 
-  test("rejects a redirected refresh before it can drift from current history", async () => {
+  test("retargets redirected refresh history before committing the final tree", async () => {
     const history = historyFixture()
     const { controller, pending, session } = harness({ history: history.history })
-    const tree = session.tree
-    const entry = history.history.current
 
     const refreshing = controller.refreshCurrent("https://example.test/current")
     pending[0]?.resolve(
@@ -1832,9 +1848,129 @@ describe("Document visit controller", () => {
       }),
     )
 
+    expect(await refreshing).toMatchObject({ redirected: true, status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/redirected",
+        },
+        method: "replace",
+      },
+    ])
+    expect(history.history.current).toBe(history.writes[0]?.entry)
+    expect(session.tree.document.url).toBe("https://example.test/redirected")
+    expect(session.tree.getElementById("redirected")).toBeDefined()
+  })
+
+  test("replaces history for authoritative refresh error documents", async () => {
+    for (const fixtureCase of [
+      { classification: "client-error", status: 422, tag: "Invalid" },
+      { classification: "server-error", status: 500, tag: "Broken" },
+    ] as const) {
+      const history = historyFixture()
+      const { controller, pending, session } = harness({ history: history.history })
+
+      const refreshing = controller.refreshCurrent("https://example.test/current")
+      pending[0]?.resolve(
+        response(`<Gallery><${fixtureCase.tag} id="result" /></Gallery>`, {
+          status: fixtureCase.status,
+          url: "https://example.test/current",
+        }),
+      )
+
+      expect(await refreshing).toMatchObject({
+        classification: fixtureCase.classification,
+        status: "committed",
+      })
+      expect(controller.state.status).toBe("failed")
+      expect(history.writes).toEqual([
+        {
+          entry: {
+            restorationIdentifier: "history-1",
+            restorationIndex: 0,
+            url: "https://example.test/current",
+          },
+          method: "replace",
+        },
+      ])
+      expect(session.tree.getElementById("result")?.tagName).toBe(fixtureCase.tag)
+    }
+  })
+
+  test("keeps refresh history and tree unchanged when no document commits", async () => {
+    const fixtureCases: ReadonlyArray<
+      Readonly<{
+        error?: typeof ContentTypeError | typeof ParseError
+        name: string
+        response: TurboResponse
+      }>
+    > = [
+      {
+        name: "empty",
+        response: response("", {
+          status: 204,
+          text: async () => "",
+          url: "https://example.test/current",
+        }),
+      },
+      {
+        error: ContentTypeError,
+        name: "wrong MIME",
+        response: response('{"ignored":true}', {
+          headers: { "Content-Type": "application/json" },
+          url: "https://example.test/current",
+        }),
+      },
+      {
+        error: ParseError,
+        name: "malformed XML",
+        response: response("<Gallery><Broken></Gallery>", {
+          url: "https://example.test/current",
+        }),
+      },
+    ]
+
+    for (const fixtureCase of fixtureCases) {
+      const history = historyFixture()
+      const { controller, pending, session } = harness({ history: history.history })
+      const tree = session.tree
+      const entry = history.history.current
+
+      const refreshing = controller.refreshCurrent("https://example.test/current")
+      pending[0]?.resolve(fixtureCase.response)
+      if (fixtureCase.error) {
+        await expect(refreshing).rejects.toBeInstanceOf(fixtureCase.error)
+      } else {
+        expect(await refreshing).toMatchObject({ status: "empty" })
+      }
+
+      expect(history.writes, fixtureCase.name).toEqual([])
+      expect(history.history.current, fixtureCase.name).toBe(entry)
+      expect(session.tree, fixtureCase.name).toBe(tree)
+    }
+  })
+
+  test("keeps the active refresh tree when its replace history host rejects", async () => {
+    const history = historyFixture(() => {
+      throw new Error("history host rejected secret-token")
+    })
+    const { controller, pending, session } = harness({ history: history.history })
+    const tree = session.tree
+    const entry = history.history.current
+
+    const refreshing = controller.refreshCurrent("https://example.test/current")
+    pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
     await expect(refreshing).rejects.toBeInstanceOf(StateError)
     expect(controller.state.status).toBe("failed")
-    expect(history.writes).toEqual([])
+    expect(history.writes).toHaveLength(1)
     expect(history.history.current).toBe(entry)
     expect(session.tree).toBe(tree)
   })
