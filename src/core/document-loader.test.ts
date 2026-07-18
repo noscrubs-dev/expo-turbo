@@ -4,8 +4,10 @@ import type { TurboRequest, TurboResponse } from "../adapters"
 import {
   DocumentCommitError,
   DocumentRequestLoader,
+  DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
+import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
@@ -115,6 +117,229 @@ describe("Document request loader", () => {
     expect(report).toMatchObject({ status: "committed" })
     expect(order).toEqual(["start", "fetch"])
     expect(session.recentRequestIds.has("request-started")).toBe(true)
+  })
+
+  test("restores a cached tree under document ownership and retargets its exact URL", () => {
+    const order: string[] = []
+    const session = documentSession()
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/restored#stored",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Restored id="restored" /></Gallery>',
+        { url: "https://example.test/restored#stored" },
+      ),
+    )
+    const loader = new DocumentRequestLoader(
+      session,
+      { fetch: async () => response("") },
+      { next: () => "unused" },
+    )
+
+    const report = loader.restoreSnapshot(
+      cache,
+      "https://example.test/restored#history",
+      undefined,
+      {
+        beforeTreeCommit() {
+          order.push("commit")
+          expect(session.tree.getElementById("old")).toBeDefined()
+        },
+        onRestoreStart() {
+          order.push("start")
+        },
+      },
+    )
+
+    expect(report).toEqual({ status: "committed", url: "https://example.test/restored#history" })
+    expect(order).toEqual(["start", "commit"])
+    expect(session.tree.getElementById("restored")).toBeDefined()
+    expect(session.tree.document.url).toBe("https://example.test/restored#history")
+  })
+
+  test("returns a frozen cache miss without claiming ownership or running callbacks", () => {
+    const session = documentSession()
+    const loader = new DocumentRequestLoader(
+      session,
+      { fetch: async () => response("") },
+      { next: () => "unused" },
+    )
+    let callbacks = 0
+
+    const report = loader.restoreSnapshot(
+      new DocumentSnapshotCache(),
+      "https://example.test/missing",
+      undefined,
+      {
+        beforeTreeCommit() {
+          callbacks += 1
+        },
+        onRestoreStart() {
+          callbacks += 1
+        },
+      },
+    )
+
+    expect(report).toEqual({ status: "miss", url: "https://example.test/missing" })
+    expect(Object.isFrozen(report)).toBe(true)
+    expect(callbacks).toBe(0)
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(() =>
+      loader.restoreSnapshot(new DocumentSnapshotCache(), "https://other.test/missing"),
+    ).toThrow(TargetError)
+  })
+
+  test("cached restoration supersedes an active document request", async () => {
+    const session = documentSession()
+    let pendingRequest: TurboRequest | undefined
+    let resolvePending: ((value: TurboResponse) => void) | undefined
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pendingRequest = request
+            resolvePending = resolve
+          }),
+      },
+      { next: () => "pending" },
+    )
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+
+    const pending = loader.load("/pending")
+    if (!pendingRequest || !resolvePending) throw new Error("pending request did not start")
+    expect(loader.restoreSnapshot(cache, "https://example.test/restored")).toMatchObject({
+      status: "committed",
+    })
+    expect(pendingRequest.signal?.aborted).toBe(true)
+
+    resolvePending(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/pending",
+      }),
+    )
+    expect(await pending).toMatchObject({ status: "canceled" })
+    expect(session.tree.getElementById("restored")).toBeDefined()
+    expect(session.tree.getElementById("late")).toBeUndefined()
+  })
+
+  test("skips cached-restore start when displaced abort work wins ownership", async () => {
+    const session = documentSession()
+    let oldestRequest: TurboRequest | undefined
+    let resolveOldest: ((value: TurboResponse) => void) | undefined
+    const oldestLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            oldestRequest = request
+            resolveOldest = resolve
+          }),
+      },
+      { next: () => "oldest" },
+    )
+    let newestRequest: TurboRequest | undefined
+    let resolveNewest: ((value: TurboResponse) => void) | undefined
+    const newestLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            newestRequest = request
+            resolveNewest = resolve
+          }),
+      },
+      { next: () => "newest" },
+    )
+    const restoringLoader = new DocumentRequestLoader(
+      session,
+      { fetch: async () => response("") },
+      { next: () => "unused" },
+    )
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    let newest: Promise<unknown> | undefined
+    let restoreStarts = 0
+
+    const oldest = oldestLoader.load("/oldest")
+    if (!oldestRequest || !resolveOldest) throw new Error("oldest request did not start")
+    oldestRequest.signal?.addEventListener("abort", () => {
+      newest = newestLoader.load("/newest")
+    })
+    const report = restoringLoader.restoreSnapshot(
+      cache,
+      "https://example.test/restored",
+      undefined,
+      {
+        onRestoreStart() {
+          restoreStarts += 1
+        },
+      },
+    )
+
+    expect(report).toEqual({ status: "canceled", url: "https://example.test/restored" })
+    expect(restoreStarts).toBe(0)
+    expect(newestRequest).toBeDefined()
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("restored")).toBeUndefined()
+
+    resolveOldest(
+      response('<Gallery><Oldest id="oldest" /></Gallery>', {
+        url: "https://example.test/oldest",
+      }),
+    )
+    resolveNewest?.(
+      response('<Gallery><Newest id="newest" /></Gallery>', {
+        url: "https://example.test/newest",
+      }),
+    )
+    expect(await oldest).toMatchObject({ status: "canceled" })
+    await newest
+    expect(session.tree.getElementById("newest")).toBeDefined()
+  })
+
+  test("reports committed cached truth when replacement finalization fails", () => {
+    const session = documentSession()
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/restored",
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: "https://example.test/restored",
+      }),
+    )
+    session.registerDisposal("id:old", () => {
+      throw new Error("disposal failed")
+    })
+    const loader = new DocumentRequestLoader(
+      session,
+      { fetch: async () => response("") },
+      { next: () => "unused" },
+    )
+
+    let error: unknown
+    try {
+      loader.restoreSnapshot(cache, "https://example.test/restored")
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(DocumentSnapshotRestoreCommitError)
+    expect((error as DocumentSnapshotRestoreCommitError).outcome).toEqual({
+      status: "committed",
+      url: "https://example.test/restored",
+    })
+    expect(session.tree.getElementById("restored")).toBeDefined()
   })
 
   test("skips request-start acknowledgement when displaced abort work supersedes the new lease", async () => {

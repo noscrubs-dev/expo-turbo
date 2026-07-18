@@ -4,7 +4,7 @@ import {
   destinationRequestOwnership,
 } from "./destination-request-ownership"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
+import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import {
   EXPO_TURBO_MIME_TYPE,
@@ -47,6 +47,16 @@ export type DocumentLoadReport =
       status: "canceled"
       url: string
     }>
+
+export type DocumentSnapshotRestoreReport = Readonly<{
+  status: "canceled" | "committed" | "miss"
+  url: string
+}>
+
+export interface DocumentSnapshotRestoreOptions {
+  readonly beforeTreeCommit?: () => undefined
+  readonly onRestoreStart?: () => undefined
+}
 
 export type DocumentCommitCandidate =
   | (DocumentResponseReport &
@@ -95,13 +105,26 @@ export class DocumentCommitError extends RequestError {
   }
 }
 
-interface ActiveDocumentRequest {
+/** A cached tree replaced the document, but synchronous finalization failed. */
+export class DocumentSnapshotRestoreCommitError extends StateError {
+  readonly outcome: DocumentSnapshotRestoreReport
+
+  constructor(outcome: DocumentSnapshotRestoreReport) {
+    super("Document snapshot restored but session finalization failed")
+    this.outcome = outcome
+  }
+}
+
+interface ActiveDocumentOperation {
   readonly controller: AbortController
   lease?: DestinationRequestLease
   readonly owner?: object
+  readonly treeGeneration: number
+}
+
+interface ActiveDocumentRequest extends ActiveDocumentOperation {
   readonly requestId: string
   readonly requestedUrl: string
-  readonly treeGeneration: number
 }
 
 function classifyResponse(status: number): DocumentResponseClassification {
@@ -115,7 +138,7 @@ function classifyResponse(status: number): DocumentResponseClassification {
 }
 
 export class DocumentRequestLoader {
-  private active: ActiveDocumentRequest | undefined
+  private active: ActiveDocumentOperation | undefined
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
 
   constructor(
@@ -137,6 +160,83 @@ export class DocumentRequestLoader {
 
   captureCurrentSnapshot(cache: DocumentSnapshotCache): void {
     this.session.captureSnapshot(cache)
+  }
+
+  restoreSnapshot(
+    cache: DocumentSnapshotCache,
+    url: string,
+    owner?: object,
+    options: DocumentSnapshotRestoreOptions = {},
+  ): DocumentSnapshotRestoreReport {
+    const restoredUrl = this.resolveSource(url)
+    const cached = cache.get(restoredUrl)
+    if (!cached) return Object.freeze({ status: "miss", url: restoredUrl })
+
+    const tree = cached.clone({ documentUrl: restoredUrl })
+    const active: ActiveDocumentOperation = {
+      controller: new AbortController(),
+      ...(owner ? { owner } : {}),
+      treeGeneration: this.session.treeGeneration,
+    }
+    const previous = this.active
+    this.active = active
+    try {
+      active.lease = this.ownership.claimDocument(active.controller, active.treeGeneration)
+    } catch (error) {
+      active.controller.abort()
+      if (this.active === active) this.active = previous
+      throw error
+    }
+    const canceled = Object.freeze({ status: "canceled" as const, url: restoredUrl })
+    const committed = Object.freeze({ status: "committed" as const, url: restoredUrl })
+
+    try {
+      if (!this.owns(active)) {
+        this.release(active)
+        return canceled
+      }
+      if (options.onRestoreStart) {
+        const result = options.onRestoreStart()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new StateError("Document snapshot restore start callback must not return a value")
+        }
+        if (!this.owns(active)) {
+          this.release(active)
+          return canceled
+        }
+      }
+      if (options.beforeTreeCommit) {
+        const lease = active.lease
+        if (!lease) throw new StateError("Document snapshot restore requires active ownership")
+        const acquired = this.ownership.commitDocument(lease, () => {
+          const result = options.beforeTreeCommit?.()
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => undefined)
+            throw new StateError("Document snapshot commit callback must not return a value")
+          }
+        })
+        if (!acquired) {
+          this.release(active)
+          return canceled
+        }
+      }
+      if (!this.owns(active)) {
+        this.release(active)
+        return canceled
+      }
+      this.release(active)
+      try {
+        this.session.replaceTree(tree)
+      } catch {
+        throw new DocumentSnapshotRestoreCommitError(committed)
+      }
+      return committed
+    } catch (error) {
+      this.release(active)
+      if (error instanceof ExpoTurboError) throw error
+      throw new StateError("Document snapshot restore failed")
+    }
   }
 
   cancel(owner?: object): boolean {
@@ -413,7 +513,7 @@ export class DocumentRequestLoader {
     return resolveSameOriginProtocolUrl(response.url, active.requestedUrl, active.requestedUrl)
   }
 
-  private owns(active: ActiveDocumentRequest): boolean {
+  private owns(active: ActiveDocumentOperation): boolean {
     return Boolean(
       this.active === active &&
         active.lease &&
@@ -422,7 +522,7 @@ export class DocumentRequestLoader {
     )
   }
 
-  private release(active: ActiveDocumentRequest): void {
+  private release(active: ActiveDocumentOperation): void {
     if (active.lease) this.ownership.release(active.lease)
     if (this.active === active) this.active = undefined
   }
