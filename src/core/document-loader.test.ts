@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
-import { DocumentCommitError, DocumentRequestLoader } from "./document-loader"
-import { ContentTypeError, ParseError, RequestError, TargetError } from "./errors"
+import {
+  DocumentCommitError,
+  DocumentRequestLoader,
+  type DocumentTreeCommitCandidate,
+} from "./document-loader"
+import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
-import { attributeValue } from "./tree"
+import { attributeValue, DocumentTree, type ProtocolDocument } from "./tree"
 
 function documentSession(): DocumentSession {
   return new DocumentSession(
@@ -230,6 +234,346 @@ describe("Document request loader", () => {
       expect(await loader.load("/retry")).toMatchObject({ status: "committed" })
       expect(session.tree.getElementById("result-2")?.tagName).toBe("Result")
     }
+  })
+
+  test("runs the exact frozen candidate under final ownership before tree replacement", async () => {
+    const session = documentSession()
+    const owner = Object.freeze({})
+    const order: string[] = []
+    let admitted: DocumentTreeCommitCandidate | undefined
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response('<Gallery><Committed id="committed" /></Gallery>', {
+            url: "https://example.test/committed",
+          }),
+      },
+      { next: () => "request-commit" },
+    )
+    session.subscribe("id:old", () => order.push("listener"))
+
+    const report = await loader.load("/committed", owner, {
+      beforeCommit(candidate) {
+        if (candidate.status !== "committed") throw new Error("expected a parsed commit candidate")
+        admitted = candidate
+        order.push("admission")
+        return "commit"
+      },
+      beforeTreeCommit(candidate) {
+        if (!admitted) throw new Error("commit candidate was not admitted")
+        expect(candidate).toBe(admitted)
+        expect(Object.isFrozen(candidate)).toBe(true)
+        expect(candidate.status).toBe("committed")
+        expect(session.tree.getElementById("old")).toBeDefined()
+        expect(session.tree.getElementById("committed")).toBeUndefined()
+        expect(loader.cancel(owner)).toBe(false)
+        order.push("transaction")
+      },
+    })
+
+    expect(report).toMatchObject({ status: "committed" })
+    expect(order).toEqual(["admission", "transaction", "listener"])
+    expect(session.tree.getElementById("old")).toBeUndefined()
+    expect(session.tree.getElementById("committed")).toBeDefined()
+  })
+
+  test("blocks same-session request reentrancy during the final commit callback", async () => {
+    const session = documentSession()
+    let outerFetches = 0
+    let peerFetches = 0
+    let requestId = 0
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          outerFetches += 1
+          return response('<Gallery><Outer id="outer" /></Gallery>', {
+            url: "https://example.test/outer",
+          })
+        },
+      },
+      { next: () => `outer-${++requestId}` },
+    )
+    const peer = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          peerFetches += 1
+          return response('<Gallery><Peer id="peer" /></Gallery>')
+        },
+      },
+      { next: () => "peer-1" },
+    )
+    let sameLoader: Promise<unknown> | undefined
+    let peerLoader: Promise<unknown> | undefined
+
+    const outer = loader.load("/outer", undefined, {
+      beforeTreeCommit() {
+        sameLoader = loader.load("/same-loader")
+        peerLoader = peer.load("/peer-loader")
+      },
+    })
+
+    expect(await outer).toMatchObject({ status: "committed" })
+    if (!sameLoader || !peerLoader) throw new Error("reentrant requests were not captured")
+    await expect(sameLoader).rejects.toBeInstanceOf(StateError)
+    await expect(peerLoader).rejects.toBeInstanceOf(StateError)
+    expect(outerFetches).toBe(1)
+    expect(peerFetches).toBe(0)
+    expect(session.tree.getElementById("outer")).toBeDefined()
+    expect(session.tree.getElementById("peer")).toBeUndefined()
+  })
+
+  test("rejects invalid final commit callbacks without replacing the tree", async () => {
+    const callbacks = [
+      () => {
+        throw new Error("host callback failed with secret-token")
+      },
+      () => "invalid" as never,
+      async () => undefined,
+      async () => {
+        throw new Error("async callback failed with secret-token")
+      },
+    ]
+
+    for (const beforeTreeCommit of callbacks) {
+      let requests = 0
+      const session = documentSession()
+      const tree = session.tree
+      const loader = new DocumentRequestLoader(
+        session,
+        {
+          fetch: async (request) => {
+            requests += 1
+            return response(`<Gallery><Result id="result-${requests}" /></Gallery>`, {
+              url: request.url,
+            })
+          },
+        },
+        { next: () => `request-${requests + 1}` },
+      )
+
+      try {
+        await loader.load("/invalid-callback", undefined, {
+          beforeTreeCommit: beforeTreeCommit as never,
+        })
+        throw new Error("expected commit callback admission to fail")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RequestError)
+        expect(String(error)).not.toContain("secret-token")
+      }
+      expect(session.tree).toBe(tree)
+      expect(session.revision).toBe(0)
+
+      expect(await loader.load("/retry")).toMatchObject({ status: "committed" })
+      expect(session.tree.getElementById("result-2")).toBeDefined()
+    }
+  })
+
+  test("does not enter the final commit callback after admission loses ownership", async () => {
+    const session = documentSession()
+    const owner = Object.freeze({})
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => response('<Gallery><Canceled id="canceled" /></Gallery>'),
+      },
+      { next: () => "request-canceled" },
+    )
+    let callbackCalls = 0
+
+    const report = await loader.load("/canceled", owner, {
+      beforeCommit() {
+        expect(loader.cancel(owner)).toBe(true)
+        return "commit"
+      },
+      beforeTreeCommit() {
+        callbackCalls += 1
+      },
+    })
+
+    expect(report).toMatchObject({ status: "canceled" })
+    expect(callbackCalls).toBe(0)
+    expect(session.tree.getElementById("old")).toBeDefined()
+    expect(session.tree.getElementById("canceled")).toBeUndefined()
+  })
+
+  test("does not enter the final commit callback after preparation changes tree generation", async () => {
+    const session = documentSession()
+    const replacement = parseExpoTurboDocument(
+      '<Gallery><Replacement id="replacement" /></Gallery>',
+      {
+        url: "https://example.test/replacement",
+      },
+    )
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => response('<Gallery><Stale id="stale" /></Gallery>'),
+      },
+      { next: () => "request-stale" },
+    )
+    let callbackCalls = 0
+
+    const report = await loader.load("/stale", undefined, {
+      beforeCommit() {
+        session.replaceTree(replacement)
+        return "commit"
+      },
+      beforeTreeCommit() {
+        callbackCalls += 1
+      },
+    })
+
+    expect(report).toMatchObject({ status: "canceled" })
+    expect(callbackCalls).toBe(0)
+    expect(session.tree).toBe(replacement)
+    expect(session.tree.getElementById("stale")).toBeUndefined()
+  })
+
+  test("does not detach newer work started by tree replacement finalization", async () => {
+    let pending:
+      | Readonly<{
+          request: TurboRequest
+          resolve: (response: TurboResponse) => void
+        }>
+      | undefined
+    const session = documentSession()
+    const outer = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response('<Gallery><Outer id="outer" /></Gallery>', {
+            url: "https://example.test/outer",
+          }),
+      },
+      { next: () => "request-outer" },
+    )
+    const peer = new DocumentRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending = { request, resolve }
+          }),
+      },
+      { next: () => "request-newer" },
+    )
+    let newer: Promise<unknown> | undefined
+    session.subscribe("id:old", () => {
+      newer = peer.load("/newer")
+    })
+
+    expect(
+      await outer.load("/outer", undefined, {
+        beforeTreeCommit() {},
+      }),
+    ).toMatchObject({ status: "committed" })
+    if (!newer || !pending) throw new Error("replacement listener did not start newer work")
+    expect(pending.request.signal?.aborted).toBe(false)
+    expect(session.tree.getElementById("outer")).toBeDefined()
+
+    pending.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newer")).toBeDefined()
+    expect(session.tree.getElementById("outer")).toBeUndefined()
+  })
+
+  test("does not enter the final commit callback for empty or discarded candidates", async () => {
+    let callbackCalls = 0
+    const rootlessDocument: ProtocolDocument = {
+      children: [],
+      key: "document",
+      kind: "document",
+      parent: null,
+      url: "https://example.test/current/index",
+    }
+    const emptySession = new DocumentSession(new DocumentTree(rootlessDocument))
+    const emptyTree = emptySession.tree
+    const emptyLoader = new DocumentRequestLoader(
+      emptySession,
+      {
+        fetch: async () =>
+          response("unused", {
+            headers: {},
+            status: 204,
+            url: "https://example.test/empty",
+          }),
+      },
+      { next: () => "request-empty" },
+    )
+
+    expect(
+      await emptyLoader.load("/empty", undefined, {
+        beforeTreeCommit() {
+          callbackCalls += 1
+        },
+      }),
+    ).toMatchObject({ status: "empty" })
+
+    const discardedSession = documentSession()
+    const discardedLoader = new DocumentRequestLoader(
+      discardedSession,
+      {
+        fetch: async () => response('<Gallery><Discarded id="discarded" /></Gallery>'),
+      },
+      { next: () => "request-discarded" },
+    )
+    expect(
+      await discardedLoader.load("/discarded", undefined, {
+        beforeCommit: () => "discard",
+        beforeTreeCommit() {
+          callbackCalls += 1
+        },
+      }),
+    ).toMatchObject({ status: "discarded" })
+
+    expect(callbackCalls).toBe(0)
+    expect(emptySession.tree).toBe(emptyTree)
+    expect(emptySession.tree.document.children).toHaveLength(0)
+    expect(discardedSession.tree.getElementById("old")).toBeDefined()
+  })
+
+  test("releases ownership when final-callback candidate construction fails", async () => {
+    let requests = 0
+    let callbackCalls = 0
+    const session = documentSession()
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          requests += 1
+          return response(
+            requests === 1
+              ? '<Gallery data-turbo-root="https://user:secret-token@example.test/" />'
+              : '<Gallery><Retry id="retry" /></Gallery>',
+          )
+        },
+      },
+      { next: () => `request-${requests + 1}` },
+    )
+
+    try {
+      await loader.load("/invalid-root", undefined, {
+        beforeTreeCommit() {
+          callbackCalls += 1
+        },
+      })
+      throw new Error("expected candidate construction to fail")
+    } catch (error) {
+      expect(error).toBeInstanceOf(TargetError)
+      expect(String(error)).not.toContain("secret-token")
+    }
+    expect(callbackCalls).toBe(0)
+    expect(session.tree.getElementById("old")).toBeDefined()
+
+    expect(await loader.load("/retry")).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("retry")).toBeDefined()
   })
 
   test("treats 204 and an empty 201 as explicit native no-op outcomes", async () => {
@@ -639,13 +983,21 @@ describe("Document request loader", () => {
     for (const fixture of fixtures) {
       const session = documentSession()
       const tree = session.tree
+      let callbackCalls = 0
       const loader = new DocumentRequestLoader(
         session,
         { fetch: fixture.fetch },
         { next: () => `request-${fixture.name}` },
       )
 
-      await expect(loader.load("/failure")).rejects.toBeInstanceOf(fixture.error)
+      await expect(
+        loader.load("/failure", undefined, {
+          beforeTreeCommit() {
+            callbackCalls += 1
+          },
+        }),
+      ).rejects.toBeInstanceOf(fixture.error)
+      expect(callbackCalls, fixture.name).toBe(0)
       expect(session.tree, fixture.name).toBe(tree)
       expect(session.revision, fixture.name).toBe(0)
     }
@@ -798,6 +1150,7 @@ describe("Document request loader", () => {
 
     for (const fixture of fixtures) {
       const session = documentSession()
+      let commitCallbacks = 0
       session.registerDisposal("id:old", () => {
         throw new Error("fixture disposal failed with secret-token")
       })
@@ -814,7 +1167,11 @@ describe("Document request loader", () => {
       )
 
       try {
-        await loader.load("/committed")
+        await loader.load("/committed", undefined, {
+          beforeTreeCommit() {
+            commitCallbacks += 1
+          },
+        })
         throw new Error("expected session finalization to fail")
       } catch (error) {
         expect(error).toBeInstanceOf(DocumentCommitError)
@@ -832,6 +1189,7 @@ describe("Document request loader", () => {
       expect(session.tree.getElementById("old")).toBeUndefined()
       expect(session.tree.getElementById("committed")?.tagName).toBe("Committed")
       expect(session.tree.document.url).toBe(`https://example.test/committed/${fixture.status}`)
+      expect(commitCallbacks).toBe(1)
     }
   })
 })

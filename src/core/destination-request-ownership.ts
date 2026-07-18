@@ -20,6 +20,7 @@ export interface FrameRequestCheckpoint {
 
 class DestinationRequestOwnership {
   private document: DestinationRequestLease | undefined
+  private documentCommit: DestinationRequestLease | undefined
   private readonly frameGenerations = new WeakMap<ProtocolElement, number>()
   private readonly frames = new Map<string, DestinationRequestLease>()
   private readonly sourceOwners = new WeakMap<object, DestinationRequestLease>()
@@ -65,9 +66,11 @@ class DestinationRequestOwnership {
     return this.claim(lease)
   }
 
-  cancel(lease: DestinationRequestLease): void {
+  cancel(lease: DestinationRequestLease): boolean {
+    if (this.documentCommit === lease) return false
     this.detach(lease)
     lease.controller.abort()
+    return true
   }
 
   owns(lease: DestinationRequestLease): boolean {
@@ -100,6 +103,23 @@ class DestinationRequestOwnership {
       destinationRetained &&
         (!lease.sourceOwner || this.sourceOwners.get(lease.sourceOwner) === lease),
     )
+  }
+
+  commitDocument(lease: DestinationRequestLease, callback: () => void): boolean {
+    if (lease.destination !== "document") {
+      throw new StateError("Document commit ownership requires a document lease")
+    }
+    if (!this.owns(lease)) return false
+    if (this.documentCommit) {
+      throw new StateError("A document commit transaction is already active")
+    }
+    this.documentCommit = lease
+    try {
+      callback()
+      return true
+    } finally {
+      if (this.documentCommit === lease) this.documentCommit = undefined
+    }
   }
 
   checkpointFrame(frame: ProtocolElement): FrameRequestCheckpoint {
@@ -148,6 +168,9 @@ class DestinationRequestOwnership {
   }
 
   private claim(lease: DestinationRequestLease): DestinationRequestLease {
+    if (this.documentCommit) {
+      throw new StateError("Destination requests cannot start during a document commit transaction")
+    }
     const displaced = new Set<DestinationRequestLease>()
     const destinationLease =
       lease.destination === "document"
