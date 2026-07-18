@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import {
   dispatchTurboStreamFragment,
+  DocumentRefreshController,
   DocumentFormControls,
   DocumentSession,
   parseExpoTurboDocument,
@@ -20,7 +21,10 @@ import { Linking, Platform, Pressable, ScrollView, Text, View } from "react-nati
 
 import { DEMO_DOCUMENT, DEMO_REGISTRY } from "../demo-registry";
 import { createDemoActionRuntime } from "../demo-actions";
-import { createDemoDocumentController } from "../demo-document-controller";
+import {
+  createDemoDocumentController,
+  DEMO_CLOCK,
+} from "../demo-document-controller";
 import { createDemoFrameControllers } from "../demo-frame-controllers";
 import { createDemoFormController } from "../demo-form-controller";
 import { DEMO_FORM_ANNOUNCEMENTS } from "../demo-form-announcement-runtime";
@@ -208,9 +212,13 @@ export default function HomeScreen() {
     () => createDemoDocumentController(session),
     [session],
   );
+  const refresh = useMemo(
+    () => new DocumentRefreshController(session, documentController, DEMO_CLOCK),
+    [documentController, session],
+  );
   const formController = useMemo(
-    () => createDemoFormController(session),
-    [session],
+    () => createDemoFormController(session, refresh),
+    [refresh, session],
   );
   const forms = useMemo(
     () => new DocumentFormControls(session, { submissionController: formController }),
@@ -235,10 +243,16 @@ export default function HomeScreen() {
     [router],
   );
   const frames = useMemo(
-    () => createDemoFrameControllers(session, navigation, documentController),
-    [documentController, navigation, session],
+    () => createDemoFrameControllers(session, navigation, documentController, refresh),
+    [documentController, navigation, refresh, session],
   );
-  useEffect(() => () => documentController.cancel(), [documentController]);
+  useEffect(
+    () => () => {
+      refresh.dispose();
+      documentController.cancel();
+    },
+    [documentController, refresh],
+  );
 
   return (
     <ScrollView
@@ -318,6 +332,26 @@ export default function HomeScreen() {
       >
         <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
           Apply Stream update
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          dispatchTurboStreamFragment(
+            session,
+            '<turbo-stream action="refresh" method="replace" target="ignored"><template><DemoText>Ignored refresh payload.</DemoText></template></turbo-stream>',
+            { refresh },
+          )
+        }
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#254a36" : "#34704d",
+          borderRadius: 12,
+          padding: 14,
+        })}
+      >
+        <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+          Refresh current document
         </Text>
       </Pressable>
       <Pressable

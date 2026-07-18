@@ -13,6 +13,7 @@ import {
   responseContentType,
 } from "./protocol-request"
 import type { DocumentSession } from "./session"
+import type { StreamActionDispatchOptions } from "./streams"
 import { attributeValue, type ProtocolElement } from "./tree"
 
 export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
@@ -29,7 +30,7 @@ export interface FrameLoadReport {
   readonly url: string
 }
 
-export interface FrameRequestLoaderOptions {
+export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
   readonly maxRecurseDepth?: number
 }
@@ -58,6 +59,7 @@ export class FrameRequestLoader {
   private readonly capabilityHash: string | undefined
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
+  private readonly streamOptions: StreamActionDispatchOptions
 
   constructor(
     private readonly session: DocumentSession,
@@ -68,6 +70,11 @@ export class FrameRequestLoader {
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     this.ownership = destinationRequestOwnership(session)
+    this.streamOptions = Object.freeze({
+      ...(options.customActions ? { customActions: options.customActions } : {}),
+      ...(options.onActionError ? { onActionError: options.onActionError } : {}),
+      ...(options.refresh ? { refresh: options.refresh } : {}),
+    })
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")
     }
@@ -138,6 +145,7 @@ export class FrameRequestLoader {
           })
         preparedRequest = undefined
         requestIds.push(requestId)
+        this.session.recentRequestIds.add(requestId)
         const response = await this.fetchAdapter.fetch({
           headers,
           method: "GET",
@@ -188,7 +196,10 @@ export class FrameRequestLoader {
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
-          const frame = applyFrameResponse(this.session, frameId, xml, { finalUrl: responseUrl })
+          const frame = applyFrameResponse(this.session, frameId, xml, {
+            finalUrl: responseUrl,
+            ...this.streamOptions,
+          })
           this.release(frameId, active)
           return Object.freeze({
             frame,

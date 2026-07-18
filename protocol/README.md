@@ -122,6 +122,14 @@ React hosts inject the controller through `documentController`, may supply a `do
 
 The controller currently accepts only initial `advance` visits and uses `replace` solely when delegating an unvisitable successful redirect. It does not yet own router URL/history state or restoration identifiers. Cache previews/restoration, lifecycle-event parity, document-visit live announcements, browser progress-bar animation, and physical-device accessibility evidence remain unsupported.
 
+## Document refresh Streams
+
+The built-in `refresh` Stream action ignores `target`, `targets`, and template content. It captures the active document URL plus optional `method`, `request-id`, and `scroll` attributes, then delegates to the host-wired `DocumentRefreshController`; dispatch itself never performs a nested fetch while a Stream response still owns its destination lease. A missing controller or active document URL is an isolated action error and does not prevent later sibling Stream actions from running.
+
+The current native slice admits an absent method or `method="replace"` and rejects `method="morph"` or any explicit scroll policy until native morph and scroll contracts exist. Accepted requests use Turbo 8.0.23's 150 ms trailing debounce. At execution time, only the newest pending request may proceed, its captured URL must still exactly own the active document, and an already-started document visit is never interrupted. The refresh then reuses the ordinary document GET loader and observable visit lifecycle to replace the complete document from canonical truth.
+
+Each document session retains the newest 20 request IDs in insertion order. Document GETs, Frame and recurse GETs, and canonical form submissions record their generated ID immediately before transport; a caller-scoped `FormRequestExecutor` can be given the same tracker explicitly. A refresh carrying one of those IDs is suppressed when the debounce fires, preventing the originating request from refreshing itself twice. This is loop suppression, not request replay, cache restoration, morph preservation, history synchronization, or missed-Cable-message recovery.
+
 ## Document-tree link activation
 
 `useExpoTurboDocumentLink(href)` lets an app-owned registered component expose a plain native link without adding React Native or a host router to the package. The hook requires the host-injected `DocumentVisitController` and returns a stable activation callback without subscribing the component to visit-state ticks. An ordinary same-origin top-level activation delegates the unchanged `href` to that shared controller, so request headers, cancellation, response classification, and latest-visit ownership use the document GET contracts above.

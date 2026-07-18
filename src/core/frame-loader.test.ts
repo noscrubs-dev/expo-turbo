@@ -62,6 +62,7 @@ describe("Frame request loader", () => {
       url: "https://example.test/frame",
     })
     expect(report).toMatchObject({ responseStatus: 422, status: "completed" })
+    expect(session.recentRequestIds.has("request-1")).toBe(true)
     expect(attributeValue(frame, "src")).toBe("https://example.test/final")
     expect(frame.children.filter(isElement)[0]?.tagName).toBe("Loaded")
   })
@@ -91,6 +92,35 @@ describe("Frame request loader", () => {
 
     expect(await loader.load("details", "/frame")).toMatchObject({ status: "empty" })
     expect(frame?.children).toBe(children)
+  })
+
+  test("forwards embedded refresh Streams to the configured session coordinator", async () => {
+    const session = documentSession()
+    const refreshes: unknown[] = []
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response(
+            '<turbo-frame id="details"><turbo-stream action="refresh" request-id="frame-origin"/></turbo-frame>',
+          ),
+      },
+      { next: () => "frame-request" },
+      { refresh: { request: (request) => refreshes.push(request) } },
+    )
+
+    const report = await loader.load("details", "/frame")
+
+    expect(report.frame?.streams.actions).toEqual([
+      {
+        action: "refresh",
+        appliedTargets: 0,
+        index: 0,
+        matchedTargets: 0,
+        status: "applied",
+      },
+    ])
+    expect(refreshes).toEqual([{ baseUrl: "https://example.test/page", requestId: "frame-origin" }])
   })
 
   test("supersedes an older request even when its adapter resolves late", async () => {
@@ -234,6 +264,8 @@ describe("Frame request loader", () => {
       status: "completed",
       url: "https://example.test/redirected/index",
     })
+    expect(session.recentRequestIds.has("request-1")).toBe(true)
+    expect(session.recentRequestIds.has("request-2")).toBe(true)
     expect(attributeValue(frame, "src")).toBe("https://example.test/redirected/index")
     expect(frame.children.filter(isElement)[0]?.tagName).toBe("Recursive")
   })

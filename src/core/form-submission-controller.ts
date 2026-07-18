@@ -254,6 +254,7 @@ export class FormSubmissionController {
       ...(options.customActions ? { customActions: options.customActions } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
+      ...(options.refresh ? { refresh: options.refresh } : {}),
     })
     this.ownership = destinationRequestOwnership(session)
   }
@@ -385,6 +386,7 @@ export class FormSubmissionController {
       let response: FormRequestExecutionReport
       try {
         fetchInvoked = true
+        this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
         response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
           controller,
           owns: () => this.ownership.owns(activeLease),
