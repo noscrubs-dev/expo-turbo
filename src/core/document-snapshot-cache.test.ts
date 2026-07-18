@@ -178,6 +178,75 @@ describe("document snapshot cache", () => {
     expect(restored.getElementById("temporary")).toBeUndefined()
   })
 
+  test("returns fresh preview clones under fragment-free keys", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/gallery?filter=active#source",
+      snapshot("preview", "https://example.test/gallery?filter=active#document"),
+    )
+
+    const first = cache.getPreview("https://example.test/gallery?filter=active#first")
+    const firstKept = first?.getElementById("kept")
+    if (!first || !firstKept) throw new Error("cache lost its preview node")
+    first.setAttribute(firstKept, "data-label", "preview-mutated")
+
+    const second = cache.getPreview("https://example.test/gallery?filter=active#second")
+    const secondKept = second?.getElementById("kept")
+    expect(second).toBeDefined()
+    expect(second).not.toBe(first)
+    expect(secondKept ? attributeValue(secondKept, "data-label") : undefined).toBe("preview")
+  })
+
+  test("suppresses no-preview lookups while retaining restoration access", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/no-preview",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><DemoText id="kept" /></Gallery>',
+        { url: "https://example.test/no-preview" },
+      ),
+    )
+
+    expect(cache.getPreview("https://example.test/no-preview#preview")).toBeUndefined()
+    expect(cache.has("https://example.test/no-preview")).toBe(true)
+    expect(
+      cache.get("https://example.test/no-preview#restore")?.getElementById("kept"),
+    ).toBeDefined()
+  })
+
+  test("refreshes LRU recency before suppressing a no-preview lookup", () => {
+    const cache = new DocumentSnapshotCache(2)
+    cache.put(
+      "https://example.test/no-preview",
+      parseExpoTurboDocument('<Gallery data-turbo-cache-control="no-preview" />', {
+        url: "https://example.test/no-preview",
+      }),
+    )
+    cache.put("https://example.test/ordinary", snapshot("ordinary"))
+
+    expect(cache.getPreview("https://example.test/no-preview")).toBeUndefined()
+    cache.put("https://example.test/newest", snapshot("newest"))
+
+    expect(cache.has("https://example.test/no-preview")).toBe(true)
+    expect(cache.has("https://example.test/ordinary")).toBe(false)
+    expect(cache.has("https://example.test/newest")).toBe(true)
+  })
+
+  test("rejects invalid preview URLs and keeps no-cache as a miss", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/no-cache",
+      parseExpoTurboDocument('<Gallery data-turbo-cache-control="no-cache" />', {
+        url: "https://example.test/no-cache",
+      }),
+    )
+
+    expect(cache.getPreview("https://example.test/no-cache")).toBeUndefined()
+    for (const url of ["", "/relative", "https://user:secret@example.test/private"]) {
+      expect(() => cache.getPreview(url)).toThrow(TargetError)
+    }
+  })
+
   test("rejects invalid capacities, URLs, credentials, entry forgeries, and URL mismatches", () => {
     for (const capacity of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
       expect(() => new DocumentSnapshotCache(capacity)).toThrow(PropsError)

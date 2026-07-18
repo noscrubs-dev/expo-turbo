@@ -56,6 +56,12 @@ export class DocumentSnapshotCache {
     return snapshot.clone()
   }
 
+  getPreview(url: string): DocumentTree | undefined {
+    const snapshot = this.get(url)
+    if (!snapshot || !documentCachePolicy(snapshot).previewable) return undefined
+    return snapshot
+  }
+
   has(url: string): boolean {
     return this.entries.has(cacheKey(url))
   }
