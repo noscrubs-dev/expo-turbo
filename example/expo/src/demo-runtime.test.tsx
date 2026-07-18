@@ -225,6 +225,7 @@ describe("demo app runtime ownership", () => {
     runtime.dispose();
 
     expect(runtime.forms.isDisposed).toBeTrue();
+    expect(() => runtime.focus.focus("id:first-name")).toThrow(/disposed/);
     expect(runtime.actionRuntime.state.isDisposed).toBeTrue();
   });
 
@@ -281,6 +282,7 @@ describe("demo app runtime ownership", () => {
       await Promise.resolve();
     });
     expect(runtime.forms.isDisposed).toBeTrue();
+    expect(() => runtime.focus.focus("id:first-name")).toThrow(/disposed/);
     expect(runtime.actionRuntime.state.isDisposed).toBeTrue();
   });
 

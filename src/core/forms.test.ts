@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
+import { FormSubmissionController } from "./form-submission-controller"
 import { assertActiveFormSubmissionProposal } from "./form-submission-proposal"
 import {
   DocumentFormControls,
@@ -8,11 +9,13 @@ import {
   type FormControlDirectionality,
   type FormControlRegistration,
   FormControlRegistry,
+  type FormControlRegistryOptions,
   type FormControlSelection,
   type FormSelectItem,
   type FormSelectOption,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
+import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 import { DocumentSession } from "./session"
 import { isElement } from "./tree"
 
@@ -173,10 +176,13 @@ const FORM_SEMANTICS = Object.freeze({
   },
 })
 
-function registryFor(session: DocumentSession): FormControlRegistry {
+function registryFor(
+  session: DocumentSession,
+  options: FormControlRegistryOptions = {},
+): FormControlRegistry {
   const form = session.tree.getElementById("form")
   if (!form) throw new Error("form fixture is missing")
-  return new FormControlRegistry(session, form.key)
+  return new FormControlRegistry(session, form.key, options)
 }
 
 describe("native form control registry", () => {
@@ -401,6 +407,489 @@ describe("native form control registry", () => {
       formMode: "invalid" as never,
     })
     expect(() => invalidDocumentControls.controlsFor("id:form")).toThrow(PropsError)
+  })
+
+  test("reports host-owned constraint snapshots in whole-document order and focuses only first invalid", () => {
+    const session = externalFormFixture()
+    const focused: string[] = []
+    const registry = registryFor(session, {
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+    })
+    const before = registry.register("id:before", {
+      kind: "value",
+      value: "",
+      validity: { message: "Before is required", valid: false },
+    })
+    registry.register("id:inside", {
+      kind: "value",
+      name: "inside",
+      value: "",
+      validity: { message: "Inside is required", valid: false },
+    })
+    registry.register("id:after", {
+      kind: "value",
+      name: "after",
+      value: "",
+      validity: { message: "After is required", valid: false },
+    })
+
+    const checked = registry.checkValidity()
+    expect(checked).toEqual({
+      firstInvalid: { message: "Before is required", nodeKey: "id:before" },
+      invalidControls: [
+        { message: "Before is required", nodeKey: "id:before" },
+        { message: "Inside is required", nodeKey: "id:inside" },
+        { message: "After is required", nodeKey: "id:after" },
+      ],
+      valid: false,
+    })
+    expect(focused).toEqual([])
+    expect(Object.isFrozen(checked)).toBe(true)
+    expect(Object.isFrozen(checked.invalidControls)).toBe(true)
+    expect(checked.invalidControls.every(Object.isFrozen)).toBe(true)
+
+    expect(registry.reportValidity()).toEqual(checked)
+    expect(focused).toEqual(["id:before"])
+
+    before.update({ kind: "value", value: "Ada", validity: { valid: true } })
+    expect(registry.reportValidity()).toMatchObject({
+      firstInvalid: { nodeKey: "id:inside" },
+      valid: false,
+    })
+    expect(focused).toEqual(["id:before", "id:inside"])
+  })
+
+  test("admits live validity snapshots for every validatable descriptor family", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const value = registry.register("id:first", {
+      kind: "value",
+      value: "",
+      validity: { message: "Value is invalid", valid: false },
+    })
+    const checkable = registry.register("id:second", {
+      checked: false,
+      kind: "checkable",
+      validity: { message: "Checkable is invalid", valid: false },
+    })
+    const multiple = registry.register("id:checked", {
+      kind: "multiple",
+      values: [],
+      validity: { message: "Multiple is invalid", valid: false },
+    })
+    const select = registry.register("id:multiple", {
+      kind: "select",
+      options: [{ kind: "option", selected: false, value: "one" }],
+      validity: { message: "Select is invalid", valid: false },
+    })
+
+    expect(registry.checkValidity()).toMatchObject({
+      invalidControls: [
+        { nodeKey: "id:first" },
+        { nodeKey: "id:second" },
+        { nodeKey: "id:checked" },
+        { nodeKey: "id:multiple" },
+      ],
+      valid: false,
+    })
+
+    value.update({ kind: "value", value: "Ada", validity: { valid: true } })
+    checkable.update({ checked: true, kind: "checkable", validity: { valid: true } })
+    multiple.update({ kind: "multiple", values: ["one"], validity: { valid: true } })
+    select.update({
+      kind: "select",
+      options: [{ kind: "option", selected: true, value: "one" }],
+      validity: { valid: true },
+    })
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
+  })
+
+  test("bars disabled, fieldset, datalist, hidden, and submitter controls from validation", () => {
+    const fieldsetSession = fieldsetFixture()
+    const fieldsetRegistry = registryFor(fieldsetSession, { formSemantics: FORM_SEMANTICS })
+    for (const nodeKey of [
+      "id:external-disabled",
+      "id:external-enabled",
+      "id:outer-exempt",
+      "id:inner-exempt",
+      "id:inner-disabled",
+      "id:outer-body",
+    ]) {
+      fieldsetRegistry.register(nodeKey, {
+        kind: "value",
+        value: "",
+        validity: { message: `${nodeKey} invalid`, valid: false },
+      })
+    }
+    expect(fieldsetRegistry.checkValidity()).toMatchObject({
+      invalidControls: [
+        { nodeKey: "id:external-enabled" },
+        { nodeKey: "id:outer-exempt" },
+        { nodeKey: "id:inner-exempt" },
+      ],
+      valid: false,
+    })
+
+    const datalistSession = datalistFixture()
+    const datalistRegistry = registryFor(datalistSession, { formSemantics: FORM_SEMANTICS })
+    datalistRegistry.register("id:external-barred", {
+      kind: "value",
+      value: "",
+      validity: { message: "External barred", valid: false },
+    })
+    datalistRegistry.register("id:before", {
+      kind: "value",
+      value: "",
+      validity: { message: "Before", valid: false },
+    })
+    datalistRegistry.register("id:value", {
+      kind: "value",
+      value: "",
+      validity: { message: "Datalist value", valid: false },
+    })
+    datalistRegistry.register("id:hidden", { kind: "hidden", value: "" })
+    datalistRegistry.register("id:external-submit", { kind: "submitter" })
+    datalistRegistry.register("id:after", {
+      disabled: true,
+      kind: "value",
+      value: "",
+      validity: { message: "Disabled after", valid: false },
+    })
+    expect(datalistRegistry.checkValidity()).toEqual({
+      firstInvalid: { message: "Before", nodeKey: "id:before" },
+      invalidControls: [{ message: "Before", nodeKey: "id:before" }],
+      valid: false,
+    })
+  })
+
+  test("blocks interactive submission before confirmation, activity, terminal state, and fetch", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery><DemoForm id="form" action="/submit" method="post" data-turbo-confirm="Confirm">
+          <DemoInput id="field" />
+          <DemoButton id="save" />
+          <DemoButton id="bypass" formnovalidate="false" />
+        </DemoForm></Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    let confirmations = 0
+    let fetches = 0
+    const focused: string[] = []
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          fetches += 1
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
+      },
+      {
+        confirmation: {
+          confirm: async () => {
+            confirmations += 1
+            return true
+          },
+        },
+      },
+    )
+    const registry = registryFor(session, {
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+      submissionController: controller,
+    })
+    const field = registry.register("id:field", {
+      kind: "value",
+      name: "profile[name]",
+      value: "",
+      validity: { message: "Name is required", valid: false },
+    })
+    const save = registry.register("id:save", { kind: "submitter", name: "commit", value: "save" })
+    const bypass = registry.register("id:bypass", {
+      kind: "submitter",
+      name: "commit",
+      value: "bypass",
+    })
+
+    expect(
+      registry.requestPlan({
+        protocol: { requestId: "validation-plan" },
+        submitter: save.selection,
+      }).entries,
+    ).toEqual([
+      { name: "profile[name]", value: "" },
+      { name: "commit", value: "save" },
+    ])
+    expect(focused).toEqual([])
+
+    for (const protocol of [
+      { requestId: "" },
+      { requestId: "\t" },
+      { capabilityHash: "bad\nmetadata", requestId: "validation-invalid-capability" },
+    ]) {
+      expect(() =>
+        registry.submit({
+          protocol,
+          submitter: save.selection,
+        }),
+      ).toThrow(RequestError)
+    }
+    expect(focused).toEqual([])
+    expect(confirmations).toBe(0)
+    expect(fetches).toBe(0)
+
+    await expect(
+      registry.submit({
+        protocol: { requestId: "validation-blocked" },
+        submitter: save.selection,
+      }),
+    ).resolves.toEqual({
+      firstInvalid: { message: "Name is required", nodeKey: "id:field" },
+      invalidControls: [{ message: "Name is required", nodeKey: "id:field" }],
+      requestId: "validation-blocked",
+      status: "invalid",
+      submitterNodeKey: "id:save",
+    })
+    expect(focused).toEqual(["id:field"])
+    expect(confirmations).toBe(0)
+    expect(fetches).toBe(0)
+    expect(registry.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(registry.submissionTerminalState).toEqual({ revision: 0, status: "none" })
+
+    await expect(
+      registry.submit({
+        protocol: { requestId: "validation-bypassed" },
+        submitter: bypass.selection,
+      }),
+    ).resolves.toMatchObject({ requestId: "validation-bypassed", status: "empty" })
+    expect(confirmations).toBe(1)
+    expect(fetches).toBe(1)
+
+    field.update({
+      kind: "value",
+      name: "profile[name]",
+      value: "Ada",
+      validity: { valid: true },
+    })
+    await expect(
+      registry.submit({
+        protocol: { requestId: "validation-passed" },
+        submitter: save.selection,
+      }),
+    ).resolves.toMatchObject({ requestId: "validation-passed", status: "empty" })
+    expect(confirmations).toBe(2)
+    expect(fetches).toBe(2)
+  })
+
+  test("revalidates live controls before retrying a safe terminal failure", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery><DemoForm id="form" action="/submit" data-turbo-confirm="Confirm">
+          <DemoInput id="field" />
+          <DemoButton id="save" />
+        </DemoForm></Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    let confirmations = 0
+    let fetches = 0
+    const focused: string[] = []
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          fetches += 1
+          if (fetches === 1) throw new Error("offline secret")
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
+      },
+      {
+        confirmation: {
+          confirm: async () => {
+            confirmations += 1
+            return true
+          },
+        },
+      },
+    )
+    const registry = registryFor(session, {
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+      submissionController: controller,
+    })
+    const field = registry.register("id:field", {
+      kind: "value",
+      name: "profile[name]",
+      value: "Ada",
+      validity: { valid: true },
+    })
+    const submitter = registry.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+
+    await expect(
+      registry.submit({
+        protocol: { requestId: "retry-initial" },
+        submitter: submitter.selection,
+      }),
+    ).rejects.toBeInstanceOf(RequestError)
+    const terminal = registry.submissionTerminalState
+    expect(terminal).toMatchObject({
+      requestId: "retry-initial",
+      retryDisposition: "safe",
+      status: "failed",
+    })
+    expect(confirmations).toBe(1)
+    expect(fetches).toBe(1)
+
+    field.update({
+      kind: "value",
+      name: "profile[name]",
+      value: "",
+      validity: { message: "Name is required", valid: false },
+    })
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "retry-invalid" } }),
+    ).resolves.toMatchObject({
+      firstInvalid: { nodeKey: "id:field" },
+      requestId: "retry-invalid",
+      status: "invalid",
+      submitterNodeKey: "id:save",
+    })
+    expect(focused).toEqual(["id:field"])
+    expect(confirmations).toBe(1)
+    expect(fetches).toBe(1)
+    expect(registry.submissionTerminalState).toBe(terminal)
+
+    field.update({
+      kind: "value",
+      name: "profile[name]",
+      value: "Grace",
+      validity: { valid: true },
+    })
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "retry-valid" } }),
+    ).resolves.toMatchObject({ requestId: "retry-valid", status: "empty" })
+    expect(confirmations).toBe(2)
+    expect(fetches).toBe(2)
+  })
+
+  test("honors form novalidate presence and fails closed when invalid focus is unavailable", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoForm id="form" action="/submit" novalidate="false"><DemoInput id="field" /></DemoForm></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    let fetches = 0
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        fetches += 1
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const registry = registryFor(session, { submissionController: controller })
+    registry.register("id:field", {
+      kind: "value",
+      value: "",
+      validity: { message: "Required", valid: false },
+    })
+    await expect(
+      registry.submit({ protocol: { requestId: "form-novalidate" } }),
+    ).resolves.toMatchObject({ requestId: "form-novalidate", status: "empty" })
+    expect(fetches).toBe(1)
+
+    session.removeAttribute("id:form", "novalidate")
+    expect(() => registry.reportValidity()).toThrow(
+      "Invalid form submission requires a configured focus adapter",
+    )
+    expect(() => registry.submit({ protocol: { requestId: "focus-unavailable" } })).toThrow(
+      StateError,
+    )
+    expect(fetches).toBe(1)
+
+    const throwingSession = formFixture()
+    const throwing = registryFor(throwingSession, {
+      focus: {
+        blur() {},
+        focus() {
+          throw new Error("private native handle")
+        },
+        getFocusedId: () => undefined,
+      },
+    })
+    throwing.register("id:first", {
+      kind: "value",
+      value: "",
+      validity: { message: "Required", valid: false },
+    })
+    expect(() => throwing.reportValidity()).toThrow(
+      "Form validation could not focus the first invalid control",
+    )
+    try {
+      throwing.reportValidity()
+    } catch (error) {
+      expect(error).toBeInstanceOf(StateError)
+      expect((error as StateError).context).toEqual({ target: "id:first" })
+      expect((error as Error).message).not.toContain("private native handle")
+      expect((error as Error & { cause?: unknown }).cause).toBeUndefined()
+    }
+
+    const asynchronousSession = formFixture()
+    const asynchronous = registryFor(asynchronousSession, {
+      focus: {
+        blur() {},
+        async focus() {
+          throw new Error("private asynchronous handle")
+        },
+        getFocusedId: () => undefined,
+      },
+    })
+    asynchronous.register("id:first", {
+      kind: "value",
+      value: "",
+      validity: { message: "Required", valid: false },
+    })
+    expect(() => asynchronous.reportValidity()).toThrow(
+      "Form validation could not focus the first invalid control",
+    )
+    await Promise.resolve()
   })
 
   test("inherits live disabled fieldsets with the first direct legend exception", () => {
@@ -1005,6 +1494,58 @@ describe("native form control registry", () => {
         PropsError,
       )
     }
+  })
+
+  test("strictly admits frozen host-owned validity snapshots", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const registration = registry.register("id:first", {
+      kind: "value",
+      value: "Ada",
+      validity: { valid: true },
+    })
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
+
+    for (const validity of [
+      null,
+      { valid: "false" },
+      { valid: false },
+      { message: "", valid: false },
+      { message: "unexpected", valid: true },
+      { extra: true, valid: true },
+      { extra: true, message: "Required", valid: false },
+    ]) {
+      expect(() =>
+        registration.update({
+          kind: "value",
+          value: "",
+          validity,
+        } as unknown as FormControlDescriptor),
+      ).toThrow(PropsError)
+    }
+
+    registration.update({
+      kind: "value",
+      value: "",
+      validity: { message: "Required", valid: false },
+    })
+    const invalid = registry.checkValidity()
+    if (invalid.valid) throw new Error("invalid form fixture unexpectedly passed")
+    expect(Object.isFrozen(invalid.firstInvalid)).toBe(true)
+    expect(invalid.firstInvalid).toEqual({ message: "Required", nodeKey: "id:first" })
+
+    expect(() =>
+      registry.register("id:unchecked", {
+        kind: "hidden",
+        validity: { message: "Unsupported", valid: false },
+      } as unknown as FormControlDescriptor),
+    ).toThrow(PropsError)
+    expect(() =>
+      registry.register("id:save", {
+        kind: "submitter",
+        validity: { message: "Unsupported", valid: false },
+      } as unknown as FormControlDescriptor),
+    ).toThrow(PropsError)
   })
 
   test("rejects malformed select option snapshots", () => {
@@ -1900,6 +2441,29 @@ const invalidSubmitterDirectionality: FormControlDescriptor = {
   value: "save",
 }
 void invalidSubmitterDirectionality
+
+const invalidHiddenValidity: FormControlDescriptor = {
+  kind: "hidden",
+  name: "token",
+  // @ts-expect-error Hidden controls are barred from constraint validation.
+  validity: { message: "Required", valid: false },
+}
+void invalidHiddenValidity
+
+const invalidSubmitterValidity: FormControlDescriptor = {
+  kind: "submitter",
+  // @ts-expect-error Submitters are barred from constraint validation.
+  validity: { message: "Required", valid: false },
+}
+void invalidSubmitterValidity
+
+const invalidValidMessage: FormControlDescriptor = {
+  kind: "value",
+  value: "value",
+  // @ts-expect-error Valid controls cannot carry invalid-state message copy.
+  validity: { message: "Unexpected", valid: true },
+}
+void invalidValidMessage
 
 // @ts-expect-error Select options require an explicit value or a text snapshot.
 const missingSelectOptionValue: FormSelectOption = { kind: "option", selected: true }
