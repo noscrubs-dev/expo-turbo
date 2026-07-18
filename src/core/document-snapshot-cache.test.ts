@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import { documentCachePolicy } from "./document-metadata"
 import { DOCUMENT_SNAPSHOT_CACHE_SIZE, DocumentSnapshotCache } from "./document-snapshot-cache"
 import { PropsError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
@@ -118,6 +119,63 @@ describe("document snapshot cache", () => {
 
     const restored = cache.get("https://example.test/key")?.getElementById("kept")
     expect(restored ? nodeTextContent(restored) : undefined).toBe("original")
+  })
+
+  test("skips no-cache writes without evicting an older matching snapshot", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put("https://example.test/key", snapshot("original", "https://example.test/key"))
+    cache.put(
+      "https://example.test/key",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-cache"><DemoText id="kept">replacement</DemoText></Gallery>',
+        { url: "https://example.test/key" },
+      ),
+    )
+    cache.put(
+      "https://example.test/uncached",
+      parseExpoTurboDocument('<Gallery data-turbo-cache-control="no-cache" />', {
+        url: "https://example.test/uncached",
+      }),
+    )
+
+    expect(cache.size).toBe(1)
+    expect(cache.has("https://example.test/uncached")).toBe(false)
+    const restored = cache.get("https://example.test/key")?.getElementById("kept")
+    expect(restored ? nodeTextContent(restored) : undefined).toBe("original")
+  })
+
+  test("does not refresh LRU recency when a no-cache write is skipped", () => {
+    const cache = new DocumentSnapshotCache(2)
+    cache.put("https://example.test/a", snapshot("a"))
+    cache.put("https://example.test/b", snapshot("b"))
+    cache.put(
+      "https://example.test/a",
+      parseExpoTurboDocument('<Gallery data-turbo-cache-control="no-cache" />', {
+        url: "https://example.test/a",
+      }),
+    )
+    cache.put("https://example.test/c", snapshot("c"))
+
+    expect(cache.has("https://example.test/a")).toBe(false)
+    expect(cache.has("https://example.test/b")).toBe(true)
+    expect(cache.has("https://example.test/c")).toBe(true)
+  })
+
+  test("retains no-preview metadata while pruning temporary content", () => {
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/no-preview",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><DemoText id="kept" /><DemoText id="temporary" data-turbo-temporary="" /></Gallery>',
+        { url: "https://example.test/no-preview" },
+      ),
+    )
+
+    const restored = cache.get("https://example.test/no-preview")
+    if (!restored) throw new Error("cache lost its no-preview snapshot")
+    expect(documentCachePolicy(restored)).toEqual({ cacheable: true, previewable: false })
+    expect(restored.getElementById("kept")).toBeDefined()
+    expect(restored.getElementById("temporary")).toBeUndefined()
   })
 
   test("rejects invalid capacities, URLs, credentials, entry forgeries, and URL mismatches", () => {
