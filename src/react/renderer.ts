@@ -19,6 +19,7 @@ import type {
   FormSubmissionAnnouncementEvent,
   FormSubmissionAnnouncementTerminalSnapshot,
   NavigationAdapter,
+  VisitAction,
 } from "../adapters"
 import {
   type ComponentStyleLayers,
@@ -210,6 +211,15 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "stream",
 ] as const
 const MISSING_FORM_OWNER_KEY = "__expo-turbo-missing-form-owner__"
+
+function exactVisitAction(value: string | undefined): VisitAction | undefined {
+  return value === "advance" || value === "replace" || value === "restore" ? value : undefined
+}
+
+function linkFrameVisitAction(value: string | undefined): VisitAction | null | undefined {
+  if (value === undefined) return undefined
+  return exactVisitAction(value) ?? null
+}
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
@@ -806,10 +816,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       }
     }
     const actionValue = attributeValue(node, "data-turbo-action")
-    const action =
-      actionValue === "advance" || actionValue === "replace" || actionValue === "restore"
-        ? actionValue
-        : undefined
+    const action = exactVisitAction(actionValue)
     const documentUrl = session.tree.document.url
     if (!documentUrl) throw new TargetError("Document links require an active document URL")
     const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
@@ -856,8 +863,9 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           frameId: nearestFrameId,
         })
       }
+      const frameAction = linkFrameVisitAction(actionValue)
       return frames.visit(href, {
-        ...(action !== undefined ? { action } : {}),
+        ...(frameAction !== undefined ? { action: frameAction } : {}),
         ...(elementTarget !== undefined ? { elementTarget } : {}),
         frame: nearestFrameId,
       })
@@ -870,8 +878,9 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
             frameId: elementTarget,
           })
         }
+        const frameAction = linkFrameVisitAction(actionValue)
         return frames.visit(href, {
-          ...(action !== undefined ? { action } : {}),
+          ...(frameAction !== undefined ? { action: frameAction } : {}),
           elementTarget,
           frame: elementTarget,
         })

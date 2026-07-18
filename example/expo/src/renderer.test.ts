@@ -3694,6 +3694,107 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("inherits exact actions from the resolved destination Frame and lets link non-actions mask them", async () => {
+    for (const fixture of [
+      {
+        href: "/current-inherited-action",
+        xml: '<Gallery><turbo-frame id="frame" data-turbo-action="advance"><DocumentLink href="/current-inherited-action" /></turbo-frame></Gallery>',
+      },
+      {
+        href: "/parent-inherited-action",
+        xml: '<Gallery><turbo-frame id="outer" data-turbo-action="replace"><turbo-frame id="inner"><DocumentLink href="/parent-inherited-action" data-turbo-frame="_parent" /></turbo-frame></turbo-frame></Gallery>',
+      },
+      {
+        href: "/named-inherited-action",
+        xml: '<Gallery><turbo-frame id="named" data-turbo-action="restore" /><DocumentLink href="/named-inherited-action" data-turbo-frame="named" /></Gallery>',
+      },
+    ]) {
+      const documentRequests: TurboRequest[] = []
+      const frameRequests: TurboRequest[] = []
+      const harness = renderDocumentLinks(
+        fixture.xml,
+        async (request) => {
+          documentRequests.push(request)
+          throw new Error("inherited Frame action must not fetch a document")
+        },
+        "https://example.test/gallery",
+        undefined,
+        async (request) => {
+          frameRequests.push(request)
+          throw new Error("inherited Frame action must not fetch a Frame")
+        },
+      )
+
+      await act(async () => {
+        await expect(harness.activation(fixture.href)()).rejects.toBeInstanceOf(TargetError)
+      })
+      expect(documentRequests).toHaveLength(0)
+      expect(frameRequests).toHaveLength(0)
+      act(() => harness.renderer.unmount())
+    }
+
+    for (const action of ["", "bogus", "Advance"]) {
+      const frameRequests: TurboRequest[] = []
+      const href = `/masked-frame-action-${action || "blank"}`
+      const harness = renderDocumentLinks(
+        `<Gallery><turbo-frame id="frame" data-turbo-action="advance"><DocumentLink href="${href}" data-turbo-action="${action}" /></turbo-frame></Gallery>`,
+        async () => {
+          throw new Error("masked Frame action must not fetch a document")
+        },
+        "https://example.test/gallery",
+        undefined,
+        async (request) => {
+          frameRequests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => '<turbo-frame id="frame" />',
+            url: request.url,
+          }
+        },
+      )
+
+      await act(async () => {
+        await expect(harness.activation(href)()).resolves.toMatchObject({
+          frameId: "frame",
+          kind: "frame",
+        })
+      })
+      expect(frameRequests).toHaveLength(1)
+      act(() => harness.renderer.unmount())
+    }
+
+    const documentRequests: TurboRequest[] = []
+    const promoted = renderDocumentLinks(
+      '<Gallery><turbo-frame id="frame" data-turbo-action="replace"><DocumentLink href="/top-without-inheritance" data-turbo-frame="_top" /></turbo-frame></Gallery>',
+      async (request) => {
+        documentRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      undefined,
+      async () => {
+        throw new Error("promoted Frame link must not fetch a Frame")
+      },
+    )
+
+    await act(async () => {
+      await expect(promoted.activation("/top-without-inheritance")()).resolves.toMatchObject({
+        action: "advance",
+        kind: "top",
+      })
+    })
+    expect(documentRequests).toHaveLength(1)
+    act(() => promoted.renderer.unmount())
+  })
+
   test("projects authored disabled link presence through the Expo Pressable", async () => {
     mock.module("react-native", () => ({
       Platform: { OS: "web" },

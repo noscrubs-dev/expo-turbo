@@ -10,7 +10,7 @@ import {
 } from "./frames"
 import { resolveProtocolUrl } from "./protocol-request"
 import type { DocumentSession } from "./session"
-import type { ProtocolElement } from "./tree"
+import { attributeValue, type ProtocolElement } from "./tree"
 
 export interface FrameControllerCollection {
   delete(frameId: string, controller?: FrameController): void
@@ -19,7 +19,8 @@ export interface FrameControllerCollection {
 }
 
 export interface FrameVisitOptions extends ResolveFrameTargetOptions {
-  readonly action?: VisitAction
+  /** `null` explicitly masks destination-Frame action inheritance. */
+  readonly action?: VisitAction | null
   readonly frame: string
 }
 
@@ -48,6 +49,10 @@ interface FrameControllerRecord {
   readonly controller: FrameController
   readonly node: ProtocolElement
   unregisterDisposal: () => void
+}
+
+function exactVisitAction(value: string | undefined): VisitAction | undefined {
+  return value === "advance" || value === "replace" || value === "restore" ? value : undefined
 }
 
 export class FrameControllerRegistry implements FrameControllerCollection {
@@ -104,7 +109,16 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       throw new TargetError("Frame visit fragments require navigation support")
     }
     const target = resolveFrameTarget(this.session.tree, options.frame, options)
-    if (options.action !== undefined && target.kind === "frame") {
+    const targetFrame =
+      target.kind === "frame" ? this.session.tree.getElementById(target.frameId) : undefined
+    const inheritedAction =
+      options.action === undefined &&
+      targetFrame?.kind === "frame" &&
+      resolved.urlOrigin === resolved.documentOrigin
+        ? exactVisitAction(attributeValue(targetFrame, "data-turbo-action"))
+        : undefined
+    const action = options.action === null ? undefined : (options.action ?? inheritedAction)
+    if (action !== undefined && target.kind === "frame") {
       throw new TargetError("Frame action visits require history support", {
         frameId: target.frameId,
       })
@@ -116,18 +130,18 @@ export class FrameControllerRegistry implements FrameControllerCollection {
       return Object.freeze({ kind: "external", target, url: resolved.url })
     }
     if (target.kind === "top") {
-      const action = options.action ?? "advance"
+      const topAction = action ?? "advance"
       if (this.topLevelVisits) {
         const outcome = await this.topLevelVisits.visit(resolved.url, {
-          action,
+          action: topAction,
           ...(this.navigation ? { navigation: this.navigation } : {}),
         })
-        return Object.freeze({ action, kind: "top", outcome, target, url: resolved.url })
+        return Object.freeze({ action: topAction, kind: "top", outcome, target, url: resolved.url })
       } else {
         if (!this.navigation) throw new TargetError("Top-level Frame visits require navigation")
-        await this.navigation.visit(resolved.url, action)
+        await this.navigation.visit(resolved.url, topAction)
       }
-      return Object.freeze({ action, kind: "top", target, url: resolved.url })
+      return Object.freeze({ action: topAction, kind: "top", target, url: resolved.url })
     }
 
     const load = await this.get(target.frameId).visit(resolved.url)
