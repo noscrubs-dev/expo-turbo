@@ -1,7 +1,9 @@
 import type { ClockAdapter, TurboResponse } from "expo-turbo/adapters";
 import {
+  DocumentHistory,
   DocumentRequestLoader,
   type DocumentSession,
+  DocumentSnapshotCache,
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
 } from "expo-turbo/core";
@@ -12,8 +14,8 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="linked-document" title="Document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>The app-owned native link used the host-injected document controller and replaced this session from XML.</DemoText>
   </DemoCard>
-  <DemoDocumentLink href="/demo">
-    <DemoText>Return to the compatibility gallery.</DemoText>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
   </DemoDocumentLink>
 </Gallery>`;
 
@@ -27,6 +29,22 @@ export function createDemoDocumentController(
   session: DocumentSession,
 ): DocumentVisitController {
   let requestId = 0;
+  let restorationIdentifier = 0;
+  const documentUrl = session.tree.document.url;
+  if (!documentUrl) throw new Error("The Expo Turbo demo requires an active document URL");
+  const history = new DocumentHistory(
+    { next: () => `demo-history-${++restorationIdentifier}` },
+    { write: () => undefined },
+  );
+  history.initialize({
+    entry: {
+      restorationIdentifier: "demo-history-current",
+      restorationIndex: 0,
+      url: documentUrl,
+    },
+    kind: "managed",
+  });
+  const snapshotCache = new DocumentSnapshotCache();
   return new DocumentVisitController(
     new DocumentRequestLoader(
       session,
@@ -46,5 +64,6 @@ export function createDemoDocumentController(
       { next: () => `demo-document-${++requestId}` },
     ),
     DEMO_CLOCK,
+    { history, snapshotCache },
   );
 }

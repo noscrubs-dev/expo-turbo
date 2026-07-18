@@ -19,11 +19,16 @@ import {
   attributeValue,
   dispatchTurboStreamFragment,
   DocumentFormControls,
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryWriteMethod,
   DocumentRequestLoader,
+  DocumentSnapshotCache,
   DocumentStateScopes,
   DocumentStateStore,
   DocumentSession,
   DocumentVisitController,
+  type DocumentVisitControllerOptions,
   EXPO_TURBO_MIME_TYPE,
   FormLinkSubmissionController,
   FormSubmissionController,
@@ -471,8 +476,10 @@ function renderDocumentLinks(
   navigation?: NavigationAdapter,
   frameFetch?: (request: TurboRequest) => Promise<TurboResponse>,
   createFormLinks?: (session: DocumentSession) => FormLinkSubmissionController,
+  controllerOptions?: DocumentVisitControllerOptions,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
+  let documentRequestIds = 0
   let renders = 0
   function DocumentLink({
     disabled,
@@ -510,12 +517,17 @@ function renderDocumentLinks(
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
   const formLinks = createFormLinks?.(session)
   const controller = new DocumentVisitController(
-    new DocumentRequestLoader(session, { fetch }, { next: () => "request-link" }),
+    new DocumentRequestLoader(
+      session,
+      { fetch },
+      { next: () => `request-link-${++documentRequestIds}` },
+    ),
     {
       clearTimeout: () => undefined,
       now: () => 0,
       setTimeout: () => Object.freeze({}),
     },
+    controllerOptions,
   )
   let frameRequestId = 0
   const frames = frameFetch
@@ -547,6 +559,7 @@ function renderDocumentLinks(
       return activation
     },
     controller,
+    documentRequestIdCount: () => documentRequestIds,
     formLinks,
     frames,
     renderCount: () => renders,
@@ -3515,6 +3528,84 @@ describe("React protocol renderer", () => {
       expect(requests).toHaveLength(1)
       act(() => harness.renderer.unmount())
     }
+  })
+
+  test("restores an exact top-level restore link from cache with aligned history", async () => {
+    const currentUrl = "https://example.test/gallery"
+    const restoredUrl = "https://example.test/restored"
+    const writes: Readonly<{
+      entry: DocumentHistoryEntry
+      method: DocumentHistoryWriteMethod
+    }>[] = []
+    let restorationIdentifier = 0
+    const history = new DocumentHistory(
+      { next: () => `restore-history-${++restorationIdentifier}` },
+      {
+        write(method, entry) {
+          writes.push(Object.freeze({ entry, method }))
+        },
+      },
+    )
+    history.initialize({
+      entry: {
+        restorationIdentifier: "restore-history-current",
+        restorationIndex: 4,
+        url: currentUrl,
+      },
+      kind: "managed",
+    })
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      restoredUrl,
+      parseExpoTurboDocument(
+        '<Gallery><DocumentLink href="/later" /><DemoText>Restored from cache</DemoText></Gallery>',
+        { url: restoredUrl },
+      ),
+    )
+    const requests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/restored" data-turbo-action="restore" /><DemoText>Before</DemoText></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("cached restore must not fetch")
+      },
+      currentUrl,
+      undefined,
+      undefined,
+      undefined,
+      { history, snapshotCache },
+    )
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("/restored")()
+    })
+
+    expect(result).toEqual({
+      source: "snapshot",
+      status: "restored",
+      url: restoredUrl,
+    })
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(requests).toHaveLength(0)
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state).toMatchObject({ busy: false, status: "completed" })
+    expect(harness.session.tree.document.url).toBe(restoredUrl)
+    expect(JSON.stringify(harness.renderer.toJSON())).toContain("Restored from cache")
+    expect(snapshotCache.has(currentUrl)).toBe(true)
+    expect(writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "restore-history-1",
+          restorationIndex: 5,
+          url: restoredUrl,
+        },
+        method: "push",
+      },
+    ])
+    expect(history.current).toBe(writes[0]?.entry)
+
+    act(() => harness.renderer.unmount())
   })
 
   test("keeps Turbo non-actions and browser-bypassed actions on their existing paths", async () => {
