@@ -7,6 +7,7 @@ import {
 } from "react";
 import { Text } from "react-native";
 
+import type { DemoDocumentBootstrap } from "./demo-document-controller";
 import type { DemoRouterNavigation } from "./demo-router-history";
 import type { DemoRuntime } from "./demo-runtime";
 
@@ -66,6 +67,7 @@ function ActiveDemoRouterRouteOwner({
 
   useEffect(() => {
     let active = true;
+    let bootstrap: DemoDocumentBootstrap | undefined;
     let initialized = false;
     let detach: (() => undefined) | undefined;
     const unsubscribeErrors = runtime.navigation.subscribeErrors((error) => {
@@ -73,29 +75,55 @@ function ActiveDemoRouterRouteOwner({
       if (error) gate.fail(routeKey, error);
       else if (initialized) gate.ready(routeKey);
     });
-    try {
-      detach = runtime.navigation.attach(navigation, routeKey);
-      const documentUrl = runtime.session.tree.document.url;
-      if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
-      if (!runtime.documentRuntime.history.current) {
-        runtime.documentRuntime.history.initialize(
-          runtime.navigation.readInitialState(documentUrl),
+    const initialize = async (): Promise<void> => {
+      try {
+        detach = runtime.navigation.attach(navigation, routeKey);
+        let documentUrl = runtime.session.tree.document.url;
+        if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
+        const managedEntry = runtime.navigation.readManagedEntry();
+        if (
+          !runtime.documentRuntime.history.current &&
+          managedEntry &&
+          managedEntry.url !== documentUrl
+        ) {
+          bootstrap = runtime.documentRuntime.bootstrapManagedEntry(
+            managedEntry,
+            () => runtime.navigation.readManagedEntry(),
+          );
+          const report = await bootstrap.result;
+          if (!active) return;
+          if (report.status !== "committed") {
+            throw new StateError("Demo Router cold-start restoration was canceled");
+          }
+          documentUrl = runtime.session.tree.document.url;
+          if (!documentUrl) {
+            throw new StateError("The Expo Turbo demo has no active document URL");
+          }
+        }
+        if (!active) return;
+        if (!runtime.documentRuntime.history.current) {
+          runtime.documentRuntime.history.initialize(
+            runtime.navigation.readInitialState(documentUrl),
+          );
+        }
+        runtime.navigation.reconcile();
+        initialized = true;
+        runtime.navigation.clearError();
+        if (active) gate.ready(routeKey);
+      } catch (error) {
+        if (!active) return;
+        runtime.navigation.reportError(
+          error instanceof Error
+            ? error
+            : new StateError("Demo Router history initialization failed"),
         );
       }
-      runtime.navigation.reconcile();
-      initialized = true;
-      runtime.navigation.clearError();
-      if (active) gate.ready(routeKey);
-    } catch (error) {
-      runtime.navigation.reportError(
-        error instanceof Error
-          ? error
-          : new StateError("Demo Router history initialization failed"),
-      );
-    }
+    };
+    void initialize();
 
     return () => {
       active = false;
+      bootstrap?.cancel();
       unsubscribeErrors();
       detach?.();
     };

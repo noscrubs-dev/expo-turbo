@@ -1,3 +1,4 @@
+import type { FetchAdapter } from "expo-turbo/adapters";
 import { Linking, Text } from "react-native";
 import {
   DocumentFormControls,
@@ -53,11 +54,15 @@ export interface DemoRuntime {
   dispose(): void;
 }
 
+export interface DemoRuntimeOptions {
+  readonly documentFetch?: FetchAdapter;
+}
+
 const DemoRuntimeContext = createContext<DemoRuntime | undefined>(undefined);
 const runtimeOwners = new WeakMap<DemoRuntime, number>();
 let sharedRuntime: DemoRuntime | undefined;
 
-export function createDemoRuntime(): DemoRuntime {
+export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime {
   const session = new DocumentSession(
     parseExpoTurboDocument(DEMO_DOCUMENT, {
       url: "https://example.test/demo",
@@ -68,7 +73,11 @@ export function createDemoRuntime(): DemoRuntime {
     currentEntry: () => documentRuntime.history.current,
     openExternal: (url) => Linking.openURL(url).then(() => undefined),
   });
-  documentRuntime = createDemoDocumentRuntime(session, navigation);
+  documentRuntime = createDemoDocumentRuntime(
+    session,
+    navigation,
+    options.documentFetch,
+  );
   const refresh = new DocumentRefreshController(
     session,
     documentRuntime.controller,
@@ -128,7 +137,7 @@ export function createDemoRuntime(): DemoRuntime {
       forms.dispose();
       frames.dispose();
       refresh.dispose();
-      documentRuntime.controller.cancel();
+      documentRuntime.dispose();
       actionRuntime.state.dispose();
     },
   });
