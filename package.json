@@ -49,7 +49,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "bun run lint && bun run typecheck && bun run test && bun run pack:check",
     "example:expo:check": "cd example/expo && bun run check",
-    "example:rails:check": "cd example/rails && bundle exec standardrb && bundle exec rspec",
+    "example:rails:check": "cd example/rails && export BUNDLE_GEMFILE=\"$PWD/Gemfile\" && bundle exec standardrb && bundle exec rspec",
     "examples:check": "bun run example:expo:check && bun run example:rails:check",
     "format": "biome check --write src package.json tsconfig.json tsconfig.build.json biome.json",
     "lint": "biome check src package.json tsconfig.json tsconfig.build.json biome.json",

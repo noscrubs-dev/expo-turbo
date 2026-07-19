@@ -49,6 +49,10 @@ export function stageDocumentAutofocus(
   pendingBindings.set(session, binding)
 }
 
+export function suppressDocumentAutofocus(session: DocumentSession): void {
+  pendingBindings.delete(session)
+}
+
 export function consumeDocumentAutofocus(
   session: DocumentSession,
   document: ProtocolDocument,

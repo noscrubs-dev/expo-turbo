@@ -110,6 +110,49 @@ describe("document autofocus generations", () => {
     expect(consumeDocumentAutofocus(session, tree.document, 1)).toEqual(["id:candidate"])
   })
 
+  test("suppresses preview autofocus and stages the later canonical generation", () => {
+    const session = sessionFor('<Gallery><Field id="initial" autofocus="" /></Gallery>')
+    expect(
+      consumeDocumentAutofocus(session, session.tree.document, session.treeGeneration),
+    ).toEqual(["id:initial"])
+
+    session.replaceTreePreview(
+      parseExpoTurboDocument('<Gallery><Field id="preview" autofocus="" /></Gallery>', {
+        url: "https://example.test/preview",
+      }),
+    )
+    expect(
+      consumeDocumentAutofocus(session, session.tree.document, session.treeGeneration),
+    ).toBeUndefined()
+
+    session.replaceTree(
+      parseExpoTurboDocument('<Gallery><Field id="canonical" autofocus="" /></Gallery>', {
+        url: "https://example.test/canonical",
+      }),
+    )
+    expect(
+      consumeDocumentAutofocus(session, session.tree.document, session.treeGeneration),
+    ).toEqual(["id:canonical"])
+  })
+
+  test("clears stale pending autofocus before preview disposal callbacks run", () => {
+    const session = sessionFor(
+      '<Gallery><Field id="old" autofocus="" /><Other id="removed" /></Gallery>',
+    )
+    let observed: readonly string[] | undefined = ["unexpected"]
+    session.registerDisposal("id:removed", () => {
+      observed = consumeDocumentAutofocus(session, session.tree.document, session.treeGeneration)
+    })
+
+    session.replaceTreePreview(
+      parseExpoTurboDocument('<Gallery><Field id="preview" autofocus="" /></Gallery>', {
+        url: "https://example.test/preview",
+      }),
+    )
+
+    expect(observed).toBeUndefined()
+  })
+
   test("consumes an empty generation before a later Stream inserts autofocus", () => {
     const session = sessionFor('<Gallery id="gallery" />')
     const document = session.tree.document

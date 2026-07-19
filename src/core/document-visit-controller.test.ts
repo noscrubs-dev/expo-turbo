@@ -17,6 +17,7 @@ import {
 import {
   DocumentCommitError,
   DocumentRequestLoader,
+  DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
 } from "./document-loader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
@@ -68,6 +69,19 @@ class ManualClock implements ClockAdapter {
     const timer = this.timers[index]
     if (!timer) throw new Error(`Missing timer ${index}`)
     timer.callback()
+  }
+}
+
+class ThrowingProgressSetupClock extends ManualClock {
+  override setTimeout(): unknown {
+    throw new Error("sensitive setup failure")
+  }
+}
+
+class ThrowingProgressCleanupClock extends ManualClock {
+  override clearTimeout(handle: unknown): void {
+    super.clearTimeout(handle)
+    throw new Error("sensitive cleanup failure")
   }
 }
 
@@ -192,6 +206,7 @@ describe("Document visit controller", () => {
 
     expect(controller.state).toEqual({
       busy: false,
+      previewVisible: false,
       progressVisible: false,
       revision: 0,
       status: "initialized",
@@ -203,6 +218,7 @@ describe("Document visit controller", () => {
     expect(pending).toHaveLength(1)
     expect(controller.state).toEqual({
       busy: true,
+      previewVisible: false,
       progressVisible: false,
       revision: 1,
       status: "started",
@@ -212,6 +228,7 @@ describe("Document visit controller", () => {
     clock.fire(0)
     expect(controller.state).toEqual({
       busy: true,
+      previewVisible: false,
       progressVisible: true,
       revision: 2,
       status: "started",
@@ -225,12 +242,965 @@ describe("Document visit controller", () => {
     expect(await visit).toMatchObject({ classification: "success", status: "committed" })
     expect(controller.state).toEqual({
       busy: false,
+      previewVisible: false,
       progressVisible: false,
       revision: 3,
       status: "completed",
     })
     expect(revisions).toEqual([1, 2, 3])
     expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+  })
+
+  test("renders one cached preview before always issuing the canonical GET", async () => {
+    const order: string[] = []
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    let history: DocumentHistory
+    let session: DocumentSession
+    const fixture = historyFixture((_method, entry) => {
+      expect(entry.url).toBe("https://example.test/next")
+      expect(session.tree.getElementById("old")).toBeDefined()
+      expect(session.tree.getElementById("preview")).toBeUndefined()
+      order.push("history")
+    })
+    history = fixture.history
+    const current = harness({
+      documentXml: '<Gallery><Old id="old" data-state="initial" /></Gallery>',
+      history,
+      snapshotCache,
+    })
+    session = current.session
+    const states: string[] = []
+    current.controller.subscribe(() => {
+      states.push(
+        `${current.controller.state.status}:${current.controller.state.previewVisible ? "preview" : "canonical"}`,
+      )
+    })
+    session.setAttribute("id:old", "data-state", "latest")
+    const unsubscribe = session.subscribe("id:old", () => {
+      unsubscribe()
+      expect(history.current?.url).toBe("https://example.test/next")
+      expect(session.tree.getElementById("preview")).toBeDefined()
+      expect(session.treeState.preview).toBe(true)
+      order.push("tree")
+    })
+
+    const visit = current.controller.visit("/next")
+
+    expect(order).toEqual(["history", "tree"])
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/next")
+    expect(current.requestIdCount()).toBe(1)
+    expect(current.clock.timers).toHaveLength(1)
+    expect(current.controller.state).toMatchObject({
+      busy: true,
+      previewVisible: true,
+      status: "started",
+    })
+    expect(session.tree.getElementById("preview")).toBeDefined()
+    const outgoing = snapshotCache.get("https://example.test/current")
+    const old = outgoing?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ classification: "success", status: "committed" })
+    expect(session.tree.getElementById("canonical")).toBeDefined()
+    expect(session.tree.getElementById("preview")).toBeUndefined()
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: false,
+      status: "completed",
+    })
+    expect(states).toEqual([
+      "started:canonical",
+      "started:preview",
+      "started:canonical",
+      "completed:canonical",
+    ])
+    expect(fixture.writes).toHaveLength(1)
+  })
+
+  test("revalidates a preview when progress timer setup fails", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({
+      clock: new ThrowingProgressSetupClock(),
+      snapshotCache,
+    })
+    const errors: Error[] = []
+    current.controller.subscribeErrors((error) => errors.push(error))
+
+    const visit = current.controller.visit("/next")
+
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/next")
+    expect(current.controller.state).toMatchObject({
+      busy: true,
+      previewVisible: true,
+      status: "started",
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(StateError)
+    expect(errors[0]?.message).not.toContain("sensitive")
+    expect(errors[0]?.cause).toBeUndefined()
+
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: false,
+      status: "completed",
+    })
+  })
+
+  test("completes preview revalidation when progress timer cleanup fails", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({
+      clock: new ThrowingProgressCleanupClock(),
+      snapshotCache,
+    })
+    const errors: Error[] = []
+    current.controller.subscribeErrors((error) => errors.push(error))
+    const visit = current.controller.visit("/next")
+
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(StateError)
+    expect(errors[0]?.message).not.toContain("sensitive")
+    expect(errors[0]?.cause).toBeUndefined()
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: false,
+      status: "completed",
+    })
+  })
+
+  test("publishes preview provenance even when a node listener reads state first", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const observed: boolean[] = []
+    current.controller.subscribe(() => observed.push(current.controller.state.previewVisible))
+    const unsubscribe = current.session.subscribe("id:old", () => {
+      unsubscribe()
+      expect(current.controller.state.previewVisible).toBe(true)
+    })
+
+    const visit = current.controller.visit("/next")
+
+    expect(observed).toEqual([false, true])
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    await visit
+    expect(observed).toEqual([false, true, false, false])
+  })
+
+  test("ignores cancellation inside the guarded preview history commit", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    let controller: DocumentVisitController
+    let statusDuringCommit: string | undefined
+    const fixture = historyFixture(() => {
+      controller.cancel()
+      statusDuringCommit = controller.state.status
+    })
+    const current = harness({ history: fixture.history, snapshotCache })
+    controller = current.controller
+
+    const visit = controller.visit("/next")
+
+    expect(statusDuringCommit).toBe("started")
+    expect(current.session.tree.getElementById("preview")).toBeDefined()
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+  })
+
+  test("honors cancellation during preview finalization before canonical ownership", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const unsubscribe = current.session.subscribe("id:old", () => {
+      unsubscribe()
+      current.controller.cancel()
+    })
+
+    expect(await current.controller.visit("/next")).toEqual({
+      source: "preview",
+      status: "canceled",
+      url: "https://example.test/next",
+    })
+    expect(current.pending).toEqual([])
+    expect(current.session.tree.getElementById("preview")).toBeDefined()
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: true,
+      status: "canceled",
+    })
+  })
+
+  test("revalidates a committed preview after its synchronous finalization reports an error", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const fixture = historyFixture()
+    const current = harness({ history: fixture.history, snapshotCache })
+    const errors: Error[] = []
+    current.controller.subscribeErrors((error) => errors.push(error))
+    current.session.registerDisposal("id:old", () => {
+      throw new Error("preview finalization failed")
+    })
+
+    const visit = current.controller.visit("/next")
+
+    expect(current.pending).toHaveLength(1)
+    expect(current.session.tree.getElementById("preview")).toBeDefined()
+    expect(current.controller.state).toMatchObject({
+      busy: true,
+      previewVisible: true,
+      status: "started",
+    })
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    await expect(visit).rejects.toBeInstanceOf(DocumentSnapshotPreviewCommitError)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(DocumentSnapshotPreviewCommitError)
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: false,
+      status: "completed",
+    })
+    expect(fixture.writes).toHaveLength(1)
+  })
+
+  test("does not reclaim a newer peer request started by preview finalization", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/outer",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const peer = new DocumentVisitController(current.loader, new ManualClock())
+    let peerVisit: Promise<unknown> | undefined
+    const unsubscribe = current.session.subscribe("id:old", () => {
+      unsubscribe()
+      peerVisit = peer.visit("/peer")
+    })
+
+    expect(await current.controller.visit("/outer")).toEqual({
+      source: "preview",
+      status: "canceled",
+      url: "https://example.test/outer",
+    })
+    if (!peerVisit) throw new Error("peer visit did not start")
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/peer")
+    expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+    current.pending[0]?.resolve(
+      response('<Gallery><Peer id="peer" /></Gallery>', {
+        url: "https://example.test/peer",
+      }),
+    )
+    expect(await peerVisit).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("peer")).toBeDefined()
+  })
+
+  test("does not reclaim a newer peer request started by canonical request-ID allocation", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/outer",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    let peer: DocumentVisitController
+    let peerVisit: Promise<unknown> | undefined
+    let triggerPeer = true
+    const current = harness({
+      onRequestId: () => {
+        if (!triggerPeer) return
+        triggerPeer = false
+        peerVisit = peer.visit("/peer")
+      },
+      snapshotCache,
+    })
+    peer = new DocumentVisitController(current.loader, new ManualClock())
+
+    expect(await current.controller.visit("/outer")).toEqual({
+      source: "preview",
+      status: "canceled",
+      url: "https://example.test/outer",
+    })
+    if (!peerVisit) throw new Error("peer visit did not start")
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/peer")
+    expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+    current.pending[0]?.resolve(
+      response('<Gallery><Peer id="peer" /></Gallery>', {
+        url: "https://example.test/peer",
+      }),
+    )
+    expect(await peerVisit).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("peer")).toBeDefined()
+  })
+
+  test("does not continue after finalization installs a newer same-URL preview", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><OlderPreview id="older-preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const unsubscribe = current.session.subscribe("id:old", () => {
+      unsubscribe()
+      current.session.replaceTreePreview(
+        parseExpoTurboDocument('<Gallery><NewerPreview id="newer-preview" /></Gallery>', {
+          url: "https://example.test/next",
+        }),
+      )
+    })
+
+    expect(await current.controller.visit("/next")).toEqual({
+      source: "preview",
+      status: "canceled",
+      url: "https://example.test/next",
+    })
+    expect(current.pending).toEqual([])
+    expect(current.session.tree.getElementById("newer-preview")).toBeDefined()
+  })
+
+  test("selects a same-location preview before replacing its cache entry with outgoing truth", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/current",
+      parseExpoTurboDocument('<Gallery><Cached id="cached" data-state="stale" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const fixture = historyFixture()
+    const current = harness({
+      documentXml: '<Gallery><Old id="old" data-state="initial" /></Gallery>',
+      history: fixture.history,
+      snapshotCache,
+    })
+    current.session.setAttribute("id:old", "data-state", "latest")
+
+    const visit = current.controller.visit("/current")
+
+    expect(current.session.tree.getElementById("cached")).toBeDefined()
+    expect(current.session.tree.getElementById("old")).toBeUndefined()
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
+    const outgoing = snapshotCache.get("https://example.test/current")
+    const old = outgoing?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("latest")
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+  })
+
+  test("keeps explicit replace history at one index across preview and canonical redirect", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/requested",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/requested",
+      }),
+    )
+    const fixture = historyFixture(() => undefined, "https://example.test/current", 7)
+    const current = harness({ history: fixture.history, snapshotCache })
+
+    const visit = current.controller.visit("/requested", { action: "replace" })
+
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 7,
+          url: "https://example.test/requested",
+        },
+        method: "replace",
+      },
+    ])
+    current.pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 7,
+          url: "https://example.test/requested",
+        },
+        method: "replace",
+      },
+      {
+        entry: {
+          restorationIdentifier: "history-2",
+          restorationIndex: 7,
+          url: "https://example.test/final",
+        },
+        method: "replace",
+      },
+    ])
+  })
+
+  test("replaces a preview with authoritative client and server error XML", async () => {
+    for (const candidate of [
+      { classification: "client-error", status: 422 },
+      { classification: "server-error", status: 500 },
+    ] as const) {
+      const url = `https://example.test/error-${candidate.status}`
+      const snapshotCache = new DocumentSnapshotCache()
+      snapshotCache.put(
+        url,
+        parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', { url }),
+      )
+      const current = harness({ snapshotCache })
+
+      const visit = current.controller.visit(`/error-${candidate.status}`)
+      current.pending[0]?.resolve(
+        response(`<Gallery><ErrorResult id="error-${candidate.status}" /></Gallery>`, {
+          status: candidate.status,
+          url,
+        }),
+      )
+
+      expect(await visit).toMatchObject({
+        classification: candidate.classification,
+        status: "committed",
+      })
+      expect(current.session.tree.getElementById(`error-${candidate.status}`)).toBeDefined()
+      expect(current.session.tree.getElementById("preview")).toBeUndefined()
+      expect(current.controller.state).toMatchObject({
+        busy: false,
+        previewVisible: false,
+        status: "failed",
+      })
+    }
+  })
+
+  test("retains canonical committed classification when finalization fails after a preview", async () => {
+    for (const candidate of [
+      { expected: "completed", status: 200 },
+      { expected: "failed", status: 422 },
+    ] as const) {
+      const url = `https://example.test/commit-${candidate.status}`
+      const snapshotCache = new DocumentSnapshotCache()
+      snapshotCache.put(
+        url,
+        parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', { url }),
+      )
+      const current = harness({ snapshotCache })
+      const visit = current.controller.visit(`/commit-${candidate.status}`)
+      current.session.registerDisposal("id:preview", () => {
+        throw new Error("canonical finalization failed")
+      })
+      current.pending[0]?.resolve(
+        response(`<Gallery><Canonical id="canonical-${candidate.status}" /></Gallery>`, {
+          status: candidate.status,
+          url,
+        }),
+      )
+
+      await expect(visit).rejects.toBeInstanceOf(DocumentCommitError)
+      expect(current.session.tree.getElementById(`canonical-${candidate.status}`)).toBeDefined()
+      expect(current.controller.state).toMatchObject({
+        busy: false,
+        previewVisible: false,
+        status: candidate.expected,
+      })
+    }
+  })
+
+  test("keeps no-preview explicit replace tree and history unchanged on canonical failure", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Retained id="retained" /></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+    const fixture = historyFixture()
+    const current = harness({
+      fetch: async () => Promise.reject(new Error("offline")),
+      history: fixture.history,
+      snapshotCache,
+    })
+    const tree = current.session.tree
+    const entry = fixture.history.current
+
+    await expect(current.controller.visit("/next", { action: "replace" })).rejects.toBeInstanceOf(
+      RequestError,
+    )
+    expect(current.session.tree).toBe(tree)
+    expect(fixture.history.current).toBe(entry)
+    expect(fixture.writes).toEqual([])
+    expect(snapshotCache.get("https://example.test/next")?.getElementById("retained")).toBeDefined()
+  })
+
+  test("lets an external canonical replacement supersede pending preview revalidation", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const visit = current.controller.visit("/next")
+
+    current.session.replaceTree(
+      parseExpoTurboDocument('<Gallery><PeerCanonical id="peer-canonical" /></Gallery>', {
+        url: "https://example.test/peer",
+      }),
+    )
+    current.pending[0]?.resolve(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(current.session.tree.getElementById("peer-canonical")).toBeDefined()
+    expect(current.session.tree.getElementById("late")).toBeUndefined()
+    expect(current.controller.state).toMatchObject({
+      previewVisible: false,
+      status: "canceled",
+    })
+  })
+
+  test("does not let a peer from initial preview lookup get reclaimed", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/outer",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    const peer = new DocumentVisitController(current.loader, new ManualClock())
+    let peerVisit: Promise<unknown> | undefined
+    snapshotCache.onGet = () => {
+      peerVisit = peer.visit("/peer")
+    }
+
+    await expect(current.controller.visit("/outer")).rejects.toBeInstanceOf(StateError)
+    if (!peerVisit) throw new Error("peer visit did not start")
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/peer")
+    expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+    current.pending[0]?.resolve(
+      response('<Gallery><Peer id="peer" /></Gallery>', {
+        url: "https://example.test/peer",
+      }),
+    )
+    expect(await peerVisit).toMatchObject({ status: "committed" })
+  })
+
+  test("does not let an initial preview lookup overwrite a reentrant authoritative tree", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/outer",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    snapshotCache.onGet = () => {
+      current.session.replaceTree(
+        parseExpoTurboDocument('<Gallery><Peer id="peer" /></Gallery>', {
+          url: "https://example.test/peer",
+        }),
+      )
+    }
+
+    await expect(current.controller.visit("/outer")).rejects.toBeInstanceOf(StateError)
+    expect(current.pending).toHaveLength(0)
+    expect(current.session.tree.getElementById("peer")).toBeDefined()
+    expect(current.session.tree.getElementById("preview")).toBeUndefined()
+    expect(current.session.treeState.preview).toBe(false)
+    expect(current.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: false,
+      status: "initialized",
+    })
+  })
+
+  test("keeps a guarded preview commit authoritative when cache storage starts rejected work", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/outer",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    const current = harness({ snapshotCache })
+    let peerVisit: Promise<unknown> | undefined
+    snapshotCache.onPut = () => {
+      peerVisit = current.controller.visit("/peer")
+    }
+
+    const outer = current.controller.visit("/outer")
+
+    if (!peerVisit) throw new Error("peer visit did not start")
+    await expect(peerVisit).rejects.toBeInstanceOf(StateError)
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/outer")
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/outer",
+      }),
+    )
+    expect(await outer).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+  })
+
+  test("replaces preview history with a fresh same-index entry after a canonical redirect", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/requested",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/requested",
+      }),
+    )
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+
+    const visit = controller.visit("/requested")
+    expect(session.tree.getElementById("preview")).toBeDefined()
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 1,
+          url: "https://example.test/requested",
+        },
+        method: "push",
+      },
+    ])
+
+    pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ redirected: true, status: "committed" })
+    expect(fixture.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 1,
+          url: "https://example.test/requested",
+        },
+        method: "push",
+      },
+      {
+        entry: {
+          restorationIdentifier: "history-2",
+          restorationIndex: 1,
+          url: "https://example.test/final",
+        },
+        method: "replace",
+      },
+    ])
+    expect(session.tree.document.url).toBe("https://example.test/final")
+    expect(session.tree.getElementById("final")).toBeDefined()
+    expect(controller.state.previewVisible).toBe(false)
+  })
+
+  test("treats no-preview snapshots as ordinary network-only visits", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Hidden id="hidden" /></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    const oldTree = session.tree
+
+    const visit = controller.visit("/next")
+
+    expect(session.tree).toBe(oldTree)
+    expect(session.tree.getElementById("hidden")).toBeUndefined()
+    expect(controller.state.previewVisible).toBe(false)
+    expect(fixture.writes).toEqual([])
+    expect(snapshotCache.get("https://example.test/next")?.getElementById("hidden")).toBeDefined()
+    pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("canonical")).toBeDefined()
+    expect(controller.state.previewVisible).toBe(false)
+    expect(fixture.writes).toHaveLength(1)
+  })
+
+  test("keeps a completed preview visible after canonical no-tree responses", async () => {
+    for (const candidate of [
+      { headers: {}, status: 204, text: "unused" },
+      {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        status: 201,
+        text: " \n ",
+      },
+    ] as const) {
+      const snapshotCache = new DocumentSnapshotCache()
+      snapshotCache.put(
+        "https://example.test/next",
+        parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+          url: "https://example.test/next",
+        }),
+      )
+      const fixture = historyFixture()
+      const { controller, pending, session } = harness({
+        history: fixture.history,
+        snapshotCache,
+      })
+
+      const visit = controller.visit("/next")
+      pending[0]?.resolve(
+        response(candidate.text, {
+          headers: candidate.headers,
+          status: candidate.status,
+          url: "https://example.test/next",
+        }),
+      )
+
+      expect(await visit).toMatchObject({ status: "empty" })
+      expect(session.tree.getElementById("preview")).toBeDefined()
+      expect(controller.state).toMatchObject({
+        busy: false,
+        previewVisible: true,
+        status: "completed",
+      })
+      expect(fixture.history.current?.url).toBe("https://example.test/next")
+      expect(fixture.writes).toHaveLength(1)
+    }
+  })
+
+  test("keeps a failed or canceled canonical revalidation explicitly provisional", async () => {
+    const failingCache = new DocumentSnapshotCache()
+    failingCache.put(
+      "https://example.test/failure",
+      parseExpoTurboDocument('<Gallery><Preview id="failed-preview" /></Gallery>', {
+        url: "https://example.test/failure",
+      }),
+    )
+    const failing = harness({
+      fetch: async () => Promise.reject(new Error("offline")),
+      history: historyFixture().history,
+      snapshotCache: failingCache,
+    })
+
+    await expect(failing.controller.visit("/failure")).rejects.toBeInstanceOf(RequestError)
+    expect(failing.session.tree.getElementById("failed-preview")).toBeDefined()
+    expect(failing.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: true,
+      status: "failed",
+    })
+
+    const canceledCache = new DocumentSnapshotCache()
+    canceledCache.put(
+      "https://example.test/canceled",
+      parseExpoTurboDocument('<Gallery><Preview id="canceled-preview" /></Gallery>', {
+        url: "https://example.test/canceled",
+      }),
+    )
+    const canceled = harness({
+      history: historyFixture().history,
+      snapshotCache: canceledCache,
+    })
+    const visit = canceled.controller.visit("/canceled")
+    canceled.controller.cancel()
+
+    expect(canceled.pending[0]?.request.signal?.aborted).toBe(true)
+    canceled.pending[0]?.resolve(
+      response('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/canceled",
+      }),
+    )
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(canceled.session.tree.getElementById("canceled-preview")).toBeDefined()
+    expect(canceled.controller.state).toMatchObject({
+      busy: false,
+      previewVisible: true,
+      status: "canceled",
+    })
+  })
+
+  test("does not let a reentrant preview lookup reclaim ownership from a newer visit", async () => {
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/older",
+      parseExpoTurboDocument('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    const fixture = historyFixture()
+    const { controller, pending, requestIdCount, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    let newer: Promise<unknown> | undefined
+    snapshotCache.onGet = () => {
+      newer = controller.visit("/newer")
+    }
+
+    const older = controller.visit("/older")
+
+    await expect(older).rejects.toBeInstanceOf(StateError)
+    if (!newer) throw new Error("newer visit did not start")
+    expect(pending).toHaveLength(1)
+    expect(requestIdCount()).toBe(1)
+    expect(session.tree.getElementById("older")).toBeUndefined()
+    pending[0]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("does not start stale revalidation when preview finalization starts a newer visit", async () => {
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/previewed",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/previewed",
+      }),
+    )
+    const fixture = historyFixture()
+    const { controller, pending, session } = harness({
+      history: fixture.history,
+      snapshotCache,
+    })
+    let newer: Promise<unknown> | undefined
+    const unsubscribe = session.subscribe("id:old", () => {
+      unsubscribe()
+      newer = controller.visit("/newer")
+    })
+
+    const previewed = controller.visit("/previewed")
+
+    expect(await previewed).toEqual({
+      source: "preview",
+      status: "canceled",
+      url: "https://example.test/previewed",
+    })
+    if (!newer) throw new Error("newer visit did not start")
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/newer")
+    pending[0]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newer")).toBeDefined()
+    expect(controller.state.previewVisible).toBe(false)
   })
 
   test("restores a no-preview snapshot for a host back traversal without fetching or writing history", async () => {
@@ -384,7 +1354,7 @@ describe("Document visit controller", () => {
       url: "https://example.test/older",
     })
 
-    await expect(older).rejects.toThrow("superseded before ownership")
+    await expect(older).rejects.toBeInstanceOf(StateError)
     if (!newest) throw new Error("newer traversal was not started")
     expect(pending).toHaveLength(1)
     expect(pending[0]?.request.signal?.aborted).toBe(false)
@@ -400,6 +1370,54 @@ describe("Document visit controller", () => {
     expect(history.current?.restorationIdentifier).toBe("history-newest")
     expect(session.tree.getElementById("newest")).toBeDefined()
     expect(session.tree.getElementById("older")).toBeUndefined()
+  })
+
+  test("does not let traversal cache lookup reclaim a peer controller", async () => {
+    for (const cached of [true, false]) {
+      const target = `https://example.test/traversal-peer-${cached ? "hit" : "miss"}`
+      const peerUrl = `https://example.test/peer-${cached ? "hit" : "miss"}`
+      const snapshotCache = new ReentrantSnapshotCache()
+      if (cached) {
+        snapshotCache.put(
+          target,
+          parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+            url: target,
+          }),
+        )
+      }
+      const { history } = historyFixture()
+      const current = harness({ history, snapshotCache })
+      const peer = new DocumentVisitController(current.loader, new ManualClock())
+      let peerVisit: Promise<unknown> | undefined
+      snapshotCache.onGet = () => {
+        peerVisit = peer.visit(peerUrl)
+      }
+
+      const stale = current.controller.restoreTraversal({
+        restorationIdentifier: `history-traversal-${cached ? "hit" : "miss"}`,
+        restorationIndex: 1,
+        url: target,
+      })
+
+      await expect(stale).rejects.toBeInstanceOf(StateError)
+      if (!peerVisit) throw new Error("peer visit was not started")
+      expect(current.controller.state.status).toBe("initialized")
+      expect(peer.state.status).toBe("started")
+      expect(current.pending).toHaveLength(1)
+      expect(current.pending[0]?.request.url).toBe(peerUrl)
+      expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+      expect(current.requestIdCount()).toBe(cached ? 1 : 2)
+      expect(current.session.tree.getElementById("restored")).toBeUndefined()
+
+      current.pending[0]?.resolve(
+        response('<Gallery><Peer id="peer" /></Gallery>', {
+          url: peerUrl,
+        }),
+      )
+      expect(await peerVisit).toMatchObject({ status: "committed" })
+      expect(peer.state.status).toBe("completed")
+      expect(current.session.tree.getElementById("peer")).toBeDefined()
+    }
   })
 
   test("rejects a stale pre-start traversal after claim reentrancy without fetching", async () => {
@@ -1093,7 +2111,7 @@ describe("Document visit controller", () => {
 
       const stale = current.controller.visit(target, { action: "restore" })
 
-      await expect(stale).rejects.toThrow("superseded before ownership")
+      await expect(stale).rejects.toBeInstanceOf(StateError)
       if (!newer) throw new Error("newer visit was not started")
       expect(current.controller.state.status).toBe("started")
       expect(current.pending).toHaveLength(1)
@@ -1120,6 +2138,81 @@ describe("Document visit controller", () => {
     }
   })
 
+  test("does not let explicit restore cache lookup reclaim a peer controller", async () => {
+    for (const cached of [true, false]) {
+      const target = `https://example.test/restored-peer-${cached ? "hit" : "miss"}`
+      const peerUrl = `https://example.test/peer-${cached ? "hit" : "miss"}`
+      const snapshotCache = new ReentrantSnapshotCache()
+      if (cached) {
+        snapshotCache.put(
+          target,
+          parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+            url: target,
+          }),
+        )
+      }
+      const history = historyFixture()
+      const current = harness({ history: history.history, snapshotCache })
+      const peer = new DocumentVisitController(current.loader, new ManualClock())
+      let peerVisit: Promise<unknown> | undefined
+      snapshotCache.onGet = () => {
+        peerVisit = peer.visit(peerUrl)
+      }
+
+      const stale = current.controller.visit(target, { action: "restore" })
+
+      await expect(stale).rejects.toBeInstanceOf(StateError)
+      if (!peerVisit) throw new Error("peer visit was not started")
+      expect(current.controller.state.status).toBe("initialized")
+      expect(peer.state.status).toBe("started")
+      expect(current.pending).toHaveLength(1)
+      expect(current.pending[0]?.request.url).toBe(peerUrl)
+      expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+      expect(current.requestIdCount()).toBe(1)
+      expect(history.writes).toEqual([])
+      expect(current.session.tree.getElementById("restored")).toBeUndefined()
+
+      current.pending[0]?.resolve(
+        response('<Gallery><Peer id="peer" /></Gallery>', {
+          url: peerUrl,
+        }),
+      )
+      expect(await peerVisit).toMatchObject({ status: "committed" })
+      expect(peer.state.status).toBe("completed")
+      expect(current.session.tree.getElementById("peer")).toBeDefined()
+    }
+  })
+
+  test("does not let explicit restore cache lookup overwrite a same-URL authoritative tree", async () => {
+    const target = "https://example.test/restored"
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      target,
+      parseExpoTurboDocument('<Gallery><Restored id="restored" /></Gallery>', {
+        url: target,
+      }),
+    )
+    const history = historyFixture()
+    const current = harness({ history: history.history, snapshotCache })
+    snapshotCache.onGet = () => {
+      current.session.replaceTree(
+        parseExpoTurboDocument('<Gallery><Peer id="peer" /></Gallery>', {
+          url: "https://example.test/current",
+        }),
+      )
+    }
+
+    await expect(current.controller.visit(target, { action: "restore" })).rejects.toBeInstanceOf(
+      StateError,
+    )
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
+    expect(history.writes).toEqual([])
+    expect(current.session.tree.getElementById("peer")).toBeDefined()
+    expect(current.session.tree.getElementById("restored")).toBeUndefined()
+    expect(current.controller.state.status).toBe("initialized")
+  })
+
   test("does not let restore request-ID reentrancy displace newer work on cache-miss or no-cache paths", async () => {
     for (const snapshotCache of [new DocumentSnapshotCache(), undefined]) {
       const history = historyFixture()
@@ -1138,7 +2231,7 @@ describe("Document visit controller", () => {
 
       const stale = current.controller.visit("/restored", { action: "restore" })
 
-      await expect(stale).rejects.toThrow("superseded before ownership")
+      await expect(stale).rejects.toBeInstanceOf(StateError)
       if (!newer) throw new Error("newer visit was not started")
       expect(current.controller.state.status).toBe("started")
       expect(current.pending).toHaveLength(1)
@@ -2393,6 +3486,43 @@ describe("Document visit controller", () => {
       },
     ])
     expect(history.history.current).toBe(history.writes[0]?.entry)
+  })
+
+  test("does not let refresh request-ID allocation reclaim a peer controller", async () => {
+    const history = historyFixture()
+    let peer: DocumentVisitController
+    let peerVisit: Promise<unknown> | undefined
+    let triggerPeer = true
+    const current = harness({
+      history: history.history,
+      onRequestId: () => {
+        if (!triggerPeer) return
+        triggerPeer = false
+        peerVisit = peer.visit("/peer")
+      },
+    })
+    peer = new DocumentVisitController(current.loader, new ManualClock())
+
+    await expect(
+      current.controller.refreshCurrent("https://example.test/current"),
+    ).rejects.toBeInstanceOf(StateError)
+    if (!peerVisit) throw new Error("peer visit did not start")
+    expect(current.controller.state.status).toBe("initialized")
+    expect(peer.state.status).toBe("started")
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/peer")
+    expect(current.pending[0]?.request.signal?.aborted).toBe(false)
+    expect(current.requestIdCount()).toBe(2)
+    expect(history.writes).toEqual([])
+
+    current.pending[0]?.resolve(
+      response('<Gallery><Peer id="peer" /></Gallery>', {
+        url: "https://example.test/peer",
+      }),
+    )
+    expect(await peerVisit).toMatchObject({ status: "committed" })
+    expect(peer.state.status).toBe("completed")
+    expect(current.session.tree.getElementById("peer")).toBeDefined()
   })
 
   test("refreshes canonical-equivalent current history with a canonical replace", async () => {

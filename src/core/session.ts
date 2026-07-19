@@ -1,5 +1,9 @@
 import { destinationCommitActive } from "./destination-request-ownership"
-import { prepareDocumentAutofocus, stageDocumentAutofocus } from "./document-autofocus-internal"
+import {
+  prepareDocumentAutofocus,
+  stageDocumentAutofocus,
+  suppressDocumentAutofocus,
+} from "./document-autofocus-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
@@ -17,6 +21,11 @@ export interface NodeSnapshot {
   readonly identity: string
   readonly node: ProtocolNode
   readonly revision: number
+}
+
+export interface DocumentTreeState {
+  readonly generation: number
+  readonly preview: boolean
 }
 
 export type DocumentSnapshotRestoreResult = Readonly<{ status: "miss" } | { status: "restored" }>
@@ -39,11 +48,13 @@ export class DocumentSession {
   private readonly disposals = new Map<ProtocolNode, Set<DisposalHook>>()
   private readonly identities = new WeakMap<ProtocolNode, string>()
   private readonly listeners = new Map<string, Set<SessionListener>>()
+  private readonly treeStateListeners = new Set<SessionListener>()
   private readonly sessionIdentity = nextSessionIdentity++
   private readonly snapshots = new Map<string, NodeSnapshot>()
   private currentRevision = 0
   private currentTree: DocumentTree
   private currentTreeGeneration = 0
+  private currentTreeState: DocumentTreeState = Object.freeze({ generation: 0, preview: false })
   private nextIdentity = 0
   private unregisterTreeMutationGuard: (() => void) | undefined
 
@@ -67,6 +78,10 @@ export class DocumentSession {
 
   get treeGeneration(): number {
     return this.currentTreeGeneration
+  }
+
+  get treeState(): DocumentTreeState {
+    return this.currentTreeState
   }
 
   getNodeSnapshot(key: string): NodeSnapshot | undefined {
@@ -100,17 +115,35 @@ export class DocumentSession {
   }
 
   replaceTree(tree: DocumentTree): void {
+    this.installTree(tree, false)
+  }
+
+  replaceTreePreview(tree: DocumentTree): void {
+    this.installTree(tree, true)
+  }
+
+  subscribeTreeState(listener: SessionListener): () => void {
+    this.treeStateListeners.add(listener)
+    return () => this.treeStateListeners.delete(listener)
+  }
+
+  private installTree(tree: DocumentTree, preview: boolean): void {
     this.assertMutationAllowed()
     const generation = this.currentTreeGeneration + 1
-    const autofocus = prepareDocumentAutofocus(tree, generation)
+    const autofocus = preview ? undefined : prepareDocumentAutofocus(tree, generation)
     this.currentTree = tree
     this.guardTree(tree)
     this.currentTreeGeneration = generation
-    stageDocumentAutofocus(this, autofocus)
+    this.currentTreeState = Object.freeze({ generation, preview })
+    if (autofocus) stageDocumentAutofocus(this, autofocus)
+    else suppressDocumentAutofocus(this)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()
-    this.reportErrors(disposalErrors, this.notify([...this.listeners.keys()]))
+    this.reportErrors(disposalErrors, [
+      ...this.notify([...this.listeners.keys()]),
+      ...this.notifyListeners(this.treeStateListeners),
+    ])
   }
 
   registerDisposal(key: string, hook: DisposalHook): () => void {
@@ -232,8 +265,12 @@ export class DocumentSession {
       const listeners = this.listeners.get(key)
       if (listeners) callbacks.push(...listeners)
     }
+    return this.notifyListeners(callbacks)
+  }
+
+  private notifyListeners(listeners: Iterable<SessionListener>): unknown[] {
     const errors: unknown[] = []
-    for (const callback of callbacks) {
+    for (const callback of [...listeners]) {
       try {
         callback()
       } catch (error) {

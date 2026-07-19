@@ -157,6 +157,56 @@ describe("Document request loader", () => {
     expect(session.tree.document.url).toBe("https://example.test/restored#history")
   })
 
+  test("selects only previewable snapshots and publishes provisional tree provenance", () => {
+    const order: string[] = []
+    const session = documentSession()
+    const cache = new DocumentSnapshotCache()
+    cache.put(
+      "https://example.test/preview",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/preview",
+      }),
+    )
+    cache.put(
+      "https://example.test/no-preview",
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Hidden id="hidden" /></Gallery>',
+        { url: "https://example.test/no-preview" },
+      ),
+    )
+    const loader = new DocumentRequestLoader(
+      session,
+      { fetch: async () => response("") },
+      { next: () => "unused" },
+    )
+
+    expect(loader.previewSnapshot(cache, "https://example.test/no-preview")).toEqual({
+      status: "miss",
+      url: "https://example.test/no-preview",
+    })
+    expect(session.treeState).toEqual({ generation: 0, preview: false })
+    const report = loader.previewSnapshot(cache, "https://example.test/preview", undefined, {
+      beforeTreeCommit() {
+        order.push("commit")
+        expect(session.treeState.preview).toBe(false)
+      },
+      onPreviewStart() {
+        order.push("start")
+      },
+    })
+
+    expect(report).toEqual({ status: "committed", url: "https://example.test/preview" })
+    expect(order).toEqual(["start", "commit"])
+    expect(session.tree.getElementById("preview")).toBeDefined()
+    expect(session.treeState).toEqual({ generation: 1, preview: true })
+    session.replaceTree(
+      parseExpoTurboDocument('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/preview",
+      }),
+    )
+    expect(session.treeState).toEqual({ generation: 2, preview: false })
+  })
+
   test("returns a frozen cache miss without claiming ownership or running callbacks", () => {
     const session = documentSession()
     const loader = new DocumentRequestLoader(
