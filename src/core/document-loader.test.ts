@@ -240,6 +240,49 @@ describe("Document request loader", () => {
     expect(session.recentRequestIds.has("request-started")).toBe(true)
   })
 
+  test("acknowledges request ownership before a paused request lifecycle", async () => {
+    const order: string[] = []
+    const session = documentSession()
+    const lifecycle = new RequestLifecycle()
+    let resume: () => void = () => {
+      throw new Error("before-fetch-request did not pause")
+    }
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      order.push("before-fetch-request")
+      event.pause()
+      resume = () => event.resume()
+    })
+    let fetches = 0
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          fetches += 1
+          return response('<Gallery><Late id="late" /></Gallery>')
+        },
+      },
+      { next: () => "request-paused" },
+      { requestLifecycle: lifecycle },
+    )
+
+    const loading = loader.load("/paused", undefined, {
+      onRequestStart() {
+        order.push("start")
+        expect(session.recentRequestIds.has("request-paused")).toBe(false)
+      },
+    })
+
+    expect(order).toEqual(["start", "before-fetch-request"])
+    expect(fetches).toBe(0)
+    expect(session.recentRequestIds.has("request-paused")).toBe(false)
+
+    expect(loader.cancel()).toBe(true)
+    expect(await loading).toMatchObject({ status: "canceled" })
+    expect(fetches).toBe(0)
+    expect(session.recentRequestIds.has("request-paused")).toBe(false)
+    resume()
+  })
+
   test("restores a cached tree under document ownership and retargets its exact URL", () => {
     const order: string[] = []
     const session = documentSession()

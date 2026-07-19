@@ -238,6 +238,45 @@ describe("Document visit controller", () => {
     expect(errors).toEqual([])
   })
 
+  test("starts and can cancel a visit while before-fetch-request is paused", async () => {
+    const lifecycle = new RequestLifecycle()
+    let resume: () => void = () => {
+      throw new Error("before-fetch-request did not pause")
+    }
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      event.pause()
+      resume = () => event.resume()
+    })
+    const { clock, controller, pending } = harness({ requestLifecycle: lifecycle })
+
+    const visit = controller.visit("/paused")
+
+    expect(controller.state).toEqual({
+      busy: true,
+      previewVisible: false,
+      progressVisible: false,
+      revision: 1,
+      status: "started",
+    })
+    expect(clock.timers).toHaveLength(1)
+    expect(clock.timers[0]?.delayMs).toBe(DOCUMENT_VISIT_PROGRESS_DELAY_MS)
+    expect(pending).toHaveLength(0)
+
+    controller.cancel()
+
+    expect(controller.state).toEqual({
+      busy: false,
+      previewVisible: false,
+      progressVisible: false,
+      revision: 2,
+      status: "canceled",
+    })
+    expect(clock.timers[0]?.cleared).toBe(true)
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(pending).toHaveLength(0)
+    resume()
+  })
+
   test("publishes initialized, started, delayed-progress, and completed snapshots", async () => {
     const { clock, controller, pending, session } = harness()
     const revisions: number[] = []

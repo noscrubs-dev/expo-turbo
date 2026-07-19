@@ -420,20 +420,21 @@ export class DocumentRequestLoader {
       | undefined
 
     try {
+      if (!this.owns(active)) return this.canceled(active)
+      if (options.onRequestStart) {
+        const result = options.onRequestStart()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new RequestError("Document request start callback must not return a value", {
+            method: "GET",
+          })
+        }
+        if (!this.owns(active)) return this.canceled(active)
+      }
       const startRequest = (effectiveRequest: TurboRequest): boolean => {
         if (!this.owns(active)) return false
         requestedUrl = effectiveRequest.url
         active.requestedUrl = requestedUrl
-        if (options.onRequestStart) {
-          const result = options.onRequestStart()
-          if (result !== undefined) {
-            void Promise.resolve(result).catch(() => undefined)
-            throw new RequestError("Document request start callback must not return a value", {
-              method: "GET",
-            })
-          }
-          if (!this.owns(active)) return false
-        }
         beginDocumentNavigation(this.session)
         this.session.recentRequestIds.add(requestId)
         return this.owns(active)
