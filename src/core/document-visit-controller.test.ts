@@ -243,27 +243,19 @@ describe("Document visit controller", () => {
     let resume: () => void = () => {
       throw new Error("before-fetch-request did not pause")
     }
+    const { clock, controller, pending } = harness({ requestLifecycle: lifecycle })
+    const order: string[] = []
+    controller.subscribe(() => order.push(`state:${controller.state.status}`))
     lifecycle.subscribe("before-fetch-request", (event) => {
+      order.push(`before-fetch-request:${controller.state.status}`)
       event.pause()
       resume = () => event.resume()
+      controller.cancel()
     })
-    const { clock, controller, pending } = harness({ requestLifecycle: lifecycle })
 
     const visit = controller.visit("/paused")
 
-    expect(controller.state).toEqual({
-      busy: true,
-      previewVisible: false,
-      progressVisible: false,
-      revision: 1,
-      status: "started",
-    })
-    expect(clock.timers).toHaveLength(1)
-    expect(clock.timers[0]?.delayMs).toBe(DOCUMENT_VISIT_PROGRESS_DELAY_MS)
-    expect(pending).toHaveLength(0)
-
-    controller.cancel()
-
+    expect(order).toEqual(["state:started", "before-fetch-request:started", "state:canceled"])
     expect(controller.state).toEqual({
       busy: false,
       previewVisible: false,
@@ -271,7 +263,8 @@ describe("Document visit controller", () => {
       revision: 2,
       status: "canceled",
     })
-    expect(clock.timers[0]?.cleared).toBe(true)
+    expect(clock.timers).toHaveLength(0)
+    expect(pending).toHaveLength(0)
     expect(await visit).toMatchObject({ status: "canceled" })
     expect(pending).toHaveLength(0)
     resume()
@@ -3286,7 +3279,7 @@ describe("Document visit controller", () => {
   })
 
   test("installs request ownership before a started subscriber cancels", async () => {
-    const { clock, controller, pending, session } = harness()
+    const { clock, controller, pending, requestIdCount, session } = harness()
     let unsubscribe: () => void = () => undefined
     unsubscribe = controller.subscribe(() => {
       if (controller.state.status !== "started") return
@@ -3296,15 +3289,10 @@ describe("Document visit controller", () => {
 
     const visit = controller.visit("/canceled-by-subscriber")
 
-    expect(pending).toHaveLength(1)
-    expect(pending[0]?.request.signal?.aborted).toBe(true)
-    expect(clock.timers[0]?.cleared).toBe(true)
+    expect(requestIdCount()).toBe(1)
+    expect(pending).toHaveLength(0)
+    expect(clock.timers).toHaveLength(0)
     expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
-    pending[0]?.resolve(
-      response('<Gallery><Late id="late" /></Gallery>', {
-        url: "https://example.test/canceled-by-subscriber",
-      }),
-    )
     expect(await visit).toMatchObject({ status: "canceled" })
     expect(session.tree.getElementById("late")).toBeUndefined()
   })
@@ -3321,19 +3309,13 @@ describe("Document visit controller", () => {
 
     const older = controller.visit("/older")
 
-    expect(pending).toHaveLength(2)
-    expect(pending[0]?.request.url).toBe("https://example.test/older")
-    expect(pending[0]?.request.signal?.aborted).toBe(true)
-    expect(pending[1]?.request.url).toBe("https://example.test/newer-from-subscriber")
-    expect(pending[1]?.request.signal?.aborted).toBe(false)
-    expect(clock.timers[0]?.cleared).toBe(true)
-    pending[0]?.resolve(
-      response('<Gallery><Older id="older" /></Gallery>', {
-        url: "https://example.test/older",
-      }),
-    )
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/newer-from-subscriber")
+    expect(pending[0]?.request.signal?.aborted).toBe(false)
+    expect(clock.timers).toHaveLength(1)
+    expect(clock.timers[0]?.cleared).toBe(false)
     expect(await older).toMatchObject({ status: "canceled" })
-    pending[1]?.resolve(
+    pending[0]?.resolve(
       response('<Gallery><Newer id="newer" /></Gallery>', {
         url: "https://example.test/newer-from-subscriber",
       }),
