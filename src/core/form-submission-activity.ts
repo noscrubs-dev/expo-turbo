@@ -11,6 +11,7 @@ export type FormSubmissionUnappliedReason =
   | "superseded"
   | "unvisitable-extension"
   | "visit-prevented"
+  | "visit-control-reload"
 
 export interface FormSubmissionActivitySnapshot {
   readonly busy: boolean
@@ -78,7 +79,7 @@ export type FormSubmissionTerminalSnapshot =
     >
   | Readonly<
       FormSubmissionTerminalBase & {
-        readonly classification: "success"
+        readonly classification: FormResponseClassification
         readonly reason: FormSubmissionUnappliedReason
         readonly responseStatus: number
         readonly status: "unapplied"
@@ -124,7 +125,7 @@ export type FormSubmissionTerminalReportInput =
       readonly status: "canceled"
     }>
   | Readonly<{
-      readonly classification: "success"
+      readonly classification: FormResponseClassification
       readonly effectiveMethod: FormSubmissionMethod
       readonly reason: FormSubmissionUnappliedReason
       readonly requestId: string

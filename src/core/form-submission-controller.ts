@@ -14,7 +14,7 @@ import type {
   DocumentHistoryEntry,
   DocumentHistoryProposal,
 } from "./document-history"
-import { documentCachePolicy } from "./document-metadata"
+import { documentCachePolicy, documentVisitControl } from "./document-metadata"
 import {
   beginDocumentNavigation,
   currentDocumentNavigationEpoch,
@@ -91,6 +91,7 @@ import {
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
+  executeFrameVisitControlReload,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   type FrameLifecycle,
   type FrameMissingEvent,
@@ -102,7 +103,7 @@ import {
   dispatchPreparedFrameResponseStreams,
   type PreparedFrameResponse,
   prepareFrameMutation,
-  prepareFrameResponse,
+  prepareFrameResponseTree,
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
@@ -191,6 +192,15 @@ export type FormSubmissionReport =
         destination: DocumentSubmissionDestination
         reason: FormSubmissionUnappliedReason
         status: "unapplied"
+      }
+    >
+  | Readonly<
+      FormSubmissionResponseMetadata & {
+        action: "advance"
+        applicationDestination: FrameSubmissionDestination
+        destination: FrameSubmissionDestination
+        reason: "visit-control-reload"
+        status: "promoted"
       }
     >
   | Readonly<
@@ -725,6 +735,13 @@ export class FormSubmissionController {
       }
 
       let missingEvent: FrameMissingEvent | undefined
+      let visitControlReload:
+        | Readonly<{
+            body: string
+            frameId: string
+            response: Readonly<{ redirected: boolean; status: number; url: string }>
+          }>
+        | undefined
       let application: FormSubmissionReport
       try {
         if (!this.isCurrent(activeLease, proposal)) {
@@ -762,21 +779,18 @@ export class FormSubmissionController {
         let preparedFrame: PreparedFrameResponse | undefined
         let pendingMissingError: FrameMissingError | undefined
         let pendingMissingEvent: FrameMissingEvent | undefined
+        let pendingVisitControlReload: typeof visitControlReload
         if (response.status === "xml" && proposal.destination.kind === "frame") {
           const frameId =
             response.classification === "success"
               ? proposal.destination.frameId
               : (identity.originFrameId ?? proposal.destination.frameId)
-          try {
-            preparedFrame = prepareFrameResponse(frameId, response.body, {
-              ...(this.options.limits ? { limits: this.options.limits } : {}),
-              url: response.url,
-            })
-          } catch (error) {
-            const lifecycle = this.options.frameLifecycle
-            if (!(error instanceof FrameMissingError) || !lifecycle) throw error
-            pendingMissingError = error
-            pendingMissingEvent = createFrameMissingEvent({
+          const document = parseExpoTurboDocument(response.body, {
+            ...(this.options.limits ? { limits: this.options.limits } : {}),
+            url: response.url,
+          })
+          if (documentVisitControl(document) === "reload") {
+            pendingVisitControlReload = Object.freeze({
               body: response.body,
               frameId,
               response: {
@@ -785,10 +799,27 @@ export class FormSubmissionController {
                 url: response.url,
               },
             })
+          } else {
+            try {
+              preparedFrame = prepareFrameResponseTree(frameId, document)
+            } catch (error) {
+              const lifecycle = this.options.frameLifecycle
+              if (!(error instanceof FrameMissingError) || !lifecycle) throw error
+              pendingMissingError = error
+              pendingMissingEvent = createFrameMissingEvent({
+                body: response.body,
+                frameId,
+                response: {
+                  redirected: response.redirected,
+                  status: response.responseStatus,
+                  url: response.url,
+                },
+              })
+            }
           }
         }
         if (
-          (preparedFrame || pendingMissingEvent) &&
+          (preparedFrame || pendingMissingEvent || pendingVisitControlReload) &&
           response.classification !== "success" &&
           proposal.destination.kind === "frame" &&
           identity.originFrame &&
@@ -806,6 +837,45 @@ export class FormSubmissionController {
           if (!this.isCurrent(activeLease, proposal)) {
             return settle(this.canceled(response, proposal.destination))
           }
+        }
+        if (pendingVisitControlReload) {
+          if (!this.isCurrent(activeLease, proposal)) {
+            return settle(this.canceled(response, proposal.destination))
+          }
+          if (
+            frameHistoryPlan &&
+            response.classification === "success" &&
+            proposal.destination.kind === "frame"
+          ) {
+            const destinationFrame = identity.destinationFrame
+            if (
+              !destinationFrame ||
+              !frameFormHistoryPlanCurrent(
+                frameHistoryPlan,
+                this.session,
+                destinationFrame,
+                plan.request.url,
+              )
+            ) {
+              return settle(this.canceled(response, proposal.destination))
+            }
+          }
+          const activeFrame =
+            pendingVisitControlReload.frameId === identity.originFrameId
+              ? identity.originFrame
+              : identity.destinationFrame
+          if (!activeFrame) {
+            throw new StateError("Form submission proposal has no exact promotion Frame", {
+              frameId: pendingVisitControlReload.frameId,
+            })
+          }
+          if (response.redirected || response.classification === "success") {
+            this.session.setAttribute(activeFrame.key, "src", response.url)
+            if (!this.isCurrent(activeLease, proposal)) {
+              return settle(this.canceled(response, proposal.destination))
+            }
+          }
+          visitControlReload = pendingVisitControlReload
         }
         if (pendingMissingEvent) {
           const lifecycle = this.options.frameLifecycle
@@ -848,25 +918,31 @@ export class FormSubmissionController {
           }
           missingEvent = pendingMissingEvent
         }
-        application = missingEvent
-          ? settle(this.prevented(response, proposal.destination))
-          : settle(
-              await this.apply(
-                response,
-                proposal,
-                identity,
-                activeLease,
-                preparedFrame,
-                historyPlan,
-                frameHistoryPlan,
-              ),
-            )
+        application = visitControlReload
+          ? this.promoted(response, proposal.destination, visitControlReload.frameId)
+          : missingEvent
+            ? settle(this.prevented(response, proposal.destination))
+            : settle(
+                await this.apply(
+                  response,
+                  proposal,
+                  identity,
+                  activeLease,
+                  preparedFrame,
+                  historyPlan,
+                  frameHistoryPlan,
+                ),
+              )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
         this.ownership.release(activeLease)
       }
       if (missingEvent && this.options.frameLifecycle) {
         await executeFrameMissingVisit(this.options.frameLifecycle, missingEvent)
+      }
+      if (visitControlReload) {
+        await executeFrameVisitControlReload(this.options.frameLifecycle, visitControlReload)
+        return settle(application)
       }
       return application
     } catch (error) {
@@ -969,7 +1045,7 @@ export class FormSubmissionController {
         status: "canceled",
       })
     }
-    if (report.status === "unapplied") {
+    if (report.status === "unapplied" || report.status === "promoted") {
       return Object.freeze({
         classification: report.classification,
         effectiveMethod: report.effectiveMethod,
@@ -1463,6 +1539,25 @@ export class FormSubmissionController {
       destination,
       reason,
       status: "unapplied",
+    })
+  }
+
+  private promoted(
+    candidate: FormResponseCandidate,
+    destination: FormSubmissionDestination,
+    frameId: string,
+  ): FormSubmissionReport {
+    if (destination.kind !== "frame") {
+      throw new StateError("Frame visit-control promotion requires a Frame destination")
+    }
+    return Object.freeze({
+      ...responseMetadata(candidate),
+      action: "advance",
+      applicationDestination:
+        frameId === destination.frameId ? destination : Object.freeze({ frameId, kind: "frame" }),
+      destination,
+      reason: "visit-control-reload",
+      status: "promoted",
     })
   }
 

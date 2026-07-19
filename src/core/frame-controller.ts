@@ -30,6 +30,7 @@ export type FrameControllerStatus =
   | "idle"
   | "loading"
   | "prevented"
+  | "promoted"
 
 interface PendingFrameAutofocus {
   readonly report: FrameResponseReport
@@ -299,11 +300,15 @@ export class FrameController {
     const loaded = request.then(
       async (report) => {
         if (epoch !== this.loadEpoch) return report
-        if (report.frame && this.connected) {
+        if (report.status !== "promoted" && report.frame && this.connected) {
           stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
         }
         this.status = report.status
-        if (report.status === "completed" || report.status === "empty") {
+        if (
+          report.status === "completed" ||
+          report.status === "empty" ||
+          report.status === "promoted"
+        ) {
           this.hasBeenLoaded = true
           this.needsLoad = false
         } else {
@@ -478,6 +483,7 @@ export class FrameController {
         busy: this.status === "loading",
         complete: this.status !== "loading",
         connected: this.connected,
+        hasBeenLoaded: this.hasBeenLoaded,
         revision: this.revision,
         status: this.status,
       })

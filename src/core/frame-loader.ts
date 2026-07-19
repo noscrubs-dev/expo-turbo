@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import { documentVisitControl } from "./document-metadata"
 import {
   ContentTypeError,
   ExpoTurboError,
@@ -27,6 +28,7 @@ import {
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
+  executeFrameVisitControlReload,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   type FrameLifecycle,
   type FrameMissingEvent,
@@ -60,17 +62,30 @@ import { attributeValue, type ProtocolElement } from "./tree"
 
 export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 
-export type FrameLoadStatus = "canceled" | "completed" | "empty" | "prevented"
+export type FrameLoadStatus = "canceled" | "completed" | "empty" | "prevented" | "promoted"
 
-export interface FrameLoadReport {
-  readonly frame?: FrameResponseReport
+interface FrameLoadReportBase {
   readonly frameId: string
   readonly requestId: string
   readonly requestIds: readonly string[]
   readonly responseStatus?: number
-  readonly status: FrameLoadStatus
   readonly url: string
 }
+
+export type FrameLoadReport =
+  | Readonly<
+      FrameLoadReportBase & {
+        readonly reason: "visit-control-reload"
+        readonly status: "promoted"
+      }
+    >
+  | Readonly<
+      FrameLoadReportBase & {
+        readonly frame?: FrameResponseReport
+        readonly reason?: never
+        readonly status: Exclude<FrameLoadStatus, "promoted">
+      }
+    >
 
 export interface FrameTreeCommitCandidate {
   readonly frameId: string
@@ -133,6 +148,16 @@ interface BufferedMissingFrameResponse {
   readonly redirected: boolean
   readonly status: number
   readonly url: string
+}
+
+interface BufferedFrameVisitControlReload {
+  readonly body: string
+  readonly report: FrameLoadReport
+  readonly response: Readonly<{
+    redirected: boolean
+    status: number
+    url: string
+  }>
 }
 
 type FrameMissingDispatchOutcome =
@@ -305,6 +330,7 @@ export class FrameRequestLoader {
     }
     const historyPlan = loadOptions[FRAME_HISTORY_PLAN_OPTION]
     let handledMissing: Readonly<{ event: FrameMissingEvent; report: FrameLoadReport }> | undefined
+    let promoted: BufferedFrameVisitControlReload | undefined
 
     try {
       let requestFrameId = frameId
@@ -514,6 +540,43 @@ export class FrameRequestLoader {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
         const document = parseExpoTurboDocument(xml, { url: finalUrl })
+        if (documentVisitControl(document) === "reload") {
+          if (
+            recurseDepth === 0 &&
+            !historyPlan &&
+            (responseRedirected || (response.status >= 200 && response.status < 300))
+          ) {
+            this.session.setAttribute(frame.key, "src", finalUrl)
+            if (!this.owns(frameId, active)) {
+              return this.canceled(frameId, requestIds, finalUrl, active)
+            }
+          }
+          const requestId = requestIds[0]
+          if (!requestId) {
+            throw new StateError("Frame visit-control promotion requires a recorded request", {
+              frameId,
+            })
+          }
+          promoted = Object.freeze({
+            body: xml,
+            report: Object.freeze({
+              frameId,
+              reason: "visit-control-reload",
+              requestId,
+              requestIds: Object.freeze([...requestIds]),
+              responseStatus: response.status,
+              status: "promoted",
+              url: finalUrl,
+            }),
+            response: Object.freeze({
+              redirected: response.redirected || finalUrl !== requestUrl,
+              status: response.status,
+              url: finalUrl,
+            }),
+          })
+          this.release(frameId, active)
+          break
+        }
         if (recurseDepth === 0) {
           primaryMissingResponse = Object.freeze({
             body: xml,
@@ -690,6 +753,15 @@ export class FrameRequestLoader {
       }
       this.release(frameId, active)
       throw error
+    }
+
+    if (promoted) {
+      await executeFrameVisitControlReload(this.frameLifecycle, {
+        body: promoted.body,
+        frameId,
+        response: promoted.response,
+      })
+      return promoted.report
     }
 
     if (!handledMissing || !this.frameLifecycle) {

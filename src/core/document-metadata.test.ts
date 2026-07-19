@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { documentCachePolicy } from "./document-metadata"
+import { documentCachePolicy, documentVisitControl } from "./document-metadata"
 import { parseExpoTurboDocument } from "./parser"
 
 function policy(xml: string) {
@@ -33,3 +33,24 @@ describe("document cache metadata", () => {
     }
   })
 })
+
+describe("document visit-control metadata", () => {
+  test("admits only exact reload on the sole XML root", () => {
+    expect(visitControl('<Gallery data-turbo-visit-control="reload" />')).toBe("reload")
+
+    for (const xml of [
+      "<Gallery />",
+      '<Gallery data-turbo-visit-control="" />',
+      '<Gallery data-turbo-visit-control="replace" />',
+      '<Gallery data-turbo-visit-control="RELOAD" />',
+      '<Gallery data-turbo-visit-control=" reload " />',
+      '<Gallery><Nested data-turbo-visit-control="reload" /></Gallery>',
+    ]) {
+      expect(visitControl(xml)).toBeUndefined()
+    }
+  })
+})
+
+function visitControl(xml: string) {
+  return documentVisitControl(parseExpoTurboDocument(xml, { url: "https://example.test/document" }))
+}
