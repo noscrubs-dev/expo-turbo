@@ -1,0 +1,20 @@
+import { attributeValue, isElement, type ProtocolNode, type ProtocolParentNode } from "./tree"
+
+export function applicationAutofocusCandidates(root: ProtocolParentNode): readonly string[] {
+  const candidates: string[] = []
+  const visit = (node: ProtocolNode) => {
+    if (
+      !isElement(node) ||
+      node.kind === "stream" ||
+      node.kind === "stream-source" ||
+      node.kind === "template"
+    ) {
+      return
+    }
+    const id = node.kind === "element" ? attributeValue(node, "id") : undefined
+    if (id && attributeValue(node, "autofocus") !== undefined) candidates.push(node.key)
+    for (const child of node.children) visit(child)
+  }
+  for (const child of root.children) visit(child)
+  return Object.freeze(candidates)
+}

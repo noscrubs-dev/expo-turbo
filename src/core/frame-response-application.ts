@@ -1,3 +1,4 @@
+import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
 import { FrameMissingError, StateError, TargetError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import type { DocumentSession } from "./session"
@@ -69,32 +70,13 @@ function embeddedStreams(frame: ProtocolElement): ProtocolElement[] {
   return streams
 }
 
-function autofocusCandidates(frame: ProtocolElement): readonly string[] {
-  const candidates: string[] = []
-  const visit = (node: ProtocolNode) => {
-    if (
-      !isElement(node) ||
-      node.kind === "stream" ||
-      node.kind === "stream-source" ||
-      node.kind === "template"
-    ) {
-      return
-    }
-    const id = node.kind === "element" ? attributeValue(node, "id") : undefined
-    if (id && attributeValue(node, "autofocus") !== undefined) candidates.push(node.key)
-    for (const child of node.children) visit(child)
-  }
-  for (const child of frame.children) visit(child)
-  return Object.freeze(candidates)
-}
-
 export function activeFrameAutofocusCandidates(
   session: DocumentSession,
   frame: ProtocolElement,
 ): readonly string[] {
   const frameId = attributeValue(frame, "id")
   if (!frameId || session.tree.getElementById(frameId) !== frame) return Object.freeze([])
-  return autofocusCandidates(frame)
+  return applicationAutofocusCandidates(frame)
 }
 
 export function prepareFrameResponse(

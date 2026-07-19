@@ -1,4 +1,5 @@
 import { destinationCommitActive } from "./destination-request-ownership"
+import { prepareDocumentAutofocus, stageDocumentAutofocus } from "./document-autofocus-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
@@ -50,8 +51,10 @@ export class DocumentSession {
     tree: DocumentTree,
     private readonly options: DocumentSessionOptions = {},
   ) {
+    const autofocus = prepareDocumentAutofocus(tree, this.currentTreeGeneration)
     this.currentTree = tree
     this.guardTree(tree)
+    stageDocumentAutofocus(this, autofocus)
   }
 
   get revision(): number {
@@ -98,9 +101,12 @@ export class DocumentSession {
 
   replaceTree(tree: DocumentTree): void {
     this.assertMutationAllowed()
+    const generation = this.currentTreeGeneration + 1
+    const autofocus = prepareDocumentAutofocus(tree, generation)
     this.currentTree = tree
     this.guardTree(tree)
-    this.currentTreeGeneration += 1
+    this.currentTreeGeneration = generation
+    stageDocumentAutofocus(this, autofocus)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()

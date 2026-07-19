@@ -27,6 +27,7 @@ import {
   resolveComponentStyle,
   type StyleAdapter,
 } from "../adapters/styles"
+import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
 import type {
   DocumentVisitController,
   DocumentVisitDelegation,
@@ -75,6 +76,7 @@ import type {
 import {
   attributeValue,
   isElement,
+  type ProtocolDocument,
   type ProtocolElement,
   type ProtocolNode,
   renderedTextValue,
@@ -967,6 +969,8 @@ interface ErrorBoundaryState {
   readonly revision: number | string
 }
 
+const alreadyReportedRenderErrors = new WeakSet<Error>()
+
 class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null, revision: this.props.revision }
 
@@ -982,6 +986,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
   }
 
   componentDidCatch(error: Error): void {
+    if (alreadyReportedRenderErrors.has(error)) return
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
   }
 
@@ -1075,18 +1080,20 @@ function consumeUnexpectedAdapterResult(result: unknown): void {
 function focusFirstAvailableCandidate(
   adapter: AutofocusAdapter,
   candidates: readonly string[],
-  frameId: string,
+  scope: "Document" | "Frame",
+  frameId?: string,
 ): void {
+  const context = frameId ? { frameId } : {}
   for (const candidate of candidates) {
     let available: unknown
     try {
       available = adapter.canFocus(candidate)
     } catch {
-      throw new StateError("Frame autofocus availability check failed", { frameId })
+      throw new StateError(`${scope} autofocus availability check failed`, context)
     }
     if (typeof available !== "boolean") {
       consumeUnexpectedAdapterResult(available)
-      throw new StateError("Frame autofocus availability check failed", { frameId })
+      throw new StateError(`${scope} autofocus availability check failed`, context)
     }
     if (!available) continue
 
@@ -1094,13 +1101,39 @@ function focusFirstAvailableCandidate(
     try {
       result = adapter.focus(candidate)
     } catch {
-      throw new StateError("Frame autofocus failed", { frameId })
+      throw new StateError(`${scope} autofocus failed`, context)
     }
     if (result !== undefined) {
       consumeUnexpectedAdapterResult(result)
-      throw new StateError("Frame autofocus failed", { frameId })
+      throw new StateError(`${scope} autofocus failed`, context)
     }
     return
+  }
+}
+
+function applyAutofocus(
+  adapter: AutofocusAdapter,
+  candidates: readonly string[],
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+  scope: "Document" | "Frame",
+  frameId?: string,
+): void {
+  try {
+    focusFirstAvailableCandidate(adapter, candidates, scope, frameId)
+  } catch (error) {
+    const reported = error instanceof Error ? error : new StateError(`${scope} autofocus failed`)
+    if (!onError) throw reported
+    try {
+      onError({ error: reported, nodeKey })
+    } catch {
+      const reportingError = new StateError(
+        `${scope} autofocus error reporting failed`,
+        frameId ? { frameId } : {},
+      )
+      alreadyReportedRenderErrors.add(reportingError)
+      throw reportingError
+    }
   }
 }
 
@@ -1129,19 +1162,14 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   useLayoutEffect(() => {
     const candidates = consumeFrameAutofocus(controller, state.revision)
     if (!candidates || !props.autofocus) return
-    try {
-      focusFirstAvailableCandidate(props.autofocus, candidates, props.frameId)
-    } catch (error) {
-      const reported = error instanceof Error ? error : new StateError("Frame autofocus failed")
-      if (!props.onError) throw reported
-      try {
-        props.onError({ error: reported, nodeKey: props.node.key })
-      } catch {
-        throw new StateError("Frame autofocus error reporting failed", {
-          frameId: props.frameId,
-        })
-      }
-    }
+    applyAutofocus(
+      props.autofocus,
+      candidates,
+      props.node.key,
+      props.onError,
+      "Frame",
+      props.frameId,
+    )
   }, [controller, props.autofocus, props.frameId, props.node.key, props.onError, state.revision])
   const children = useMemo(
     () => createElement(Fragment, null, renderChildren(props.node.children)),
@@ -1169,6 +1197,22 @@ interface ConnectedDocumentProps {
   readonly nodeKey: string
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+}
+
+interface DocumentAutofocusBoundaryProps {
+  readonly children?: ReactNode
+  readonly document: ProtocolDocument
+  readonly generation: number
+}
+
+function DocumentAutofocusBoundary(props: DocumentAutofocusBoundaryProps): ReactNode {
+  const { autofocus, onError, session } = useRenderer()
+  useLayoutEffect(() => {
+    const candidates = consumeDocumentAutofocus(session, props.document, props.generation)
+    if (!candidates || !autofocus) return
+    applyAutofocus(autofocus, candidates, props.document.key, onError, "Document")
+  }, [autofocus, onError, props.document, props.generation, session])
+  return props.children
 }
 
 function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
@@ -1283,16 +1327,34 @@ export function ExpoTurboRoot(): ReactNode {
   const root = useProtocolNode(session.tree.document.key)
   if (root?.node.kind !== "document") return null
   const children = createElement(Fragment, null, renderChildren(root.node.children))
-  if (!context.documentController) return children
+  const rendered = context.documentController
+    ? createElement(
+        ConnectedDocument,
+        {
+          controller: context.documentController,
+          documentComponent: context.documentComponent,
+          nodeKey: root.node.key,
+          onError: context.onError,
+          renderError: context.renderError,
+        },
+        children,
+      )
+    : children
   return createElement(
-    ConnectedDocument,
+    NodeErrorBoundary,
     {
-      controller: context.documentController,
-      documentComponent: context.documentComponent,
       nodeKey: root.node.key,
       onError: context.onError,
       renderError: context.renderError,
+      revision: root.revision,
     },
-    children,
+    createElement(
+      DocumentAutofocusBoundary,
+      {
+        document: root.node,
+        generation: session.treeGeneration,
+      },
+      rendered,
+    ),
   )
 }
