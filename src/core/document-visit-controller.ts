@@ -914,9 +914,10 @@ export class DocumentVisitController {
         epoch = ++this.visitEpoch
         this.progressVisible = false
         this.status = "started"
+        this.publish()
       },
     })
-    if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, true)
+    if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
