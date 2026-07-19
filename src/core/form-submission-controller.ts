@@ -53,6 +53,18 @@ import type {
   FormSubmissionUnappliedReason,
 } from "./form-submission-activity"
 import {
+  createFormSubmissionHandle,
+  FORM_SUBMISSION_LIFECYCLE_END_DISPATCH,
+  FORM_SUBMISSION_LIFECYCLE_START_DISPATCH,
+  type FormSubmissionEndOutcome,
+  type FormSubmissionHandle,
+  type FormSubmissionLifecycle,
+  finishFormSubmissionHandle,
+  formSubmissionLifecycleOption,
+  SubmitEndEvent,
+  SubmitStartEvent,
+} from "./form-submission-lifecycle"
+import {
   assertActiveFormSubmissionProposal,
   type FormSubmissionProposal,
   type FormSubmissionProposalIdentity,
@@ -229,6 +241,7 @@ export interface FormSubmissionControllerOptions extends StreamActionDispatchOpt
   readonly navigation?: NavigationAdapter
   readonly requestLifecycle?: RequestLifecycle
   readonly snapshotCache?: DocumentSnapshotCache
+  readonly submissionLifecycle?: FormSubmissionLifecycle
   readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
@@ -346,6 +359,7 @@ export class FormSubmissionController {
     options: FormSubmissionControllerOptions = {},
   ) {
     const requestLifecycle = requestLifecycleOption(options, "Form submission controller")
+    const submissionLifecycle = formSubmissionLifecycleOption(options, "Form submission controller")
     const visitLifecycle = documentVisitLifecycleOption(options, "Form submission controller")
     const navigation = options.navigation
     this.options = Object.freeze({
@@ -359,6 +373,7 @@ export class FormSubmissionController {
       ...(options.refresh ? { refresh: options.refresh } : {}),
       ...(requestLifecycle ? { requestLifecycle } : {}),
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
+      ...(submissionLifecycle ? { submissionLifecycle } : {}),
       ...(visitLifecycle ? { visitLifecycle } : {}),
     })
     this.ownership = destinationRequestOwnership(session)
@@ -434,6 +449,19 @@ export class FormSubmissionController {
     if (!activityLease) return this.canceledPlan(plan, proposal.destination)
     const submissionActivity = identity.submissionActivity
     let fetchInvoked = false
+    let lifecycleHandle: FormSubmissionHandle | undefined
+    let requestFinished = false
+    const finishRequest = (outcome?: FormSubmissionEndOutcome): void => {
+      if (requestFinished) return
+      requestFinished = true
+      submissionActivity.finish(activityLease)
+      if (!lifecycleHandle || !this.options.submissionLifecycle) return
+
+      finishFormSubmissionHandle(lifecycleHandle)
+      this.options.submissionLifecycle[FORM_SUBMISSION_LIFECYCLE_END_DISPATCH](
+        new SubmitEndEvent(lifecycleHandle, outcome),
+      )
+    }
     const settle = (report: FormSubmissionReport): FormSubmissionReport => {
       submissionActivity.settleReport(activityLease, this.terminalReport(report))
       return report
@@ -515,7 +543,11 @@ export class FormSubmissionController {
         if (error instanceof ExpoTurboError) throw error
         throw new RequestError("Form submission history changed before transport")
       }
-      let response: FormRequestExecutionReport
+      let response: FormRequestExecutionReport | undefined
+      let admittedTransportResponse:
+        | Readonly<{ redirected: boolean; responseStatus: number }>
+        | undefined
+      let transportFailure: unknown
       try {
         response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
           beforeRequest: (request) => {
@@ -531,12 +563,6 @@ export class FormSubmissionController {
             if (proposal.destination.kind === "frame" && identity.visitAction) {
               frameHistoryPlan = this.prepareFrameHistory(identity, request.url)
             }
-            if (
-              !identity.submissionActivity.start(activityLease) ||
-              !this.isCurrent(activeLease, proposal)
-            ) {
-              return false
-            }
             if (historyPlan) this.assertDocumentHistory(historyPlan)
             if (frameHistoryPlan) this.assertFrameHistory(frameHistoryPlan, identity, request.url)
             if (historyPlan) {
@@ -545,11 +571,43 @@ export class FormSubmissionController {
             } else if (proposal.destination.kind === "document") {
               beginDocumentNavigation(this.session)
             }
+            if (!this.isCurrent(activeLease, proposal)) return false
+            if (
+              !identity.submissionActivity.start(activityLease) ||
+              !this.isCurrent(activeLease, proposal)
+            ) {
+              return false
+            }
+            if (historyPlan) this.assertDocumentHistory(historyPlan)
+            if (frameHistoryPlan) this.assertFrameHistory(frameHistoryPlan, identity, request.url)
+            if (!this.isCurrent(activeLease, proposal)) return false
+            if (this.options.submissionLifecycle) {
+              lifecycleHandle = createFormSubmissionHandle({
+                controller,
+                destination: proposal.destination,
+                formNodeKey: identity.form.key,
+                requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+                stop: () => {
+                  controller.signal.removeEventListener("abort", activityLease.abortListener)
+                  controller.abort()
+                },
+                ...(identity.submitter ? { submitterNodeKey: identity.submitter.key } : {}),
+              })
+              this.options.submissionLifecycle[FORM_SUBMISSION_LIFECYCLE_START_DISPATCH](
+                new SubmitStartEvent(lifecycleHandle),
+              )
+            }
+            if (!this.isCurrent(activeLease, proposal)) return false
             fetchInvoked = true
             this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
             return this.isCurrent(activeLease, proposal)
           },
           beforeResponseBody: (admittedResponse) => {
+            admittedTransportResponse = Object.freeze({
+              redirected: admittedResponse.redirected,
+              responseStatus: admittedResponse.responseStatus,
+            })
+            finishRequest(this.submissionLifecycleOutcome(undefined, admittedTransportResponse))
             if (proposal.destination.kind !== "frame" || !this.isCurrent(activeLease, proposal)) {
               return undefined
             }
@@ -613,11 +671,23 @@ export class FormSubmissionController {
               }
             : {}),
         })
+      } catch (error) {
+        transportFailure = error
+        throw error
       } finally {
-        // Turbo clears form/submitter presentation before applying the response.
-        // Exact activity ownership keeps an older finalizer from clearing newer work.
-        identity.submissionActivity.finish(activityLease)
+        // A received response finishes the request before body buffering; this
+        // fallback settles only prevented responses, pre-response failure, or abort.
+        finishRequest(
+          this.submissionLifecycleOutcome(
+            response,
+            admittedTransportResponse,
+            plan,
+            controller.signal.aborted,
+            transportFailure,
+          ),
+        )
       }
+      if (!response) throw new StateError("Form submission transport produced no result")
       if (response.status === "canceled") {
         return settle(this.canceled(response, proposal.destination))
       }
@@ -725,6 +795,34 @@ export class FormSubmissionController {
       }
       throw reported
     }
+  }
+
+  private submissionLifecycleOutcome(
+    response: FormRequestExecutionReport | undefined,
+    admittedResponse: Readonly<{ redirected: boolean; responseStatus: number }> | undefined,
+    plan?: FormRequestPlan,
+    aborted = false,
+    failure?: unknown,
+  ): FormSubmissionEndOutcome | undefined {
+    const transportResponse =
+      admittedResponse ?? (response?.status !== "canceled" ? response : undefined)
+    if (transportResponse) {
+      return Object.freeze({
+        fetchResponse: Object.freeze({
+          redirected: transportResponse.redirected,
+          status: transportResponse.responseStatus,
+        }),
+        success: transportResponse.responseStatus >= 200 && transportResponse.responseStatus < 300,
+      })
+    }
+    if (failure && requestLifecycleDefaultHandlingPrevented(failure)) return undefined
+    if (response?.status === "canceled" || (!response && aborted)) return undefined
+    return Object.freeze({
+      error: new RequestError("Form submission request failed", {
+        ...(plan ? { method: plan.request.method } : {}),
+      }),
+      success: false,
+    })
   }
 
   private terminalFailure(

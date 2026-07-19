@@ -219,6 +219,86 @@ function routeTree(
 }
 
 describe("demo app runtime ownership", () => {
+  test("shares one submit lifecycle through the rendered native form", async () => {
+    const runtime = createDemoRuntime();
+    const events: string[] = [];
+    let resolveEnd: () => void = () => undefined;
+    const ended = new Promise<void>((resolve) => {
+      resolveEnd = resolve;
+    });
+    const unsubscribeStart = runtime.submissionLifecycle.subscribe("submit-start", (event) => {
+      events.push(`${event.type}:${event.detail.formSubmission.requestId}`);
+    });
+    const unsubscribeEnd = runtime.submissionLifecycle.subscribe("submit-end", (event) => {
+      const outcome =
+        "fetchResponse" in event.detail
+          ? "response"
+          : "error" in event.detail
+            ? "error"
+            : "canceled";
+      events.push(`${event.type}:${outcome}`);
+      resolveEnd();
+    });
+    const originalConfirm = globalThis.confirm;
+    globalThis.confirm = () => true;
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(
+            DemoRuntimeProvider,
+            { runtime },
+            createElement(ExpoTurboRoot),
+          ),
+          {
+            createNodeMock(element) {
+              if (element.type === "text-input") return { blur() {}, focus() {} };
+              if (element.type === "view") {
+                return {
+                  measureInWindow(
+                    listener: (x: number, y: number, width: number, height: number) => void,
+                  ) {
+                    listener(0, 0, 320, 40);
+                  },
+                };
+              }
+              return {};
+            },
+          },
+        );
+        await Promise.resolve();
+      });
+      if (!renderer) throw new Error("renderer was not created");
+      const submitter = renderer.root
+        .findAll((node) => String(node.type) === "pressable")
+        .find((pressable) =>
+          pressable.findAll(
+            (node) =>
+              String(node.type) === "native-text" &&
+              node.children.includes("Confirm and submit immutable request"),
+          ).length > 0,
+        );
+      if (!submitter) throw new Error("native form submitter was not rendered");
+
+      await act(async () => {
+        submitter.props.onPress();
+        await ended;
+      });
+
+      expect(events).toEqual(["submit-start:demo-form-1", "submit-end:response"]);
+      expect(runtime.forms.controlsFor("id:native-form").submissionState.busy).toBeFalse();
+    } finally {
+      unsubscribeStart();
+      unsubscribeEnd();
+      globalThis.confirm = originalConfirm;
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+    }
+  });
+
   test("focuses real initial-document and replacement-Frame inputs once in order", async () => {
     const runtime = createDemoRuntime();
     const nativeFocuses: string[] = [];
