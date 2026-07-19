@@ -36,6 +36,13 @@ export class BeforeVisitEvent extends CancellableEvent<"before-visit", Readonly<
   }
 }
 
+export class BeforeCacheEvent extends NotificationEvent<"before-cache", undefined> {
+  constructor() {
+    super("before-cache", undefined)
+    Object.freeze(this)
+  }
+}
+
 export class VisitEvent extends NotificationEvent<
   "visit",
   Readonly<{ action: VisitAction; url: string }>
@@ -45,9 +52,14 @@ export class VisitEvent extends NotificationEvent<
   }
 }
 
-export type DocumentVisitLifecycleEvent = BeforeVisitEvent | LinkClickEvent | VisitEvent
+export type DocumentVisitLifecycleEvent =
+  | BeforeCacheEvent
+  | BeforeVisitEvent
+  | LinkClickEvent
+  | VisitEvent
 
 export interface DocumentVisitLifecycleEventMap {
+  readonly "before-cache": BeforeCacheEvent
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
   readonly visit: VisitEvent
@@ -66,6 +78,9 @@ type DocumentVisitObserver = (error: AggregateError) => undefined
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.before-cache-dispatch",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.click-dispatch",
 )
@@ -75,8 +90,8 @@ export const DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH = Symbol(
 
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
- * Click and before-visit listeners may cancel admission; visit listeners are
- * notification observers.
+ * Click and before-visit listeners may cancel admission; visit and before-cache
+ * listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -93,7 +108,12 @@ export class DocumentVisitLifecycle {
     type: Type,
     listener: DocumentVisitLifecycleListener<Type>,
   ): () => void {
-    if (type !== "before-visit" && type !== "click" && type !== "visit") {
+    if (
+      type !== "before-cache" &&
+      type !== "before-visit" &&
+      type !== "click" &&
+      type !== "visit"
+    ) {
       throw new StateError("Document visit lifecycle event type is invalid")
     }
     if (typeof listener !== "function") {
@@ -145,20 +165,35 @@ export class DocumentVisitLifecycle {
     return event
   }
 
+  [DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](event: BeforeCacheEvent): void {
+    this.dispatchNotification("before-cache", event, "Before-cache listener failed")
+  }
+
   [DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](event: VisitEvent): void {
+    this.dispatchNotification("visit", event, "Visit listener failed")
+  }
+
+  private dispatchNotification(
+    type: "before-cache" | "visit",
+    event: BeforeCacheEvent | VisitEvent,
+    listenerFailure: string,
+  ): void {
     const errors: StateError[] = []
-    for (const listener of [...(this.listeners.get("visit") ?? [])]) {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
       let result: unknown
       try {
         result = listener(event)
       } catch {
-        errors.push(new StateError("Visit listener failed"))
+        errors.push(new StateError(listenerFailure))
         continue
       }
       try {
-        rejectListenerResult(result, "Visit listener must return undefined")
+        rejectListenerResult(
+          result,
+          `${type === "visit" ? "Visit" : "Before-cache"} listener must return undefined`,
+        )
       } catch {
-        errors.push(new StateError("Visit listener failed"))
+        errors.push(new StateError(listenerFailure))
       }
     }
     if (errors.length === 0) return

@@ -14,13 +14,16 @@ import type {
   DocumentHistoryEntry,
   DocumentHistoryProposal,
 } from "./document-history"
+import { documentCachePolicy } from "./document-metadata"
 import {
   beginDocumentNavigation,
   currentDocumentNavigationEpoch,
 } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
+  BeforeCacheEvent,
   BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   type DocumentVisitLifecycle,
@@ -1164,6 +1167,19 @@ export class FormSubmissionController {
     if (historyProposal && !this.isCurrent(lease, proposal)) {
       return this.canceled(candidate, destination)
     }
+    let beforeCacheDispatched = false
+    if (
+      snapshotCache &&
+      this.options.visitLifecycle &&
+      documentCachePolicy(this.session.tree).cacheable
+    ) {
+      this.options.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](
+        new BeforeCacheEvent(),
+      )
+      beforeCacheDispatched = true
+      if (!this.ownership.owns(lease)) return this.canceled(candidate, destination)
+      if (historyPlan) this.assertDocumentHistory(historyPlan)
+    }
     const revision = this.session.revision
     let historyCommitted = false
     try {
@@ -1178,7 +1194,10 @@ export class FormSubmissionController {
           }
         })
         if (!acquired) return this.canceled(candidate, destination)
-        if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+        const current = beforeCacheDispatched
+          ? this.ownership.owns(lease)
+          : this.isCurrent(lease, proposal)
+        if (!current) return this.canceled(candidate, destination)
       }
       try {
         this.session.replaceTree(tree)

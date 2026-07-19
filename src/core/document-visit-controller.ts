@@ -13,10 +13,13 @@ import {
   type DocumentLoadReport,
   type DocumentRequestLoader,
   DocumentSnapshotPreviewCommitError,
+  type DocumentSnapshotPreviewOptions,
   DocumentSnapshotRestoreCommitError,
+  type DocumentSnapshotRestoreOptions,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
 import {
+  DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
 } from "./document-loader-lifecycle-internal"
@@ -24,7 +27,9 @@ import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { registerDocumentVisitControllerLifecycle } from "./document-visit-controller-internal"
 import {
   admitDocumentVisitLifecycle,
+  BeforeCacheEvent,
   BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   type DocumentVisitLifecycle,
@@ -163,6 +168,11 @@ interface DocumentPreviewContinuation {
   readonly historyEntry?: DocumentHistoryEntry
   readonly url: string
 }
+
+type DocumentSnapshotRestoreLifecycleOptions = DocumentSnapshotRestoreOptions &
+  Readonly<{ [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined }>
+type DocumentSnapshotPreviewLifecycleOptions = DocumentSnapshotPreviewOptions &
+  Readonly<{ [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined }>
 
 export class DocumentVisitController {
   private attemptEpoch = 0
@@ -410,6 +420,9 @@ export class DocumentVisitController {
       let epoch: number | undefined
       try {
         const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
+          ...(this.visitLifecycle
+            ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
+            : {}),
           beforeClaim: () => {
             this.assertDocumentClaimSerial(documentClaimSerial)
             this.assertTreeGeneration(treeGeneration)
@@ -441,7 +454,7 @@ export class DocumentVisitController {
             this.publish()
             this.notifyVisit(restoredEntry.url, "restore", epoch)
           },
-        })
+        } as DocumentSnapshotRestoreLifecycleOptions)
         if (report.status !== "miss") {
           this.reconcileTraversal(restoredEntry)
           if (epoch !== undefined && epoch === this.visitEpoch) {
@@ -566,6 +579,9 @@ export class DocumentVisitController {
     let report: ReturnType<DocumentRequestLoader["previewSnapshot"]> | undefined
     try {
       report = this.loader.previewSnapshot(cache, source, this.requestOwner, {
+        ...(this.visitLifecycle
+          ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
+          : {}),
         beforeClaim: () => {
           this.assertAttemptEpoch(attemptEpoch)
           this.assertDocumentClaimSerial(documentClaimSerial)
@@ -598,7 +614,7 @@ export class DocumentVisitController {
           this.notifyVisit(source, action, epoch)
           return undefined
         },
-      })
+      } as DocumentSnapshotPreviewLifecycleOptions)
     } catch (error) {
       const reported =
         error instanceof Error ? error : new StateError("Document snapshot preview failed")
@@ -759,6 +775,9 @@ export class DocumentVisitController {
     let epoch: number | undefined
     try {
       const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
+        ...(this.visitLifecycle
+          ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
+          : {}),
         beforeClaim: () => {
           this.assertAttemptEpoch(attemptEpoch)
           this.assertRestoreEpoch(restoreEpoch)
@@ -785,7 +804,7 @@ export class DocumentVisitController {
           this.notifyVisit(source, "restore", epoch)
           return undefined
         },
-      })
+      } as DocumentSnapshotRestoreLifecycleOptions)
       if (report.status === "miss") {
         this.assertRestoreEpoch(restoreEpoch)
         this.assertDocumentClaimSerial(documentClaimSerial)
@@ -846,6 +865,9 @@ export class DocumentVisitController {
     let redirectDelegation: RequestOperationResult<DocumentVisitDelegation> | undefined
     let redirectFollowupUrl: string | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
+      ...(snapshotCache && this.visitLifecycle
+        ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
+        : {}),
       ...((historyGuard?.kind === "traversal" ||
         historyPlan ||
         attemptEpoch !== undefined ||
@@ -1180,6 +1202,11 @@ export class DocumentVisitController {
       status: "canceled",
       url,
     })
+  }
+
+  private notifyBeforeCache(): undefined {
+    this.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent())
+    return undefined
   }
 
   private notifyVisit(url: string, action: VisitAction, epoch: number): void {
