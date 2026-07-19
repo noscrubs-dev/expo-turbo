@@ -21,6 +21,7 @@ import {
   TargetError,
 } from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
+import { FormSubmissionLifecycle } from "./form-submission-lifecycle"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
 import { consumeFrameAutofocus } from "./frame-autofocus-internal"
@@ -226,6 +227,363 @@ describe("FormSubmissionController", () => {
           { requestLifecycle: null } as never,
         ),
     ).toThrow(PropsError)
+  })
+
+  test("snapshots the form submission lifecycle and brackets transport before application", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const submitter = controls.register("id:document-submitter", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    const requestLifecycle = new RequestLifecycle()
+    const submissionLifecycle = new FormSubmissionLifecycle()
+    const order: string[] = []
+    let reads = 0
+    requestLifecycle.subscribe("before-fetch-request", () => {
+      order.push("before-fetch-request")
+    })
+    requestLifecycle.subscribe("before-fetch-response", () => {
+      order.push("before-fetch-response")
+    })
+    submissionLifecycle.subscribe("submit-start", (event) => {
+      order.push("submit-start")
+      expect(controls.submissionState).toMatchObject({ busy: true, status: "submitting" })
+      expect(controls.controlSubmissionState("id:document-submitter")).toMatchObject({
+        pending: true,
+        submitsWith: "Submitting…",
+      })
+      expect(event.detail.formSubmission).toMatchObject({
+        destination: { kind: "document" },
+        formNodeKey: "id:document-form",
+        requestId: "submission-lifecycle",
+        state: "waiting",
+        submitterNodeKey: "id:document-submitter",
+      })
+      expect("body" in event.detail.formSubmission).toBe(false)
+      expect("headers" in event.detail.formSubmission).toBe(false)
+      expect("url" in event.detail.formSubmission).toBe(false)
+    })
+    submissionLifecycle.subscribe("submit-end", (event) => {
+      order.push("submit-end")
+      expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+      expect(controls.controlSubmissionState("id:document-submitter").pending).toBe(false)
+      expect(controls.submissionTerminalState.status).toBe("none")
+      expect(event.detail.formSubmission.state).toBe("stopped")
+      expect(event.detail).toMatchObject({
+        fetchResponse: { redirected: false, status: 200 },
+        formSubmission: event.detail.formSubmission,
+        success: true,
+      })
+      expect(session.tree.getElementById("submission-applied")).toBeUndefined()
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => {
+          order.push("fetch")
+          return response(request, '<Gallery><Result id="submission-applied" /></Gallery>')
+        },
+      },
+      {
+        requestLifecycle,
+        get submissionLifecycle() {
+          reads += 1
+          return submissionLifecycle
+        },
+      },
+    )
+
+    expect(
+      await controller.submit((signal) =>
+        controls.submissionProposal({
+          protocol: { requestId: "submission-lifecycle" },
+          signal,
+          submitter: submitter.selection,
+        }),
+      ),
+    ).toMatchObject({ application: "document", status: "applied" })
+    order.push("applied")
+
+    expect(reads).toBe(1)
+    expect(order).toEqual([
+      "before-fetch-request",
+      "submit-start",
+      "fetch",
+      "before-fetch-response",
+      "submit-end",
+      "applied",
+    ])
+    expect(session.tree.getElementById("submission-applied")).toBeDefined()
+    expect(
+      () =>
+        new FormSubmissionController(
+          fixture(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { submissionLifecycle: null } as never,
+        ),
+    ).toThrow(PropsError)
+  })
+
+  test("lets a submit-start observer stop the exact attempt while later observers and submit-end run", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const lifecycle = new FormSubmissionLifecycle()
+    const order: string[] = []
+    let fetches = 0
+    lifecycle.subscribe("submit-start", (event) => {
+      order.push("stop")
+      expect(event.detail.formSubmission.stop()).toBe(true)
+    })
+    lifecycle.subscribe("submit-start", (event) => {
+      order.push("later-start")
+      expect(event.detail.formSubmission.signal.aborted).toBe(true)
+      expect(event.detail.formSubmission.state).toBe("stopping")
+      expect(controls.submissionState).toMatchObject({ busy: true, status: "submitting" })
+    })
+    lifecycle.subscribe("submit-end", (event) => {
+      order.push("submit-end")
+      expect(event.detail.formSubmission.state).toBe("stopped")
+      expect(event.detail).toEqual({ formSubmission: event.detail.formSubmission })
+      expect(event.detail.formSubmission.stop()).toBeUndefined()
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => {
+          fetches += 1
+          return response(request, "", { status: 204 })
+        },
+      },
+      { submissionLifecycle: lifecycle },
+    )
+
+    expect(await controller.submit(proposal(controls, "stopped-at-start"))).toMatchObject({
+      status: "canceled",
+    })
+    expect({ fetches, order }).toEqual({
+      fetches: 0,
+      order: ["stop", "later-start", "submit-end"],
+    })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+  })
+
+  test("keeps a reentrant submit-start supersession authoritative through the older end", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const transport = pendingFetch()
+    const lifecycle = new FormSubmissionLifecycle()
+    const events: string[] = []
+    let controller!: FormSubmissionController
+    let second: Promise<unknown> | undefined
+    lifecycle.subscribe("submit-start", (event) => {
+      const requestId = event.detail.formSubmission.requestId
+      events.push(`start:${requestId}:${controls.submissionState.requestId}`)
+      if (requestId === "reentrant-first") {
+        second = controller.submit(proposal(controls, "reentrant-second"), {
+          duplicateBehavior: "supersede",
+        })
+      }
+    })
+    lifecycle.subscribe("submit-end", (event) => {
+      const outcome =
+        "fetchResponse" in event.detail
+          ? "response"
+          : "error" in event.detail
+            ? "error"
+            : "canceled"
+      events.push(
+        `end:${event.detail.formSubmission.requestId}:${outcome}:${
+          controls.submissionState.requestId ?? "idle"
+        }`,
+      )
+    })
+    controller = new FormSubmissionController(session, transport.adapter, {
+      submissionLifecycle: lifecycle,
+    })
+
+    const first = controller.submit(proposal(controls, "reentrant-first"))
+    expect(await first).toMatchObject({ requestId: "reentrant-first", status: "canceled" })
+    expect(transport.pending).toHaveLength(1)
+    expect(transport.pending[0]?.request.headers["X-Turbo-Request-Id"]).toBe("reentrant-second")
+    expect(controls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "reentrant-second",
+      status: "submitting",
+    })
+
+    const pending = transport.pending[0]
+    if (!pending || !second) throw new Error("reentrant replacement did not start")
+    pending.response.resolve(response(pending.request, "", { status: 204 }))
+    expect(await second).toMatchObject({ requestId: "reentrant-second", status: "empty" })
+    expect(events).toEqual([
+      "start:reentrant-first:reentrant-first",
+      "start:reentrant-second:reentrant-second",
+      "end:reentrant-first:canceled:reentrant-second",
+      "end:reentrant-second:response:idle",
+    ])
+  })
+
+  test("emits no submit notifications before transport actually starts", async () => {
+    const lifecycle = new FormSubmissionLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("submit-start", () => {
+      events.push("start")
+    })
+    lifecycle.subscribe("submit-end", () => {
+      events.push("end")
+    })
+
+    const deniedSession = fixture()
+    deniedSession.setAttribute("id:document-form", "data-turbo-confirm", "Private prompt")
+    const denied = new FormSubmissionController(
+      deniedSession,
+      { fetch: async () => Promise.reject(new Error("must not fetch")) },
+      { confirmation: { confirm: () => false }, submissionLifecycle: lifecycle },
+    )
+    expect(
+      await denied.submit(proposal(registry(deniedSession, "document-form"), "denied")),
+    ).toMatchObject({ status: "canceled" })
+
+    const preventedSession = fixture()
+    const requestLifecycle = new RequestLifecycle()
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
+      event.preventDefault()
+    })
+    const prevented = new FormSubmissionController(
+      preventedSession,
+      { fetch: async () => Promise.reject(new Error("must not fetch")) },
+      { requestLifecycle, submissionLifecycle: lifecycle },
+    )
+    expect(
+      await prevented.submit(
+        proposal(registry(preventedSession, "document-form"), "pre-request-prevented"),
+      ),
+    ).toMatchObject({ status: "canceled" })
+
+    expect(events).toEqual([])
+  })
+
+  test("reports received errors as transport responses and network failures as redacted errors", async () => {
+    const responseSession = fixture()
+    const responseEvents: unknown[] = []
+    const responseLifecycle = new FormSubmissionLifecycle()
+    responseLifecycle.subscribe("submit-end", (event) => {
+      responseEvents.push(event.detail)
+      expect(responseSession.tree.getElementById("validation-error")).toBeUndefined()
+    })
+    const responseController = new FormSubmissionController(
+      responseSession,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Error id="validation-error" /></Gallery>', {
+            status: 422,
+          }),
+      },
+      { submissionLifecycle: responseLifecycle },
+    )
+    expect(
+      await responseController.submit(
+        proposal(registry(responseSession, "document-form"), "response-error"),
+      ),
+    ).toMatchObject({ application: "document", classification: "client-error", status: "applied" })
+    expect(responseEvents).toHaveLength(1)
+    expect(responseEvents[0]).toMatchObject({
+      fetchResponse: { redirected: false, status: 422 },
+      success: false,
+    })
+    expect(responseSession.tree.getElementById("validation-error")).toBeDefined()
+
+    const failureSession = fixture()
+    const failureEvents: unknown[] = []
+    const failureLifecycle = new FormSubmissionLifecycle()
+    failureLifecycle.subscribe("submit-end", (event) => {
+      failureEvents.push(event.detail)
+    })
+    const failureController = new FormSubmissionController(
+      failureSession,
+      { fetch: async () => Promise.reject(new Error("secret field value")) },
+      { submissionLifecycle: failureLifecycle },
+    )
+    await expect(
+      failureController.submit(
+        proposal(registry(failureSession, "document-form"), "network-error"),
+      ),
+    ).rejects.toBeInstanceOf(RequestError)
+    expect(failureEvents).toHaveLength(1)
+    const failure = failureEvents[0] as {
+      error: RequestError
+      success: boolean
+    }
+    expect(failure).toMatchObject({ success: false })
+    expect(failure.error).toBeInstanceOf(RequestError)
+    expect(failure.error.cause).toBeUndefined()
+    expect(JSON.stringify(failure)).not.toContain("secret")
+  })
+
+  test("ends at response admission before body buffering and never downgrades that response", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const body = deferred<string>()
+    const lifecycle = new FormSubmissionLifecycle()
+    const ends: Array<Readonly<{ requestId: string; responseStatus?: number }>> = []
+    const firstEnded = deferred<void>()
+    let fetches = 0
+    lifecycle.subscribe("submit-end", (event) => {
+      ends.push(
+        Object.freeze({
+          requestId: event.detail.formSubmission.requestId,
+          ...("fetchResponse" in event.detail
+            ? { responseStatus: event.detail.fetchResponse.status }
+            : {}),
+        }),
+      )
+      if (event.detail.formSubmission.requestId === "slow-body") firstEnded.resolve()
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => {
+          fetches += 1
+          if (fetches === 1) return response(request, "", { text: () => body.promise })
+          return response(request, "", { status: 204 })
+        },
+      },
+      { submissionLifecycle: lifecycle },
+    )
+
+    let firstSettled = false
+    const first = controller.submit(proposal(controls, "slow-body"))
+    void first.then(
+      () => {
+        firstSettled = true
+      },
+      () => {
+        firstSettled = true
+      },
+    )
+    await firstEnded.promise
+
+    expect(firstSettled).toBe(false)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(session.tree.getElementById("slow-body-applied")).toBeUndefined()
+    expect(ends).toEqual([{ requestId: "slow-body", responseStatus: 200 }])
+
+    expect(
+      await controller.submit(proposal(controls, "newer-after-response"), {
+        duplicateBehavior: "supersede",
+      }),
+    ).toMatchObject({ requestId: "newer-after-response", status: "empty" })
+    expect(await first).toMatchObject({ requestId: "slow-body", status: "canceled" })
+    body.resolve('<Gallery><Late id="slow-body-applied" /></Gallery>')
+    await Promise.resolve()
+
+    expect(ends).toEqual([
+      { requestId: "slow-body", responseStatus: 200 },
+      { requestId: "newer-after-response", responseStatus: 204 },
+    ])
+    expect(session.tree.getElementById("slow-body-applied")).toBeUndefined()
   })
 
   test("snapshots and validates the document visit lifecycle option", async () => {
@@ -892,8 +1250,13 @@ describe("FormSubmissionController", () => {
     const cache = populatedSnapshotCache(session)
     const controls = registry(session, "document-form")
     const lifecycle = new RequestLifecycle()
+    const submissionLifecycle = new FormSubmissionLifecycle()
+    let submitEnd: unknown
     let reads = 0
     lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
+    submissionLifecycle.subscribe("submit-end", (event) => {
+      submitEnd = event.detail
+    })
     const controller = new FormSubmissionController(
       session,
       {
@@ -905,7 +1268,11 @@ describe("FormSubmissionController", () => {
             },
           }),
       },
-      { requestLifecycle: lifecycle, snapshotCache: cache },
+      {
+        requestLifecycle: lifecycle,
+        snapshotCache: cache,
+        submissionLifecycle,
+      },
     )
 
     expect(await controller.submit(proposal(controls, "prevented-unsafe"))).toMatchObject({
@@ -919,6 +1286,10 @@ describe("FormSubmissionController", () => {
     expect(controls.submissionTerminalState).toMatchObject({
       requestId: "prevented-unsafe",
       status: "canceled",
+    })
+    expect(submitEnd).toMatchObject({
+      fetchResponse: { redirected: false, status: 200 },
+      success: true,
     })
     expect(session.tree.getElementById("status")?.children).toHaveLength(0)
   })
@@ -1378,7 +1749,12 @@ describe("FormSubmissionController", () => {
     const session = fixture()
     const controls = registry(session, "document-form")
     const lifecycle = new RequestLifecycle()
+    const submissionLifecycle = new FormSubmissionLifecycle()
+    let submitEnd: unknown
     lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    submissionLifecycle.subscribe("submit-end", (event) => {
+      submitEnd = event.detail
+    })
     const controller = new FormSubmissionController(
       session,
       {
@@ -1386,7 +1762,7 @@ describe("FormSubmissionController", () => {
           throw new Error("secret transport failure")
         },
       },
-      { requestLifecycle: lifecycle },
+      { requestLifecycle: lifecycle, submissionLifecycle },
     )
 
     await expect(controller.submit(proposal(controls, "suppressed-fetch-error"))).rejects.toThrow(
@@ -1394,6 +1770,9 @@ describe("FormSubmissionController", () => {
     )
     expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
     expect(controls.submissionTerminalState).toMatchObject({ status: "none" })
+    expect(submitEnd).toEqual({
+      formSubmission: (submitEnd as { formSubmission: unknown }).formSubmission,
+    })
   })
 
   test("redacts response payload identifiers from terminal parse failures", async () => {
@@ -3615,6 +3994,8 @@ describe("FormSubmissionController", () => {
       const session = fixture()
       const history = historyFixture(session)
       const controls = registry(session, "document-form")
+      const lifecycle = new FormSubmissionLifecycle()
+      const lifecycleEvents: string[] = []
       let drifted = false
       let fetches = 0
       const adapter = {
@@ -3630,13 +4011,21 @@ describe("FormSubmissionController", () => {
           history.history.proposeAdvance("https://example.test/activity-drift"),
         )
       })
+      lifecycle.subscribe("submit-start", () => {
+        lifecycleEvents.push("start")
+      })
+      lifecycle.subscribe("submit-end", () => {
+        lifecycleEvents.push("end")
+      })
 
       await expect(
-        new FormSubmissionController(session, adapter, { history: history.history }).submit(
-          proposal(controls, "activity-history-drift"),
-        ),
+        new FormSubmissionController(session, adapter, {
+          history: history.history,
+          submissionLifecycle: lifecycle,
+        }).submit(proposal(controls, "activity-history-drift")),
       ).rejects.toThrow(/history or the active document changed/)
       expect(fetches).toBe(0)
+      expect(lifecycleEvents).toEqual([])
       expect(controls.submissionState.busy).toBe(false)
 
       const loader = new DocumentRequestLoader(session, adapter, requestIds("history-reuse"))

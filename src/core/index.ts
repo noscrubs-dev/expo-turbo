@@ -34,6 +34,19 @@ export type {
   FormSubmitterActivitySnapshot,
 } from "./form-submission-activity"
 export * from "./form-submission-controller"
+export {
+  type FormSubmissionFetchResponse,
+  type FormSubmissionHandle,
+  FormSubmissionLifecycle,
+  type FormSubmissionLifecycleEvent,
+  type FormSubmissionLifecycleEventMap,
+  type FormSubmissionLifecycleOptions,
+  type FormSubmissionState,
+  type SubmitEndEvent,
+  type SubmitEndEventDetail,
+  type SubmitStartEvent,
+  type SubmitStartEventDetail,
+} from "./form-submission-lifecycle"
 export type { FormSubmissionProposal } from "./form-submission-proposal"
 export * from "./forms"
 export * from "./frame-controller"

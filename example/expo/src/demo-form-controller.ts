@@ -6,6 +6,7 @@ import {
   type DocumentVisitLifecycle,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
+  type FormSubmissionLifecycle,
   type FrameControllerRegistry,
 } from "expo-turbo/core";
 import { Alert, Platform } from "react-native";
@@ -19,6 +20,7 @@ export function createDemoFormController(
   snapshotCache: DocumentSnapshotCache,
   navigation: NavigationAdapter,
   visitLifecycle: DocumentVisitLifecycle,
+  submissionLifecycle: FormSubmissionLifecycle,
 ): FormSubmissionController {
   let failedOnce = false;
   return new FormSubmissionController(
@@ -69,6 +71,7 @@ export function createDemoFormController(
       navigation,
       refresh,
       snapshotCache,
+      submissionLifecycle,
       visitLifecycle,
     },
   );

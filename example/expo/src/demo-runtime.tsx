@@ -4,6 +4,7 @@ import {
   DocumentFormControls,
   DocumentRefreshController,
   DocumentSession,
+  FormSubmissionLifecycle,
   FormLinkSubmissionController,
   parseExpoTurboDocument,
   subscribeDocumentHistoryTraversal,
@@ -52,6 +53,7 @@ export interface DemoRuntime {
   readonly navigation: DemoRouterHistoryBridge;
   readonly refresh: DocumentRefreshController;
   readonly session: DocumentSession;
+  readonly submissionLifecycle: FormSubmissionLifecycle;
   readonly visibility: DemoVisibilityRegistry;
   dispose(): void;
 }
@@ -88,6 +90,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   const actionRuntime = createDemoActionRuntime();
   const focus = new DemoFocusRegistry();
   const visibility = new DemoVisibilityRegistry();
+  const submissionLifecycle = new FormSubmissionLifecycle();
   const frames = createDemoFrameControllers(
     session,
     navigation,
@@ -105,6 +108,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     documentRuntime.snapshotCache,
     navigation,
     documentRuntime.visitLifecycle,
+    submissionLifecycle,
   );
   const forms = new DocumentFormControls(session, {
     focus,
@@ -136,6 +140,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     navigation,
     refresh,
     session,
+    submissionLifecycle,
     visibility,
     dispose(): void {
       if (disposed) return;
