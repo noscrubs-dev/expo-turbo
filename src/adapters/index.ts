@@ -96,6 +96,11 @@ export interface FocusAdapter {
   getFocusedId(): string | undefined
 }
 
+export interface AutofocusAdapter {
+  canFocus(id: string): boolean
+  focus(id: string): void
+}
+
 export type ScrollAlignment = "start" | "center" | "end" | "nearest"
 
 export interface ScrollAdapter {
@@ -133,6 +138,7 @@ export interface RestorationIdentifierAdapter {
 }
 
 export interface ExpoTurboAdapters<TStyle = unknown> {
+  readonly autofocus?: AutofocusAdapter
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
   readonly confirmation?: FormConfirmationAdapter

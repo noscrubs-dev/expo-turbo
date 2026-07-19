@@ -39,6 +39,7 @@ import {
   type FormSubmissionProposal,
   type FormSubmissionProposalIdentity,
 } from "./form-submission-proposal"
+import { notifyMountedFrameAutofocus, recordFrameAutofocusReport } from "./frame-autofocus-internal"
 import type { FrameControllerRegistry } from "./frame-controller-registry"
 import {
   admitFrameFormHistoryResponse,
@@ -52,6 +53,7 @@ import {
 } from "./frame-history"
 import { resolveMountedFrameHistory } from "./frame-history-internal"
 import {
+  activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   type PreparedFrameResponse,
@@ -823,11 +825,19 @@ export class FormSubmissionController {
             shouldContinue: () => this.ownership.retains(lease),
           },
         )
-        const frame: FrameResponseReport = Object.freeze({
-          ...(finalUrl ? { finalUrl } : {}),
-          frameId,
-          streams,
-        })
+        const frame: FrameResponseReport = recordFrameAutofocusReport(
+          Object.freeze({
+            ...(finalUrl ? { finalUrl } : {}),
+            frameId,
+            streams,
+          }),
+          this.session,
+          activeFrame,
+          activeFrameAutofocusCandidates(this.session, activeFrame),
+        )
+        if (this.ownership.retains(lease) && this.options.frameControllers) {
+          notifyMountedFrameAutofocus(this.options.frameControllers, frame)
+        }
         return Object.freeze({
           ...metadata,
           application: "frame",

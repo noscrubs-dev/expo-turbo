@@ -15,6 +15,7 @@ import { FrameMissingError, ParseError, RequestError, StateError } from "./error
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
+import { consumeFrameAutofocus } from "./frame-autofocus-internal"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator } from "./frame-history"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
@@ -2946,6 +2947,55 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("publishes final-tree autofocus intent to an exact mounted Frame after form replacement", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    session.removeAttribute("id:frame-a", "src")
+    const frameControllers = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async () => Promise.reject(new Error("Frame form response must not issue a GET")),
+        },
+        requestIds("autofocus-frame-get"),
+      ),
+    )
+    const mounted = frameControllers.get("frame-a")
+    await mounted.connect()
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            `<turbo-frame id="frame-a">
+               <Field id="removed" autofocus="" />
+               <Field id="first" autofocus="" />
+               <Field id="second" autofocus="false" />
+               <turbo-stream action="remove" target="removed"></turbo-stream>
+             </turbo-frame>`,
+          ),
+      },
+      { frameControllers },
+    )
+
+    const result = await controller.submit(
+      proposal(registry(session, "form-a"), "frame-form-autofocus"),
+    )
+
+    expect(result).toMatchObject({
+      application: "frame",
+      frame: { frameId: "frame-a" },
+      status: "applied",
+    })
+    expect(consumeFrameAutofocus(mounted, mounted.state.revision)).toEqual([
+      "id:first",
+      "id:second",
+    ])
+    expect(session.tree.getElementById("removed")).toBeUndefined()
+  })
+
   test("applies cross-target Frame success to its destination and failures to the origin", async () => {
     {
       const session = fixture()
@@ -3500,9 +3550,15 @@ describe("FormSubmissionController", () => {
 
     {
       const session = fixture()
+      session.removeAttribute("id:frame-a", "src")
       const transport = pendingFetch()
       const loader = new FrameRequestLoader(session, transport.adapter, requestIds("frame-newer"))
-      const controller = new FormSubmissionController(session, transport.adapter)
+      const frameControllers = new FrameControllerRegistry(session, loader)
+      const mounted = frameControllers.get("frame-a")
+      await mounted.connect()
+      const controller = new FormSubmissionController(session, transport.adapter, {
+        frameControllers,
+      })
       let loading: ReturnType<FrameRequestLoader["load"]> | undefined
       session.subscribe("id:frame-a", () => {
         loading ??= loader.load("frame-a", "/newer-frame")
@@ -3515,16 +3571,19 @@ describe("FormSubmissionController", () => {
         response(
           formRequest.request,
           `<turbo-frame id="frame-a">
-            <FrameResult id="staged-frame-result" />
+            <FrameResult id="staged-frame-result" autofocus="" />
             <turbo-stream action="update" target="frame-b"><template><Stale id="stale-frame-stream" /></template></turbo-stream>
           </turbo-frame>`,
         ),
       )
       expect(await submitting).toMatchObject({
         application: "frame",
-        frame: { streams: { actions: [], interrupted: true } },
+        frame: {
+          streams: { actions: [], interrupted: true },
+        },
         status: "applied",
       })
+      expect(consumeFrameAutofocus(mounted, mounted.state.revision)).toBeUndefined()
       expect(session.tree.getElementById("staged-frame-result")).toBeDefined()
       expect(session.tree.getElementById("stale-frame-stream")).toBeUndefined()
 

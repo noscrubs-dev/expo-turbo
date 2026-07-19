@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { FrameMissingError, TargetError } from "./errors"
+import { activeFrameAutofocusCandidates } from "./frame-response-application"
 import { applyFrameResponse, resolveFormSubmissionDestination, resolveFrameTarget } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -55,6 +56,42 @@ describe("Turbo Frame responses", () => {
     expect(
       document.tree.getElementById("details")?.children.some((child) => child.kind === "stream"),
     ).toBe(false)
+  })
+
+  test("reports ordered stable-id autofocus candidates that survive embedded Streams", () => {
+    const document = session()
+    applyFrameResponse(
+      document,
+      "details",
+      `<turbo-frame id="details" autofocus="">
+         <Field autofocus="" />
+         <Field id="first" autofocus="" />
+         <Group id="group">
+           <Field id="removed" autofocus="false" />
+           <Field id="second" autofocus="false" />
+         </Group>
+         <turbo-frame id="nested" autofocus="">
+           <Field id="nested-field" autofocus="" />
+         </turbo-frame>
+         <template><Field id="deferred" autofocus="" /></template>
+         <turbo-cable-stream-source id="source" autofocus="">
+           <Field id="source-child" autofocus="" />
+         </turbo-cable-stream-source>
+         <turbo-stream action="remove" target="removed"></turbo-stream>
+         <turbo-stream action="append" target="group">
+           <template><Field id="inserted" autofocus="" /></template>
+         </turbo-stream>
+       </turbo-frame>`,
+    )
+
+    const frame = document.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("fixture lost its active Frame")
+    const candidates = activeFrameAutofocusCandidates(document, frame)
+    expect(candidates).toEqual(["id:first", "id:second", "id:inserted", "id:nested-field"])
+    expect(Object.isFrozen(candidates)).toBe(true)
+    expect(document.tree.getElementById("removed")).toBeUndefined()
+    expect(document.tree.getElementById("deferred")).toBeDefined()
+    expect(document.tree.getElementById("source-child")).toBeDefined()
   })
 
   test("fails without changing the active frame when the response omits it", () => {

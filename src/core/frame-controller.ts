@@ -1,6 +1,10 @@
 import type { Unsubscribe, VisibilityAdapter } from "../adapters"
 import { FrameMissingError, StateError, TargetError } from "./errors"
 import {
+  registerFrameAutofocusController,
+  stageFrameAutofocusReport,
+} from "./frame-autofocus-internal"
+import {
   assertFrameHistoryCommitPlan,
   FRAME_HISTORY_PLAN_OPTION,
   type FrameHistoryAction,
@@ -10,6 +14,7 @@ import {
 } from "./frame-history"
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
 import { FrameCommitError, type FrameLoadReport, type FrameRequestLoader } from "./frame-loader"
+import type { FrameResponseReport } from "./frames"
 import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
 
@@ -21,6 +26,11 @@ export type FrameControllerStatus =
   | "error"
   | "idle"
   | "loading"
+
+interface PendingFrameAutofocus {
+  readonly report: FrameResponseReport
+  stateRevision: number
+}
 
 export interface FrameControllerSnapshot {
   readonly busy: boolean
@@ -60,6 +70,7 @@ export class FrameController {
   private revision = 0
   private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
+  private pendingAutofocus: PendingFrameAutofocus | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
   private visibilityUnsubscribe: Unsubscribe | undefined
 
@@ -92,6 +103,12 @@ export class FrameController {
         this.publish()
       }
       return this.startLoad(source, historyPlan)
+    })
+    registerFrameAutofocusController(this, {
+      consume: (revision) => this.consumeAutofocus(revision),
+      stage: (report, candidates, publish) => {
+        if (this.stageAutofocus(report, candidates) && publish) this.publish()
+      },
     })
   }
 
@@ -126,6 +143,7 @@ export class FrameController {
     if (!this.connected) return
     const revision = this.revision
     this.connected = false
+    this.pendingAutofocus = undefined
     this.stopVisibilityObserver()
     this.cancel()
     if (this.revision === revision) this.publish()
@@ -222,6 +240,14 @@ export class FrameController {
     return () => this.errorListeners.delete(listener)
   }
 
+  private consumeAutofocus(revision: number): FrameResponseReport | undefined {
+    const pending = this.pendingAutofocus
+    if (!this.connected || !pending || pending.stateRevision !== revision) return undefined
+    this.pendingAutofocus = undefined
+    this.publish()
+    return pending.report
+  }
+
   private get frame(): ProtocolElement {
     if (
       !this.session.tree.contains(this.frameNode) ||
@@ -252,6 +278,7 @@ export class FrameController {
     this.assertLoadAdmission()
     const epoch = ++this.loadEpoch
     this.stopVisibilityObserver()
+    this.pendingAutofocus = undefined
     this.needsLoad = false
     this.status = "loading"
     this.publish()
@@ -263,6 +290,9 @@ export class FrameController {
     const loaded = request.then(
       (report) => {
         if (epoch !== this.loadEpoch) return report
+        if (report.frame && this.connected) {
+          stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
+        }
         this.status = report.status
         if (report.status === "completed" || report.status === "empty") {
           this.hasBeenLoaded = true
@@ -377,6 +407,19 @@ export class FrameController {
     this.visibilityUnsubscribe = undefined
   }
 
+  private stageAutofocus(report: FrameResponseReport, candidates: readonly string[]): boolean {
+    if (candidates.length === 0) {
+      const changed = this.pendingAutofocus !== undefined
+      this.pendingAutofocus = undefined
+      return changed
+    }
+    this.pendingAutofocus = {
+      report,
+      stateRevision: this.revision,
+    }
+    return true
+  }
+
   private createSnapshot(): FrameControllerSnapshot {
     const frame = this.session.tree.contains(this.frameNode) ? this.frameNode : undefined
     if (!frame || frame !== this.session.tree.getElementById(this.frameId)) {
@@ -413,6 +456,7 @@ export class FrameController {
 
   private publish(): void {
     this.revision += 1
+    if (this.pendingAutofocus) this.pendingAutofocus.stateRevision = this.revision
     this.snapshot = this.createSnapshot()
     for (const listener of this.listeners) listener()
   }

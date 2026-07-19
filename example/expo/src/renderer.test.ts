@@ -1,11 +1,20 @@
 /// <reference types="bun" />
 
 import { describe, expect, mock, test } from "bun:test"
-import { createElement, Fragment, type ReactNode, StrictMode, useEffect, useState } from "react"
+import {
+  createElement,
+  Fragment,
+  type ReactNode,
+  StrictMode,
+  useEffect,
+  useLayoutEffect,
+  useState,
+} from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 import { z } from "zod"
 
 import {
+  type AutofocusAdapter,
   defineStyleAdapter,
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
@@ -140,6 +149,7 @@ function render(
   session: DocumentSession,
   registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
+    autofocus?: AutofocusAdapter
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     formLinks?: ExpoTurboProviderProps["formLinks"]
@@ -5479,6 +5489,244 @@ describe("React protocol renderer", () => {
     ])
 
     act(() => renderer.unmount())
+  })
+
+  function loadedAutofocusFrame(xml: string) {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/replacement"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          async fetch(request): Promise<TurboResponse> {
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () => xml,
+              url: request.url,
+            }
+          },
+        },
+        { next: () => "frame-autofocus-request" },
+      ),
+    )
+    const controller = frames.get("frame")
+    return { frames, loaded: controller.connect(), session }
+  }
+
+  test("focuses the first mounted stable-id candidate once during StrictMode Frame mount", async () => {
+    const mounted = new Set<string>()
+    const focused: string[] = []
+    const errors: ExpoTurboRenderError[] = []
+    function FocusTarget(props: Readonly<{ focusKey: string; focusable: boolean }>): ReactNode {
+      const nodeKey = `id:${props.focusKey}`
+      useLayoutEffect(() => {
+        if (!props.focusable) return
+        mounted.add(nodeKey)
+        return () => {
+          mounted.delete(nodeKey)
+        }
+      }, [nodeKey, props.focusable])
+      return createElement("focus-target", { nodeKey })
+    }
+    const focusTarget = defineComponent({
+      attributes: {
+        "focus-key": { codec: stringCodec, prop: "focusKey" },
+        focusable: { codec: presenceCodec, prop: "focusable" },
+      },
+      children: "none",
+      component: FocusTarget,
+      schema: z.object({
+        focusKey: z.string(),
+        focusable: z.boolean().default(false),
+      }),
+      tag: "FocusTarget",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [focusTarget],
+        name: "frame-autofocus-component",
+        version: "0.1.0",
+      }),
+    )
+    const { frames, loaded, session } = loadedAutofocusFrame(
+      `<turbo-frame id="frame">
+         <FocusTarget id="unavailable" focus-key="unavailable" autofocus="" />
+         <FocusTarget id="available" focus-key="available" focusable="" autofocus="" />
+         <FocusTarget id="later" focus-key="later" focusable="" autofocus="false" />
+       </turbo-frame>`,
+    )
+    await loaded
+    const autofocus: AutofocusAdapter = {
+      canFocus: (nodeKey) => mounted.has(nodeKey),
+      focus: (nodeKey) => {
+        focused.push(nodeKey)
+      },
+    }
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              autofocus,
+              frames,
+              onError: (event) => errors.push(event),
+              registry,
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    expect(mounted).toEqual(new Set(["id:available", "id:later"]))
+    expect(focused).toEqual(["id:available"])
+    expect(errors).toEqual([])
+
+    act(() => renderer?.unmount())
+  })
+
+  test("consumes missing-adapter and stale same-id autofocus intents without later focus", async () => {
+    {
+      const { frames, loaded, session } = loadedAutofocusFrame(
+        '<turbo-frame id="frame"><DemoText id="candidate" autofocus="">After</DemoText></turbo-frame>',
+      )
+      await loaded
+      const registry = registryWithCounters()
+      const renderer = render(session, registry, { frames })
+
+      const focused: string[] = []
+      act(() => {
+        renderer.update(
+          createElement(
+            ExpoTurboProvider,
+            {
+              autofocus: {
+                canFocus: () => true,
+                focus: (nodeKey) => focused.push(nodeKey),
+              },
+              frames,
+              registry,
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        )
+      })
+      expect(focused).toEqual([])
+      act(() => renderer?.unmount())
+    }
+
+    {
+      const { frames, loaded, session } = loadedAutofocusFrame(
+        '<turbo-frame id="frame"><DemoText id="candidate" autofocus="">After</DemoText></turbo-frame>',
+      )
+      await loaded
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="candidate"><template><DemoText id="candidate">New owner</DemoText></template></turbo-stream>',
+      )
+      const focused: string[] = []
+      const renderer = render(session, registryWithCounters(), {
+        autofocus: {
+          canFocus: () => true,
+          focus: (nodeKey) => focused.push(nodeKey),
+        },
+        frames,
+      })
+      expect(focused).toEqual([])
+      act(() => renderer?.unmount())
+    }
+  })
+
+  test("reports redacted autofocus adapter contract failures after retaining committed children", async () => {
+    const rejectedThenable = {
+      then(_resolve: (value: unknown) => void, reject: (error: Error) => void) {
+        reject(new Error("secret thenable failure"))
+      },
+    }
+    for (const autofocus of [
+      {
+        canFocus: (() => "secret nonboolean result") as unknown as () => boolean,
+        focus: () => undefined,
+      },
+      {
+        canFocus: (() =>
+          Promise.reject(new Error("secret availability failure"))) as unknown as () => boolean,
+        focus: () => undefined,
+      },
+      {
+        canFocus() {
+          throw new Error("secret availability failure")
+        },
+        focus: () => undefined,
+      },
+      {
+        canFocus: () => true,
+        focus() {
+          throw new Error("secret focus failure")
+        },
+      },
+      {
+        canFocus: () => true,
+        focus: (() => "secret nonvoid result") as unknown as () => void,
+      },
+      {
+        canFocus: () => true,
+        focus: (() => Promise.reject(new Error("secret focus failure"))) as () => never,
+      },
+      {
+        canFocus: () => true,
+        focus: (() => rejectedThenable) as unknown as () => void,
+      },
+    ] satisfies AutofocusAdapter[]) {
+      const { frames, loaded, session } = loadedAutofocusFrame(
+        '<turbo-frame id="frame"><DemoText id="candidate" autofocus="">After</DemoText></turbo-frame>',
+      )
+      await loaded
+      const errors: ExpoTurboRenderError[] = []
+      let renderer: ReactTestRenderer | undefined
+      await act(async () => {
+        renderer = create(
+          createElement(
+            StrictMode,
+            null,
+            createElement(
+              ExpoTurboProvider,
+              {
+                autofocus,
+                frames,
+                onError: (event) => errors.push(event),
+                registry: registryWithCounters(),
+                session,
+              },
+              createElement(ExpoTurboRoot),
+            ),
+          ),
+        )
+        await Promise.resolve()
+      })
+      if (!renderer) throw new Error("renderer was not created")
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+      act(() => renderer?.unmount())
+    }
   })
 
   test("exposes Frame GET busy accessibility without remounting stable native boundaries", async () => {

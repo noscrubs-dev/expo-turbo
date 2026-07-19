@@ -150,6 +150,7 @@ export function defineComponentModule<
 }
 
 export interface ProtocolAttributes {
+  readonly autofocus: boolean
   readonly classNames: readonly string[]
   readonly data: Readonly<Record<string, string>>
   readonly direction?: "auto" | "ltr" | "rtl"
@@ -223,6 +224,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
   const id = attributeValue(element, "id")
 
   return Object.freeze({
+    autofocus: attributeValue(element, "autofocus") !== undefined,
     classNames: Object.freeze(classes),
     data: Object.freeze(data),
     ...(direction === "auto" || direction === "ltr" || direction === "rtl" ? { direction } : {}),
@@ -235,6 +237,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
 function isSharedAttribute(name: string): boolean {
   return (
     name === "class" ||
+    name === "autofocus" ||
     name === "dir" ||
     name === "form" ||
     name === "id" ||

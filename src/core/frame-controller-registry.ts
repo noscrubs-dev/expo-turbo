@@ -1,6 +1,10 @@
 import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters"
 import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller"
 import { FrameMissingError, TargetError } from "./errors"
+import {
+  registerMountedFrameAutofocusNotifier,
+  stageFrameAutofocusReport,
+} from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { type FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
 import {
@@ -81,6 +85,11 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     registerMountedFrameHistoryResolver(this, (frameId, frame) => {
       const record = this.controllers.get(frameId)
       return record?.node === frame ? record.history : undefined
+    })
+    registerMountedFrameAutofocusNotifier(this, (report) => {
+      const current = this.controllers.get(report.frameId)
+      if (!current?.controller.state.connected) return false
+      return stageFrameAutofocusReport(current.controller, report, this.session, current.node, true)
     })
   }
 

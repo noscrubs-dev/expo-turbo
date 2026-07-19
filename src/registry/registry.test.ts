@@ -81,7 +81,7 @@ describe("typed component registry", () => {
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
       element(
-        '<DemoCard id="card" class="featured" data-state="ready" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
+        '<DemoCard id="card" autofocus="false" class="featured" data-state="ready" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
       ),
     )
 
@@ -96,6 +96,7 @@ describe("typed component registry", () => {
       tone: "neutral",
     })
     expect(decoded.protocol).toEqual({
+      autofocus: true,
       classNames: ["featured"],
       data: { state: "ready" },
       form: "profile",

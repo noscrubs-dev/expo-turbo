@@ -2,8 +2,15 @@ import { describe, expect, test } from "bun:test"
 
 import type { NavigationAdapter, TurboRequest, TurboResponse, VisitAction } from "../adapters"
 import { FrameMissingError, TargetError } from "./errors"
+import {
+  consumeFrameAutofocus,
+  notifyMountedFrameAutofocus,
+  recordFrameAutofocusReport,
+} from "./frame-autofocus-internal"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
+import { activeFrameAutofocusCandidates } from "./frame-response-application"
+import { applyFrameResponse } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
@@ -70,6 +77,58 @@ function harness(documentUrl = "https://example.test/document"): Harness {
 }
 
 describe("Frame controller registry visits", () => {
+  test("keeps exact connected autofocus valid across unrelated Frame mutations", async () => {
+    const { registry, session } = harness()
+    const controller = registry.get("named")
+    const frame = session.tree.getElementById("named")
+    if (frame?.kind !== "frame") throw new Error("fixture Frame is missing")
+    const report = recordFrameAutofocusReport(
+      applyFrameResponse(
+        session,
+        "named",
+        '<turbo-frame id="named"><Field id="field" autofocus="" /></turbo-frame>',
+      ),
+      session,
+      frame,
+      activeFrameAutofocusCandidates(session, frame),
+    )
+
+    expect(notifyMountedFrameAutofocus(registry, report)).toBe(false)
+    await controller.connect()
+    expect(notifyMountedFrameAutofocus(registry, report)).toBe(true)
+    applyFrameResponse(
+      session,
+      "outer",
+      '<turbo-frame id="outer"><Changed id="unrelated" /></turbo-frame>',
+    )
+    expect(consumeFrameAutofocus(controller, controller.state.revision)).toEqual(["id:field"])
+
+    const stale = recordFrameAutofocusReport(
+      applyFrameResponse(
+        session,
+        "named",
+        '<turbo-frame id="named"><Field id="same" autofocus="" /></turbo-frame>',
+      ),
+      session,
+      frame,
+      activeFrameAutofocusCandidates(session, frame),
+    )
+    applyFrameResponse(
+      session,
+      "named",
+      '<turbo-frame id="named"><Field id="same" /></turbo-frame>',
+    )
+    expect(notifyMountedFrameAutofocus(registry, stale)).toBe(false)
+    expect(consumeFrameAutofocus(controller, controller.state.revision)).toBeUndefined()
+
+    dispatchTurboStreamFragment(
+      session,
+      '<turbo-stream action="replace" target="named"><template><turbo-frame id="named" /></template></turbo-stream>',
+    )
+    expect(controller.state.connected).toBe(false)
+    expect(notifyMountedFrameAutofocus(registry, report)).toBe(false)
+  })
+
   test("uses target resolution and the existing controller loader for named Frame visits", async () => {
     const { registry, requests, session } = harness()
 

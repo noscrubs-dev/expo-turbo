@@ -1,4 +1,4 @@
-import type { FocusAdapter } from "expo-turbo/adapters";
+import type { AutofocusAdapter, FocusAdapter } from "expo-turbo/adapters";
 import {
   createContext,
   type ReactNode,
@@ -13,12 +13,16 @@ export interface DemoFocusHandle {
   focus(): void;
 }
 
-export class DemoFocusRegistry implements FocusAdapter {
+export class DemoFocusRegistry implements AutofocusAdapter, FocusAdapter {
   private disposed = false;
   private focusedId: string | undefined;
   private focusRevision = 0;
   private readonly eventTokens = new Map<string, object>();
   private readonly handles = new Map<string, DemoFocusHandle>();
+  private readonly replayFocus = new Map<
+    string,
+    Readonly<{ eventToken: object; handle: DemoFocusHandle; revision: number }>
+  >();
 
   blur(id: string): void {
     this.assertActive();
@@ -36,6 +40,11 @@ export class DemoFocusRegistry implements FocusAdapter {
     }
   }
 
+  canFocus(id: string): boolean {
+    this.assertActive();
+    return this.handles.has(id);
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -43,6 +52,7 @@ export class DemoFocusRegistry implements FocusAdapter {
     this.focusRevision += 1;
     this.eventTokens.clear();
     this.handles.clear();
+    this.replayFocus.clear();
   }
 
   focus(id: string): void {
@@ -90,8 +100,19 @@ export class DemoFocusRegistry implements FocusAdapter {
       throw new Error("Demo focus registrations require an ID and focusable handle");
     }
     if (this.handles.has(id)) throw new Error(`Demo focus handle ${id} is already registered`);
+    const replay = this.replayFocus.get(id);
+    this.replayFocus.delete(id);
     this.handles.set(id, handle);
     this.eventTokens.set(id, eventToken);
+    if (
+      replay?.handle === handle &&
+      replay.eventToken === eventToken &&
+      replay.revision === this.focusRevision &&
+      this.focusedId === undefined
+    ) {
+      this.focusedId = id;
+      this.focusRevision += 1;
+    }
     return () => {
       if (this.handles.get(id) !== handle) return;
       this.handles.delete(id);
@@ -99,6 +120,15 @@ export class DemoFocusRegistry implements FocusAdapter {
       if (this.focusedId === id) {
         this.focusedId = undefined;
         this.focusRevision += 1;
+        const pending = Object.freeze({
+          eventToken,
+          handle,
+          revision: this.focusRevision,
+        });
+        this.replayFocus.set(id, pending);
+        queueMicrotask(() => {
+          if (this.replayFocus.get(id) === pending) this.replayFocus.delete(id);
+        });
       }
     };
   }

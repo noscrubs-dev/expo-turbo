@@ -10,6 +10,7 @@ import {
   RequestError,
   TargetError,
 } from "./errors"
+import { recordFrameAutofocusReport } from "./frame-autofocus-internal"
 import {
   assertFrameHistoryCommitPlan,
   beginFrameHistoryRequest,
@@ -22,6 +23,7 @@ import {
 } from "./frame-history"
 import { registerFrameCommitProtection } from "./frame-history-internal"
 import {
+  activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   prepareFrameMutation,
@@ -457,7 +459,16 @@ export class FrameRequestLoader {
                 shouldContinue: () => Boolean(active.lease && this.ownership.retains(active.lease)),
               },
             )
-            frameReport = Object.freeze({ finalUrl: responseUrl, frameId, streams })
+            frameReport = recordFrameAutofocusReport(
+              Object.freeze({
+                finalUrl: responseUrl,
+                frameId,
+                streams,
+              }),
+              this.session,
+              frame,
+              activeFrameAutofocusCandidates(this.session, frame),
+            )
           } catch (error) {
             if (this.session.revision !== revision) throw new FrameCommitError(candidate)
             throw error

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
+import { consumeFrameAutofocus } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
@@ -81,6 +82,37 @@ describe("Frame controller", () => {
     expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
       "Loaded",
     )
+  })
+
+  test("publishes each committed autofocus intent once and clears it after consumption", async () => {
+    const { controller, pending } = harness()
+    const loaded = controller.connect()
+    pending[0]?.resolve(
+      response(
+        '<turbo-frame id="details"><Field id="first" autofocus="" /><Field id="second" autofocus="false" /></turbo-frame>',
+      ),
+    )
+
+    expect(await loaded).toMatchObject({
+      frame: { frameId: "details" },
+      status: "completed",
+    })
+    const firstRevision = controller.state.revision
+    expect(consumeFrameAutofocus(controller, firstRevision - 1)).toBeUndefined()
+    const first = consumeFrameAutofocus(controller, firstRevision)
+    expect(first).toEqual(["id:first", "id:second"])
+    expect(Object.isFrozen(first)).toBe(true)
+    expect(consumeFrameAutofocus(controller, controller.state.revision)).toBeUndefined()
+
+    const reloaded = controller.reload()
+    pending[1]?.resolve(
+      response('<turbo-frame id="details"><Field id="latest" autofocus="" /></turbo-frame>'),
+    )
+    await reloaded
+    const latestRevision = controller.state.revision
+    expect(consumeFrameAutofocus(controller, firstRevision)).toBeUndefined()
+    expect(consumeFrameAutofocus(controller, latestRevision)).toEqual(["id:latest"])
+    expect(consumeFrameAutofocus(controller, controller.state.revision)).toBeUndefined()
   })
 
   test("cancels on disable, source replacement, and disconnect without stale state commits", async () => {

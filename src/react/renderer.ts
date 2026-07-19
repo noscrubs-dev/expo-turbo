@@ -15,6 +15,7 @@ import {
 } from "react"
 
 import type {
+  AutofocusAdapter,
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
   FormSubmissionAnnouncementTerminalSnapshot,
@@ -60,6 +61,7 @@ import type {
   SuccessfulFormEntriesOptions,
   SuccessfulFormEntry,
 } from "../core/forms"
+import { consumeFrameAutofocus } from "../core/frame-autofocus-internal"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
 import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
@@ -177,6 +179,7 @@ interface ExpoTurboFormContextValue {
 
 interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
+  readonly autofocus: AutofocusAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
@@ -227,6 +230,7 @@ function linkFrameVisitAction(value: string | undefined): VisitAction | null | u
 
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
+  readonly autofocus?: AutofocusAdapter
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
@@ -268,6 +272,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
+      autofocus: props.autofocus,
       documentComponent: props.documentComponent,
       documentController: props.documentController,
       frameComponent: props.frameComponent,
@@ -286,6 +291,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     }),
     [
       props.actions,
+      props.autofocus,
       props.documentComponent,
       props.documentController,
       props.frameComponent,
@@ -1048,12 +1054,54 @@ function AssociatedRegisteredElementBoundary(
 }
 
 interface ConnectedFrameProps {
+  readonly autofocus: AutofocusAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frameId: string
   readonly frames: FrameControllerCollection
   readonly node: ProtocolElement
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+}
+
+function consumeUnexpectedAdapterResult(result: unknown): void {
+  if ((typeof result !== "object" || result === null) && typeof result !== "function") return
+  try {
+    void Promise.resolve(result).catch(() => undefined)
+  } catch {
+    // The redacted StateError from the caller is the only exposed host failure.
+  }
+}
+
+function focusFirstAvailableCandidate(
+  adapter: AutofocusAdapter,
+  candidates: readonly string[],
+  frameId: string,
+): void {
+  for (const candidate of candidates) {
+    let available: unknown
+    try {
+      available = adapter.canFocus(candidate)
+    } catch {
+      throw new StateError("Frame autofocus availability check failed", { frameId })
+    }
+    if (typeof available !== "boolean") {
+      consumeUnexpectedAdapterResult(available)
+      throw new StateError("Frame autofocus availability check failed", { frameId })
+    }
+    if (!available) continue
+
+    let result: unknown
+    try {
+      result = adapter.focus(candidate)
+    } catch {
+      throw new StateError("Frame autofocus failed", { frameId })
+    }
+    if (result !== undefined) {
+      consumeUnexpectedAdapterResult(result)
+      throw new StateError("Frame autofocus failed", { frameId })
+    }
+    return
+  }
 }
 
 function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
@@ -1078,6 +1126,23 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
       }),
     [controller, props.node.key, props.onError],
   )
+  useLayoutEffect(() => {
+    const candidates = consumeFrameAutofocus(controller, state.revision)
+    if (!candidates || !props.autofocus) return
+    try {
+      focusFirstAvailableCandidate(props.autofocus, candidates, props.frameId)
+    } catch (error) {
+      const reported = error instanceof Error ? error : new StateError("Frame autofocus failed")
+      if (!props.onError) throw reported
+      try {
+        props.onError({ error: reported, nodeKey: props.node.key })
+      } catch {
+        throw new StateError("Frame autofocus error reporting failed", {
+          frameId: props.frameId,
+        })
+      }
+    }
+  }, [controller, props.autofocus, props.frameId, props.node.key, props.onError, state.revision])
   const children = useMemo(
     () => createElement(Fragment, null, renderChildren(props.node.children)),
     [props.node.children],
@@ -1154,6 +1219,7 @@ function ProtocolElementView(
     const rendered =
       context.frames && frameId
         ? createElement(ConnectedFrame, {
+            autofocus: context.autofocus,
             frameComponent: context.frameComponent,
             frameId,
             frames: context.frames,

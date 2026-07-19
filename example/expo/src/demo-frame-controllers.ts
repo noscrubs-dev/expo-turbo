@@ -40,6 +40,9 @@ export function createDemoFrameControllers(
                     <DemoCard title="Frame link loaded">
                       <DemoText>The registered native link reused the Frame controller and replaced only this Frame.</DemoText>
                     </DemoCard>
+                    <DemoForm action="/demo/frame-autofocus">
+                      <DemoFormInput id="frame-autofocus-name" autofocus="" label="Autofocused Frame field" name="frame_autofocus_name" value="" />
+                    </DemoForm>
                   </turbo-frame></Gallery>`
                 : request.url.endsWith("/demo/frame")
                   ? '<Gallery><turbo-frame id="demo-recurse" src="/demo/recurse" recurse="preview-frame" /></Gallery>'
