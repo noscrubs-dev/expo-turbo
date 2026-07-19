@@ -1,8 +1,9 @@
-import type { TurboResponse } from "expo-turbo/adapters";
+import type { NavigationAdapter, TurboResponse } from "expo-turbo/adapters";
 import {
   type DocumentRefreshRequester,
   type DocumentSession,
   type DocumentSnapshotCache,
+  type DocumentVisitLifecycle,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
   type FrameControllerRegistry,
@@ -16,6 +17,8 @@ export function createDemoFormController(
   refresh: DocumentRefreshRequester,
   frameControllers: FrameControllerRegistry,
   snapshotCache: DocumentSnapshotCache,
+  navigation: NavigationAdapter,
+  visitLifecycle: DocumentVisitLifecycle,
 ): FormSubmissionController {
   let failedOnce = false;
   return new FormSubmissionController(
@@ -63,8 +66,10 @@ export function createDemoFormController(
         webConfirm: (message) => globalThis.confirm(message),
       }),
       frameControllers,
+      navigation,
       refresh,
       snapshotCache,
+      visitLifecycle,
     },
   );
 }

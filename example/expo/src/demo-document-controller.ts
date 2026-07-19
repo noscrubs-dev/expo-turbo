@@ -9,6 +9,7 @@ import {
   type DocumentSession,
   DocumentSnapshotCache,
   DocumentVisitController,
+  DocumentVisitLifecycle,
   EXPO_TURBO_MIME_TYPE,
   StateError,
 } from "expo-turbo/core";
@@ -41,6 +42,7 @@ export interface DemoDocumentRuntime {
   readonly history: DocumentHistory;
   readonly preloader: DocumentPreloader;
   readonly snapshotCache: DocumentSnapshotCache;
+  readonly visitLifecycle: DocumentVisitLifecycle;
   dispose(): void;
 }
 
@@ -89,6 +91,7 @@ export function createDemoDocumentRuntime(
     historyHost,
   );
   const snapshotCache = new DocumentSnapshotCache();
+  const visitLifecycle = new DocumentVisitLifecycle();
   let preloadRequestId = 0;
   const preloader = new DocumentPreloader(
     session,
@@ -104,6 +107,7 @@ export function createDemoDocumentRuntime(
   const controller = new DocumentVisitController(loader, DEMO_CLOCK, {
     history,
     snapshotCache,
+    visitLifecycle,
   });
   return Object.freeze({
     bootstrapInitialState(
@@ -176,5 +180,6 @@ export function createDemoDocumentRuntime(
     history,
     preloader,
     snapshotCache,
+    visitLifecycle,
   });
 }

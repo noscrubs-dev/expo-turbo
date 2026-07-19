@@ -64,6 +64,7 @@ import {
   assertFrameFormHistoryPlanCurrent,
   commitFrameFormHistoryPlan,
   type FrameFormHistoryPlan,
+  finalizeFrameFormHistoryVisit,
   frameFormHistoryPlanCurrent,
   invalidateFrameFormHistoryCache,
   prepareFrameFormHistoryCommit,
@@ -898,12 +899,11 @@ export class FormSubmissionController {
         })
       }
       const revision = this.session.revision
+      const promotedHistory = candidate.classification === "success" ? frameHistoryPlan : undefined
       let historyCommitted = false
       try {
         const finalUrl =
           candidate.classification === "success" || candidate.redirected ? candidate.url : undefined
-        const promotedHistory =
-          candidate.classification === "success" ? frameHistoryPlan : undefined
         const mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
           ...(promotedHistory ? { documentUrl: candidate.url } : {}),
           ...(finalUrl ? { finalUrl } : {}),
@@ -945,6 +945,13 @@ export class FormSubmissionController {
         )
         if (this.ownership.retains(lease) && this.options.frameControllers) {
           notifyMountedFrameAutofocus(this.options.frameControllers, frame)
+        }
+        if (promotedHistory) {
+          await finalizeFrameFormHistoryVisit(
+            promotedHistory,
+            () => this.ownership.retains(lease),
+            lease.controller.signal,
+          )
         }
         return Object.freeze({
           ...metadata,
@@ -1176,6 +1183,7 @@ export class FormSubmissionController {
       binding.coordinator,
       binding.scope,
       binding.isCurrent,
+      binding.invalidationSignal,
       frame,
       requestedUrl,
       action,

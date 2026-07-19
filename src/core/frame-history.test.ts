@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test"
 
-import type { ClockAdapter, TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
+import type {
+  ClockAdapter,
+  NavigationAdapter,
+  TurboRequest,
+  TurboResponse,
+  VisibilityAdapter,
+} from "../adapters"
 import {
   DocumentHistory,
   type DocumentHistoryEntry,
@@ -9,13 +15,14 @@ import {
 import { DocumentRequestLoader } from "./document-loader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DocumentVisitController } from "./document-visit-controller"
-import { ContentTypeError, RequestError, StateError, TargetError } from "./errors"
+import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
+import { ContentTypeError, PropsError, RequestError, StateError, TargetError } from "./errors"
 import { FormSubmissionController } from "./form-submission-controller"
 import { FormControlRegistry } from "./forms"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
 import { visitFrameWithHistory } from "./frame-history-internal"
-import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
+import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
@@ -56,15 +63,18 @@ function historyHarness(
     undefined,
   options: Readonly<{
     document?: string
+    documentUrl?: string
     frameHistory?: boolean
+    navigation?: NavigationAdapter
     requestLifecycle?: RequestLifecycle
     snapshotCache?: boolean
+    visitLifecycle?: DocumentVisitLifecycle
     visibility?: VisibilityAdapter
   }> = {},
 ) {
   const session = new DocumentSession(
     parseExpoTurboDocument(options.document ?? frameDocument(), {
-      url: "https://example.test/current",
+      url: options.documentUrl ?? "https://example.test/current",
     }),
   )
   let identifier = 0
@@ -82,7 +92,7 @@ function historyHarness(
     entry: {
       restorationIdentifier: "initial-history",
       restorationIndex: 0,
-      url: "https://example.test/current",
+      url: options.documentUrl ?? "https://example.test/current",
     },
     kind: "managed",
   }).entry
@@ -102,7 +112,9 @@ function historyHarness(
   )
   const frameHistory = new FrameHistoryCoordinator(session, {
     history,
+    ...(options.navigation ? { navigation: options.navigation } : {}),
     ...(options.snapshotCache === false ? {} : { snapshotCache: cache }),
+    ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
   })
   const registry = new FrameControllerRegistry(
     session,
@@ -116,7 +128,43 @@ function historyHarness(
 }
 
 describe("promoted Frame history", () => {
+  test("snapshots and validates the promoted Frame visit lifecycle", () => {
+    const current = historyHarness(async ({ url }) => response("<Gallery />", { url }))
+    const lifecycle = new DocumentVisitLifecycle()
+    let reads = 0
+    new FrameHistoryCoordinator(current.session, {
+      history: current.history,
+      get visitLifecycle() {
+        reads += 1
+        return lifecycle
+      },
+    })
+
+    expect(reads).toBe(1)
+    expect(
+      () =>
+        new FrameHistoryCoordinator(current.session, {
+          history: current.history,
+          visitLifecycle: {} as DocumentVisitLifecycle,
+        }),
+    ).toThrow(PropsError)
+    expect(
+      () =>
+        new FrameHistoryCoordinator(current.session, {
+          history: current.history,
+          get visitLifecycle(): DocumentVisitLifecycle {
+            throw new Error("sensitive lifecycle getter failure")
+          },
+        }),
+    ).toThrow(PropsError)
+  })
+
   test("promotes the first delayed lazy appearance using the live Frame action", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const visits: string[] = []
+    lifecycle.subscribe("visit", (event) => {
+      visits.push(`${event.detail.action}:${event.detail.url}`)
+    })
     let visible = false
     let appearance: ((visible: boolean) => void) | undefined
     let unsubscribed = 0
@@ -139,6 +187,7 @@ describe("promoted Frame history", () => {
       undefined,
       {
         document: frameDocument("Old", 'src="/stale-lazy" loading="lazy"'),
+        visitLifecycle: lifecycle,
         visibility,
       },
     )
@@ -190,11 +239,606 @@ describe("promoted Frame history", () => {
       "before-visible",
     )
     expect(attributeValue(outgoing?.getElementById("details") as never, "src")).toBe("/lazy")
+    expect(visits).toEqual(["advance:https://example.test/lazy"])
 
     firstAppearance?.(true)
     await Promise.resolve()
     expect(current.frameRequests).toHaveLength(1)
     expect(current.writes).toHaveLength(1)
+  })
+
+  test("emits one final redirected visit after a matching error Frame is committed", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const current = historyHarness(
+      async () =>
+        response('<turbo-frame id="details"><Handled /></turbo-frame>', {
+          redirected: true,
+          status: 422,
+          url: "https://example.test/final",
+        }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    const controller = current.registry.get("details")
+    const expectCommittedState = () => {
+      expect(current.history.current?.url).toBe("https://example.test/final")
+      expect(current.session.tree.document.url).toBe("https://example.test/final")
+      expect(
+        current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+      ).toBe("Handled")
+      expect(controller.state.status).toBe("completed")
+    }
+    lifecycle.subscribe("before-visit", (event) => {
+      expect(event.detail.url).toBe("https://example.test/final")
+      expectCommittedState()
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      expectCommittedState()
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+
+    await expect(
+      current.registry.visit("/requested", { action: "replace", frame: "details" }),
+    ).resolves.toMatchObject({
+      action: "replace",
+      load: { responseStatus: 422, status: "completed", url: "https://example.test/final" },
+    })
+    expect(events).toEqual([
+      "before:https://example.test/final",
+      "visit:replace:https://example.test/final",
+    ])
+  })
+
+  test("lets before-visit suppress notification without rolling back the promoted Frame", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+      event.preventDefault()
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><Prevented /></turbo-frame>', { url }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await expect(
+      current.registry.visit("/prevented", { action: "advance", frame: "details" }),
+    ).resolves.toMatchObject({ action: "advance", load: { status: "completed" } })
+    expect(events).toEqual(["before:https://example.test/prevented"])
+    expect(current.history.current?.url).toBe("https://example.test/prevented")
+    expect(current.session.tree.document.url).toBe("https://example.test/prevented")
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("Prevented")
+    expect(current.registry.get("details").state.status).toBe("completed")
+  })
+
+  test("reports redacted committed truth when promoted Frame before-visit fails", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-visit", () => {
+      throw new Error("sensitive promoted Frame listener failure")
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response('<turbo-frame id="details"><ListenerFailed /></turbo-frame>', { url }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    const controller = current.registry.get("details")
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+
+    let failure: unknown
+    try {
+      await current.registry.visit("/listener-failed", {
+        action: "advance",
+        frame: "details",
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FrameCommitError)
+    expect(JSON.stringify(failure)).not.toContain("sensitive")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(FrameCommitError)
+    expect(controller.state).toMatchObject({ complete: true, status: "completed" })
+    expect(current.history.current?.url).toBe("https://example.test/listener-failed")
+    expect(current.session.tree.document.url).toBe("https://example.test/listener-failed")
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("ListenerFailed")
+  })
+
+  test("freezes the initial relative Turbo root while awaiting outside-root navigation", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const navigationCalls: Array<{ action: string; url: string }> = []
+    let navigationStarted: (() => void) | undefined
+    let releaseNavigation: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      navigationStarted = resolve
+    })
+    const released = new Promise<void>((resolve) => {
+      releaseNavigation = resolve
+    })
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      async visit(url, action) {
+        navigationCalls.push({ action, url })
+        navigationStarted?.()
+        await released
+      },
+    }
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const current = historyHarness(
+      async () =>
+        response('<turbo-frame id="details"><Outside /></turbo-frame>', {
+          redirected: true,
+          url: "https://example.test/outside",
+        }),
+      undefined,
+      {
+        document: frameDocument("Old", 'src="/app/old" data-turbo-action="advance"').replace(
+          'data-turbo-root="/"',
+          'data-turbo-root="./"',
+        ),
+        documentUrl: "https://example.test/app/current",
+        navigation,
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    let settled = false
+    const visiting = current.registry
+      .visit("/app/requested", { action: "advance", frame: "details" })
+      .finally(() => {
+        settled = true
+      })
+    await started
+
+    expect(settled).toBe(false)
+    expect(events).toEqual(["before:https://example.test/outside"])
+    expect(navigationCalls).toEqual([{ action: "advance", url: "https://example.test/outside" }])
+    expect(current.history.current?.url).toBe("https://example.test/outside")
+    expect(current.session.tree.document.url).toBe("https://example.test/outside")
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("Outside")
+    expect(current.registry.get("details").state.status).toBe("completed")
+
+    releaseNavigation?.()
+    await expect(visiting).resolves.toMatchObject({ load: { status: "completed" } })
+    expect(events).toEqual(["before:https://example.test/outside"])
+  })
+
+  for (const supersession of ["document", "frame", "disconnect"] as const) {
+    test(`settles pending promoted navigation on ${supersession} supersession and consumes its late rejection`, async () => {
+      let navigationStartedResolve: (() => void) | undefined
+      const navigationStarted = new Promise<void>((resolve) => {
+        navigationStartedResolve = resolve
+      })
+      let rejectNavigation: ((error: Error) => void) | undefined
+      const pendingNavigation = new Promise<void>((_resolve, reject) => {
+        rejectNavigation = reject
+      })
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        visit() {
+          navigationStartedResolve?.()
+          return pendingNavigation
+        },
+      }
+      let frameRequestCount = 0
+      let resolveNewFrame: ((response: TurboResponse) => void) | undefined
+      const current = historyHarness(
+        async () => {
+          frameRequestCount += 1
+          if (frameRequestCount === 1) {
+            return response('<turbo-frame id="details"><Committed /></turbo-frame>', {
+              redirected: true,
+              url: "https://example.test/outside",
+            })
+          }
+          return new Promise<TurboResponse>((resolve) => {
+            resolveNewFrame = resolve
+          })
+        },
+        undefined,
+        {
+          document: frameDocument("Old", 'src="/current/old"').replace(
+            'data-turbo-root="/"',
+            'data-turbo-root="/current"',
+          ),
+          navigation,
+        },
+      )
+      const controller = current.registry.get("details")
+      const visiting = current.registry.visit("/current/requested", {
+        action: "advance",
+        frame: "details",
+      })
+      await navigationStarted
+
+      let superseding: Promise<unknown> | undefined
+      let documentRequest: TurboRequest | undefined
+      let resolveDocument: ((response: TurboResponse) => void) | undefined
+      if (supersession === "document") {
+        const documentController = new DocumentVisitController(
+          new DocumentRequestLoader(
+            current.session,
+            {
+              fetch(request) {
+                documentRequest = request
+                return new Promise<TurboResponse>((resolve) => {
+                  resolveDocument = resolve
+                })
+              },
+            },
+            { next: () => "newer-document" },
+          ),
+          clock,
+          { history: current.history, snapshotCache: current.cache },
+        )
+        superseding = documentController.visit("/current/newer-document")
+      } else if (supersession === "frame") {
+        superseding = controller.visit("/current/newer-frame")
+      } else {
+        controller.disconnect()
+      }
+
+      await expect(visiting).resolves.toMatchObject({ load: { status: "completed" } })
+      rejectNavigation?.(new Error("sensitive late navigation failure"))
+      await Promise.resolve()
+      await Promise.resolve()
+
+      if (supersession === "document") {
+        if (!superseding || !documentRequest || !resolveDocument) {
+          throw new Error("newer document request did not start")
+        }
+        resolveDocument(
+          response('<Gallery data-turbo-root="/current"><NewerDocument /></Gallery>', {
+            url: documentRequest.url,
+          }),
+        )
+        await expect(superseding).resolves.toMatchObject({ status: "committed" })
+      } else if (supersession === "frame") {
+        const request = current.frameRequests[1]
+        if (!superseding || !request || !resolveNewFrame) {
+          throw new Error("newer Frame request did not start")
+        }
+        resolveNewFrame(
+          response('<turbo-frame id="details"><NewerFrame /></turbo-frame>', {
+            url: request.url,
+          }),
+        )
+        await expect(superseding).resolves.toMatchObject({ status: "completed" })
+      }
+    })
+  }
+
+  test("preserves a committed Stream error when completion publication also fails", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response(
+          `<turbo-frame id="details">
+             <CommittedFrame id="committed-frame" />
+             <turbo-stream action="update" target="stream-target">
+               <template><CommittedStream id="committed-stream" /></template>
+             </turbo-stream>
+           </turbo-frame>`,
+          { url },
+        ),
+      undefined,
+      {
+        document: `<Gallery data-turbo-root="/">
+          <Shell id="shell" />
+          <List id="stream-target"><OldStream id="old-stream" /></List>
+          <turbo-frame id="details" src="/old"><OldFrame /></turbo-frame>
+        </Gallery>`,
+        visitLifecycle: lifecycle,
+      },
+    )
+    const removed = current.session.tree.getElementById("old-stream")
+    if (!removed) throw new Error("embedded Stream failure fixture is incomplete")
+    current.session.registerDisposal(removed.key, () => {
+      throw new Error("sensitive embedded Stream disposal failure")
+    })
+    const controller = current.registry.get("details")
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const unsubscribe = controller.subscribe(() => {
+      if (controller.state.status === "completed") {
+        throw new Error("sensitive rejection publication failure")
+      }
+    })
+
+    let failure: unknown
+    try {
+      await current.registry.visit("/committed-stream-error", {
+        action: "advance",
+        frame: "details",
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FrameCommitError)
+    expect(JSON.stringify(failure)).not.toContain("sensitive")
+    expect(events).toEqual([])
+    expect(errors).toHaveLength(1)
+    if (!(failure instanceof Error)) throw new Error("Expected a committed Frame failure")
+    expect(errors[0]).toBe(failure)
+    expect(controller.state).toMatchObject({ complete: true, status: "completed" })
+    expect(current.history.current?.url).toBe("https://example.test/committed-stream-error")
+    expect(current.session.tree.document.url).toBe("https://example.test/committed-stream-error")
+    expect(current.session.tree.getElementById("committed-frame")).toBeDefined()
+    expect(current.session.tree.getElementById("committed-stream")).toBeDefined()
+
+    unsubscribe()
+    await expect(
+      current.registry.visit("/recovered-after-committed-error", {
+        action: "replace",
+        frame: "details",
+      }),
+    ).resolves.toMatchObject({ load: { status: "completed" } })
+    expect(events).toEqual(["before", "visit"])
+    expect(errors).toEqual([failure])
+  })
+
+  test("reports one redacted committed error when completion publication fails", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    let requestCount = 0
+    const current = historyHarness(
+      async ({ url }) => {
+        requestCount += 1
+        return response(
+          `<turbo-frame id="details"><Committed id="committed-${requestCount}" /></turbo-frame>`,
+          { url },
+        )
+      },
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    const controller = current.registry.get("details")
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const unsubscribe = controller.subscribe(() => {
+      if (controller.state.status === "completed") {
+        throw new Error("sensitive completion observer failure")
+      }
+    })
+
+    let failure: unknown
+    try {
+      await current.registry.visit("/completion-failed", {
+        action: "advance",
+        frame: "details",
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FrameCommitError)
+    if (!(failure instanceof Error)) throw new Error("Expected a committed Frame failure")
+    expect(JSON.stringify(failure)).not.toContain("sensitive")
+    expect(errors).toEqual([failure])
+    expect(events).toEqual([])
+    expect(controller.state).toMatchObject({ complete: true, status: "completed" })
+    expect(current.history.current?.url).toBe("https://example.test/completion-failed")
+    expect(current.session.tree.getElementById("committed-1")).toBeDefined()
+
+    unsubscribe()
+    await expect(
+      current.registry.visit("/recovered", { action: "replace", frame: "details" }),
+    ).resolves.toMatchObject({ load: { status: "completed" } })
+    expect(events).toEqual(["before", "visit"])
+    expect(errors).toEqual([failure])
+    expect(current.history.current?.url).toBe("https://example.test/recovered")
+    expect(current.session.tree.getElementById("committed-2")).toBeDefined()
+  })
+
+  test("reports committed truth when promoted outside-root navigation is unavailable", async () => {
+    for (const fixtureCase of ["missing", "rejecting"] as const) {
+      const lifecycle = new DocumentVisitLifecycle()
+      const events: string[] = []
+      const navigationCalls: string[] = []
+      let navigationSettled = false
+      lifecycle.subscribe("before-visit", (event) => {
+        events.push(`before:${event.detail.url}`)
+      })
+      lifecycle.subscribe("visit", () => {
+        events.push("visit")
+      })
+      const navigation: NavigationAdapter | undefined =
+        fixtureCase === "rejecting"
+          ? {
+              back() {},
+              openExternal() {},
+              async visit(url) {
+                navigationCalls.push(url)
+                await Promise.resolve()
+                navigationSettled = true
+                throw new Error("sensitive promoted navigation rejection")
+              },
+            }
+          : undefined
+      const current = historyHarness(
+        async () =>
+          response(
+            `<turbo-frame id="details"><Outside id="outside-${fixtureCase}" /></turbo-frame>`,
+            {
+              redirected: true,
+              url: "https://example.test/outside",
+            },
+          ),
+        undefined,
+        {
+          document: frameDocument("Old", 'src="/current/old" data-turbo-action="advance"').replace(
+            'data-turbo-root="/"',
+            'data-turbo-root="/current"',
+          ),
+          ...(navigation ? { navigation } : {}),
+          visitLifecycle: lifecycle,
+        },
+      )
+      const controller = current.registry.get("details")
+      const errors: Error[] = []
+      controller.subscribeErrors((error) => errors.push(error))
+
+      let failure: unknown
+      try {
+        await current.registry.visit("/current/requested", {
+          action: "advance",
+          frame: "details",
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(FrameCommitError)
+      if (!(failure instanceof Error)) throw new Error("Expected a committed Frame failure")
+      expect(JSON.stringify(failure)).not.toContain("sensitive")
+      expect(events).toEqual(["before:https://example.test/outside"])
+      expect(navigationCalls).toEqual(
+        fixtureCase === "rejecting" ? ["https://example.test/outside"] : [],
+      )
+      expect(navigationSettled).toBe(fixtureCase === "rejecting")
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toBe(failure)
+      expect(controller.state).toMatchObject({ complete: true, status: "completed" })
+      expect(current.history.current?.url).toBe("https://example.test/outside")
+      expect(current.session.tree.document.url).toBe("https://example.test/outside")
+      expect(current.session.tree.getElementById(`outside-${fixtureCase}`)).toBeDefined()
+    }
+  })
+
+  test("suppresses a stale promoted visit when before-visit starts newer document work", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const visits: string[] = []
+    let documentController: DocumentVisitController
+    let newerDocument: Promise<unknown> | undefined
+    let resolveDocument: ((response: TurboResponse) => void) | undefined
+    lifecycle.subscribe("before-visit", (event) => {
+      if (event.detail.url.endsWith("/promoted")) {
+        newerDocument = documentController.visit("/newer")
+      }
+    })
+    lifecycle.subscribe("visit", (event) => {
+      visits.push(event.detail.url)
+    })
+    const current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><Promoted /></turbo-frame>', { url }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    documentController = new DocumentVisitController(
+      new DocumentRequestLoader(
+        current.session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              resolveDocument = resolve
+            }),
+        },
+        { next: () => "document-request" },
+      ),
+      clock,
+      { history: current.history, snapshotCache: current.cache },
+    )
+
+    await expect(
+      current.registry.visit("/promoted", { action: "advance", frame: "details" }),
+    ).resolves.toMatchObject({ load: { status: "completed" } })
+    expect(visits).toEqual([])
+    if (!newerDocument || !resolveDocument) {
+      throw new Error("reentrant document visit did not start")
+    }
+    resolveDocument(
+      response('<Gallery data-turbo-root="/"><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    await expect(newerDocument).resolves.toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+    expect(current.session.tree.getElementById("details")).toBeUndefined()
+  })
+
+  test("suppresses an old promoted GET visit when before-visit starts a same-Frame form", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const visits: string[] = []
+    const current = historyHarness(
+      async ({ url }) =>
+        response(
+          '<turbo-frame id="details"><DemoForm id="replacement-form" action="/submit-replacement" /></turbo-frame>',
+          { url },
+        ),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    let resolveForm: ((response: TurboResponse) => void) | undefined
+    let formRequest: TurboRequest | undefined
+    let formSubmission: Promise<unknown> | undefined
+    const formController = new FormSubmissionController(current.session, {
+      fetch(request) {
+        formRequest = request
+        return new Promise<TurboResponse>((resolve) => {
+          resolveForm = resolve
+        })
+      },
+    })
+    lifecycle.subscribe("before-visit", (event) => {
+      if (!event.detail.url.endsWith("/promoted-form")) return
+      const form = current.session.tree.getElementById("replacement-form")
+      if (!form) throw new Error("committed same-Frame form is missing")
+      const controls = new FormControlRegistry(current.session, form.key)
+      formSubmission = formController.submit((signal) =>
+        controls.submissionProposal({ protocol: { requestId: "replacement-form" }, signal }),
+      )
+    })
+    lifecycle.subscribe("visit", (event) => {
+      visits.push(event.detail.url)
+    })
+
+    await expect(
+      current.registry.visit("/promoted-form", { action: "advance", frame: "details" }),
+    ).resolves.toMatchObject({ load: { status: "completed" } })
+
+    expect(visits).toEqual([])
+    expect(formRequest?.url).toBe("https://example.test/submit-replacement")
+    if (!formSubmission || !formRequest || !resolveForm) {
+      throw new Error("same-Frame form submission did not start")
+    }
+    resolveForm(response("", { status: 204, url: formRequest.url }))
+    await expect(formSubmission).resolves.toMatchObject({ status: "empty" })
   })
 
   test("promotes an immediately visible lazy replacement with the mounted Frame scope", async () => {

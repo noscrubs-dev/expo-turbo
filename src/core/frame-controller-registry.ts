@@ -63,6 +63,7 @@ export type FrameVisitResult =
 interface FrameControllerRecord {
   readonly controller: FrameController
   readonly history?: MountedFrameHistoryBinding
+  readonly historyInvalidation?: AbortController
   readonly node: ProtocolElement
   unregisterDisposal: () => void
 }
@@ -113,12 +114,14 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     )
     let record!: FrameControllerRecord
     const frameHistory = this.options.frameHistory
+    const historyInvalidation = frameHistory ? new AbortController() : undefined
     record = {
       controller,
-      ...(frameHistory
+      ...(frameHistory && historyInvalidation
         ? {
             history: Object.freeze({
               coordinator: frameHistory,
+              invalidationSignal: historyInvalidation.signal,
               isCurrent: () =>
                 this.controllers.get(frameId) === record &&
                 this.session.tree.getElementById(frameId) === frame,
@@ -126,6 +129,7 @@ export class FrameControllerRegistry implements FrameControllerCollection {
             }),
           }
         : {}),
+      ...(historyInvalidation ? { historyInvalidation } : {}),
       node: frame,
       unregisterDisposal: () => undefined,
     }
@@ -232,6 +236,7 @@ export class FrameControllerRegistry implements FrameControllerCollection {
   ): void {
     if (this.controllers.get(frameId) !== record) return
     this.controllers.delete(frameId)
+    record.historyInvalidation?.abort()
     if (unregisterDisposal) record.unregisterDisposal()
     record.controller.disconnect()
   }
