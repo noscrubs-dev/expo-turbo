@@ -31,6 +31,7 @@ describe("form request construction", () => {
         { name: "order[items][]", value: "é😀" },
         { name: "empty", value: "" },
         { name: "empty", value: "again" },
+        { name: "", value: "empty-name" },
       ],
       form: { action: "../search?stale=1" },
     })
@@ -48,7 +49,7 @@ describe("form request construction", () => {
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",
-      url: "https://example.test/search?space+plus%2B%7E*%5B%5D=a+b%2Bc%25%7E%3D*%5B%5D&line%0D%0Aname=a%0D%0Ab%0D%0Ac%0D%0A&order%5Bitems%5D%5B%5D=%C3%A9%F0%9F%98%80&empty=&empty=again",
+      url: "https://example.test/search?space+plus%2B%7E*%5B%5D=a+b%2Bc%25%7E%3D*%5B%5D&line%0D%0Aname=a%0D%0Ab%0D%0Ac%0D%0A&order%5Bitems%5D%5B%5D=%C3%A9%F0%9F%98%80&empty=&empty=again&=empty-name",
     })
   })
 
@@ -121,6 +122,26 @@ describe("form request construction", () => {
       method: "POST",
       url: "https://example.test/save?keep=1",
     })
+  })
+
+  test("preserves ordered duplicate and empty names in a URL-encoded POST body", () => {
+    const built = plan({
+      entries: [
+        { name: "first", value: "one" },
+        { name: "", value: "empty-name" },
+        { name: "first", value: "two" },
+        { name: "_charset_", value: "host-owned" },
+      ],
+      form: { method: "POST" },
+    })
+
+    expect(built.entries).toEqual([
+      { name: "first", value: "one" },
+      { name: "", value: "empty-name" },
+      { name: "first", value: "two" },
+      { name: "_charset_", value: "host-owned" },
+    ])
+    expect(built.request.body?.value).toBe("first=one&=empty-name&first=two&_charset_=host-owned")
   })
 
   test("normalizes raw PUT, PATCH, and DELETE to POST plus one Rails override", () => {
@@ -311,11 +332,33 @@ describe("form request construction", () => {
     expect(() =>
       plan({ entries: [{ name: "count", value: 3 } as unknown as SuccessfulFormEntry] }),
     ).toThrow(RequestError)
-    expect(() => plan({ entries: [{ name: "", value: "empty-name" }] })).toThrow(RequestError)
     expect(() => plan({ unsafeMethodTransport: "browser" as never })).toThrow(RequestError)
     expect(() => plan({ entries: Array(1) as unknown as readonly SuccessfulFormEntry[] })).toThrow(
       RequestError,
     )
+  })
+
+  test("reads each request entry field once before normalization", () => {
+    let nameReads = 0
+    let valueReads = 0
+    const entry = {
+      get name(): unknown {
+        nameReads += 1
+        return nameReads === 1 ? "field" : { replace: () => ({ uri: "file:///name" }) }
+      },
+      get value(): unknown {
+        valueReads += 1
+        return valueReads === 1 ? "admitted" : { replace: () => ({ uri: "file:///value" }) }
+      },
+    }
+    const built = plan({
+      entries: [entry] as unknown as readonly SuccessfulFormEntry[],
+      form: { method: "POST" },
+    })
+
+    expect(built.entries).toEqual([{ name: "field", value: "admitted" }])
+    expect(built.request.body?.value).toBe("field=admitted")
+    expect({ nameReads, valueReads }).toEqual({ nameReads: 1, valueReads: 1 })
   })
 
   test("rejects control characters in protocol headers without echoing their values", () => {

@@ -140,20 +140,18 @@ function admittedEntries(entries: readonly SuccessfulFormEntry[]): readonly Succ
   }
   const admitted: SuccessfulFormEntry[] = []
   for (const entry of entries) {
-    if (
-      !entry ||
-      typeof entry !== "object" ||
-      Array.isArray(entry) ||
-      typeof entry.name !== "string" ||
-      entry.name === "" ||
-      typeof entry.value !== "string"
-    ) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RequestError("Form request entries must contain string names and values")
+    }
+    const name = entry.name
+    const value = entry.value
+    if (typeof name !== "string" || typeof value !== "string") {
       throw new RequestError("Form request entries must contain string names and values")
     }
     admitted.push(
       Object.freeze({
-        name: normalizedLineBreaks(entry.name),
-        value: normalizedLineBreaks(entry.value),
+        name: normalizedLineBreaks(name),
+        value: normalizedLineBreaks(value),
       }),
     )
   }

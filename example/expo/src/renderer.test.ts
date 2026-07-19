@@ -1264,6 +1264,27 @@ describe("React protocol renderer", () => {
       useExpoTurboFormControl({ kind: "multiple", name, values: values.split("|") })
       return createElement("native-multiple", { values })
     }
+    function NativeEntries({
+      entryNames,
+      entryValues,
+    }: {
+      entryNames: string
+      entryValues: string
+    }): ReactNode {
+      const values = entryValues.split("|")
+      const binding = useExpoTurboFormControl({
+        entries: entryNames
+          .split("|")
+          .map((name, index) => ({ name, value: values[index] ?? "" })),
+        kind: "entries",
+      })
+      return createElement("native-entries", {
+        entryNames,
+        entryValues,
+        nodeKey: binding.nodeKey,
+        selection: binding.selection,
+      })
+    }
     function NativeSubmitter(props: {
       disabled?: boolean
       formaction?: string
@@ -1383,6 +1404,16 @@ describe("React protocol renderer", () => {
       schema: z.object({ name: z.string(), values: z.string() }),
       tag: "NativeMultiple",
     })
+    const entries = defineComponent({
+      attributes: {
+        "entry-names": { codec: stringCodec, prop: "entryNames" },
+        "entry-values": { codec: stringCodec, prop: "entryValues" },
+      },
+      children: "none",
+      component: NativeEntries,
+      schema: z.object({ entryNames: z.string(), entryValues: z.string() }),
+      tag: "NativeEntries",
+    })
     const submitter = defineComponent({
       attributes: {
         "data-turbo-frame": { codec: stringCodec, prop: "frameTarget" },
@@ -1418,6 +1449,7 @@ describe("React protocol renderer", () => {
           liveValue,
           checkable,
           multiple,
+          entries,
           submitter,
         ],
         name: "native-form-components",
@@ -1435,6 +1467,7 @@ describe("React protocol renderer", () => {
           <NativeLiveValue id="local" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
+          <NativeEntries id="entry-list" entry-names="profile[city]||_charset_" entry-values="London|empty-name|host-owned" />
           <NativeValue id="disabled" disabled="true" name="ignored" value="secret" />
           <NativeValue id="unnamed" value="ignored" />
           <NativeSubmitter id="submit" name="commit" value="save" formaction="/profile/save" formmethod="patch" data-turbo-stream="" data-turbo-submits-with="Saving…" />
@@ -1498,6 +1531,11 @@ describe("React protocol renderer", () => {
     if (!submitterControl) throw new Error("submitter control was not rendered")
     const submitterSelection = submitterControl.props.selection
     const selectedSubmitter = submitterSelection()
+    const entryListControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-entries")
+      .find((control) => control.props.nodeKey === "id:entry-list")
+    if (!entryListControl) throw new Error("entry-list control was not rendered")
+    const entryListSelection = entryListControl.props.selection()
     expect(primary.successfulEntries({ submitter: selectedSubmitter })).toEqual([
       { name: "item", value: "" },
       { name: "authenticity_token", value: "token" },
@@ -1509,6 +1547,9 @@ describe("React protocol renderer", () => {
       { name: "choices[]", value: "one" },
       { name: "choices[]", value: "" },
       { name: "choices[]", value: "one" },
+      { name: "profile[city]", value: "London" },
+      { name: "", value: "empty-name" },
+      { name: "_charset_", value: "host-owned" },
       { name: "commit", value: "save" },
     ])
     expect(
@@ -1535,6 +1576,9 @@ describe("React protocol renderer", () => {
           { name: "choices[]", value: "one" },
           { name: "choices[]", value: "" },
           { name: "choices[]", value: "one" },
+          { name: "profile[city]", value: "London" },
+          { name: "", value: "empty-name" },
+          { name: "_charset_", value: "host-owned" },
           { name: "commit", value: "save" },
           { name: "_method", value: "patch" },
         ],
@@ -1686,11 +1730,30 @@ describe("React protocol renderer", () => {
         { name: "choices[]", value: "one" },
         { name: "choices[]", value: "" },
         { name: "choices[]", value: "one" },
+        { name: "profile[city]", value: "London" },
+        { name: "", value: "empty-name" },
+        { name: "_charset_", value: "host-owned" },
         { name: "commit", value: "replacement" },
       ],
       request: { method: "POST", url: "https://example.test/profile/replacement" },
       sourceMethod: "POST",
     })
+
+    act(() => session.setAttribute("id:entry-list", "entry-values", "Paris|changed|host-two"))
+    const updatedEntryListControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-entries")
+      .find((control) => control.props.nodeKey === "id:entry-list")
+    if (!updatedEntryListControl) throw new Error("updated entry-list control was not rendered")
+    expect(updatedEntryListControl.props.selection()).toBe(entryListSelection)
+    const updatedEntryList = primary.successfulEntries()
+    const updatedEntryListIndex = updatedEntryList.findIndex(
+      ({ name }) => name === "profile[city]",
+    )
+    expect(updatedEntryList.slice(updatedEntryListIndex, updatedEntryListIndex + 3)).toEqual([
+      { name: "profile[city]", value: "Paris" },
+      { name: "", value: "changed" },
+      { name: "_charset_", value: "host-two" },
+    ])
 
     act(() => session.setAttribute("id:first", "value", "updated"))
     expect(primary.successfulEntries()[0]).toEqual({ name: "item", value: "updated" })
