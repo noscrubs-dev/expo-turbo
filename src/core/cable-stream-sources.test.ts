@@ -5,6 +5,7 @@ import { CableStreamSourceRegistry } from "./cable-stream-sources"
 import { StateError, SubscriptionError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
+import { StreamLifecycle } from "./stream-lifecycle"
 import { attributeValue, isElement, type ProtocolElement } from "./tree"
 
 interface FakeSubscriptionRecord {
@@ -419,11 +420,18 @@ describe("Cable stream source registry", () => {
     const cable = new FakeCable()
     const errors: Error[] = []
     const reports: string[] = []
+    const lifecycleReports: string[] = []
+    const streamLifecycle = new StreamLifecycle()
+    streamLifecycle.subscribe("stream-action", (event) => {
+      lifecycleReports.push(event.detail.report.status)
+      return undefined
+    })
     const registry = new CableStreamSourceRegistry(document, cable, {
       onError: (error) => errors.push(error),
       onMessage: (report) => {
         reports.push(report.actions.map((action) => action.status).join(","))
       },
+      streamOptions: { streamLifecycle },
     })
     registry.retain(source(document, "first"))
     registry.retain(source(document, "second"))
@@ -437,6 +445,7 @@ describe("Cable stream source registry", () => {
 
     expect(text(document, "status")).toBe("fresh")
     expect(reports).toEqual(["applied"])
+    expect(lifecycleReports).toEqual(["applied"])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toBeInstanceOf(SubscriptionError)
     expect(errors[0]?.message).toBe("Cable stream message dispatch failed")

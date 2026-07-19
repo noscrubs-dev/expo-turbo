@@ -2,7 +2,11 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
-import { EXPO_TURBO_MIME_TYPE, StateError } from "expo-turbo/core";
+import {
+  dispatchTurboStreamFragment,
+  EXPO_TURBO_MIME_TYPE,
+  StateError,
+} from "expo-turbo/core";
 import { createElement, Fragment, StrictMode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -219,6 +223,37 @@ function routeTree(
 }
 
 describe("demo app runtime ownership", () => {
+  test("shares one Stream lifecycle through direct gallery dispatch", () => {
+    const runtime = createDemoRuntime();
+    const events: string[] = [];
+    const unsubscribeBefore = runtime.streamLifecycle.subscribe(
+      "before-stream-render",
+      (event) => {
+        events.push(`before:${event.detail.action}`);
+        return undefined;
+      },
+    );
+    const unsubscribeAction = runtime.streamLifecycle.subscribe("stream-action", (event) => {
+      events.push(`action:${event.detail.report.status}`);
+      return undefined;
+    });
+
+    try {
+      const report = dispatchTurboStreamFragment(
+        runtime.session,
+        '<turbo-stream action="update" target="static-renderer"><template><DemoText>Lifecycle update.</DemoText></template></turbo-stream>',
+        { streamLifecycle: runtime.streamLifecycle },
+      );
+
+      expect(report.actions.map((action) => action.status)).toEqual(["applied"]);
+      expect(events).toEqual(["before:update", "action:applied"]);
+    } finally {
+      unsubscribeBefore();
+      unsubscribeAction();
+      runtime.dispose();
+    }
+  });
+
   test("shares one submit lifecycle through the rendered native form", async () => {
     const runtime = createDemoRuntime();
     const events: string[] = [];

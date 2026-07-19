@@ -83,6 +83,7 @@ function CompatibilityGallery() {
           dispatchTurboStreamFragment(
             runtime.session,
             '<turbo-stream action="update" target="static-renderer"><template><DemoText>Updated in place by an ordered Turbo Stream action.</DemoText></template></turbo-stream>',
+            { streamLifecycle: runtime.streamLifecycle },
           )
         }
         style={({ pressed }) => ({
@@ -102,7 +103,7 @@ function CompatibilityGallery() {
           dispatchTurboStreamFragment(
             runtime.session,
             '<turbo-stream action="refresh" method="replace" target="ignored"><template><DemoText>Ignored refresh payload.</DemoText></template></turbo-stream>',
-            { refresh: runtime.refresh },
+            { refresh: runtime.refresh, streamLifecycle: runtime.streamLifecycle },
           )
         }
         style={({ pressed }) => ({

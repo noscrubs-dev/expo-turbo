@@ -15,6 +15,7 @@ import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./fr
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
+import { StreamLifecycle } from "./stream-lifecycle"
 import { attributeValue, isElement } from "./tree"
 
 function documentSession(): DocumentSession {
@@ -143,6 +144,16 @@ describe("Frame request loader", () => {
   test("forwards embedded refresh Streams to the configured session coordinator", async () => {
     const session = documentSession()
     const refreshes: unknown[] = []
+    const streamEvents: string[] = []
+    const streamLifecycle = new StreamLifecycle()
+    streamLifecycle.subscribe("before-stream-render", (event) => {
+      streamEvents.push(`before:${event.detail.action}`)
+      return undefined
+    })
+    streamLifecycle.subscribe("stream-action", (event) => {
+      streamEvents.push(`action:${event.detail.report.status}`)
+      return undefined
+    })
     const loader = new FrameRequestLoader(
       session,
       {
@@ -152,7 +163,7 @@ describe("Frame request loader", () => {
           ),
       },
       { next: () => "frame-request" },
-      { refresh: { request: (request) => refreshes.push(request) } },
+      { refresh: { request: (request) => refreshes.push(request) }, streamLifecycle },
     )
 
     const report = await loader.load("details", "/frame")
@@ -167,6 +178,7 @@ describe("Frame request loader", () => {
       },
     ])
     expect(refreshes).toEqual([{ baseUrl: "https://example.test/page", requestId: "frame-origin" }])
+    expect(streamEvents).toEqual(["before:refresh", "action:applied"])
   })
 
   test("supersedes an older request even when its adapter resolves late", async () => {

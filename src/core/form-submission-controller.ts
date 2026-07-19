@@ -105,6 +105,7 @@ import {
   settleRequestOperation,
 } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
+import { streamLifecycleOption } from "./stream-lifecycle"
 import {
   dispatchGuardedTurboStreamElements,
   type StreamActionDispatchOptions,
@@ -360,6 +361,7 @@ export class FormSubmissionController {
   ) {
     const requestLifecycle = requestLifecycleOption(options, "Form submission controller")
     const submissionLifecycle = formSubmissionLifecycleOption(options, "Form submission controller")
+    const streamLifecycle = streamLifecycleOption(options, "Form submission controller")
     const visitLifecycle = documentVisitLifecycleOption(options, "Form submission controller")
     const navigation = options.navigation
     this.options = Object.freeze({
@@ -374,6 +376,7 @@ export class FormSubmissionController {
       ...(requestLifecycle ? { requestLifecycle } : {}),
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
       ...(submissionLifecycle ? { submissionLifecycle } : {}),
+      ...(streamLifecycle ? { streamLifecycle } : {}),
       ...(visitLifecycle ? { visitLifecycle } : {}),
     })
     this.ownership = destinationRequestOwnership(session)

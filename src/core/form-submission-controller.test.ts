@@ -32,6 +32,7 @@ import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
+import { StreamLifecycle } from "./stream-lifecycle"
 import { attributeValue, isElement } from "./tree"
 
 function deferred<T>() {
@@ -1128,6 +1129,12 @@ describe("FormSubmissionController", () => {
   test("keeps non-successful and non-document form outcomes out of visit lifecycle", async () => {
     const events: string[] = []
     const lifecycle = new DocumentVisitLifecycle()
+    const streamEvents: string[] = []
+    const streamLifecycle = new StreamLifecycle()
+    streamLifecycle.subscribe("stream-action", (event) => {
+      streamEvents.push(`${event.detail.report.action}:${event.detail.report.status}`)
+      return undefined
+    })
     lifecycle.subscribe("before-visit", () => {
       events.push("before")
     })
@@ -1170,7 +1177,7 @@ describe("FormSubmissionController", () => {
                 headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
               }),
           },
-          { visitLifecycle: lifecycle },
+          { streamLifecycle, visitLifecycle: lifecycle },
         ).submit(proposal(registry(session, "document-form"), "visit-stream")),
       ).toMatchObject({ application: "stream" })
     }
@@ -1192,6 +1199,7 @@ describe("FormSubmissionController", () => {
     }
 
     expect(events).toEqual([])
+    expect(streamEvents).toEqual(["remove:applied"])
   })
 
   test("pauses before pending presentation and starts the exact form only after resume", async () => {
