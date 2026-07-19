@@ -14,6 +14,7 @@ type FrameCommitProtection = (frameId: string, owner: object) => boolean
 
 export interface MountedFrameHistoryBinding {
   readonly coordinator: FrameHistoryCoordinator
+  readonly invalidationSignal: AbortSignal
   readonly scope: object
   isCurrent(): boolean
 }

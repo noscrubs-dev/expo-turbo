@@ -25,6 +25,7 @@ class DestinationRequestOwnership {
   private documentCommit: DestinationRequestLease | undefined
   private frameCommit: DestinationRequestLease | undefined
   private readonly frameGenerations = new WeakMap<ProtocolElement, number>()
+  private readonly frameGenerationListeners = new WeakMap<ProtocolElement, Set<() => void>>()
   private readonly frames = new Map<string, DestinationRequestLease>()
   private readonly sourceOwners = new WeakMap<object, DestinationRequestLease>()
 
@@ -170,6 +171,32 @@ class DestinationRequestOwnership {
     })
   }
 
+  frameCheckpointCurrent(checkpoint: FrameRequestCheckpoint): boolean {
+    return (
+      this.session.treeGeneration === checkpoint.treeGeneration &&
+      this.session.tree.getElementById(checkpoint.frameId) === checkpoint.frame &&
+      (this.frameGenerations.get(checkpoint.frame) ?? 0) === checkpoint.generation
+    )
+  }
+
+  subscribeFrameCheckpoint(checkpoint: FrameRequestCheckpoint, listener: () => void): () => void {
+    if (!this.frameCheckpointCurrent(checkpoint)) {
+      listener()
+      return () => undefined
+    }
+    let listeners = this.frameGenerationListeners.get(checkpoint.frame)
+    if (!listeners) {
+      listeners = new Set()
+      this.frameGenerationListeners.set(checkpoint.frame, listeners)
+    }
+    listeners.add(listener)
+    if (!this.frameCheckpointCurrent(checkpoint)) listener()
+    return () => {
+      listeners?.delete(listener)
+      if (listeners?.size === 0) this.frameGenerationListeners.delete(checkpoint.frame)
+    }
+  }
+
   transferFrame(
     lease: DestinationRequestLease,
     checkpoint: FrameRequestCheckpoint,
@@ -230,6 +257,9 @@ class DestinationRequestOwnership {
       this.frames.set(lease.frameId, lease)
       if (lease.frame) {
         this.frameGenerations.set(lease.frame, (this.frameGenerations.get(lease.frame) ?? 0) + 1)
+        for (const listener of [...(this.frameGenerationListeners.get(lease.frame) ?? [])]) {
+          listener()
+        }
       }
     }
     if (lease.sourceOwner) this.sourceOwners.set(lease.sourceOwner, lease)

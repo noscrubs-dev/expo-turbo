@@ -10,6 +10,8 @@ import {
   type FrameHistoryAction,
   type FrameHistoryCommitPlan,
   type FrameHistoryCoordinator,
+  finalizeFrameHistoryVisit,
+  frameHistoryCommittedCandidate,
   prepareFrameHistoryCommit,
 } from "./frame-history"
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
@@ -73,6 +75,7 @@ export class FrameController {
   private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
   private pendingAutofocus: PendingFrameAutofocus | undefined
+  private visitFinalization: AbortController | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
   private visibilityUnsubscribe: Unsubscribe | undefined
 
@@ -152,6 +155,7 @@ export class FrameController {
   }
 
   cancel(): void {
+    this.cancelVisitFinalization()
     const epoch = this.loadEpoch
     if (!this.loader.cancel(this.frameId, this.requestOwner)) return
     if (epoch !== this.loadEpoch) return
@@ -278,6 +282,9 @@ export class FrameController {
     historyPlan?: FrameHistoryCommitPlan,
   ): Promise<FrameLoadReport | undefined> {
     this.assertLoadAdmission()
+    this.cancelVisitFinalization()
+    const visitFinalization = historyPlan ? new AbortController() : undefined
+    this.visitFinalization = visitFinalization
     const epoch = ++this.loadEpoch
     this.stopVisibilityObserver()
     this.pendingAutofocus = undefined
@@ -290,7 +297,7 @@ export class FrameController {
     })
     if (historyPlan && epoch === this.loadEpoch) this.publish()
     const loaded = request.then(
-      (report) => {
+      async (report) => {
         if (epoch !== this.loadEpoch) return report
         if (report.frame && this.connected) {
           stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
@@ -302,26 +309,60 @@ export class FrameController {
         } else {
           this.needsLoad = true
         }
-        this.publish()
+        if (historyPlan && report.status === "completed") {
+          try {
+            this.publish()
+            await finalizeFrameHistoryVisit(
+              historyPlan,
+              () => epoch === this.loadEpoch && this.connected,
+              visitFinalization?.signal,
+            )
+          } catch {
+            const committed = new FrameCommitError(frameHistoryCommittedCandidate(historyPlan))
+            if (epoch === this.loadEpoch) {
+              for (const listener of this.errorListeners) listener(committed)
+            }
+            throw committed
+          } finally {
+            if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
+          }
+        } else {
+          this.publish()
+        }
+        if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
         return report
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         const reported = error instanceof Error ? error : new Error("Frame source load failed")
-        if (epoch === this.loadEpoch) {
-          const committed = error instanceof FrameCommitError
-          this.hasBeenLoaded ||= committed
-          this.needsLoad = !committed
-          this.status = committed ? "completed" : "error"
-          this.publish()
-          if (!requestLifecycleDefaultHandlingPrevented(error)) {
-            for (const listener of this.errorListeners) listener(reported)
+        const committed = error instanceof FrameCommitError
+        let publicationFailure: unknown
+        try {
+          if (epoch === this.loadEpoch) {
+            this.hasBeenLoaded ||= committed
+            this.needsLoad = !committed
+            this.status = committed ? "completed" : "error"
+            this.publish()
           }
+        } catch (failure) {
+          publicationFailure = failure
+        } finally {
+          if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
+        }
+        if (publicationFailure !== undefined && !committed) throw publicationFailure
+        if (epoch === this.loadEpoch && !requestLifecycleDefaultHandlingPrevented(error)) {
+          for (const listener of this.errorListeners) listener(reported)
         }
         throw reported
       },
     )
     this.loadedPromise = loaded
     return loaded
+  }
+
+  private cancelVisitFinalization(): void {
+    const controller = this.visitFinalization
+    this.visitFinalization = undefined
+    controller?.abort()
   }
 
   private assertLoadAdmission(): void {

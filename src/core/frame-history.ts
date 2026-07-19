@@ -1,19 +1,37 @@
-import type { VisitAction } from "../adapters"
+import type { NavigationAdapter, VisitAction } from "../adapters"
+import {
+  destinationRequestOwnership,
+  type FrameRequestCheckpoint,
+} from "./destination-request-ownership"
 import type { DocumentHistory, DocumentHistoryEntry } from "./document-history"
-import { currentDocumentNavigationEpoch } from "./document-navigation-epoch"
+import {
+  currentDocumentNavigationEpoch,
+  subscribeDocumentNavigation,
+} from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+import {
+  BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  type DocumentVisitLifecycle,
+  documentVisitLifecycleOption,
+  VisitEvent,
+} from "./document-visit-lifecycle"
 import { StateError, TargetError } from "./errors"
 import type { FrameTreeCommitCandidate } from "./frame-loader"
 import { resolveProtocolUrl } from "./protocol-request"
+import { settleRequestOperation } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import { attributeValue, type DocumentTree, type ProtocolElement } from "./tree"
-import { classifyTopLevelLocation } from "./visitability"
+import { classifyTopLevelLocation, classifyTopLevelLocationAgainstRoot } from "./visitability"
 
 export type FrameHistoryAction = Exclude<VisitAction, "restore">
 
 export interface FrameHistoryCoordinatorOptions {
   readonly history: DocumentHistory
+  readonly navigation?: NavigationAdapter
   readonly snapshotCache?: DocumentSnapshotCache
+  readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
 declare const FRAME_HISTORY_COMMIT_PLAN: unique symbol
@@ -29,38 +47,56 @@ interface FrameFormHistoryPlan {
 
 interface FrameHistoryCommitPlanState {
   readonly action: FrameHistoryAction
+  candidate?: FrameTreeCommitCandidate
+  committedEntry?: DocumentHistoryEntry
   readonly documentNavigationEpoch: number
+  readonly documentUrl: string
   readonly frame: ProtocolElement
+  frameCheckpoint?: FrameRequestCheckpoint
   readonly frameScope: object
   readonly history: DocumentHistory
+  readonly navigation?: NavigationAdapter
   requestedUrl: string
+  readonly rootLocation: string
   readonly session: DocumentSession
   readonly snapshot?: DocumentTree
   readonly snapshotCache?: DocumentSnapshotCache
   readonly snapshotUrl: string
-  status: "committed" | "ready"
+  status: "committed" | "finalized" | "ready"
+  treeGeneration?: number
+  readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
 interface FrameHistoryCoordinatorState {
   readonly history: DocumentHistory
+  readonly navigation?: NavigationAdapter
   readonly session: DocumentSession
   readonly snapshotCache?: DocumentSnapshotCache
+  readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
 interface FrameFormHistoryPlanState {
   readonly action: FrameHistoryAction
+  committedEntry?: DocumentHistoryEntry
   readonly documentNavigationEpoch: number
+  readonly documentUrl: string
   readonly frame: ProtocolElement
+  frameCheckpoint?: FrameRequestCheckpoint
   readonly frameScope: object
   readonly history: DocumentHistory
   readonly isMounted: () => boolean
+  readonly mountInvalidationSignal: AbortSignal
+  readonly navigation?: NavigationAdapter
   readonly requestedUrl: string
+  readonly rootLocation: string
   readonly session: DocumentSession
   snapshot?: DocumentTree
   readonly snapshotCache?: DocumentSnapshotCache
   snapshotUrl?: string
   responseUrl?: string
-  status: "admitted" | "committed" | "ready" | "staged"
+  status: "admitted" | "committed" | "finalized" | "ready" | "staged"
+  treeGeneration?: number
+  readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
 const frameHistoryCommitPlans = new WeakMap<FrameHistoryCommitPlan, FrameHistoryCommitPlanState>()
@@ -81,9 +117,12 @@ function canonicalDocumentUrl(value: string | undefined): string | undefined {
   }
 }
 
-function planState(plan: FrameHistoryCommitPlan): FrameHistoryCommitPlanState {
+function planState(
+  plan: FrameHistoryCommitPlan,
+  allowed: readonly FrameHistoryCommitPlanState["status"][] = ["ready"],
+): FrameHistoryCommitPlanState {
   const state = frameHistoryCommitPlans.get(plan)
-  if (state?.status !== "ready") {
+  if (!state || !allowed.includes(state.status)) {
     throw new StateError("Frame history commit plan is invalid")
   }
   return state
@@ -124,10 +163,133 @@ function formPlanCurrent(state: FrameFormHistoryPlanState): boolean {
   )
 }
 
+type PromotedFrameVisitState = FrameHistoryCommitPlanState | FrameFormHistoryPlanState
+
+function committedPromotionCurrent(state: PromotedFrameVisitState): boolean {
+  const frameId = attributeValue(state.frame, "id")
+  const entry = state.committedEntry
+  if (
+    !frameId ||
+    !entry ||
+    !state.frameCheckpoint ||
+    state.treeGeneration === undefined ||
+    currentDocumentNavigationEpoch(state.session) !== state.documentNavigationEpoch ||
+    state.session.treeGeneration !== state.treeGeneration ||
+    !destinationRequestOwnership(state.session).frameCheckpointCurrent(state.frameCheckpoint) ||
+    state.session.tree.getElementById(frameId) !== state.frame ||
+    state.history.current !== entry
+  ) {
+    return false
+  }
+  if ("isMounted" in state && !state.isMounted()) return false
+  try {
+    return canonicalDocumentUrl(state.session.tree.document.url) === entry.url
+  } catch {
+    return false
+  }
+}
+
+async function finalizePromotedFrameVisit(
+  state: PromotedFrameVisitState,
+  isCurrent: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (state.status === "finalized") return
+  if (state.status !== "committed" || !state.committedEntry) {
+    throw new StateError("Promoted Frame visit plan is invalid")
+  }
+  state.status = "finalized"
+  if (!committedPromotionCurrent(state) || !isCurrent() || signal?.aborted) return
+  const frameCheckpoint = state.frameCheckpoint
+  if (!frameCheckpoint) return
+
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  const ownership = destinationRequestOwnership(state.session)
+  const unsubscribeNavigation = subscribeDocumentNavigation(state.session, cancel)
+  const unsubscribeFrame = ownership.subscribeFrameCheckpoint(frameCheckpoint, cancel)
+  const unregisterDisposal = state.session.registerDisposal(state.frame.key, cancel)
+  const mountInvalidationSignal =
+    "mountInvalidationSignal" in state ? state.mountInvalidationSignal : undefined
+  signal?.addEventListener("abort", cancel, { once: true })
+  mountInvalidationSignal?.addEventListener("abort", cancel, { once: true })
+
+  try {
+    if (
+      !committedPromotionCurrent(state) ||
+      !isCurrent() ||
+      signal?.aborted ||
+      mountInvalidationSignal?.aborted
+    ) {
+      return
+    }
+
+    const url = state.committedEntry.url
+    if (state.visitLifecycle) {
+      const event = state.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH](
+        new BeforeVisitEvent(url),
+      )
+      if (event.defaultPrevented) return
+      if (
+        controller.signal.aborted ||
+        !committedPromotionCurrent(state) ||
+        !isCurrent() ||
+        signal?.aborted ||
+        mountInvalidationSignal?.aborted
+      ) {
+        return
+      }
+    }
+
+    const disposition = classifyTopLevelLocationAgainstRoot(
+      url,
+      state.documentUrl,
+      state.rootLocation,
+    )
+    if (disposition.classification !== "visitable") {
+      if (disposition.classification === "external") {
+        throw new StateError("Promoted Frame response escaped same-origin transport")
+      }
+      if (!state.navigation) {
+        throw new TargetError("Unvisitable promoted Frame responses require navigation")
+      }
+      const navigation = state.navigation
+      const navigated = await settleRequestOperation(controller.signal, () =>
+        navigation.visit(disposition.url, state.action),
+      )
+      if (
+        navigated.status === "canceled" ||
+        !committedPromotionCurrent(state) ||
+        !isCurrent() ||
+        signal?.aborted ||
+        mountInvalidationSignal?.aborted
+      ) {
+        return
+      }
+      if (navigated.status === "rejected") {
+        throw new StateError("Promoted Frame navigation failed")
+      }
+      return
+    }
+
+    state.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](
+      new VisitEvent(disposition.url, state.action),
+    )
+  } finally {
+    signal?.removeEventListener("abort", cancel)
+    mountInvalidationSignal?.removeEventListener("abort", cancel)
+    unregisterDisposal()
+    unsubscribeFrame()
+    unsubscribeNavigation()
+  }
+}
+
 function formResponseUrl(state: FrameFormHistoryPlanState, finalUrl: string): string {
   const disposition = classifyTopLevelLocation(state.session.tree, finalUrl)
-  if (disposition.classification !== "visitable" || disposition.url.includes("#")) {
-    throw new TargetError("Promoted Frame form responses require a root-visitable destination")
+  if (disposition.classification === "external" || disposition.url.includes("#")) {
+    throw new TargetError(
+      "Promoted Frame form responses require a same-origin fragment-free destination",
+    )
   }
   return disposition.url
 }
@@ -174,7 +336,7 @@ function setFrameSource(
   if (attributeValue(frame, "src") !== source) session.setAttribute(frame.key, "src", source)
 }
 
-/** Coordinates promoted Frame history without owning document visit lifecycle or traversal. */
+/** Coordinates promoted Frame history and its logical post-commit document visit lifecycle. */
 export class FrameHistoryCoordinator {
   constructor(session: DocumentSession, options: FrameHistoryCoordinatorOptions) {
     this.coordinatorBrand()
@@ -184,10 +346,13 @@ export class FrameHistoryCoordinator {
     if (!options.history) {
       throw new TargetError("Frame history coordination requires a history ledger")
     }
+    const visitLifecycle = documentVisitLifecycleOption(options, "Frame history coordinator")
     frameHistoryCoordinators.set(this, {
       history: options.history,
+      ...(options.navigation ? { navigation: options.navigation } : {}),
       session,
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
+      ...(visitLifecycle ? { visitLifecycle } : {}),
     })
   }
 
@@ -206,7 +371,7 @@ export function prepareFrameHistoryCommit(
   if (action !== "advance" && action !== "replace") {
     throw new TargetError("Frame history action is unsupported")
   }
-  const { history, session, snapshotCache } = coordinatorState
+  const { history, navigation, session, snapshotCache, visitLifecycle } = coordinatorState
   const disposition = classifyTopLevelLocation(session.tree, requestedUrl)
   if (disposition.classification !== "visitable") {
     throw new TargetError("Promoted Frame visits require a root-visitable destination")
@@ -239,15 +404,19 @@ export function prepareFrameHistoryCommit(
   frameHistoryCommitPlans.set(plan, {
     action,
     documentNavigationEpoch: currentDocumentNavigationEpoch(session),
+    documentUrl: base.url,
     frame,
     frameScope,
     history,
+    ...(navigation ? { navigation } : {}),
     requestedUrl: disposition.url,
+    rootLocation: disposition.rootLocation,
     session,
     ...(snapshot ? { snapshot } : {}),
     ...(snapshotCache ? { snapshotCache } : {}),
     snapshotUrl: base.url,
     status: "ready",
+    ...(visitLifecycle ? { visitLifecycle } : {}),
   })
   return plan
 }
@@ -256,6 +425,7 @@ export function prepareFrameFormHistoryCommit(
   coordinator: FrameHistoryCoordinator,
   frameScope: object,
   isMounted: () => boolean,
+  mountInvalidationSignal: AbortSignal,
   frame: ProtocolElement,
   requestedUrl: string,
   action: FrameHistoryAction,
@@ -265,10 +435,16 @@ export function prepareFrameFormHistoryCommit(
   if (action !== "advance" && action !== "replace") {
     throw new TargetError("Frame form history action is unsupported")
   }
-  if (typeof isMounted !== "function" || !isMounted()) {
+  if (
+    typeof isMounted !== "function" ||
+    !mountInvalidationSignal ||
+    typeof mountInvalidationSignal.aborted !== "boolean" ||
+    mountInvalidationSignal.aborted ||
+    !isMounted()
+  ) {
     throw new StateError("Frame form history requires an exact mounted Frame controller")
   }
-  const { history, session, snapshotCache } = coordinatorState
+  const { history, navigation, session, snapshotCache, visitLifecycle } = coordinatorState
   const disposition = classifyTopLevelLocation(session.tree, requestedUrl)
   if (disposition.classification !== "visitable" || disposition.url.includes("#")) {
     throw new TargetError("Promoted Frame forms require a root-visitable destination")
@@ -290,14 +466,19 @@ export function prepareFrameFormHistoryCommit(
   frameFormHistoryPlans.set(plan, {
     action,
     documentNavigationEpoch: currentDocumentNavigationEpoch(session),
+    documentUrl: current.url,
     frame,
     frameScope,
     history,
     isMounted,
+    mountInvalidationSignal,
+    ...(navigation ? { navigation } : {}),
     requestedUrl: disposition.url,
+    rootLocation: disposition.rootLocation,
     session,
     ...(snapshotCache ? { snapshotCache } : {}),
     status: "ready",
+    ...(visitLifecycle ? { visitLifecycle } : {}),
   })
   return plan
 }
@@ -447,7 +628,10 @@ export function commitFrameFormHistoryPlan(
   }
 
   const entry = state.history.commitProposal(proposal)
+  state.committedEntry = entry
+  state.frameCheckpoint = destinationRequestOwnership(session).checkpointFrame(frame)
   state.status = "committed"
+  state.treeGeneration = session.treeGeneration
   return entry
 }
 
@@ -550,8 +734,40 @@ export function commitFrameHistoryPlan(
   }
 
   const entry = state.history.commitProposal(proposal)
+  state.candidate = candidate
+  state.committedEntry = entry
+  state.frameCheckpoint = destinationRequestOwnership(session).checkpointFrame(frame)
   state.status = "committed"
+  state.treeGeneration = session.treeGeneration
   return entry
+}
+
+export async function finalizeFrameHistoryVisit(
+  plan: FrameHistoryCommitPlan,
+  isCurrent: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  await finalizePromotedFrameVisit(planState(plan, ["committed", "finalized"]), isCurrent, signal)
+}
+
+export async function finalizeFrameFormHistoryVisit(
+  plan: FrameFormHistoryPlan,
+  isCurrent: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  await finalizePromotedFrameVisit(
+    formPlanState(plan, ["committed", "finalized"]),
+    isCurrent,
+    signal,
+  )
+}
+
+export function frameHistoryCommittedCandidate(
+  plan: FrameHistoryCommitPlan,
+): FrameTreeCommitCandidate {
+  const state = planState(plan, ["committed", "finalized"])
+  if (!state.candidate) throw new StateError("Promoted Frame commit candidate is unavailable")
+  return state.candidate
 }
 
 export type { FrameFormHistoryPlan, FrameHistoryCommitPlan }

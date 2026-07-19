@@ -162,11 +162,17 @@ function mountedFrameHistoryFixture(
   cache = new DocumentSnapshotCache(),
   write?: (method: DocumentHistoryWriteMethod, entry: DocumentHistoryEntry) => undefined,
   mounted = true,
+  options: Readonly<{
+    navigation?: NavigationAdapter
+    visitLifecycle?: DocumentVisitLifecycle
+  }> = {},
 ) {
   const ledger = historyFixture(session, write)
   const frameHistory = new FrameHistoryCoordinator(session, {
     history: ledger.history,
+    ...(options.navigation ? { navigation: options.navigation } : {}),
     snapshotCache: cache,
+    ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
   })
   const frameControllers = new FrameControllerRegistry(
     session,
@@ -2917,6 +2923,503 @@ describe("FormSubmissionController", () => {
     expect(attributeValue(outgoingFrame, "src")).toBe("/frame-a")
     expect(attributeValue(outgoingStatus, "phase")).toBe("latest")
     expect(cache.has("https://example.test/other")).toBe(false)
+  })
+
+  test("emits promoted Frame form visits after history, tree, and pending state commit", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { visitLifecycle: lifecycle },
+    )
+    const controls = registry(session, "form-a")
+    const events: string[] = []
+    const finalUrl = "https://example.test/frame-a/committed"
+    const assertCommitted = () => {
+      expect(controls.submissionState.busy).toBe(false)
+      expect(current.history.current?.url).toBe(finalUrl)
+      expect(session.tree.document.url).toBe(finalUrl)
+      expect(session.tree.getElementById("committed-frame-form")).toBeDefined()
+    }
+    lifecycle.subscribe("before-visit", (event) => {
+      assertCommitted()
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      assertCommitted()
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><CommittedFrameForm id="committed-frame-form" /></turbo-frame>',
+            { redirected: true, url: finalUrl },
+          ),
+      },
+      { frameControllers: current.frameControllers },
+    ).submit(proposal(controls, "promoted-frame-lifecycle"))
+
+    expect(result).toMatchObject({ application: "frame", status: "applied" })
+    expect(events).toEqual([`before:${finalUrl}`, `visit:advance:${finalUrl}`])
+    expect(current.writes).toHaveLength(1)
+  })
+
+  test("keeps a prevented promoted Frame form fully committed without emitting visit", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "replace")
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+      event.preventDefault()
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { visitLifecycle: lifecycle },
+    )
+    const finalUrl = "https://example.test/frame-a/prevented"
+
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><PreventedFrameForm id="prevented-frame-form" /></turbo-frame>',
+            { redirected: true, url: finalUrl },
+          ),
+      },
+      { frameControllers: current.frameControllers },
+    ).submit(proposal(registry(session, "form-a"), "prevented-promoted-frame"))
+
+    expect(result).toMatchObject({ application: "frame", status: "applied" })
+    expect(events).toEqual([`before:${finalUrl}`])
+    expect(current.history.current?.url).toBe(finalUrl)
+    expect(session.tree.document.url).toBe(finalUrl)
+    expect(session.tree.getElementById("prevented-frame-form")).toBeDefined()
+  })
+
+  test("delegates an outside-root promoted Frame form after commit without emitting visit", async () => {
+    const session = fixture()
+    const root = session.tree.document.children.find(isElement)
+    if (!root) throw new Error("promoted Frame form fixture requires a document root")
+    session.setAttribute(root.key, "data-turbo-root", "/current")
+    session.setAttribute("id:form-a", "action", "/current/submit-a")
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const navigationCalls: Array<{ action: string; url: string }> = []
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      async visit(url, action) {
+        navigationCalls.push({ action, url })
+      },
+    }
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { navigation, visitLifecycle: lifecycle },
+    )
+    const finalUrl = "https://example.test/outside"
+    lifecycle.subscribe("before-visit", (event) => {
+      expect(current.history.current?.url).toBe(finalUrl)
+      expect(session.tree.getElementById("outside-frame-form")).toBeDefined()
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><OutsideFrameForm id="outside-frame-form" /></turbo-frame>',
+            { redirected: true, url: finalUrl },
+          ),
+      },
+      { frameControllers: current.frameControllers },
+    ).submit(proposal(registry(session, "form-a"), "outside-promoted-frame"))
+
+    expect(result).toMatchObject({ application: "frame", status: "applied" })
+    expect(events).toEqual([`before:${finalUrl}`])
+    expect(navigationCalls).toEqual([{ action: "advance", url: finalUrl }])
+    expect(current.history.current?.url).toBe(finalUrl)
+    expect(session.tree.document.url).toBe(finalUrl)
+  })
+
+  test("settles pending promoted Frame form navigation when its mounted registry releases", async () => {
+    for (const release of ["delete", "dispose"] as const) {
+      const session = fixture()
+      const root = session.tree.document.children.find(isElement)
+      if (!root) throw new Error("promoted Frame form fixture requires a document root")
+      session.setAttribute(root.key, "data-turbo-root", "/current")
+      session.setAttribute("id:form-a", "action", "/current/submit-a")
+      session.setAttribute("id:form-a", "data-turbo-action", "advance")
+      session.setAttribute("id:form-a", "method", "post")
+      const lifecycle = new DocumentVisitLifecycle()
+      const events: string[] = []
+      lifecycle.subscribe("before-visit", (event) => {
+        events.push(`before:${event.detail.url}`)
+      })
+      lifecycle.subscribe("visit", () => {
+        events.push("visit")
+      })
+      const navigationStarted = deferred<void>()
+      const pendingNavigation = deferred<void>()
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        visit() {
+          navigationStarted.resolve()
+          return pendingNavigation.promise
+        },
+      }
+      const current = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        true,
+        { navigation, visitLifecycle: lifecycle },
+      )
+      const controls = registry(session, "form-a")
+      const finalUrl = `https://example.test/outside-${release}`
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              `<turbo-frame id="frame-a"><Released id="released-${release}" /></turbo-frame>`,
+              { redirected: true, url: finalUrl },
+            ),
+        },
+        { frameControllers: current.frameControllers },
+      ).submit(proposal(controls, `promoted-frame-${release}`))
+      await navigationStarted.promise
+
+      if (release === "delete") current.frameControllers.delete("frame-a")
+      else current.frameControllers.dispose()
+
+      await expect(submitting).resolves.toMatchObject({ application: "frame", status: "applied" })
+      expect(events).toEqual([`before:${finalUrl}`])
+      expect(current.history.current?.url).toBe(finalUrl)
+      expect(session.tree.document.url).toBe(finalUrl)
+      expect(session.tree.getElementById(`released-${release}`)).toBeDefined()
+      expect(controls.submissionState.busy).toBe(false)
+
+      pendingNavigation.reject(new Error("sensitive late navigation failure"))
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+  })
+
+  test("does not emit a promoted visit when Frame autofocus finalization fails after commit", async () => {
+    const session = fixture()
+    session.removeAttribute("id:frame-a", "src")
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { visitLifecycle: lifecycle },
+    )
+    const mounted = current.frameControllers.get("frame-a")
+    await mounted.connect()
+    mounted.subscribe(() => {
+      throw new Error("sensitive mounted autofocus publication failure")
+    })
+    const controls = registry(session, "form-a")
+    const finalUrl = "https://example.test/frame-a/autofocus-error"
+
+    let failure: unknown
+    try {
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-frame id="frame-a"><Field id="autofocus-error" autofocus="" /></turbo-frame>',
+              { redirected: true, url: finalUrl },
+            ),
+        },
+        { frameControllers: current.frameControllers },
+      ).submit(proposal(controls, "promoted-frame-autofocus-error"))
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(FormSubmissionCommitError)
+    expect((failure as FormSubmissionCommitError).outcome).toMatchObject({
+      application: "frame",
+      status: "applied",
+    })
+    expect(JSON.stringify(failure)).not.toContain("sensitive")
+    expect(events).toEqual([])
+    expect(current.history.current?.url).toBe(finalUrl)
+    expect(session.tree.document.url).toBe(finalUrl)
+    expect(session.tree.getElementById("autofocus-error")).toBeDefined()
+    expect(controls.submissionState.busy).toBe(false)
+  })
+
+  test("reports committed truth when promoted Frame form navigation is unavailable", async () => {
+    for (const fixtureCase of ["missing", "rejecting"] as const) {
+      const session = fixture()
+      const root = session.tree.document.children.find(isElement)
+      if (!root) throw new Error("promoted Frame form fixture requires a document root")
+      session.setAttribute(root.key, "data-turbo-root", "/current")
+      session.setAttribute("id:form-a", "action", "/current/submit-a")
+      session.setAttribute("id:form-a", "data-turbo-action", "advance")
+      session.setAttribute("id:form-a", "method", "post")
+      const lifecycle = new DocumentVisitLifecycle()
+      const events: string[] = []
+      const navigationCalls: string[] = []
+      let navigationSettled = false
+      lifecycle.subscribe("before-visit", (event) => {
+        events.push(`before:${event.detail.url}`)
+      })
+      lifecycle.subscribe("visit", () => {
+        events.push("visit")
+      })
+      const navigation: NavigationAdapter | undefined =
+        fixtureCase === "rejecting"
+          ? {
+              back() {},
+              openExternal() {},
+              async visit(url) {
+                navigationCalls.push(url)
+                await Promise.resolve()
+                navigationSettled = true
+                throw new Error("sensitive promoted Frame form navigation rejection")
+              },
+            }
+          : undefined
+      const current = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        true,
+        {
+          ...(navigation ? { navigation } : {}),
+          visitLifecycle: lifecycle,
+        },
+      )
+      const controls = registry(session, "form-a")
+      const finalUrl = "https://example.test/outside"
+
+      let failure: unknown
+      try {
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(
+                request,
+                `<turbo-frame id="frame-a"><Outside id="outside-form-${fixtureCase}" /></turbo-frame>`,
+                { redirected: true, url: finalUrl },
+              ),
+          },
+          { frameControllers: current.frameControllers },
+        ).submit(proposal(controls, `promoted-frame-navigation-${fixtureCase}`))
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(FormSubmissionCommitError)
+      expect((failure as FormSubmissionCommitError).outcome).toMatchObject({
+        application: "frame",
+        status: "applied",
+      })
+      expect(JSON.stringify(failure)).not.toContain("sensitive")
+      expect(events).toEqual([`before:${finalUrl}`])
+      expect(navigationCalls).toEqual(fixtureCase === "rejecting" ? [finalUrl] : [])
+      expect(navigationSettled).toBe(fixtureCase === "rejecting")
+      expect(current.history.current?.url).toBe(finalUrl)
+      expect(session.tree.document.url).toBe(finalUrl)
+      expect(session.tree.getElementById(`outside-form-${fixtureCase}`)).toBeDefined()
+      expect(controls.submissionState.busy).toBe(false)
+    }
+  })
+
+  test("keeps failed, 422, and non-promoted Frame forms out of visit lifecycle", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+
+    {
+      const session = fixture()
+      session.setAttribute("id:form-a", "data-turbo-action", "advance")
+      const current = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        true,
+        { visitLifecycle: lifecycle },
+      )
+      await expect(
+        new FormSubmissionController(
+          session,
+          {
+            fetch: async () => {
+              throw new Error("sensitive transport failure")
+            },
+          },
+          { frameControllers: current.frameControllers },
+        ).submit(proposal(registry(session, "form-a"), "failed-promoted-frame")),
+      ).rejects.toBeInstanceOf(RequestError)
+      expect(current.writes).toEqual([])
+    }
+
+    {
+      const session = fixture()
+      session.setAttribute("id:form-a", "data-turbo-action", "replace")
+      const current = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        true,
+        { visitLifecycle: lifecycle },
+      )
+      expect(
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(
+                request,
+                '<turbo-frame id="frame-a"><InvalidFrameForm id="invalid-frame-form" /></turbo-frame>',
+                { status: 422 },
+              ),
+          },
+          { frameControllers: current.frameControllers },
+        ).submit(proposal(registry(session, "form-a"), "invalid-promoted-frame")),
+      ).toMatchObject({ application: "frame", classification: "client-error", status: "applied" })
+      expect(current.writes).toEqual([])
+    }
+
+    {
+      const session = fixture()
+      const current = mountedFrameHistoryFixture(
+        session,
+        "frame-a",
+        new DocumentSnapshotCache(),
+        undefined,
+        true,
+        { visitLifecycle: lifecycle },
+      )
+      expect(
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(
+                request,
+                '<turbo-frame id="frame-a"><OrdinaryFrameForm id="ordinary-frame-form" /></turbo-frame>',
+              ),
+          },
+          { frameControllers: current.frameControllers },
+        ).submit(proposal(registry(session, "form-a"), "ordinary-frame")),
+      ).toMatchObject({ application: "frame", status: "applied" })
+      expect(current.writes).toEqual([])
+    }
+
+    expect(events).toEqual([])
+  })
+
+  test("reports a committed error when promoted Frame before-visit fails", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-visit", () => {
+      throw new Error("sensitive promoted Frame listener failure")
+    })
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { visitLifecycle: lifecycle },
+    )
+    const controls = registry(session, "form-a")
+    const finalUrl = "https://example.test/frame-a/listener-failed"
+
+    let error: unknown
+    try {
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-frame id="frame-a"><ListenerFailedFrameForm id="listener-failed-frame-form" /></turbo-frame>',
+              { redirected: true, url: finalUrl },
+            ),
+        },
+        { frameControllers: current.frameControllers },
+      ).submit(proposal(controls, "listener-failed-promoted-frame"))
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(FormSubmissionCommitError)
+    expect((error as FormSubmissionCommitError).outcome).toMatchObject({
+      application: "frame",
+      classification: "success",
+      status: "applied",
+    })
+    expect(JSON.stringify(error)).not.toContain("sensitive")
+    expect(current.history.current?.url).toBe(finalUrl)
+    expect(session.tree.document.url).toBe(finalUrl)
+    expect(session.tree.getElementById("listener-failed-frame-form")).toBeDefined()
+    expect(controls.submissionState.busy).toBe(false)
   })
 
   test("keeps unsuccessful Frame form outcomes out of mounted history", async () => {

@@ -5,6 +5,7 @@ import type {
   DocumentSession,
   DocumentSnapshotCache,
   DocumentVisitController,
+  DocumentVisitLifecycle,
 } from "expo-turbo/core";
 import {
   EXPO_TURBO_MIME_TYPE,
@@ -20,6 +21,7 @@ export function createDemoFrameControllers(
   refresh: DocumentRefreshRequester,
   history: DocumentHistory,
   snapshotCache: DocumentSnapshotCache,
+  visitLifecycle: DocumentVisitLifecycle,
   visibility: VisibilityAdapter,
 ): FrameControllerRegistry {
   let requestId = 0;
@@ -62,7 +64,12 @@ export function createDemoFrameControllers(
     navigation,
     documentController,
     {
-      frameHistory: new FrameHistoryCoordinator(session, { history, snapshotCache }),
+      frameHistory: new FrameHistoryCoordinator(session, {
+        history,
+        navigation,
+        snapshotCache,
+        visitLifecycle,
+      }),
     },
   );
 }

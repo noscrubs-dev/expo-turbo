@@ -95,6 +95,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     refresh,
     documentRuntime.history,
     documentRuntime.snapshotCache,
+    documentRuntime.visitLifecycle,
     visibility,
   );
   const formController = createDemoFormController(
@@ -102,6 +103,8 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     refresh,
     frames,
     documentRuntime.snapshotCache,
+    navigation,
+    documentRuntime.visitLifecycle,
   );
   const forms = new DocumentFormControls(session, {
     focus,
