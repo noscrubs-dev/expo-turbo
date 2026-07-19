@@ -38,6 +38,10 @@ export type DocumentPreloadReport =
       url: string
     }>
 
+export interface DocumentPreloadRequester {
+  preload(source: string): Promise<DocumentPreloadReport>
+}
+
 interface ActiveDocumentPreload {
   readonly controller: AbortController
   readonly promise: Promise<DocumentPreloadReport>
@@ -138,8 +142,15 @@ export class DocumentPreloader {
   preload(source: string): Promise<DocumentPreloadReport> {
     let url: string
     try {
-      if (typeof source !== "string") {
-        throw new TargetError("Document preload source must be a string")
+      if (
+        typeof source !== "string" ||
+        source.trim() === "" ||
+        [...source].some((character) => {
+          const codePoint = character.codePointAt(0)
+          return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+        })
+      ) {
+        throw new TargetError("Document preload source is invalid")
       }
       const disposition = classifyTopLevelLocation(this.session.tree, source)
       if (disposition.classification !== "visitable") {
@@ -147,7 +158,7 @@ export class DocumentPreloader {
           target: disposition.classification,
         })
       }
-      if (new URL(disposition.url).hash !== "") {
+      if (disposition.url.includes("#")) {
         throw new TargetError("Document preload fragments require anchor preload support")
       }
       url = disposition.url

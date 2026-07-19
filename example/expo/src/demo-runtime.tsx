@@ -184,6 +184,7 @@ export function DemoRuntimeProvider({
             autofocus={runtime.focus}
             documentComponent={DemoDocumentBoundary}
             documentController={runtime.documentRuntime.controller}
+            documentPreloader={runtime.documentRuntime.preloader}
             frameComponent={DemoFrameBoundary}
             formComponent={DemoFormBoundary}
             formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}

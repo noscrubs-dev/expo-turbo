@@ -48,6 +48,7 @@ export class DocumentSession {
   private readonly disposals = new Map<ProtocolNode, Set<DisposalHook>>()
   private readonly identities = new WeakMap<ProtocolNode, string>()
   private readonly listeners = new Map<string, Set<SessionListener>>()
+  private readonly revisionListeners = new Set<SessionListener>()
   private readonly treeStateListeners = new Set<SessionListener>()
   private readonly sessionIdentity = nextSessionIdentity++
   private readonly snapshots = new Map<string, NodeSnapshot>()
@@ -127,6 +128,11 @@ export class DocumentSession {
     return () => this.treeStateListeners.delete(listener)
   }
 
+  subscribeRevision(listener: SessionListener): () => void {
+    this.revisionListeners.add(listener)
+    return () => this.revisionListeners.delete(listener)
+  }
+
   private installTree(tree: DocumentTree, preview: boolean): void {
     this.assertMutationAllowed()
     const generation = this.currentTreeGeneration + 1
@@ -143,6 +149,7 @@ export class DocumentSession {
     this.reportErrors(disposalErrors, [
       ...this.notify([...this.listeners.keys()]),
       ...this.notifyListeners(this.treeStateListeners),
+      ...this.notifyListeners(this.revisionListeners),
     ])
   }
 
@@ -206,7 +213,10 @@ export class DocumentSession {
     this.currentRevision += 1
     const uniqueKeys = new Set(keys)
     for (const key of uniqueKeys) this.snapshots.delete(key)
-    this.reportErrors(disposalErrors, this.notify(uniqueKeys))
+    this.reportErrors(disposalErrors, [
+      ...this.notify(uniqueKeys),
+      ...this.notifyListeners(this.revisionListeners),
+    ])
   }
 
   private assertMutationAllowed(): void {

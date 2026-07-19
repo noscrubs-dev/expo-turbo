@@ -30,13 +30,20 @@ import {
 import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal"
 import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
+import type { DocumentPreloadRequester } from "../core/document-preloader"
 import type {
   DocumentVisitController,
   DocumentVisitDelegation,
   DocumentVisitResult,
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
-import { RegistryError, StateError, TargetError } from "../core/errors"
+import {
+  ExpoTurboError,
+  RegistryError,
+  RequestError,
+  StateError,
+  TargetError,
+} from "../core/errors"
 import type { FormLinkSubmissionController } from "../core/form-link-submission"
 import type { FormRequestPlan } from "../core/form-request"
 import type {
@@ -67,6 +74,7 @@ import type {
 import { consumeFrameAutofocus } from "../core/frame-autofocus-internal"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
+import { resolveFormSubmissionDestination } from "../core/frames"
 import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
@@ -186,6 +194,7 @@ interface RendererContextValue {
   readonly autofocus: AutofocusAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
+  readonly documentPreloader: DocumentPreloadRequester | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
   readonly formAnnouncements: FormSubmissionAnnouncementAdapter | undefined
@@ -233,12 +242,83 @@ function linkFrameVisitAction(value: string | undefined): VisitAction | null | u
   return exactVisitAction(value) ?? null
 }
 
+function hasProtocolAttribute(node: ProtocolElement, name: string): boolean {
+  return node.attributes.some((attribute) => attribute.name === name)
+}
+
+function automaticDocumentPreloadUrl(
+  session: DocumentSession,
+  node: ProtocolElement,
+  href: string,
+): string | undefined {
+  if (
+    !hasProtocolAttribute(node, "data-turbo-preload") ||
+    hasProtocolAttribute(node, "disabled") ||
+    hasProtocolAttribute(node, "data-turbo-method") ||
+    hasProtocolAttribute(node, "data-turbo-stream")
+  ) {
+    return undefined
+  }
+  const browserTarget = attributeValue(node, "target")
+  if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
+    return undefined
+  }
+  if (UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))) {
+    return undefined
+  }
+
+  let current: ProtocolNode | null = node
+  while (current && current.kind !== "document") {
+    if (isElement(current)) {
+      const setting = attributeValue(current, "data-turbo")
+      if (setting !== undefined) {
+        if (setting === "false") return undefined
+        break
+      }
+    }
+    current = current.parent
+  }
+
+  try {
+    const documentUrl = session.tree.document.url
+    if (!documentUrl) return undefined
+    const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
+    if (linkUrl.kind !== "protocol") return undefined
+    const frameTarget = attributeValue(node, "data-turbo-frame")
+    const destination = resolveFormSubmissionDestination(session.tree, node, {
+      ...(frameTarget !== undefined ? { formTarget: frameTarget } : {}),
+    })
+    if (destination.kind !== "document") return undefined
+    const disposition = classifyTopLevelLocation(session.tree, linkUrl.resolution.url)
+    if (disposition.classification !== "visitable") return undefined
+    return disposition.url
+  } catch {
+    return undefined
+  }
+}
+
+function useAutomaticDocumentPreloadRevision(
+  session: DocumentSession,
+  node: ProtocolElement | undefined,
+  enabled: boolean,
+): void {
+  const subscribed =
+    enabled && node !== undefined && hasProtocolAttribute(node, "data-turbo-preload")
+  const subscribe = useCallback(
+    (listener: () => void) => (subscribed ? session.subscribeRevision(listener) : () => undefined),
+    [session, subscribed],
+  )
+  const snapshot = useCallback(() => (subscribed ? session.revision : 0), [session, subscribed])
+  useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
   readonly autofocus?: AutofocusAdapter
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
+  readonly documentPreloader?: DocumentPreloadRequester
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
@@ -281,6 +361,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       autofocus: props.autofocus,
       documentComponent: props.documentComponent,
       documentController: props.documentController,
+      documentPreloader: props.documentPreloader,
       frameComponent: props.frameComponent,
       formComponent: props.formComponent,
       formAnnouncements: props.formAnnouncements,
@@ -301,6 +382,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.autofocus,
       props.documentComponent,
       props.documentController,
+      props.documentPreloader,
       props.frameComponent,
       props.formComponent,
       props.formAnnouncements,
@@ -816,10 +898,68 @@ export type ExpoTurboDocumentLinkResult =
 export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
 
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
-  const { documentController, formLinks, frames, session } = useRenderer()
+  const { documentController, documentPreloader, formLinks, frames, onError, session } =
+    useRenderer()
   const navigation = useContext(NavigationContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
+  const link = node && isElement(node) ? node : undefined
+  useAutomaticDocumentPreloadRevision(session, link, documentPreloader !== undefined)
+  const onErrorRef = useRef(onError)
+  useLayoutEffect(() => {
+    onErrorRef.current = onError
+  }, [onError])
+  const automaticPreloadUrl =
+    documentPreloader && link ? automaticDocumentPreloadUrl(session, link, href) : undefined
+  useLayoutEffect(() => {
+    if (
+      !documentPreloader ||
+      !automaticPreloadUrl ||
+      !nodeKey ||
+      !link ||
+      session.tree.getNodeByKey(nodeKey) !== link
+    ) {
+      return
+    }
+    const activeLink = link
+    const linkNodeKey = nodeKey
+    if (automaticDocumentPreloadUrl(session, activeLink, href) !== automaticPreloadUrl) return
+
+    let active = true
+    let preload: Promise<unknown>
+    try {
+      preload = documentPreloader.preload(automaticPreloadUrl)
+    } catch (error) {
+      preload = Promise.reject(error)
+    }
+    void Promise.resolve(preload).catch((error) => {
+      if (
+        !active ||
+        session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
+        automaticDocumentPreloadUrl(session, activeLink, href) !== automaticPreloadUrl
+      ) {
+        return
+      }
+      const observer = onErrorRef.current
+      if (!observer) return
+      try {
+        observer({
+          error:
+            error instanceof ExpoTurboError
+              ? error
+              : new RequestError("Automatic document preload failed"),
+          nodeKey: linkNodeKey,
+        })
+      } catch {
+        queueMicrotask(() => {
+          throw new StateError("Automatic document preload error reporting failed")
+        })
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [automaticPreloadUrl, documentPreloader, href, link, nodeKey, session])
   const activate = useCallback(async () => {
     if (!documentController || !nodeKey || !node || !isElement(node)) {
       throw new TargetError("Document link is outside the active document")
