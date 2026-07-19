@@ -1,6 +1,34 @@
 import type { VisitAction } from "../adapters"
 import { PropsError, StateError } from "./errors"
 import { CancellableEvent, NotificationEvent } from "./events"
+import { consumeThenableResult } from "./thenable-result"
+
+export class LinkClickEvent extends CancellableEvent<
+  "click",
+  Readonly<{ nodeKey: string; url: string }>
+> {
+  constructor(nodeKey: string, url: string) {
+    super("click", Object.freeze({ nodeKey, url }))
+    let prevented = false
+    Object.defineProperties(this, {
+      defaultPrevented: {
+        configurable: false,
+        enumerable: true,
+        get: () => prevented,
+      },
+      detail: { writable: false },
+      preventDefault: {
+        configurable: false,
+        value: () => {
+          prevented = true
+        },
+        writable: false,
+      },
+      type: { writable: false },
+    })
+    Object.freeze(this)
+  }
+}
 
 export class BeforeVisitEvent extends CancellableEvent<"before-visit", Readonly<{ url: string }>> {
   constructor(url: string) {
@@ -17,10 +45,11 @@ export class VisitEvent extends NotificationEvent<
   }
 }
 
-export type DocumentVisitLifecycleEvent = BeforeVisitEvent | VisitEvent
+export type DocumentVisitLifecycleEvent = BeforeVisitEvent | LinkClickEvent | VisitEvent
 
 export interface DocumentVisitLifecycleEventMap {
   readonly "before-visit": BeforeVisitEvent
+  readonly click: LinkClickEvent
   readonly visit: VisitEvent
 }
 
@@ -37,13 +66,17 @@ type DocumentVisitObserver = (error: AggregateError) => undefined
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.click-dispatch",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.visit-dispatch",
 )
 
 /**
- * Synchronous logical lifecycle for native document visits. Before-visit
- * listeners may cancel admission; visit listeners are notification observers.
+ * Synchronous logical lifecycle for semantic links and native document visits.
+ * Click and before-visit listeners may cancel admission; visit listeners are
+ * notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -60,7 +93,7 @@ export class DocumentVisitLifecycle {
     type: Type,
     listener: DocumentVisitLifecycleListener<Type>,
   ): () => void {
-    if (type !== "before-visit" && type !== "visit") {
+    if (type !== "before-visit" && type !== "click" && type !== "visit") {
       throw new StateError("Document visit lifecycle event type is invalid")
     }
     if (typeof listener !== "function") {
@@ -78,6 +111,25 @@ export class DocumentVisitLifecycle {
       listeners?.delete(admitted)
       if (listeners?.size === 0) this.listeners.delete(type)
     }
+  }
+
+  [DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](event: LinkClickEvent): LinkClickEvent {
+    for (const listener of [...(this.listeners.get("click") ?? [])]) {
+      let result: unknown
+      try {
+        result = listener(event)
+      } catch {
+        throw new StateError("Click listener failed")
+      }
+      if (result === undefined) continue
+      try {
+        consumeThenableResult(result)
+      } catch {
+        throw new StateError("Click listener failed")
+      }
+      throw new StateError("Click listener must return undefined")
+    }
+    return event
   }
 
   [DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH](event: BeforeVisitEvent): BeforeVisitEvent {

@@ -3,9 +3,11 @@ import {
   admitDocumentVisitLifecycle,
   BeforeVisitEvent,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   DocumentVisitLifecycle,
   documentVisitLifecycleOption,
+  LinkClickEvent,
   VisitEvent,
 } from "./document-visit-lifecycle"
 import { PropsError, StateError } from "./errors"
@@ -34,6 +36,140 @@ function surfacedErrors(operation: () => unknown): Error[] {
 }
 
 describe("document visit lifecycle", () => {
+  test("freezes native click detail and makes cancellation irreversible", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const event = new LinkClickEvent("link-key", "https://example.test/next")
+    lifecycle.subscribe("click", (received) => {
+      expect(received).toBe(event)
+      expect(received.detail).toEqual({
+        nodeKey: "link-key",
+        url: "https://example.test/next",
+      })
+      expect(Object.isFrozen(received)).toBe(true)
+      expect(Object.isFrozen(received.detail)).toBe(true)
+      received.preventDefault()
+      expect(() => Object.defineProperty(received, "defaultPrevented", { value: false })).toThrow()
+    })
+
+    expect(lifecycle[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](event)).toBe(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  test("keeps click cancellation when a hostile listener poisons WeakSet intrinsics", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const add = Object.getOwnPropertyDescriptor(WeakSet.prototype, "add")
+    const has = Object.getOwnPropertyDescriptor(WeakSet.prototype, "has")
+    if (!add || !has) throw new Error("WeakSet intrinsic descriptors are unavailable")
+
+    lifecycle.subscribe("click", (event) => {
+      Object.defineProperties(WeakSet.prototype, {
+        add: {
+          ...add,
+          value: function poisonedAdd() {
+            return this
+          },
+        },
+        has: { ...has, value: () => false },
+      })
+      try {
+        event.preventDefault()
+      } finally {
+        Object.defineProperties(WeakSet.prototype, { add, has })
+      }
+    })
+
+    const event = lifecycle[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+      new LinkClickEvent("link-key", "https://example.test/next"),
+    )
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  test("uses stable click listener snapshots and rejects asynchronous or failing listeners", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const calls: string[] = []
+    const late = () => {
+      calls.push("late")
+      return undefined
+    }
+    let removeSecond: () => void = () => undefined
+    lifecycle.subscribe("click", () => {
+      calls.push("first")
+      removeSecond()
+      lifecycle.subscribe("click", late)
+    })
+    removeSecond = lifecycle.subscribe("click", () => {
+      calls.push("second")
+    })
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+      new LinkClickEvent("one", "https://example.test/one"),
+    )
+    expect(calls).toEqual(["first", "second"])
+
+    calls.length = 0
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+      new LinkClickEvent("two", "https://example.test/two"),
+    )
+    expect(calls).toEqual(["first", "late"])
+
+    const privateUrl = "https://example.test/private?token=secret"
+    const thrown = new DocumentVisitLifecycle()
+    thrown.subscribe("click", () => {
+      throw new Error(privateUrl)
+    })
+    const thrownError = capturedError(() =>
+      thrown[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+        new LinkClickEvent("private-link", privateUrl),
+      ),
+    )
+    expect(thrownError).toBeInstanceOf(StateError)
+    expect(thrownError.message).toBe("Click listener failed")
+    expect(String(thrownError)).not.toContain("secret")
+
+    for (const value of [false, null, 0, "", Promise.resolve(undefined)]) {
+      const invalid = new DocumentVisitLifecycle()
+      invalid.subscribe("click", (() => value) as never)
+      const invalidError = capturedError(() =>
+        invalid[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+          new LinkClickEvent("private-link", privateUrl),
+        ),
+      )
+      expect(invalidError).toBeInstanceOf(StateError)
+      expect(invalidError.message).toBe("Click listener must return undefined")
+      expect(String(invalidError)).not.toContain("secret")
+    }
+  })
+
+  test("redacts hostile click thenables that poison WeakSet intrinsics", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const has = Object.getOwnPropertyDescriptor(WeakSet.prototype, "has")
+    if (!has) throw new Error("WeakSet has descriptor is unavailable")
+    lifecycle.subscribe("click", (() => ({
+      // biome-ignore lint/suspicious/noThenProperty: This deliberately exercises a hostile thenable.
+      get then() {
+        Object.defineProperty(WeakSet.prototype, "has", {
+          ...has,
+          value: () => {
+            throw new Error("private click-thenable secret")
+          },
+        })
+        return () => undefined
+      },
+    })) as never)
+
+    try {
+      const error = capturedError(() =>
+        lifecycle[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](
+          new LinkClickEvent("private-link", "https://example.test/private?token=secret"),
+        ),
+      )
+      expect(error).toBeInstanceOf(StateError)
+      expect(error.message).toBe("Click listener failed")
+      expect(String(error)).not.toContain("secret")
+    } finally {
+      Object.defineProperty(WeakSet.prototype, "has", has)
+    }
+  })
+
   test("freezes event details and exposes before-visit cancellation", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const beforeVisit = new BeforeVisitEvent("https://example.test/next")
