@@ -14,6 +14,7 @@ export {
   type DocumentVisitLifecycleEvent,
   type DocumentVisitLifecycleEventMap,
   type DocumentVisitLifecycleOptions,
+  LinkClickEvent,
   VisitEvent,
 } from "./document-visit-lifecycle"
 export * from "./errors"

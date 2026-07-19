@@ -21,6 +21,7 @@ import {
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
 } from "./document-loader-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+import { registerDocumentVisitControllerLifecycle } from "./document-visit-controller-internal"
 import {
   admitDocumentVisitLifecycle,
   BeforeVisitEvent,
@@ -199,6 +200,7 @@ export class DocumentVisitController {
       admittedOptions.visitLifecycle,
       "Document visit controller visit lifecycle is invalid",
     )
+    registerDocumentVisitControllerLifecycle(this, this.visitLifecycle)
     if (!Number.isFinite(this.progressDelayMs) || this.progressDelayMs < 0) {
       throw new RequestError("Document visit progress delay must be a non-negative number")
     }

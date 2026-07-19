@@ -37,6 +37,7 @@ import type {
   DocumentVisitResult,
   DocumentVisitSnapshot,
 } from "../core/document-visit-controller"
+import { dispatchDocumentVisitLinkClick } from "../core/document-visit-controller-internal"
 import {
   ExpoTurboError,
   RegistryError,
@@ -891,6 +892,11 @@ export type ExpoTurboDocumentLinkResult =
   | ExpoTurboDocumentLinkDelegation
   | FormSubmissionReport
   | Readonly<{
+      kind: "link"
+      status: "canceled"
+      url: string
+    }>
+  | Readonly<{
       kind: "disabled"
       status: "ignored"
     }>
@@ -1017,8 +1023,26 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     const elementTarget = attributeValue(node, "data-turbo-frame")
     const resolved = linkUrl.resolution
     const documentVisitOptions = navigation ? { navigation } : {}
-    if (!optedOut && classifyTopLevelLocation(session.tree, href).classification !== "visitable") {
-      return documentController.visit(href, documentVisitOptions)
+    const disposition = classifyTopLevelLocation(session.tree, resolved.url)
+    if (!optedOut && disposition.classification !== "visitable") {
+      if (!navigation) throw new TargetError("Document link delegation requires host navigation")
+      if (disposition.classification === "external") {
+        await navigation.openExternal(disposition.url)
+        return Object.freeze({
+          kind: "external",
+          reason: "external",
+          status: "delegated",
+          url: disposition.url,
+        })
+      }
+      await navigation.visit(disposition.url, "advance")
+      return Object.freeze({
+        action: "advance",
+        kind: "navigation",
+        reason: disposition.classification,
+        status: "delegated",
+        url: disposition.url,
+      })
     }
     if (
       !optedOut &&
@@ -1032,6 +1056,16 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         throw new TargetError("Generated form-link submission is disabled")
       }
       return formLinks.submit(node.key, href)
+    }
+    if (
+      !optedOut &&
+      !dispatchDocumentVisitLinkClick(documentController, nodeKey, disposition.url)
+    ) {
+      return Object.freeze({
+        kind: "link",
+        status: "canceled",
+        url: disposition.url,
+      })
     }
     if (!optedOut && nearestFrameId !== undefined) {
       if (!nearestFrameId) {

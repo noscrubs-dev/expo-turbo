@@ -41,6 +41,7 @@ import {
   DocumentSession,
   DocumentVisitController,
   type DocumentVisitControllerOptions,
+  DocumentVisitLifecycle,
   EXPO_TURBO_MIME_TYPE,
   FormLinkSubmissionController,
   FormSubmissionController,
@@ -4579,6 +4580,184 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("emits native click before document visit lifecycle and lets cancellation start no work", async () => {
+    const events: string[] = []
+    const requests: TurboRequest[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      events.push(`click:${event.detail.url}`)
+      expect(event.detail.nodeKey).not.toBe("")
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      if (event.detail.url.endsWith("/blocked")) event.preventDefault()
+    })
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before-visit:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.url}`)
+    })
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/blocked" /><DocumentLink href="/next" /></Gallery>',
+      async (request) => {
+        events.push(`fetch:${request.url}`)
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    let canceled: unknown
+    await act(async () => {
+      canceled = await harness.activation("/blocked")()
+    })
+    expect(canceled).toEqual({
+      kind: "link",
+      status: "canceled",
+      url: "https://example.test/blocked",
+    })
+    expect(Object.isFrozen(canceled)).toBe(true)
+    expect(requests).toHaveLength(0)
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state.status).toBe("initialized")
+
+    await act(async () => {
+      await harness.activation("/next")()
+    })
+    expect(events).toEqual([
+      "click:https://example.test/blocked",
+      "click:https://example.test/next",
+      "before-visit:https://example.test/next",
+      "visit:https://example.test/next",
+      "fetch:https://example.test/next",
+    ])
+    expect(requests).toHaveLength(1)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects a failing click listener before request, Frame, or navigation ownership", async () => {
+    const documentRequests: TurboRequest[] = []
+    const frameRequests: TurboRequest[] = []
+    const navigation: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", () => {
+      throw new Error("private click-listener secret")
+    })
+    const harness = renderDocumentLinks(
+      '<Gallery><turbo-frame id="frame"><DocumentLink href="/blocked" /></turbo-frame></Gallery>',
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("click listener failure must not fetch a document")
+      },
+      "https://example.test/gallery",
+      {
+        back() {},
+        openExternal() {},
+        visit(url) {
+          navigation.push(url)
+        },
+      },
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("click listener failure must not fetch a Frame")
+      },
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await expect(harness.activation("/blocked")()).rejects.toEqual(
+      new StateError("Click listener failed"),
+    )
+    expect(documentRequests).toEqual([])
+    expect(frameRequests).toEqual([])
+    expect(navigation).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("emits click before Frame capture and before _top visit while cancellation blocks a named Frame", async () => {
+    const events: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      events.push(`click:${event.detail.url}`)
+      if (event.detail.url.endsWith("/named")) event.preventDefault()
+    })
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before-visit:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.url}`)
+    })
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="nearest"><DocumentLink href="/nearest" /></turbo-frame>
+        <turbo-frame id="top-frame"><DocumentLink href="/top" data-turbo-frame="_top" /></turbo-frame>
+        <turbo-frame id="destination" />
+        <DocumentLink href="/named" data-turbo-frame="destination" />
+      </Gallery>`,
+      async (request) => {
+        events.push(`document-fetch:${request.url}`)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/gallery",
+      undefined,
+      async (request) => {
+        const frameId = request.headers["Turbo-Frame"]
+        events.push(`frame-fetch:${frameId}:${request.url}`)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => `<turbo-frame id="${frameId}" />`,
+          url: request.url,
+        }
+      },
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await act(async () => {
+      await harness.activation("/nearest")()
+    })
+    await act(async () => {
+      await expect(harness.activation("/named")()).resolves.toEqual({
+        kind: "link",
+        status: "canceled",
+        url: "https://example.test/named",
+      })
+    })
+    await act(async () => {
+      await harness.activation("/top")()
+    })
+
+    expect(events).toEqual([
+      "click:https://example.test/nearest",
+      "frame-fetch:nearest:https://example.test/nearest",
+      "click:https://example.test/named",
+      "click:https://example.test/top",
+      "before-visit:https://example.test/top",
+      "visit:https://example.test/top",
+      "document-fetch:https://example.test/top",
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
   test("admits empty and exact _self browser targets as current-context links", async () => {
     for (const { href, target } of [
       { href: "/empty-target", target: "" },
@@ -5011,6 +5190,11 @@ describe("React protocol renderer", () => {
   test("submits method and Stream links through the generated-form controller", async () => {
     const documentRequests: TurboRequest[] = []
     const generatedRequests: TurboRequest[] = []
+    const lifecycleEvents: string[] = []
+    const visitLifecycle = new DocumentVisitLifecycle()
+    visitLifecycle.subscribe("click", () => {
+      lifecycleEvents.push("click")
+    })
     let requestId = 0
     const harness = renderDocumentLinks(
       `<Gallery>
@@ -5052,6 +5236,7 @@ describe("React protocol renderer", () => {
           }),
           { next: () => `generated-link-${++requestId}` },
         ),
+      { visitLifecycle },
     )
 
     await act(async () => {
@@ -5071,6 +5256,7 @@ describe("React protocol renderer", () => {
 
     expect(documentRequests).toHaveLength(0)
     expect(generatedRequests).toHaveLength(2)
+    expect(lifecycleEvents).toEqual([])
     expect(generatedRequests[0]).toMatchObject({
       body: {
         contentType: "application/x-www-form-urlencoded;charset=UTF-8",
@@ -5486,6 +5672,74 @@ describe("React protocol renderer", () => {
       url: "https://example.test/app/pending",
     })
     await current
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps delegated and unsupported interactive links outside click and before-visit lifecycle", async () => {
+    const events: string[] = []
+    const external: string[] = []
+    const navigation: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      events.push(`click:${event.detail.url}`)
+    })
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before-visit:${event.detail.url}`)
+    })
+    const adapter: NavigationAdapter = {
+      back() {},
+      openExternal(url) {
+        external.push(url)
+      },
+      visit(url) {
+        navigation.push(url)
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <DocumentLink href="/outside" />
+        <DocumentLink href="https://outside.test/path" />
+        <DocumentLink href="mailto:help@example.com" />
+        <Gallery data-turbo="false"><DocumentLink href="/app/opted-out" /></Gallery>
+        <DocumentLink disabled="" href="/app/disabled" />
+        <DocumentLink href="/app/unsupported" target="_blank" />
+        <DocumentLink download="" href="/app/download" />
+      </Gallery>`,
+      async () => {
+        throw new Error("delegated links must not fetch")
+      },
+      "https://example.test/app/gallery",
+      adapter,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await harness.activation("/outside")()
+    await harness.activation("https://outside.test/path")()
+    await harness.activation("mailto:help@example.com")()
+    await harness.activation("/app/opted-out")()
+    await expect(harness.activation("/app/disabled")()).resolves.toEqual({
+      kind: "disabled",
+      status: "ignored",
+    })
+    await expect(harness.activation("/app/unsupported")()).rejects.toThrow(TargetError)
+    await expect(harness.activation("/app/download")()).rejects.toThrow(TargetError)
+
+    expect(events).toEqual([])
+    expect(navigation).toEqual([
+      "https://example.test/outside",
+      "https://example.test/app/opted-out",
+    ])
+    expect(external).toEqual([
+      "https://outside.test/path",
+      "mailto:help@example.com",
+    ])
+    expect(harness.controller.state.status).toBe("initialized")
+    expect(harness.documentRequestIdCount()).toBe(0)
+
+    await harness.controller.visit("/outside", { navigation: adapter })
+    expect(events).toEqual(["before-visit:https://example.test/outside"])
     act(() => harness.renderer.unmount())
   })
 
@@ -6065,6 +6319,11 @@ describe("React protocol renderer", () => {
     const external: string[] = []
     const navigation: { action: string; url: string }[] = []
     const requests: TurboRequest[] = []
+    const clicks: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
     const harness = renderDocumentLinks(
       `<Gallery>${sources.map((href) => `<DocumentLink href="${href}" />`).join("")}</Gallery>`,
       async (request) => {
@@ -6081,6 +6340,9 @@ describe("React protocol renderer", () => {
           navigation.push({ action, url })
         },
       },
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
     )
 
     for (const source of sources) {
@@ -6099,6 +6361,7 @@ describe("React protocol renderer", () => {
     expect(external).toHaveLength(0)
     expect(navigation).toHaveLength(0)
     expect(requests).toHaveLength(0)
+    expect(clicks).toHaveLength(0)
     expect(harness.controller.state.status).toBe("initialized")
     act(() => harness.renderer.unmount())
   })
@@ -6251,6 +6514,11 @@ describe("React protocol renderer", () => {
       request: TurboRequest
       resolve: (response: TurboResponse) => void
     }[] = []
+    const clicks: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
     const harness = renderDocumentLinks(
       `<Gallery>
         <DocumentLink href="/pending" />
@@ -6258,6 +6526,11 @@ describe("React protocol renderer", () => {
         <turbo-frame id="frame"><DocumentLink href="/inside-frame" /></turbo-frame>
       </Gallery>`,
       (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
     )
     const stale = harness.activation("/stale")
     const insideFrame = harness.activation("/inside-frame")
@@ -6274,10 +6547,15 @@ describe("React protocol renderer", () => {
       )
     })
     await expect(stale()).rejects.toBeInstanceOf(TargetError)
+    expect(clicks).toEqual(["https://example.test/pending"])
     await expect(insideFrame()).rejects.toMatchObject({
       code: "target",
       context: { frameId: "frame" },
     })
+    expect(clicks).toEqual([
+      "https://example.test/pending",
+      "https://example.test/inside-frame",
+    ])
     expect(pending).toHaveLength(1)
     expect(pending[0]?.request.signal?.aborted).toBe(false)
     expect(harness.controller.state).toBe(started)
