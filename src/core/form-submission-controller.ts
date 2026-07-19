@@ -33,6 +33,7 @@ import {
 import {
   ExpoTurboError,
   type ExpoTurboErrorCode,
+  FrameMissingError,
   RequestError,
   StateError,
   TargetError,
@@ -87,6 +88,15 @@ import {
 } from "./frame-history"
 import { resolveMountedFrameHistory } from "./frame-history-internal"
 import {
+  createFrameMissingEvent,
+  discardFrameMissingResponseBody,
+  executeFrameMissingVisit,
+  FRAME_LIFECYCLE_MISSING_DISPATCH,
+  type FrameLifecycle,
+  type FrameMissingEvent,
+  frameLifecycleOption,
+} from "./frame-lifecycle"
+import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
@@ -132,6 +142,12 @@ interface FormSubmissionTransportResponseMetadata extends FormSubmissionRequestM
   /** Validated final transport URL; it does not necessarily become document/Frame state. */
   readonly responseUrl: string
   readonly responseStatus: number
+}
+
+interface FormSubmissionPreventedCandidate extends FormSubmissionRequestMetadata {
+  readonly redirected: boolean
+  readonly responseStatus: number
+  readonly url: string
 }
 
 interface FormSubmissionResponseMetadata extends FormSubmissionTransportResponseMetadata {
@@ -240,6 +256,7 @@ export class FormSubmissionCommitError extends RequestError {
 export interface FormSubmissionControllerOptions extends StreamActionDispatchOptions {
   readonly confirmation?: FormConfirmationAdapter
   readonly frameControllers?: FrameControllerRegistry
+  readonly frameLifecycle?: FrameLifecycle
   readonly history?: DocumentHistory
   readonly limits?: Partial<ParseLimits>
   readonly navigation?: NavigationAdapter
@@ -363,6 +380,7 @@ export class FormSubmissionController {
     options: FormSubmissionControllerOptions = {},
   ) {
     const requestLifecycle = requestLifecycleOption(options, "Form submission controller")
+    const frameLifecycle = frameLifecycleOption(options, "Form submission controller")
     const submissionLifecycle = formSubmissionLifecycleOption(options, "Form submission controller")
     const streamLifecycle = streamLifecycleOption(options, "Form submission controller")
     const visitLifecycle = documentVisitLifecycleOption(options, "Form submission controller")
@@ -371,6 +389,7 @@ export class FormSubmissionController {
       ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
       ...(options.frameControllers ? { frameControllers: options.frameControllers } : {}),
+      ...(frameLifecycle ? { frameLifecycle } : {}),
       ...(options.history ? { history: options.history } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(navigation ? { navigation } : {}),
@@ -705,6 +724,8 @@ export class FormSubmissionController {
         return settle(this.prevented(response, proposal.destination))
       }
 
+      let missingEvent: FrameMissingEvent | undefined
+      let application: FormSubmissionReport
       try {
         if (!this.isCurrent(activeLease, proposal)) {
           return settle(this.canceled(response, proposal.destination))
@@ -739,18 +760,35 @@ export class FormSubmissionController {
           }
         }
         let preparedFrame: PreparedFrameResponse | undefined
+        let pendingMissingError: FrameMissingError | undefined
+        let pendingMissingEvent: FrameMissingEvent | undefined
         if (response.status === "xml" && proposal.destination.kind === "frame") {
           const frameId =
             response.classification === "success"
               ? proposal.destination.frameId
               : (identity.originFrameId ?? proposal.destination.frameId)
-          preparedFrame = prepareFrameResponse(frameId, response.body, {
-            ...(this.options.limits ? { limits: this.options.limits } : {}),
-            url: response.url,
-          })
+          try {
+            preparedFrame = prepareFrameResponse(frameId, response.body, {
+              ...(this.options.limits ? { limits: this.options.limits } : {}),
+              url: response.url,
+            })
+          } catch (error) {
+            const lifecycle = this.options.frameLifecycle
+            if (!(error instanceof FrameMissingError) || !lifecycle) throw error
+            pendingMissingError = error
+            pendingMissingEvent = createFrameMissingEvent({
+              body: response.body,
+              frameId,
+              response: {
+                redirected: response.redirected,
+                status: response.responseStatus,
+                url: response.url,
+              },
+            })
+          }
         }
         if (
-          preparedFrame &&
+          (preparedFrame || pendingMissingEvent) &&
           response.classification !== "success" &&
           proposal.destination.kind === "frame" &&
           identity.originFrame &&
@@ -769,21 +807,68 @@ export class FormSubmissionController {
             return settle(this.canceled(response, proposal.destination))
           }
         }
-        return settle(
-          await this.apply(
-            response,
-            proposal,
-            identity,
-            activeLease,
-            preparedFrame,
-            historyPlan,
-            frameHistoryPlan,
-          ),
-        )
+        if (pendingMissingEvent) {
+          const lifecycle = this.options.frameLifecycle
+          if (!lifecycle || !pendingMissingError) {
+            discardFrameMissingResponseBody(pendingMissingEvent)
+            throw new StateError("Frame-missing response has no lifecycle state")
+          }
+          try {
+            lifecycle[FRAME_LIFECYCLE_MISSING_DISPATCH](pendingMissingEvent)
+          } catch (error) {
+            discardFrameMissingResponseBody(pendingMissingEvent)
+            throw error
+          }
+          if (!this.isCurrent(activeLease, proposal)) {
+            discardFrameMissingResponseBody(pendingMissingEvent)
+            return settle(this.canceled(response, proposal.destination))
+          }
+          if (
+            frameHistoryPlan &&
+            response.classification === "success" &&
+            proposal.destination.kind === "frame"
+          ) {
+            const destinationFrame = identity.destinationFrame
+            if (
+              !destinationFrame ||
+              !frameFormHistoryPlanCurrent(
+                frameHistoryPlan,
+                this.session,
+                destinationFrame,
+                plan.request.url,
+              )
+            ) {
+              discardFrameMissingResponseBody(pendingMissingEvent)
+              return settle(this.canceled(response, proposal.destination))
+            }
+          }
+          if (!pendingMissingEvent.defaultPrevented) {
+            discardFrameMissingResponseBody(pendingMissingEvent)
+            throw pendingMissingError
+          }
+          missingEvent = pendingMissingEvent
+        }
+        application = missingEvent
+          ? settle(this.prevented(response, proposal.destination))
+          : settle(
+              await this.apply(
+                response,
+                proposal,
+                identity,
+                activeLease,
+                preparedFrame,
+                historyPlan,
+                frameHistoryPlan,
+              ),
+            )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
         this.ownership.release(activeLease)
       }
+      if (missingEvent && this.options.frameLifecycle) {
+        await executeFrameMissingVisit(this.options.frameLifecycle, missingEvent)
+      }
+      return application
     } catch (error) {
       controller.abort()
       const reported =
@@ -1397,7 +1482,7 @@ export class FormSubmissionController {
   }
 
   private prevented(
-    candidate: Extract<FormRequestExecutionReport, Readonly<{ status: "prevented" }>>,
+    candidate: FormSubmissionPreventedCandidate,
     destination: FormSubmissionDestination,
   ): FormSubmissionReport {
     return Object.freeze({

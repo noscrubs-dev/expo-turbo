@@ -8,6 +8,7 @@ import {
   ExpoTurboError,
   FrameMissingError,
   RequestError,
+  StateError,
   TargetError,
 } from "./errors"
 import { recordFrameAutofocusReport } from "./frame-autofocus-internal"
@@ -22,6 +23,15 @@ import {
   updateFrameHistoryResponseSource,
 } from "./frame-history"
 import { registerFrameCommitProtection } from "./frame-history-internal"
+import {
+  createFrameMissingEvent,
+  discardFrameMissingResponseBody,
+  executeFrameMissingVisit,
+  FRAME_LIFECYCLE_MISSING_DISPATCH,
+  type FrameLifecycle,
+  type FrameMissingEvent,
+  frameLifecycleOption,
+} from "./frame-lifecycle"
 import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
@@ -106,6 +116,7 @@ export class FrameCommitError extends RequestError {
 
 export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
+  readonly frameLifecycle?: FrameLifecycle
   readonly maxRecurseDepth?: number
   readonly requestLifecycle?: RequestLifecycle
 }
@@ -116,6 +127,18 @@ interface ActiveFrameRequest {
   lease?: DestinationRequestLease
   readonly owner?: object
 }
+
+interface BufferedMissingFrameResponse {
+  readonly body: string
+  readonly redirected: boolean
+  readonly status: number
+  readonly url: string
+}
+
+type FrameMissingDispatchOutcome =
+  | Readonly<{ kind: "default" }>
+  | Readonly<{ kind: "canceled"; report: FrameLoadReport }>
+  | Readonly<{ event: FrameMissingEvent; kind: "prevented"; report: FrameLoadReport }>
 
 function recurseFrame(
   frames: readonly ProtocolElement[],
@@ -196,6 +219,7 @@ function frameLoadOptions(options: FrameLoadOptions): InternalFrameLoadOptions {
 export class FrameRequestLoader {
   private readonly active = new Map<string, ActiveFrameRequest>()
   private readonly capabilityHash: string | undefined
+  private readonly frameLifecycle: FrameLifecycle | undefined
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
   private readonly requestLifecycle: RequestLifecycle | undefined
@@ -207,6 +231,7 @@ export class FrameRequestLoader {
     private readonly requestIds: RequestIdAdapter,
     options: FrameRequestLoaderOptions = {},
   ) {
+    this.frameLifecycle = frameLifecycleOption(options, "Frame request loader")
     this.requestLifecycle = requestLifecycleOption(options, "Frame request loader")
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
@@ -279,6 +304,7 @@ export class FrameRequestLoader {
       throw error
     }
     const historyPlan = loadOptions[FRAME_HISTORY_PLAN_OPTION]
+    let handledMissing: Readonly<{ event: FrameMissingEvent; report: FrameLoadReport }> | undefined
 
     try {
       let requestFrameId = frameId
@@ -289,6 +315,7 @@ export class FrameRequestLoader {
       let responseStatus: number | undefined
       let responseUrl = url
       let responseRedirected = false
+      let primaryMissingResponse: BufferedMissingFrameResponse | undefined
       const visited = new Set([url])
       let preparedRequest:
         | Readonly<{ headers: Readonly<Record<string, string>>; requestId: string }>
@@ -420,6 +447,24 @@ export class FrameRequestLoader {
         }
         if (response.status === 204) {
           if (recurseDepth > 0) {
+            if (!primaryMissingResponse) {
+              throw new FrameMissingError(
+                `Recurse response is missing frame ${JSON.stringify(frameId)}`,
+                { frameId },
+              )
+            }
+            const missing = this.dispatchFrameMissing(
+              frameId,
+              requestIds,
+              active,
+              primaryMissingResponse,
+              historyPlan,
+            )
+            if (missing.kind === "canceled") return missing.report
+            if (missing.kind === "prevented") {
+              handledMissing = { event: missing.event, report: missing.report }
+              break
+            }
             throw new FrameMissingError(
               `Recurse response is missing frame ${JSON.stringify(frameId)}`,
               { frameId },
@@ -469,6 +514,14 @@ export class FrameRequestLoader {
           return this.canceled(frameId, requestIds, responseUrl, active)
         }
         const document = parseExpoTurboDocument(xml, { url: finalUrl })
+        if (recurseDepth === 0) {
+          primaryMissingResponse = Object.freeze({
+            body: xml,
+            redirected: responseRedirected,
+            status: responseStatus ?? response.status,
+            url: responseUrl,
+          })
+        }
         const matchingFrame = document
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
@@ -580,6 +633,24 @@ export class FrameRequestLoader {
 
         const intermediary = recurseFrame(document.getFrames(), frameId)
         if (!intermediary) {
+          const missing = this.dispatchFrameMissing(
+            frameId,
+            requestIds,
+            active,
+            primaryMissingResponse ??
+              Object.freeze({
+                body: xml,
+                redirected: responseRedirected,
+                status: responseStatus ?? response.status,
+                url: responseUrl,
+              }),
+            historyPlan,
+          )
+          if (missing.kind === "canceled") return missing.report
+          if (missing.kind === "prevented") {
+            handledMissing = { event: missing.event, report: missing.report }
+            break
+          }
           throw new FrameMissingError(`Response is missing frame ${JSON.stringify(frameId)}`, {
             frameId,
           })
@@ -620,6 +691,69 @@ export class FrameRequestLoader {
       this.release(frameId, active)
       throw error
     }
+
+    if (!handledMissing || !this.frameLifecycle) {
+      if (handledMissing) discardFrameMissingResponseBody(handledMissing.event)
+      throw new StateError("Prevented Frame-missing handling produced no result", { frameId })
+    }
+    await executeFrameMissingVisit(this.frameLifecycle, handledMissing.event)
+    return handledMissing.report
+  }
+
+  private dispatchFrameMissing(
+    frameId: string,
+    requestIds: readonly string[],
+    active: ActiveFrameRequest,
+    response: BufferedMissingFrameResponse,
+    historyPlan: FrameHistoryCommitPlan | undefined,
+  ): FrameMissingDispatchOutcome {
+    const lifecycle = this.frameLifecycle
+    if (!lifecycle) return Object.freeze({ kind: "default" })
+
+    const event = createFrameMissingEvent({
+      body: response.body,
+      frameId,
+      response: {
+        redirected: response.redirected,
+        status: response.status,
+        url: response.url,
+      },
+    })
+    try {
+      lifecycle[FRAME_LIFECYCLE_MISSING_DISPATCH](event)
+    } catch (error) {
+      discardFrameMissingResponseBody(event)
+      throw error
+    }
+    if (
+      !this.owns(frameId, active) ||
+      (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, active.frame))
+    ) {
+      discardFrameMissingResponseBody(event)
+      return Object.freeze({
+        kind: "canceled",
+        report: this.canceled(frameId, requestIds, response.url, active),
+      })
+    }
+    if (!event.defaultPrevented) {
+      discardFrameMissingResponseBody(event)
+      return Object.freeze({ kind: "default" })
+    }
+
+    const requestId = requestIds[0]
+    if (!requestId) {
+      throw new StateError("Frame-missing handling requires a recorded request", { frameId })
+    }
+    const report = Object.freeze({
+      frameId,
+      requestId,
+      requestIds: Object.freeze([...requestIds]),
+      responseStatus: response.status,
+      status: "prevented" as const,
+      url: response.url,
+    })
+    this.release(frameId, active)
+    return Object.freeze({ event, kind: "prevented", report })
   }
 
   private canceled(

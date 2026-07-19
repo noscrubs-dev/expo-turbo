@@ -7,6 +7,8 @@ import {
   FormSubmissionController,
   type FormSubmissionReport,
   FrameCommitError,
+  FrameLifecycle,
+  FrameMissingEvent,
   subscribeDocumentHistoryTraversal,
 } from "./index"
 
@@ -15,6 +17,8 @@ describe("package status", () => {
     expect(EXPO_TURBO_STATUS).toBe("foundation")
     expect(FormSubmissionController).toBeFunction()
     expect(FrameCommitError).toBeFunction()
+    expect(FrameLifecycle).toBeFunction()
+    expect(FrameMissingEvent).toBeFunction()
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
     expect(BeforeCacheEvent).toBeFunction()
