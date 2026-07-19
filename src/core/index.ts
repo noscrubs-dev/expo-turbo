@@ -39,6 +39,17 @@ export * from "./frames"
 export * from "./inspector"
 export * from "./parser"
 export * from "./recent-request-ids"
+export {
+  BeforeFetchRequestEvent,
+  BeforeFetchResponseEvent,
+  FetchRequestErrorEvent,
+  RequestLifecycle,
+  type RequestLifecycleContext,
+  type RequestLifecycleEvent,
+  type RequestLifecycleEventMap,
+  type RequestLifecycleResponse,
+  RequestMutation,
+} from "./request-lifecycle"
 export * from "./selectors"
 export * from "./serializer"
 export * from "./session"

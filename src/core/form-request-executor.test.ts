@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
-import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
+import { ContentTypeError, ExpoTurboError, PropsError, RequestError } from "./errors"
 import {
   type BuildFormRequestOptions,
   buildFormRequest,
@@ -10,6 +10,7 @@ import {
 import { FormRequestExecutor } from "./form-request-executor"
 import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import { RecentRequestIds } from "./recent-request-ids"
+import { RequestLifecycle } from "./request-lifecycle"
 
 function deferred<T>() {
   let reject!: (reason?: unknown) => void
@@ -45,6 +46,145 @@ function planFactory(requestId: string, overrides: Partial<BuildFormRequestOptio
 }
 
 describe("FormRequestExecutor", () => {
+  test("snapshots and validates the request lifecycle option", async () => {
+    const lifecycle = new RequestLifecycle()
+    let events = 0
+    let reads = 0
+    lifecycle.subscribe("before-fetch-request", () => {
+      events += 1
+    })
+    const executor = new FormRequestExecutor(
+      {
+        fetch: async (request) => response("", { headers: {}, status: 204, url: request.url }),
+      },
+      {
+        get requestLifecycle() {
+          reads += 1
+          return lifecycle
+        },
+      },
+    )
+
+    expect(reads).toBe(1)
+    expect(await executor.execute(planFactory("request-options"))).toMatchObject({
+      status: "empty",
+    })
+    expect({ events, reads }).toEqual({ events: 1, reads: 1 })
+    expect(
+      () =>
+        new FormRequestExecutor({ fetch: async () => Promise.reject(new Error("unused")) }, {
+          requestLifecycle: null,
+        } as never),
+    ).toThrow(PropsError)
+  })
+
+  test("re-admits lifecycle URL, method, header, and body mutation before transport", async () => {
+    const lifecycle = new RequestLifecycle()
+    const recentRequestIds = new RecentRequestIds()
+    let fetched: TurboRequest | undefined
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      expect(event.detail.context).toEqual({
+        kind: "form",
+        requestId: "request-mutated",
+      })
+      expect(recentRequestIds.has("request-mutated")).toBe(false)
+      event.detail.request.setUrl("https://example.test/mutated")
+      event.detail.request.setMethod("PUT")
+      event.detail.request.setHeader("accept", `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`)
+      event.detail.request.setHeader("X-Form-Hook", "mutated")
+      event.detail.request.setBody({
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "name=updated",
+      })
+    })
+    const executor = new FormRequestExecutor(
+      {
+        fetch: async (request) => {
+          fetched = request
+          expect(recentRequestIds.has("request-mutated")).toBe(true)
+          return response("", { headers: {}, status: 204, url: request.url })
+        },
+      },
+      { recentRequestIds, requestLifecycle: lifecycle },
+    )
+
+    const result = await executor.execute(planFactory("request-mutated"))
+
+    expect(fetched).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "name=updated",
+      },
+      headers: { "X-Form-Hook": "mutated" },
+      method: "PUT",
+      url: "https://example.test/mutated",
+    })
+    expect(Object.isFrozen(fetched)).toBe(true)
+    expect(result).toMatchObject({
+      effectiveMethod: "GET",
+      requestedUrl: "https://example.test/mutated",
+      status: "empty",
+      transportMethod: "PUT",
+    })
+  })
+
+  test("reports a prevented lifecycle response without reading its body", async () => {
+    const lifecycle = new RequestLifecycle()
+    let reads = 0
+    lifecycle.subscribe("before-fetch-response", (event) => {
+      expect(event.detail.context).toEqual({
+        kind: "form",
+        requestId: "request-prevented",
+      })
+      expect(event.detail.response.status).toBe(200)
+      event.preventDefault()
+    })
+    const executor = new FormRequestExecutor(
+      {
+        fetch: async (request) =>
+          response("<Ignored />", {
+            text: async () => {
+              reads += 1
+              return "<Ignored />"
+            },
+            url: request.url,
+          }),
+      },
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await executor.execute(planFactory("request-prevented"))).toEqual({
+      effectiveMethod: "GET",
+      redirected: false,
+      requestId: "request-prevented",
+      requestedUrl: "https://example.test/current",
+      responseStatus: 200,
+      sourceMethod: "GET",
+      status: "prevented",
+      transportMethod: "GET",
+      url: "https://example.test/current",
+    })
+    expect(reads).toBe(0)
+  })
+
+  test("keeps an unchanged large planner-admitted body neutral when lifecycle is enabled", async () => {
+    const executor = new FormRequestExecutor(
+      {
+        fetch: async (request) => response("", { headers: {}, status: 204, url: request.url }),
+      },
+      { requestLifecycle: new RequestLifecycle() },
+    )
+
+    expect(
+      await executor.execute(
+        planFactory("request-large-unchanged", {
+          entries: [{ name: "value", value: "x".repeat(1_048_576) }],
+          form: { method: "POST" },
+        }),
+      ),
+    ).toMatchObject({ status: "empty", transportMethod: "POST" })
+  })
+
   test("forwards the exact immutable request and buffers a frozen XML candidate", async () => {
     let built: ReturnType<typeof buildFormRequest> | undefined
     let fetched: TurboRequest | undefined
@@ -100,6 +240,7 @@ describe("FormRequestExecutor", () => {
       responseStatus: 422,
       sourceMethod: "PATCH",
       status: "xml",
+      transportMethod: "POST",
       url: "https://example.test/final",
     })
     expect(reads).toBe(1)
@@ -320,7 +461,7 @@ describe("FormRequestExecutor", () => {
         throw new Error("fixture unexpectedly succeeded")
       } catch (error) {
         expect(error).toBeInstanceOf(RequestError)
-        expect((error as RequestError).context.method).toBe("DELETE")
+        expect((error as RequestError).context.method).toBe("POST")
         expect((error as Error).message).not.toContain("details")
       }
     }
@@ -352,6 +493,7 @@ describe("FormRequestExecutor", () => {
       requestedUrl: "https://example.test/current",
       sourceMethod: "GET",
       status: "canceled",
+      transportMethod: "GET",
       url: "https://example.test/current",
     })
     expect(Object.isFrozen(result)).toBe(true)

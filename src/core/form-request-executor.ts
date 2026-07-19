@@ -7,6 +7,7 @@ import {
   type FormRequestExecutionReport,
 } from "./form-request-transport"
 import type { RecentRequestIds } from "./recent-request-ids"
+import { type RequestLifecycle, requestLifecycleOption } from "./request-lifecycle"
 
 export type {
   FormRequestExecutionReport,
@@ -22,6 +23,7 @@ interface ActiveFormRequest {
 
 export interface FormRequestExecutorOptions {
   readonly recentRequestIds?: RecentRequestIds
+  readonly requestLifecycle?: RequestLifecycle
 }
 
 /**
@@ -32,11 +34,13 @@ export interface FormRequestExecutorOptions {
 export class FormRequestExecutor {
   private active: ActiveFormRequest | undefined
   private readonly recentRequestIds: RecentRequestIds | undefined
+  private readonly requestLifecycle: RequestLifecycle | undefined
 
   constructor(
     private readonly fetchAdapter: FetchAdapter,
     options: FormRequestExecutorOptions = {},
   ) {
+    this.requestLifecycle = requestLifecycleOption(options, "Form request executor")
     this.recentRequestIds = options.recentRequestIds
   }
 
@@ -68,15 +72,26 @@ export class FormRequestExecutor {
     // Install this execution before aborting the displaced one. An abort
     // listener may synchronously start newer work, which must remain current.
     previous?.controller.abort()
-    if (this.active === active && !controller.signal.aborted) {
-      this.recentRequestIds?.add(plan.request.headers["X-Turbo-Request-Id"] as string)
-    }
     return executeAdmittedFormRequest(this.fetchAdapter, plan, {
+      beforeRequest: () => {
+        if (this.active !== active || controller.signal.aborted) return false
+        this.recentRequestIds?.add(plan.request.headers["X-Turbo-Request-Id"] as string)
+        return true
+      },
       controller,
       owns: () => this.active === active && !controller.signal.aborted,
       release: () => {
         if (this.active === active) this.active = undefined
       },
+      ...(this.requestLifecycle
+        ? {
+            requestContext: {
+              kind: "form",
+              requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+            },
+            requestLifecycle: this.requestLifecycle,
+          }
+        : {}),
     })
   }
 }

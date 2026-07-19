@@ -76,6 +76,7 @@ import type { FrameController, FrameControllerSnapshot } from "../core/frame-con
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
 import { resolveFormSubmissionDestination } from "../core/frames"
 import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
+import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
   DocumentStateScopes,
@@ -940,6 +941,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       ) {
         return
       }
+      if (requestLifecycleDefaultHandlingPrevented(error)) return
       const observer = onErrorRef.current
       if (!observer) return
       try {

@@ -16,7 +16,8 @@ import {
   MAX_FORM_CONTROL_ENTRIES_PER_CONTROL,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
-import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { isElement } from "./tree"
 
@@ -1009,6 +1010,164 @@ describe("native form control registry", () => {
     ).resolves.toMatchObject({ requestId: "retry-valid", status: "empty" })
     expect(confirmations).toBe(2)
     expect(fetches).toBe(2)
+  })
+
+  test("keeps an invoked GET retry safe across live method changes", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form" action="/submit" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    let fetches = 0
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        fetches += 1
+        if (fetches === 1) throw new Error("offline secret")
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const registry = registryFor(session, { submissionController: controller })
+
+    await expect(
+      registry.submit({ protocol: { requestId: "safe-get-initial" } }),
+    ).rejects.toBeInstanceOf(RequestError)
+    const terminal = registry.submissionTerminalState
+    expect(terminal).toMatchObject({
+      requestId: "safe-get-initial",
+      retryDisposition: "safe",
+      status: "failed",
+    })
+    expect(fetches).toBe(1)
+
+    session.setAttribute("id:form", "method", "post")
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "unsafe-live-retry" } }),
+    ).rejects.toThrow("must remain a GET")
+    expect(fetches).toBe(1)
+    expect(registry.submissionTerminalState).toBe(terminal)
+
+    session.removeAttribute("id:form", "method")
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "safe-live-retry" } }),
+    ).resolves.toMatchObject({ requestId: "safe-live-retry", status: "empty" })
+    expect(fetches).toBe(2)
+  })
+
+  test("keeps an invoked GET retry safe after lifecycle mutation", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form" action="/submit" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      if (
+        event.detail.context.kind !== "form" ||
+        event.detail.context.requestId !== "unsafe-lifecycle-retry"
+      ) {
+        return
+      }
+      event.detail.request.setMethod("POST")
+      event.detail.request.setHeader("Accept", `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`)
+      event.detail.request.setBody({
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "source=lifecycle",
+      })
+    })
+    let fetches = 0
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          fetches += 1
+          if (fetches === 1) throw new Error("offline secret")
+          return {
+            headers: {},
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+    const registry = registryFor(session, { submissionController: controller })
+
+    await expect(
+      registry.submit({ protocol: { requestId: "safe-lifecycle-initial" } }),
+    ).rejects.toBeInstanceOf(RequestError)
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "unsafe-lifecycle-retry" } }),
+    ).rejects.toThrow("must remain a GET")
+    expect(fetches).toBe(1)
+    expect(registry.submissionTerminalState).toMatchObject({
+      requestId: "unsafe-lifecycle-retry",
+      retryDisposition: "safe",
+      status: "failed",
+    })
+
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "safe-lifecycle-retry" } }),
+    ).resolves.toMatchObject({ requestId: "safe-lifecycle-retry", status: "empty" })
+    expect(fetches).toBe(2)
+  })
+
+  test("allows an unsafe retry when the earlier failure happened before fetch", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoForm id="form" action="/submit" method="post" /></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const lifecycle = new RequestLifecycle()
+    const unsubscribe = lifecycle.subscribe("before-fetch-request", () => {
+      throw new Error("pre-fetch listener secret")
+    })
+    let fetches = 0
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          fetches += 1
+          return {
+            headers: {},
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+    const registry = registryFor(session, { submissionController: controller })
+
+    await expect(
+      registry.submit({ protocol: { requestId: "unsafe-prefetch-initial" } }),
+    ).rejects.toBeInstanceOf(RequestError)
+    expect(fetches).toBe(0)
+    expect(registry.submissionTerminalState).toMatchObject({
+      effectiveMethod: "POST",
+      retryDisposition: "safe",
+      status: "failed",
+    })
+
+    unsubscribe()
+    await expect(
+      registry.retryFailure({ protocol: { requestId: "unsafe-prefetch-retry" } }),
+    ).resolves.toMatchObject({
+      requestId: "unsafe-prefetch-retry",
+      status: "empty",
+      transportMethod: "POST",
+    })
+    expect(fetches).toBe(1)
   })
 
   test("honors form novalidate presence and fails closed when invalid focus is unavailable", async () => {

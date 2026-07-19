@@ -393,7 +393,11 @@ describe("terminal form submission activity", () => {
       retryDisposition: "safe",
       status: "failed",
     })
-    expect(activity.retrySource()).toEqual({ requestId: "retryable", submitter })
+    expect(activity.retrySource()).toEqual({
+      requestId: "retryable",
+      requiresSafeTransport: false,
+      submitter,
+    })
 
     session.replaceTree(
       parseExpoTurboDocument(

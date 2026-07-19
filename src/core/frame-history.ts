@@ -33,7 +33,7 @@ interface FrameHistoryCommitPlanState {
   readonly frame: ProtocolElement
   readonly frameScope: object
   readonly history: DocumentHistory
-  readonly requestedUrl: string
+  requestedUrl: string
   readonly session: DocumentSession
   readonly snapshot?: DocumentTree
   readonly snapshotCache?: DocumentSnapshotCache
@@ -465,10 +465,16 @@ export function beginFrameHistoryRequest(
   session: DocumentSession,
   frame: ProtocolElement,
   requestedUrl: string,
+  preparedRequestedUrl = requestedUrl,
 ): void {
   const state = planState(plan)
-  validateRequest(state, session, frame, requestedUrl)
-  setFrameSource(state, session, frame, requestedUrl)
+  validateRequest(state, session, frame, preparedRequestedUrl)
+  const disposition = classifyTopLevelLocation(session.tree, requestedUrl)
+  if (disposition.classification !== "visitable") {
+    throw new TargetError("Promoted Frame visits require a root-visitable destination")
+  }
+  state.requestedUrl = disposition.url
+  setFrameSource(state, session, frame, disposition.url)
 }
 
 export function updateFrameHistoryResponseSource(

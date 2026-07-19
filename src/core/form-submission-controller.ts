@@ -27,7 +27,11 @@ import type {
   FormResponseCandidate,
   FormResponseClassification,
 } from "./form-request-transport"
-import { admitFormRequestPlan, executeAdmittedFormRequest } from "./form-request-transport"
+import {
+  admitFormRequestPlan,
+  executeAdmittedFormRequest,
+  replaceAdmittedFormRequest,
+} from "./form-request-transport"
 import type {
   FormSubmissionActivityLease,
   FormSubmissionDuplicateBehavior,
@@ -67,6 +71,11 @@ import {
   resolveProtocolUrl,
   TURBO_STREAM_MIME_TYPE,
 } from "./protocol-request"
+import {
+  type RequestLifecycle,
+  requestLifecycleDefaultHandlingPrevented,
+  requestLifecycleOption,
+} from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import {
   dispatchGuardedTurboStreamElements,
@@ -82,14 +91,18 @@ interface FormSubmissionRequestMetadata {
   readonly requestId: string
   readonly requestedUrl: string
   readonly sourceMethod: FormSubmissionMethod
+  readonly transportMethod: FormSubmissionMethod
 }
 
-interface FormSubmissionResponseMetadata extends FormSubmissionRequestMetadata {
-  readonly classification: FormResponseClassification
+interface FormSubmissionTransportResponseMetadata extends FormSubmissionRequestMetadata {
   readonly redirected: boolean
   /** Validated final transport URL; it does not necessarily become document/Frame state. */
   readonly responseUrl: string
   readonly responseStatus: number
+}
+
+interface FormSubmissionResponseMetadata extends FormSubmissionTransportResponseMetadata {
+  readonly classification: FormResponseClassification
 }
 
 type DocumentSubmissionDestination = Extract<FormSubmissionDestination, { kind: "document" }>
@@ -107,6 +120,12 @@ export type FormSubmissionReport =
       FormSubmissionRequestMetadata & {
         destination: FormSubmissionDestination
         status: "canceled"
+      }
+    >
+  | Readonly<
+      FormSubmissionTransportResponseMetadata & {
+        destination: FormSubmissionDestination
+        status: "prevented"
       }
     >
   | Readonly<
@@ -165,7 +184,7 @@ export class FormSubmissionCommitError extends RequestError {
 
   constructor(candidate: FormResponseCandidate, context: FormSubmissionCommitContext) {
     super("Form response committed but session finalization failed", {
-      method: candidate.effectiveMethod,
+      method: candidate.transportMethod,
       responseStatus: candidate.responseStatus,
     })
     this.outcome = Object.freeze({
@@ -181,6 +200,7 @@ export interface FormSubmissionControllerOptions extends StreamActionDispatchOpt
   readonly frameControllers?: FrameControllerRegistry
   readonly history?: DocumentHistory
   readonly limits?: Partial<ParseLimits>
+  readonly requestLifecycle?: RequestLifecycle
   readonly snapshotCache?: DocumentSnapshotCache
 }
 
@@ -265,6 +285,7 @@ function responseMetadata(candidate: FormResponseCandidate): FormSubmissionRespo
     responseUrl: candidate.url,
     responseStatus: candidate.responseStatus,
     sourceMethod: candidate.sourceMethod,
+    transportMethod: candidate.transportMethod,
   }
 }
 
@@ -296,6 +317,7 @@ export class FormSubmissionController {
     private readonly fetchAdapter: FetchAdapter,
     options: FormSubmissionControllerOptions = {},
   ) {
+    const requestLifecycle = requestLifecycleOption(options, "Form submission controller")
     this.options = Object.freeze({
       ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
@@ -304,6 +326,7 @@ export class FormSubmissionController {
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
+      ...(requestLifecycle ? { requestLifecycle } : {}),
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
     })
     this.ownership = destinationRequestOwnership(session)
@@ -327,6 +350,11 @@ export class FormSubmissionController {
       identity = assertActiveFormSubmissionProposal(this.session, proposal)
       plan = admitFormRequestPlan(proposal.plan, controller.signal)
       identity = assertActiveFormSubmissionProposal(this.session, proposal)
+      if (identity.requiresSafeTransport && plan.request.method !== "GET") {
+        throw new RequestError("A safely retryable form submission must remain a GET request", {
+          method: plan.request.method,
+        })
+      }
     } catch (error) {
       controller.abort()
       if (error instanceof ExpoTurboError) throw error
@@ -338,8 +366,6 @@ export class FormSubmissionController {
     try {
       if (proposal.destination.kind === "document") {
         historyPlan = this.prepareDocumentHistory(identity)
-      } else if (identity.visitAction) {
-        frameHistoryPlan = this.prepareFrameHistory(identity, plan.request.url)
       }
     } catch (error) {
       controller.abort()
@@ -449,11 +475,6 @@ export class FormSubmissionController {
       if (!lease) throw new RequestError("Form submission ownership admission failed")
       let activeLease = lease
 
-      if (!identity.submissionActivity.start(activityLease) || !this.ownership.owns(activeLease)) {
-        this.ownership.cancel(activeLease)
-        identity.submissionActivity.finish(activityLease)
-        return settle(this.canceledPlan(plan, proposal.destination))
-      }
       try {
         if (historyPlan) this.assertDocumentHistory(historyPlan)
         if (frameHistoryPlan) this.assertFrameHistory(frameHistoryPlan, identity, plan.request.url)
@@ -462,16 +483,40 @@ export class FormSubmissionController {
         if (error instanceof ExpoTurboError) throw error
         throw new RequestError("Form submission history changed before transport")
       }
-      if (proposal.destination.kind === "document") {
-        const navigationEpoch = beginDocumentNavigation(this.session)
-        if (historyPlan) historyPlan = Object.freeze({ ...historyPlan, navigationEpoch })
-      }
-
       let response: FormRequestExecutionReport
       try {
-        fetchInvoked = true
-        this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
         response = await executeAdmittedFormRequest(this.fetchAdapter, plan, {
+          beforeRequest: (request) => {
+            if (!this.isCurrent(activeLease, proposal)) return false
+            plan = replaceAdmittedFormRequest(plan, request)
+            identity = assertActiveFormSubmissionProposal(this.session, proposal)
+            if (identity.requiresSafeTransport && request.method !== "GET") {
+              throw new RequestError(
+                "A safely retryable form submission must remain a GET request",
+                { method: request.method },
+              )
+            }
+            if (proposal.destination.kind === "frame" && identity.visitAction) {
+              frameHistoryPlan = this.prepareFrameHistory(identity, request.url)
+            }
+            if (
+              !identity.submissionActivity.start(activityLease) ||
+              !this.isCurrent(activeLease, proposal)
+            ) {
+              return false
+            }
+            if (historyPlan) this.assertDocumentHistory(historyPlan)
+            if (frameHistoryPlan) this.assertFrameHistory(frameHistoryPlan, identity, request.url)
+            if (historyPlan) {
+              const navigationEpoch = beginDocumentNavigation(this.session)
+              historyPlan = Object.freeze({ ...historyPlan, navigationEpoch })
+            } else if (proposal.destination.kind === "document") {
+              beginDocumentNavigation(this.session)
+            }
+            fetchInvoked = true
+            this.session.recentRequestIds.add(plan.request.headers["X-Turbo-Request-Id"] as string)
+            return this.isCurrent(activeLease, proposal)
+          },
           beforeResponseBody: (admittedResponse) => {
             if (proposal.destination.kind !== "frame" || !this.isCurrent(activeLease, proposal)) {
               return undefined
@@ -479,7 +524,7 @@ export class FormSubmissionController {
             const invalidatesCache =
               admittedResponse.contentType !== TURBO_STREAM_MIME_TYPE &&
               (admittedResponse.classification !== "success" ||
-                admittedResponse.effectiveMethod !== "GET")
+                admittedResponse.transportMethod !== "GET")
             if (frameHistoryPlan) {
               const destinationFrame = identity.destinationFrame
               if (
@@ -525,6 +570,16 @@ export class FormSubmissionController {
           owns: () => this.ownership.owns(activeLease),
           release: () => this.ownership.release(activeLease),
           retainCandidate: true,
+          ...(this.options.requestLifecycle
+            ? {
+                requestContext: {
+                  formNodeKey: identity.form.key,
+                  kind: "form" as const,
+                  requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+                },
+                requestLifecycle: this.options.requestLifecycle,
+              }
+            : {}),
         })
       } finally {
         // Turbo clears form/submitter presentation before applying the response.
@@ -533,6 +588,13 @@ export class FormSubmissionController {
       }
       if (response.status === "canceled") {
         return settle(this.canceled(response, proposal.destination))
+      }
+      if (response.status === "prevented") {
+        if (response.transportMethod !== "GET") {
+          if (frameHistoryPlan) invalidateFrameFormHistoryCache(frameHistoryPlan)
+          this.options.snapshotCache?.clear()
+        }
+        return settle(this.prevented(response, proposal.destination))
       }
 
       try {
@@ -619,11 +681,16 @@ export class FormSubmissionController {
       const reported =
         error instanceof ExpoTurboError
           ? error
-          : new RequestError("Form submission failed", { method: plan.effectiveMethod })
-      submissionActivity.settleFailure(
-        activityLease,
-        this.terminalFailure(reported, plan, fetchInvoked),
-      )
+          : new RequestError("Form submission failed", { method: plan.request.method })
+      if (requestLifecycleDefaultHandlingPrevented(error)) {
+        submissionActivity.settleSuppressedFailure(activityLease)
+      } else {
+        submissionActivity.settleFailure(
+          activityLease,
+          this.terminalFailure(reported, plan, fetchInvoked),
+          identity.requiresSafeTransport || (fetchInvoked && plan.request.method === "GET"),
+        )
+      }
       throw reported
     }
   }
@@ -668,13 +735,13 @@ export class FormSubmissionController {
       effectiveMethod: plan.effectiveMethod,
       error: terminalError,
       requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
-      retryDisposition: !fetchInvoked || plan.effectiveMethod === "GET" ? "safe" : "unsafe",
+      retryDisposition: !fetchInvoked || plan.request.method === "GET" ? "safe" : "unsafe",
       status: "failed",
     })
   }
 
   private terminalReport(report: FormSubmissionReport): FormSubmissionTerminalReportInput {
-    if (report.status === "canceled") {
+    if (report.status === "canceled" || report.status === "prevented") {
       return Object.freeze({
         effectiveMethod: report.effectiveMethod,
         requestId: report.requestId,
@@ -858,17 +925,17 @@ export class FormSubmissionController {
     }
 
     if (
-      candidate.effectiveMethod !== "GET" &&
+      candidate.transportMethod !== "GET" &&
       candidate.responseStatus === 200 &&
       !candidate.redirected
     ) {
       throw new RequestError("Unsafe document form responses must redirect", {
-        method: candidate.effectiveMethod,
+        method: candidate.transportMethod,
         responseStatus: candidate.responseStatus,
       })
     }
 
-    if (candidate.classification === "success" && candidate.effectiveMethod !== "GET") {
+    if (candidate.classification === "success" && candidate.transportMethod !== "GET") {
       this.options.snapshotCache?.clear()
     }
 
@@ -876,7 +943,7 @@ export class FormSubmissionController {
     const appliedUrl = candidate.classification === "success" ? candidate.url : activeUrl
     if (!appliedUrl) {
       throw new RequestError("Form response application requires an active document URL", {
-        method: candidate.effectiveMethod,
+        method: candidate.transportMethod,
         responseStatus: candidate.responseStatus,
       })
     }
@@ -889,7 +956,7 @@ export class FormSubmissionController {
     if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
 
     const snapshotCache =
-      candidate.classification === "success" && candidate.effectiveMethod === "GET"
+      candidate.classification === "success" && candidate.transportMethod === "GET"
         ? this.options.snapshotCache
         : undefined
     const historyProposal =
@@ -956,7 +1023,7 @@ export class FormSubmissionController {
     }
     if (error instanceof ExpoTurboError) return error
     return new RequestError("Form response application failed", {
-      method: candidate.effectiveMethod,
+      method: candidate.transportMethod,
       responseStatus: candidate.responseStatus,
     })
   }
@@ -1077,8 +1144,27 @@ export class FormSubmissionController {
       requestId: candidate.requestId,
       requestedUrl: candidate.requestedUrl,
       sourceMethod: candidate.sourceMethod,
+      transportMethod: candidate.transportMethod,
       destination,
       status: "canceled",
+    })
+  }
+
+  private prevented(
+    candidate: Extract<FormRequestExecutionReport, Readonly<{ status: "prevented" }>>,
+    destination: FormSubmissionDestination,
+  ): FormSubmissionReport {
+    return Object.freeze({
+      destination,
+      effectiveMethod: candidate.effectiveMethod,
+      redirected: candidate.redirected,
+      requestId: candidate.requestId,
+      requestedUrl: candidate.requestedUrl,
+      responseStatus: candidate.responseStatus,
+      responseUrl: candidate.url,
+      sourceMethod: candidate.sourceMethod,
+      status: "prevented",
+      transportMethod: candidate.transportMethod,
     })
   }
 
@@ -1140,6 +1226,7 @@ export class FormSubmissionController {
       requestedUrl: plan.request.url,
       sourceMethod: plan.sourceMethod,
       status: "canceled",
+      transportMethod: plan.request.method as FormSubmissionMethod,
     })
   }
 

@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
 import { RequestError } from "./errors"
+import { CancellableEvent } from "./events"
 import {
   fetchWithRequestLifecycle,
   RequestLifecycle,
   type RequestLifecycleAdmission,
+  requestLifecycleDefaultHandlingPrevented,
 } from "./request-lifecycle"
 
 function request(url = "https://example.test/first", signal?: AbortSignal): TurboRequest {
@@ -28,6 +30,16 @@ function response(url = "https://example.test/result"): TurboResponse {
     text: async () => "<Page />",
     url,
   }
+}
+
+function deferred<T>() {
+  let reject!: (error: unknown) => void
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle
+    reject = fail
+  })
+  return { promise, reject, resolve }
 }
 
 function admission(overrides: Partial<RequestLifecycleAdmission> = {}): RequestLifecycleAdmission {
@@ -194,6 +206,7 @@ describe("request lifecycle", () => {
     const lifecycle = new RequestLifecycle()
     const failures: RequestError[] = []
     lifecycle.subscribe("fetch-request-error", (event) => {
+      expect(event).toBeInstanceOf(CancellableEvent)
       failures.push(event.detail.error)
     })
 
@@ -209,7 +222,7 @@ describe("request lifecycle", () => {
         lifecycle,
         request: request(),
       }),
-    ).rejects.toThrow("secret transport detail")
+    ).rejects.toThrow("Fetch request failed")
     expect(failures).toHaveLength(1)
     expect(failures[0]?.message).toBe("Fetch request failed")
     expect(failures[0]?.cause).toBeUndefined()
@@ -230,6 +243,118 @@ describe("request lifecycle", () => {
 
     expect((await aborted).status).toBe("canceled")
     expect(failures).toHaveLength(1)
+  })
+
+  test("lets fetch-error prevention suppress default handling without changing rejection", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+
+    let rejected: unknown
+    try {
+      await fetchWithRequestLifecycle({
+        admission: admission(),
+        context: { kind: "document", purpose: "load", requestId: "request-1" },
+        fetchAdapter: {
+          fetch: async () => {
+            throw new Error("secret transport detail")
+          },
+        },
+        lifecycle,
+        request: request(),
+      })
+    } catch (error) {
+      rejected = error
+    }
+
+    expect(rejected).toBeInstanceOf(RequestError)
+    expect((rejected as Error).message).toBe("Fetch request failed")
+    expect(requestLifecycleDefaultHandlingPrevented(rejected)).toBe(true)
+  })
+
+  test("settles cancellation when transport and error listeners ignore abort", async () => {
+    const lifecycle = new RequestLifecycle()
+    const controller = new AbortController()
+    const started = deferred<void>()
+    const late = deferred<TurboResponse>()
+    let failures = 0
+    lifecycle.subscribe("fetch-request-error", () => {
+      failures += 1
+    })
+
+    const pending = fetchWithRequestLifecycle({
+      admission: admission(),
+      context: { kind: "document", purpose: "load", requestId: "request-1" },
+      fetchAdapter: {
+        fetch: () => {
+          started.resolve()
+          return late.promise
+        },
+      },
+      lifecycle,
+      request: request("https://example.test/ignored-abort", controller.signal),
+    })
+    await started.promise
+    controller.abort()
+
+    expect(await pending).toEqual({
+      request: expect.objectContaining({ url: "https://example.test/ignored-abort" }),
+      status: "canceled",
+    })
+    late.reject(new Error("late secret"))
+    await Promise.resolve()
+    expect(failures).toBe(0)
+
+    const errorController = new AbortController()
+    const errorStarted = deferred<void>()
+    const blockedErrors = new RequestLifecycle()
+    blockedErrors.subscribe("fetch-request-error", () => {
+      errorStarted.resolve()
+      return new Promise(() => undefined)
+    })
+    const blocked = fetchWithRequestLifecycle({
+      admission: admission(),
+      context: { kind: "document", purpose: "load", requestId: "request-1" },
+      fetchAdapter: {
+        fetch: async () => {
+          throw new Error("secret")
+        },
+      },
+      lifecycle: blockedErrors,
+      request: request("https://example.test/error-listener", errorController.signal),
+    })
+    await errorStarted.promise
+    errorController.abort()
+    expect((await blocked).status).toBe("canceled")
+  })
+
+  test("does not dispatch a pre-aborted request", async () => {
+    const lifecycle = new RequestLifecycle()
+    const controller = new AbortController()
+    let events = 0
+    let fetches = 0
+    lifecycle.subscribe("before-fetch-request", () => {
+      events += 1
+    })
+    controller.abort()
+
+    expect(
+      (
+        await fetchWithRequestLifecycle({
+          admission: admission(),
+          context: { kind: "document", purpose: "load", requestId: "request-1" },
+          fetchAdapter: {
+            fetch: async () => {
+              fetches += 1
+              return response()
+            },
+          },
+          lifecycle,
+          request: request("https://example.test/pre-aborted", controller.signal),
+        })
+      ).status,
+    ).toBe("canceled")
+    expect(events).toBe(0)
+    expect(fetches).toBe(0)
   })
 
   test("redacts listener failures and keeps listener snapshots stable", async () => {

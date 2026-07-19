@@ -1,5 +1,5 @@
 import type { FetchAdapter, TurboRequest, TurboRequestBody, TurboResponse } from "../adapters"
-import { RequestError } from "./errors"
+import { ExpoTurboError, type ExpoTurboErrorContext, PropsError, RequestError } from "./errors"
 import { CancellableEvent, PausableEvent } from "./events"
 
 export type RequestLifecycleContext =
@@ -228,6 +228,37 @@ export class RequestLifecycle {
   }
 }
 
+export function admitRequestLifecycle(
+  candidate: unknown,
+  invalidMessage: string,
+): RequestLifecycle | undefined {
+  if (candidate === undefined) return undefined
+  let valid = false
+  try {
+    valid = candidate instanceof RequestLifecycle
+  } catch {
+    // Hostile proxies are rejected through the same redacted option boundary.
+  }
+  if (!valid) throw new PropsError(invalidMessage)
+  return candidate as RequestLifecycle
+}
+
+export function requestLifecycleOption(
+  options: unknown,
+  owner: string,
+): RequestLifecycle | undefined {
+  let candidate: unknown
+  try {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("invalid options")
+    }
+    candidate = (options as { readonly requestLifecycle?: unknown }).requestLifecycle
+  } catch {
+    throw new PropsError(`${owner} options could not be read`)
+  }
+  return admitRequestLifecycle(candidate, `${owner} request lifecycle is invalid`)
+}
+
 export interface RequestLifecycleAdmission {
   readonly admitUrl: (url: string) => string
   readonly allowBody: boolean
@@ -247,8 +278,27 @@ export type RequestLifecycleFetchResult =
       status: "prevented" | "response"
     }>
 
+export class RequestLifecycleTransportError extends RequestError {
+  constructor(
+    message: string,
+    readonly defaultHandlingPrevented: boolean,
+    context: ExpoTurboErrorContext,
+  ) {
+    super(message, context)
+  }
+
+  relabel(message: string, context: ExpoTurboErrorContext): RequestLifecycleTransportError {
+    return new RequestLifecycleTransportError(message, this.defaultHandlingPrevented, context)
+  }
+}
+
+export function requestLifecycleDefaultHandlingPrevented(error: unknown): boolean {
+  return error instanceof RequestLifecycleTransportError && error.defaultHandlingPrevented
+}
+
 export interface FetchWithRequestLifecycleOptions {
   readonly admission: RequestLifecycleAdmission
+  readonly beforeFetch?: (request: TurboRequest) => boolean | undefined
   readonly context: RequestLifecycleContext
   readonly fetchAdapter: FetchAdapter
   readonly lifecycle: RequestLifecycle
@@ -273,21 +323,49 @@ export async function fetchWithRequestLifecycle(
 
   const request = admitLifecycleRequest(mutation.snapshot(), options.request, options.admission)
   if (request.signal?.aborted) return Object.freeze({ request, status: "canceled" })
+  if (options.beforeFetch) {
+    let proceed: boolean | undefined
+    try {
+      proceed = options.beforeFetch(request)
+    } catch (error) {
+      if (error instanceof ExpoTurboError) throw error
+      throw new RequestError("Request lifecycle pre-fetch admission failed", {
+        method: request.method,
+      })
+    }
+    if (proceed !== undefined && typeof proceed !== "boolean") {
+      throw new RequestError("Request lifecycle pre-fetch admission must return a boolean", {
+        method: request.method,
+      })
+    }
+    if (proceed === false || request.signal?.aborted) {
+      return Object.freeze({ request, status: "canceled" })
+    }
+  }
 
-  let response: TurboResponse
-  try {
-    response = await options.fetchAdapter.fetch(request)
-  } catch (error) {
+  const fetched = await settleRequestOperation(request.signal, () =>
+    options.fetchAdapter.fetch(request),
+  )
+  if (fetched.status === "canceled") return Object.freeze({ request, status: "canceled" })
+  if (fetched.status === "rejected") {
     if (request.signal?.aborted) return Object.freeze({ request, status: "canceled" })
     const failure = new FetchRequestErrorEvent(context, request)
-    await dispatchWithAbort(
+    const errorDispatch = await dispatchWithAbort(
       options.lifecycle,
       failure,
       request.signal,
       "Fetch-request-error listener failed",
     )
-    throw error
+    if (!errorDispatch || request.signal?.aborted) {
+      return Object.freeze({ request, status: "canceled" })
+    }
+    throw new RequestLifecycleTransportError(
+      "Fetch request failed",
+      failure.defaultPrevented,
+      Object.freeze({ method: request.method }),
+    )
   }
+  const response = fetched.value
   if (request.signal?.aborted) return Object.freeze({ request, status: "canceled" })
 
   const admittedResponse = admitLifecycleResponse(response)
@@ -342,7 +420,7 @@ function admitLifecycleRequest(
   if (body && method === "GET") {
     throw new RequestError("Request lifecycle GET requests cannot include a body", { method })
   }
-  if (body && admission.maxBodyBytes !== undefined) {
+  if (body && admission.maxBodyBytes !== undefined && !sameBody(body, cloneBody(original.body))) {
     const size =
       typeof body.value === "string"
         ? new TextEncoder().encode(body.value).byteLength
@@ -361,12 +439,26 @@ function admitLifecycleRequest(
   })
 }
 
+function sameBody(
+  left: TurboRequestBody | undefined,
+  right: TurboRequestBody | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right
+  if (left.contentType !== right.contentType) return false
+  if (typeof left.value === "string" || typeof right.value === "string") {
+    return left.value === right.value
+  }
+  if (left.value.byteLength !== right.value.byteLength) return false
+  return left.value.every((value, index) => value === right.value[index])
+}
+
 async function dispatchWithAbort(
   lifecycle: RequestLifecycle,
   event: RequestLifecycleEvent,
   signal: AbortSignal | undefined,
   failureMessage: string,
 ): Promise<boolean> {
+  if (signal?.aborted) return false
   const dispatched = lifecycle[REQUEST_LIFECYCLE_DISPATCH](event).then(
     () => true,
     () => {
@@ -374,10 +466,6 @@ async function dispatchWithAbort(
     },
   )
   if (!signal) return dispatched
-  if (signal.aborted) {
-    void dispatched.catch(() => undefined)
-    return false
-  }
 
   let cancel: () => void = () => undefined
   const canceled = new Promise<false>((resolve) => {
@@ -388,6 +476,41 @@ async function dispatchWithAbort(
   signal.removeEventListener("abort", cancel)
   if (!result) void dispatched.catch(() => undefined)
   return result
+}
+
+export type RequestOperationResult<T> =
+  | Readonly<{ status: "canceled" }>
+  | Readonly<{ error: unknown; status: "rejected" }>
+  | Readonly<{ status: "resolved"; value: T }>
+
+export async function settleRequestOperation<T>(
+  signal: AbortSignal | undefined,
+  operation: () => T | PromiseLike<T>,
+): Promise<RequestOperationResult<T>> {
+  if (signal?.aborted) return Object.freeze({ status: "canceled" })
+
+  let pending: T | PromiseLike<T>
+  try {
+    pending = operation()
+  } catch (error) {
+    return Object.freeze({ error, status: "rejected" })
+  }
+  const settled: Promise<RequestOperationResult<T>> = Promise.resolve(pending).then(
+    (value) => Object.freeze({ status: "resolved", value }),
+    (error: unknown) => Object.freeze({ error, status: "rejected" }),
+  )
+  if (!signal) return settled
+  if (signal.aborted) return Object.freeze({ status: "canceled" })
+
+  let cancel: () => void = () => undefined
+  const canceled = new Promise<RequestOperationResult<T>>((resolve) => {
+    cancel = () => resolve(Object.freeze({ status: "canceled" }))
+    signal.addEventListener("abort", cancel, { once: true })
+    if (signal.aborted) cancel()
+  })
+  const result = await Promise.race([settled, canceled])
+  signal.removeEventListener("abort", cancel)
+  return signal.aborted ? Object.freeze({ status: "canceled" }) : result
 }
 
 function admitLifecycleResponse(response: TurboResponse): TurboResponse {

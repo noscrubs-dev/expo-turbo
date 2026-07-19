@@ -17,6 +17,7 @@ import { FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-hist
 import { visitFrameWithHistory } from "./frame-history-internal"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
 
@@ -56,6 +57,7 @@ function historyHarness(
   options: Readonly<{
     document?: string
     frameHistory?: boolean
+    requestLifecycle?: RequestLifecycle
     snapshotCache?: boolean
     visibility?: VisibilityAdapter
   }> = {},
@@ -96,6 +98,7 @@ function historyHarness(
       },
     },
     { next: () => `frame-request-${++requestId}` },
+    options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
   )
   const frameHistory = new FrameHistoryCoordinator(session, {
     history,
@@ -689,6 +692,34 @@ describe("promoted Frame history", () => {
     expect(outgoing?.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe("Old")
     expect(attributeValue(current.session.tree.getElementById("shell") as never, "phase")).toBe(
       "late",
+    )
+  })
+
+  test("promotes the lifecycle-admitted Frame URL through history", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      if (event.detail.context.kind === "frame") {
+        event.detail.request.setUrl("https://example.test/lifecycle-frame")
+      }
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response('<turbo-frame id="details"><LifecycleFrame /></turbo-frame>', { url }),
+      undefined,
+      { requestLifecycle: lifecycle },
+    )
+
+    await expect(
+      current.registry.visit("/original-frame", { action: "advance", frame: "details" }),
+    ).resolves.toMatchObject({ action: "advance", kind: "frame" })
+    expect(current.frameRequests[0]?.url).toBe("https://example.test/lifecycle-frame")
+    expect(current.history.current).toMatchObject({
+      restorationIndex: 1,
+      url: "https://example.test/lifecycle-frame",
+    })
+    expect(current.session.tree.document.url).toBe("https://example.test/lifecycle-frame")
+    expect(attributeValue(current.session.tree.getElementById("details") as never, "src")).toBe(
+      "https://example.test/lifecycle-frame",
     )
   })
 
