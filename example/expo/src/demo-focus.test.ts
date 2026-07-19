@@ -11,6 +11,8 @@ describe("demo focus registry", () => {
       focus: () => calls.push("focus"),
     });
 
+    expect(registry.canFocus("id:first-name")).toBe(true);
+    expect(registry.canFocus("id:missing")).toBe(false);
     registry.focus("id:first-name");
     expect(calls).toEqual(["focus"]);
     expect(registry.getFocusedId()).toBe("id:first-name");
@@ -21,6 +23,7 @@ describe("demo focus registry", () => {
 
     unregister();
     unregister();
+    expect(registry.canFocus("id:first-name")).toBe(false);
     expect(() => registry.focus("id:first-name")).toThrow(/No active demo focus handle/);
   });
 
@@ -36,6 +39,34 @@ describe("demo focus registry", () => {
     registry.focus("id:field");
     expect(registry.getFocusedId()).toBe("id:field");
     replacement();
+  });
+
+  test("restores focus bookkeeping only for an immediate exact effect replay", async () => {
+    const registry = new DemoFocusRegistry();
+    const handle = { blur() {}, focus() {} };
+    const eventToken = {};
+    let unregister = registry.register("id:field", handle, eventToken);
+    registry.focus("id:field");
+
+    unregister();
+    expect(registry.getFocusedId()).toBeUndefined();
+    unregister = registry.register("id:field", handle, eventToken);
+    expect(registry.getFocusedId()).toBe("id:field");
+
+    unregister();
+    await Promise.resolve();
+    registry.register("id:field", handle, eventToken);
+    expect(registry.getFocusedId()).toBeUndefined();
+
+    const competing = { blur() {}, focus() {} };
+    registry.register("id:competing", competing);
+    registry.focus("id:field");
+    unregister = registry.register("id:replay", handle, eventToken);
+    registry.focus("id:replay");
+    unregister();
+    registry.focus("id:competing");
+    registry.register("id:replay", handle, eventToken);
+    expect(registry.getFocusedId()).toBe("id:competing");
   });
 
   test("tracks user-driven focus and ignores reentrant stale handles", () => {
@@ -127,6 +158,7 @@ describe("demo focus registry", () => {
     registry.dispose();
     registry.dispose();
     expect(registry.getFocusedId()).toBeUndefined();
+    expect(() => registry.canFocus("id:field")).toThrow(/disposed/);
     expect(() => registry.focus("id:field")).toThrow(/disposed/);
     expect(() => registry.register("id:late", { blur() {}, focus() {} })).toThrow(/disposed/);
   });

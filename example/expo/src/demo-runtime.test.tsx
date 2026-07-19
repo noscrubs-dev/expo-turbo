@@ -36,6 +36,7 @@ const { DemoRouterRouteOwner } = await import("./demo-router-route-owner");
 const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
   "./demo-runtime"
 );
+const { ExpoTurboRoot } = await import("expo-turbo/react");
 
 const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -218,6 +219,79 @@ function routeTree(
 }
 
 describe("demo app runtime ownership", () => {
+  test("focuses the real gallery input after its Frame link replaces the mounted Frame", async () => {
+    const runtime = createDemoRuntime();
+    const nativeFocuses: string[] = [];
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            DemoRuntimeProvider,
+            { runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") {
+              const props = element.props as Readonly<Record<string, unknown>>;
+              return {
+                blur() {},
+                focus() {
+                  nativeFocuses.push(String(props.accessibilityLabel));
+                },
+              };
+            }
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await Promise.resolve();
+    });
+    if (!renderer) throw new Error("renderer was not created");
+
+    const frameLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Load this Frame through the shared Frame visit controller.",
+            ),
+        ).length > 0,
+    );
+    if (!frameLink) throw new Error("Frame fixture link was not rendered");
+    const frameController = runtime.frames.get("link-frame");
+
+    await act(async () => {
+      frameLink.props.onPress();
+      await frameController.loaded;
+      await Promise.resolve();
+    });
+
+    expect(nativeFocuses).toEqual(["Autofocused Frame field"]);
+    expect(runtime.focus.getFocusedId()).toBe("id:frame-autofocus-name");
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("direct disposal releases every runtime-owned state surface", () => {
     const runtime = createDemoRuntime();
 

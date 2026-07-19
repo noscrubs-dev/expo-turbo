@@ -181,6 +181,7 @@ export function DemoRuntimeProvider({
         <DemoVisibilityProvider visibility={runtime.visibility}>
           <ExpoTurboProvider
             actions={runtime.actionRuntime.actions}
+            autofocus={runtime.focus}
             documentComponent={DemoDocumentBoundary}
             documentController={runtime.documentRuntime.controller}
             frameComponent={DemoFrameBoundary}
