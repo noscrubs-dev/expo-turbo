@@ -6,6 +6,11 @@ import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
 
 export type FormSubmissionActivityStatus = "idle" | "submitting"
+export type FormSubmissionUnappliedReason =
+  | "outside-root"
+  | "superseded"
+  | "unvisitable-extension"
+  | "visit-prevented"
 
 export interface FormSubmissionActivitySnapshot {
   readonly busy: boolean
@@ -43,6 +48,7 @@ export type FormSubmissionTerminalStatus =
   | "empty"
   | "failed"
   | "none"
+  | "unapplied"
 
 export interface FormSubmissionTerminalErrorContext {
   readonly location?: Readonly<{ column?: number; line?: number; offset?: number }>
@@ -68,6 +74,14 @@ export type FormSubmissionTerminalSnapshot =
   | Readonly<
       FormSubmissionTerminalBase & {
         readonly status: "canceled"
+      }
+    >
+  | Readonly<
+      FormSubmissionTerminalBase & {
+        readonly classification: "success"
+        readonly reason: FormSubmissionUnappliedReason
+        readonly responseStatus: number
+        readonly status: "unapplied"
       }
     >
   | Readonly<
@@ -108,6 +122,14 @@ export type FormSubmissionTerminalReportInput =
       readonly effectiveMethod: FormSubmissionMethod
       readonly requestId: string
       readonly status: "canceled"
+    }>
+  | Readonly<{
+      readonly classification: "success"
+      readonly effectiveMethod: FormSubmissionMethod
+      readonly reason: FormSubmissionUnappliedReason
+      readonly requestId: string
+      readonly responseStatus: number
+      readonly status: "unapplied"
     }>
   | Readonly<{
       readonly classification: FormResponseClassification

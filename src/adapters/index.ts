@@ -59,8 +59,8 @@ export type VisitAction = "advance" | "replace" | "restore"
 
 export interface NavigationAdapter {
   back(): void
-  openExternal(url: string): void
-  visit(url: string, action: VisitAction): void
+  openExternal(url: string): void | Promise<void>
+  visit(url: string, action: VisitAction): void | Promise<void>
 }
 
 export interface CableCallbacks {

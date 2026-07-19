@@ -30,6 +30,7 @@ export type {
   FormSubmissionTerminalErrorContext,
   FormSubmissionTerminalSnapshot,
   FormSubmissionTerminalStatus,
+  FormSubmissionUnappliedReason,
   FormSubmitterActivitySnapshot,
 } from "./form-submission-activity"
 export * from "./form-submission-controller"

@@ -3,7 +3,10 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
-import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
+import {
+  DOCUMENT_LOAD_DISCARD_HANDLING,
+  DOCUMENT_LOAD_REQUEST_DISPATCHED,
+} from "./document-loader-lifecycle-internal"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
@@ -105,7 +108,12 @@ export interface DocumentLoadOptions {
 }
 
 type InternalDocumentLoadOptions = DocumentLoadOptions &
-  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
+  Readonly<{
+    [DOCUMENT_LOAD_DISCARD_HANDLING]?: (
+      controller: AbortController,
+    ) => undefined | PromiseLike<undefined>
+    [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined
+  }>
 
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
@@ -599,8 +607,7 @@ export class DocumentRequestLoader {
     }
     if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
     if (disposition === "discard") {
-      this.release(active)
-      return Object.freeze({
+      const report = Object.freeze({
         classification: commit.classification,
         redirected: commit.redirected,
         requestId,
@@ -610,6 +617,32 @@ export class DocumentRequestLoader {
         status: "discarded",
         url: commit.finalUrl,
       })
+      const handleDiscard = (options as InternalDocumentLoadOptions)[DOCUMENT_LOAD_DISCARD_HANDLING]
+      if (handleDiscard) {
+        try {
+          const result = await handleDiscard(active.controller)
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => undefined)
+            throw new RequestError("Document discard handler must not return a value", {
+              method: "GET",
+              responseStatus: commit.response.status,
+            })
+          }
+        } catch (error) {
+          if (active.controller.signal.aborted || !this.owns(active)) {
+            return this.canceled(active, commit.finalUrl)
+          }
+          this.release(active)
+          if (error instanceof ExpoTurboError) throw error
+          throw new RequestError("Document discard handling failed", {
+            method: "GET",
+            responseStatus: commit.response.status,
+          })
+        }
+        if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
+      }
+      this.release(active)
+      return report
     }
     const report = Object.freeze({
       classification: commit.classification,

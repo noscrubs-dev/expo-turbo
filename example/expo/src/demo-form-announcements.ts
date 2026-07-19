@@ -48,6 +48,11 @@ export function demoFormAnnouncement(
             message: "Form submission status is uncertain. Refresh before trying again.",
             priority: "assertive",
           };
+    case "unapplied":
+      return {
+        message: "Form submission succeeded, but its response was not applied.",
+        priority: "polite",
+      };
   }
 }
 

@@ -1,4 +1,9 @@
-import type { FetchAdapter, FormConfirmationAdapter } from "../adapters"
+import type {
+  FetchAdapter,
+  FormConfirmationAdapter,
+  NavigationAdapter,
+  VisitAction,
+} from "../adapters"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
@@ -14,6 +19,14 @@ import {
   currentDocumentNavigationEpoch,
 } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+import {
+  BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  type DocumentVisitLifecycle,
+  documentVisitLifecycleOption,
+  VisitEvent,
+} from "./document-visit-lifecycle"
 import {
   ExpoTurboError,
   type ExpoTurboErrorCode,
@@ -37,6 +50,7 @@ import type {
   FormSubmissionDuplicateBehavior,
   FormSubmissionTerminalFailureInput,
   FormSubmissionTerminalReportInput,
+  FormSubmissionUnappliedReason,
 } from "./form-submission-activity"
 import {
   assertActiveFormSubmissionProposal,
@@ -75,6 +89,7 @@ import {
   type RequestLifecycle,
   requestLifecycleDefaultHandlingPrevented,
   requestLifecycleOption,
+  settleRequestOperation,
 } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import {
@@ -83,6 +98,7 @@ import {
   type StreamDispatchReport,
 } from "./streams"
 import { type DocumentTree, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
+import { classifyTopLevelLocation } from "./visitability"
 
 export type FormSubmissionProposalFactory = (signal: AbortSignal) => FormSubmissionProposal
 
@@ -133,6 +149,15 @@ export type FormSubmissionReport =
         application: "empty"
         destination: FormSubmissionDestination
         status: "empty"
+      }
+    >
+  | Readonly<
+      Omit<FormSubmissionResponseMetadata, "classification"> & {
+        action: Extract<VisitAction, "advance" | "replace">
+        classification: "success"
+        destination: DocumentSubmissionDestination
+        reason: FormSubmissionUnappliedReason
+        status: "unapplied"
       }
     >
   | Readonly<
@@ -200,8 +225,10 @@ export interface FormSubmissionControllerOptions extends StreamActionDispatchOpt
   readonly frameControllers?: FrameControllerRegistry
   readonly history?: DocumentHistory
   readonly limits?: Partial<ParseLimits>
+  readonly navigation?: NavigationAdapter
   readonly requestLifecycle?: RequestLifecycle
   readonly snapshotCache?: DocumentSnapshotCache
+  readonly visitLifecycle?: DocumentVisitLifecycle
 }
 
 export interface FormSubmissionControllerSubmitOptions {
@@ -318,16 +345,20 @@ export class FormSubmissionController {
     options: FormSubmissionControllerOptions = {},
   ) {
     const requestLifecycle = requestLifecycleOption(options, "Form submission controller")
+    const visitLifecycle = documentVisitLifecycleOption(options, "Form submission controller")
+    const navigation = options.navigation
     this.options = Object.freeze({
       ...(options.confirmation ? { confirmation: options.confirmation } : {}),
       ...(options.customActions ? { customActions: options.customActions } : {}),
       ...(options.frameControllers ? { frameControllers: options.frameControllers } : {}),
       ...(options.history ? { history: options.history } : {}),
       ...(options.limits ? { limits: Object.freeze({ ...options.limits }) } : {}),
+      ...(navigation ? { navigation } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
       ...(requestLifecycle ? { requestLifecycle } : {}),
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
+      ...(visitLifecycle ? { visitLifecycle } : {}),
     })
     this.ownership = destinationRequestOwnership(session)
   }
@@ -662,7 +693,7 @@ export class FormSubmissionController {
           }
         }
         return settle(
-          this.apply(
+          await this.apply(
             response,
             proposal,
             identity,
@@ -748,6 +779,16 @@ export class FormSubmissionController {
         status: "canceled",
       })
     }
+    if (report.status === "unapplied") {
+      return Object.freeze({
+        classification: report.classification,
+        effectiveMethod: report.effectiveMethod,
+        reason: report.reason,
+        requestId: report.requestId,
+        responseStatus: report.responseStatus,
+        status: "unapplied",
+      })
+    }
     if (report.status === "empty") {
       return Object.freeze({
         classification: report.classification,
@@ -767,7 +808,7 @@ export class FormSubmissionController {
     })
   }
 
-  private apply(
+  private async apply(
     candidate: FormResponseCandidate,
     proposal: FormSubmissionProposal,
     identity: FormSubmissionProposalIdentity,
@@ -775,7 +816,7 @@ export class FormSubmissionController {
     preparedFrame?: PreparedFrameResponse,
     historyPlan?: DocumentFormHistoryPlan,
     frameHistoryPlan?: FrameFormHistoryPlan,
-  ): FormSubmissionReport {
+  ): Promise<FormSubmissionReport> {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
     if (candidate.status === "empty") {
@@ -937,6 +978,55 @@ export class FormSubmissionController {
 
     if (candidate.classification === "success" && candidate.transportMethod !== "GET") {
       this.options.snapshotCache?.clear()
+    }
+
+    if (candidate.classification === "success") {
+      const action = this.documentVisitAction(candidate, identity)
+      if (this.options.visitLifecycle) {
+        const beforeVisit = this.options.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH](
+          new BeforeVisitEvent(candidate.url),
+        )
+        if (beforeVisit.defaultPrevented) {
+          return this.unapplied(candidate, destination, action, "visit-prevented")
+        }
+        if (!this.isCurrent(lease, proposal)) {
+          return this.unapplied(candidate, destination, action, "superseded")
+        }
+      }
+      const disposition = classifyTopLevelLocation(this.session.tree, candidate.url)
+      if (disposition.classification !== "visitable") {
+        if (disposition.classification === "external") {
+          throw new StateError("Form response location escaped same-origin transport")
+        }
+        const navigation = this.options.navigation
+        if (!navigation) {
+          throw new TargetError("Unvisitable form response locations require navigation", {
+            method: candidate.transportMethod,
+            responseStatus: candidate.responseStatus,
+          })
+        }
+        const navigated = await settleRequestOperation(lease.controller.signal, () =>
+          navigation.visit(disposition.url, action),
+        )
+        if (!this.isCurrent(lease, proposal) || navigated.status === "canceled") {
+          return this.unapplied(candidate, destination, action, "superseded")
+        }
+        if (navigated.status === "rejected") {
+          throw new RequestError("Form submission failed", {
+            method: candidate.transportMethod,
+            responseStatus: candidate.responseStatus,
+          })
+        }
+        return this.unapplied(candidate, destination, action, disposition.classification)
+      }
+      if (this.options.visitLifecycle) {
+        this.options.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](
+          new VisitEvent(candidate.url, action),
+        )
+        if (!this.isCurrent(lease, proposal)) {
+          return this.unapplied(candidate, destination, action, "superseded")
+        }
+      }
     }
 
     const activeUrl = this.session.tree.document.url
@@ -1133,6 +1223,34 @@ export class FormSubmissionController {
     } catch {
       throw new StateError("Document form history requires a valid credential-free HTTP(S) URL")
     }
+  }
+
+  private documentVisitAction(
+    candidate: FormResponseCandidate,
+    identity: FormSubmissionProposalIdentity,
+  ): Extract<VisitAction, "advance" | "replace"> {
+    if (identity.visitAction === "advance" || identity.visitAction === "replace") {
+      return identity.visitAction
+    }
+    return candidate.redirected && candidate.url === this.canonicalDocumentUrl()
+      ? "replace"
+      : "advance"
+  }
+
+  private unapplied(
+    candidate: FormResponseCandidate,
+    destination: DocumentSubmissionDestination,
+    action: Extract<VisitAction, "advance" | "replace">,
+    reason: FormSubmissionUnappliedReason,
+  ): FormSubmissionReport {
+    return Object.freeze({
+      ...responseMetadata(candidate),
+      action,
+      classification: "success",
+      destination,
+      reason,
+      status: "unapplied",
+    })
   }
 
   private canceled(

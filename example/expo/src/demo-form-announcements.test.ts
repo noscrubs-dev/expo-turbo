@@ -67,6 +67,15 @@ describe("demo form announcements", () => {
         revision: 4,
         status: "empty",
       },
+      {
+        classification: "success",
+        effectiveMethod: "POST",
+        reason: "visit-prevented",
+        requestId: "redacted",
+        responseStatus: 200,
+        revision: 7,
+        status: "unapplied",
+      },
       safeFailure,
       {
         effectiveMethod: "POST",
@@ -84,6 +93,7 @@ describe("demo form announcements", () => {
       "polite",
       "polite",
       "assertive",
+      "polite",
       "polite",
       "assertive",
       "assertive",

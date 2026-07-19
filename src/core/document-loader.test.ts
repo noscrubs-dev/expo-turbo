@@ -8,7 +8,10 @@ import {
   DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
-import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
+import {
+  DOCUMENT_LOAD_DISCARD_HANDLING,
+  DOCUMENT_LOAD_REQUEST_DISPATCHED,
+} from "./document-loader-lifecycle-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   ContentTypeError,
@@ -25,7 +28,12 @@ import { DocumentSession } from "./session"
 import { attributeValue, DocumentTree, type ProtocolDocument } from "./tree"
 
 type InternalDocumentLoadOptions = DocumentLoadOptions &
-  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
+  Readonly<{
+    [DOCUMENT_LOAD_DISCARD_HANDLING]?: (
+      controller: AbortController,
+    ) => undefined | PromiseLike<undefined>
+    [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined
+  }>
 
 function documentSession(): DocumentSession {
   return new DocumentSession(
@@ -831,6 +839,62 @@ describe("Document request loader", () => {
     })
     expect(session.tree).toBe(previousTree)
     expect(session.revision).toBe(0)
+  })
+
+  test("retains discarded-response ownership through internal handling", async () => {
+    const session = documentSession()
+    let discardedController: AbortController | undefined
+    let signalDiscardHandlingStarted: () => void = () => undefined
+    const discardHandlingStarted = new Promise<void>((resolve) => {
+      signalDiscardHandlingStarted = resolve
+    })
+    const discardedLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response('<Gallery data-turbo-root="/other"><Discarded /></Gallery>', {
+            redirected: true,
+            url: "https://example.test/final",
+          }),
+      },
+      { next: () => "request-discarded" },
+    )
+    let resolveCurrent: (response: TurboResponse) => void = () => undefined
+    const currentLoader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: () =>
+          new Promise<TurboResponse>((resolve) => {
+            resolveCurrent = resolve
+          }),
+      },
+      { next: () => "request-current" },
+    )
+    const options = {
+      beforeCommit: () => "discard" as const,
+      [DOCUMENT_LOAD_DISCARD_HANDLING]: async (controller: AbortController) => {
+        discardedController = controller
+        signalDiscardHandlingStarted()
+        await new Promise<void>((resolve) => {
+          controller.signal.addEventListener("abort", () => resolve(), { once: true })
+        })
+        return undefined
+      },
+    } satisfies InternalDocumentLoadOptions
+
+    const discarded = discardedLoader.load("/requested", undefined, options)
+    await discardHandlingStarted
+    const current = currentLoader.load("/current")
+
+    expect(discardedController?.signal.aborted).toBe(true)
+    expect(await discarded).toMatchObject({ status: "canceled" })
+    resolveCurrent(
+      response('<Gallery><Current id="current" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    expect(await current).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("current")?.tagName).toBe("Current")
   })
 
   test("fails closed on invalid commit admission and releases ownership for retry", async () => {

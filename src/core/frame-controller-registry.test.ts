@@ -293,7 +293,9 @@ describe("Frame controller registry visits", () => {
       undefined,
       {
         back() {},
-        openExternal: (url) => external.push(url),
+        openExternal: (url) => {
+          external.push(url)
+        },
         visit() {
           throw new Error("fallback navigation must not own promoted visits")
         },
