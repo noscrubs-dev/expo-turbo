@@ -9,14 +9,24 @@ import type {
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
+  type DocumentLoadOptions,
   type DocumentLoadReport,
   type DocumentRequestLoader,
   DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
+import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { RequestError, StateError, TargetError } from "./errors"
+import {
+  admitDocumentVisitLifecycle,
+  BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  type DocumentVisitLifecycle,
+  VisitEvent,
+} from "./document-visit-lifecycle"
+import { PropsError, RequestError, StateError, TargetError } from "./errors"
 import { resolveProtocolUrl } from "./protocol-request"
 import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
 import {
@@ -25,6 +35,9 @@ import {
 } from "./visitability"
 
 export const DOCUMENT_VISIT_PROGRESS_DELAY_MS = 500
+
+type DocumentVisitLoadOptions = DocumentLoadOptions &
+  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
 
 export type DocumentVisitStatus = "canceled" | "completed" | "failed" | "initialized" | "started"
 
@@ -41,6 +54,15 @@ export interface DocumentVisitControllerOptions {
   readonly onObserverError?: (error: AggregateError) => void
   readonly progressDelayMs?: number
   readonly snapshotCache?: DocumentSnapshotCache
+  readonly visitLifecycle?: DocumentVisitLifecycle
+}
+
+interface AdmittedDocumentVisitControllerOptions {
+  readonly history: DocumentHistory | undefined
+  readonly onObserverError: ((error: AggregateError) => void) | undefined
+  readonly progressDelayMs: number | undefined
+  readonly snapshotCache: DocumentSnapshotCache | undefined
+  readonly visitLifecycle: unknown
 }
 
 export interface DocumentVisitOptions {
@@ -75,7 +97,14 @@ export type DocumentPreviewVisitResult = Readonly<{
   url: string
 }>
 
+export type DocumentBeforeVisitCanceledResult = Readonly<{
+  source: "visit-lifecycle"
+  status: "canceled"
+  url: string
+}>
+
 export type DocumentVisitResult =
+  | DocumentBeforeVisitCanceledResult
   | DocumentCachedVisitResult
   | DocumentPreviewVisitResult
   | DocumentLoadReport
@@ -141,6 +170,7 @@ export class DocumentVisitController {
   private traversalEntry: DocumentHistoryEntry | undefined
   private traversalEpoch = 0
   private treeStateUnsubscribe: (() => void) | undefined
+  private readonly visitLifecycle: DocumentVisitLifecycle | undefined
   private visitEpoch = 0
 
   constructor(
@@ -148,10 +178,15 @@ export class DocumentVisitController {
     private readonly clock: ClockAdapter,
     options: DocumentVisitControllerOptions = {},
   ) {
-    this.history = options.history
-    this.onObserverError = options.onObserverError
-    this.progressDelayMs = options.progressDelayMs ?? DOCUMENT_VISIT_PROGRESS_DELAY_MS
-    this.snapshotCache = options.snapshotCache
+    const admittedOptions = documentVisitControllerOptions(options)
+    this.history = admittedOptions.history
+    this.onObserverError = admittedOptions.onObserverError
+    this.progressDelayMs = admittedOptions.progressDelayMs ?? DOCUMENT_VISIT_PROGRESS_DELAY_MS
+    this.snapshotCache = admittedOptions.snapshotCache
+    this.visitLifecycle = admitDocumentVisitLifecycle(
+      admittedOptions.visitLifecycle,
+      "Document visit controller visit lifecycle is invalid",
+    )
     if (!Number.isFinite(this.progressDelayMs) || this.progressDelayMs < 0) {
       throw new RequestError("Document visit progress delay must be a non-negative number")
     }
@@ -179,17 +214,27 @@ export class DocumentVisitController {
         throw new TargetError("Document restore fragments require anchor restoration support")
       }
       if (admission.classification === "visitable") {
+        this.validateHistoryAction(action)
+      } else if (action === "restore") {
+        throw new TargetError("Document restore visits require a root-visitable location")
+      }
+    } catch (error) {
+      return Promise.reject(error)
+    }
+
+    const attemptEpoch = ++this.attemptEpoch
+    try {
+      const canceled = this.beforeVisit(admission.url)
+      if (canceled || attemptEpoch !== this.attemptEpoch) {
+        return Promise.resolve(canceled ?? this.beforeVisitCanceled(admission.url))
+      }
+      if (admission.classification === "visitable") {
         historyPlan = this.proposeHistory(action, admission.url)
       }
     } catch (error) {
       return Promise.reject(error)
     }
     if (admission.classification !== "visitable") {
-      if (action === "restore") {
-        return Promise.reject(
-          new TargetError("Document restore visits require a root-visitable location"),
-        )
-      }
       return this.delegateInitial(admission, action, options.navigation)
     }
 
@@ -203,9 +248,9 @@ export class DocumentVisitController {
         historyPlan,
         documentClaimSerial,
         treeGeneration,
+        attemptEpoch,
       )
     }
-    const attemptEpoch = ++this.attemptEpoch
     const cache = this.snapshotCache
     if (cache && new URL(admission.url).hash === "") {
       return this.startPreviewableVisit(
@@ -251,6 +296,16 @@ export class DocumentVisitController {
       if (!currentUrl || this.canonicalDocumentUrl(baseUrl) !== currentUrl) {
         return Promise.resolve(undefined)
       }
+      if (this.history) this.captureHistoryGuard(currentUrl, "refresh")
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    const attemptEpoch = ++this.attemptEpoch
+    try {
+      const canceled = this.beforeVisit(currentUrl)
+      if (canceled || attemptEpoch !== this.attemptEpoch) {
+        return Promise.resolve(canceled ?? this.beforeVisitCanceled(currentUrl))
+      }
       historyPlan = this.history ? this.proposeHistory("replace", currentUrl) : undefined
     } catch (error) {
       return Promise.reject(error)
@@ -263,7 +318,7 @@ export class DocumentVisitController {
       undefined,
       "replace",
       undefined,
-      undefined,
+      attemptEpoch,
       undefined,
       documentClaimSerial,
       treeGeneration,
@@ -370,6 +425,7 @@ export class DocumentVisitController {
             this.progressVisible = false
             this.status = "started"
             this.publish()
+            this.notifyVisit(restoredEntry.url, "restore", epoch)
           },
         })
         if (report.status !== "miss") {
@@ -418,6 +474,7 @@ export class DocumentVisitController {
       undefined,
       documentClaimSerial,
       treeGeneration,
+      "restore",
     ).then(
       (result) => {
         this.reconcileTraversal(restoredEntry)
@@ -524,6 +581,7 @@ export class DocumentVisitController {
           this.progressVisible = false
           this.status = "started"
           this.publish()
+          this.notifyVisit(source, action, epoch)
           return undefined
         },
       })
@@ -664,6 +722,7 @@ export class DocumentVisitController {
     historyPlan: DocumentVisitHistoryPlan,
     documentClaimSerial: number,
     treeGeneration: number,
+    attemptEpoch: number,
   ): Promise<DocumentVisitResult> {
     const restoreEpoch = this.visitEpoch
     const cache = this.snapshotCache
@@ -676,7 +735,7 @@ export class DocumentVisitController {
         undefined,
         "restore",
         restoreEpoch,
-        undefined,
+        attemptEpoch,
         undefined,
         documentClaimSerial,
         treeGeneration,
@@ -687,6 +746,7 @@ export class DocumentVisitController {
     try {
       const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
         beforeClaim: () => {
+          this.assertAttemptEpoch(attemptEpoch)
           this.assertRestoreEpoch(restoreEpoch)
           this.assertDocumentClaimSerial(documentClaimSerial)
           this.assertTreeGeneration(treeGeneration)
@@ -700,6 +760,7 @@ export class DocumentVisitController {
           historyPlan.history.commitProposal(historyPlan.proposal)
         },
         onRestoreStart: () => {
+          this.assertAttemptEpoch(attemptEpoch)
           this.assertRestoreEpoch(restoreEpoch)
           this.assertHistoryPlan(historyPlan)
           this.previewContinuationEpoch = undefined
@@ -707,6 +768,7 @@ export class DocumentVisitController {
           this.progressVisible = false
           this.status = "started"
           this.publish()
+          this.notifyVisit(source, "restore", epoch)
           return undefined
         },
       })
@@ -722,7 +784,7 @@ export class DocumentVisitController {
           undefined,
           "restore",
           restoreEpoch,
-          undefined,
+          attemptEpoch,
           undefined,
           documentClaimSerial,
           treeGeneration,
@@ -761,6 +823,7 @@ export class DocumentVisitController {
     continuation?: DocumentPreviewContinuation,
     expectedDocumentClaimSerial?: number,
     expectedTreeGeneration?: number,
+    eventAction?: VisitAction,
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
@@ -916,7 +979,18 @@ export class DocumentVisitController {
         this.status = "started"
         this.publish()
       },
-    })
+      ...(this.visitLifecycle && !continuation
+        ? {
+            [DOCUMENT_LOAD_REQUEST_DISPATCHED]: () => {
+              if (epoch === undefined) {
+                throw new StateError("Document request dispatched without a visit lifecycle")
+              }
+              this.notifyVisit(source, eventAction ?? action, epoch)
+              return undefined
+            },
+          }
+        : {}),
+    } satisfies DocumentVisitLoadOptions)
     if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(
@@ -1006,6 +1080,39 @@ export class DocumentVisitController {
       throw new StateError("Document history or the active document changed during visit planning")
     }
     return { base: guard.entry, history: guard.history, proposal }
+  }
+
+  private validateHistoryAction(action: VisitAction): void {
+    const guard = this.captureHistoryGuard(this.loader.currentUrl, "refresh")
+    if (guard) return
+    if (action === "replace") {
+      throw new TargetError("Document replace visits require configured history")
+    }
+    if (action === "restore") {
+      throw new TargetError("Document restore visits require configured history")
+    }
+  }
+
+  private beforeVisit(url: string): DocumentBeforeVisitCanceledResult | undefined {
+    const lifecycle = this.visitLifecycle
+    if (!lifecycle) return undefined
+    const event = lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH](new BeforeVisitEvent(url))
+    return event.defaultPrevented ? this.beforeVisitCanceled(url) : undefined
+  }
+
+  private beforeVisitCanceled(url: string): DocumentBeforeVisitCanceledResult {
+    return Object.freeze({
+      source: "visit-lifecycle",
+      status: "canceled",
+      url,
+    })
+  }
+
+  private notifyVisit(url: string, action: VisitAction, epoch: number): void {
+    if (!this.visitLifecycle || epoch !== this.visitEpoch || this.status !== "started") {
+      return
+    }
+    this.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](new VisitEvent(url, action))
   }
 
   private assertHistoryPlan(plan: DocumentVisitHistoryPlan): void {
@@ -1272,5 +1379,23 @@ export class DocumentVisitController {
         throw terminal
       })
     }
+  }
+}
+
+function documentVisitControllerOptions(options: unknown): AdmittedDocumentVisitControllerOptions {
+  try {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("invalid options")
+    }
+    const candidate = options as DocumentVisitControllerOptions
+    return {
+      history: candidate.history,
+      onObserverError: candidate.onObserverError,
+      progressDelayMs: candidate.progressDelayMs,
+      snapshotCache: candidate.snapshotCache,
+      visitLifecycle: candidate.visitLifecycle,
+    }
+  } catch {
+    throw new PropsError("Document visit controller options could not be read")
   }
 }

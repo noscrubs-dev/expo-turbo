@@ -8,6 +8,14 @@ export * from "./document-preloader"
 export * from "./document-refresh-controller"
 export * from "./document-snapshot-cache"
 export * from "./document-visit-controller"
+export {
+  BeforeVisitEvent,
+  DocumentVisitLifecycle,
+  type DocumentVisitLifecycleEvent,
+  type DocumentVisitLifecycleEventMap,
+  type DocumentVisitLifecycleOptions,
+  VisitEvent,
+} from "./document-visit-lifecycle"
 export * from "./errors"
 export * from "./events"
 export * from "./form-link-submission"

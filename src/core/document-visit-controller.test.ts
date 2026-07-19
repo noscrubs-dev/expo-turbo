@@ -25,6 +25,7 @@ import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
   DocumentVisitController,
 } from "./document-visit-controller"
+import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
 import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
@@ -163,6 +164,7 @@ function harness(
     requestLifecycle?: RequestLifecycle
     snapshotCache?: DocumentSnapshotCache
     history?: DocumentHistory
+    visitLifecycle?: DocumentVisitLifecycle
   }> = {},
 ) {
   const pending: PendingRequest[] = []
@@ -197,11 +199,334 @@ function harness(
     ...(options.onObserverError ? { onObserverError: options.onObserverError } : {}),
     ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
     ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
+    ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
   })
   return { clock, controller, loader, pending, requestIdCount: () => requestId, session }
 }
 
 describe("Document visit controller", () => {
+  test("lets before-visit prevent work before history, cache, request, or state ownership", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const snapshotCache = new ReentrantSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    let cacheReads = 0
+    snapshotCache.onGet = () => {
+      cacheReads += 1
+    }
+    const history = historyFixture()
+    lifecycle.subscribe("before-visit", (event) => {
+      expect(event.detail).toEqual({ url: "https://example.test/next" })
+      event.preventDefault()
+    })
+    const { clock, controller, pending, requestIdCount } = harness({
+      history: history.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    const initial = controller.state
+
+    expect(await controller.visit("/next")).toEqual({
+      source: "visit-lifecycle",
+      status: "canceled",
+      url: "https://example.test/next",
+    })
+    expect(controller.state).toBe(initial)
+    expect(history.restorationIdCount()).toBe(0)
+    expect(history.writes).toEqual([])
+    expect({ cacheReads, requests: requestIdCount() }).toEqual({ cacheReads: 0, requests: 0 })
+    expect(pending).toHaveLength(0)
+    expect(clock.timers).toHaveLength(0)
+  })
+
+  test("keeps a reentrant newer proposal authoritative across before-visit", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    let controller: DocumentVisitController
+    let newer: Promise<unknown> | undefined
+    lifecycle.subscribe("before-visit", (event) => {
+      if (!event.detail.url.endsWith("/older")) return
+      newer = controller.visit("/newer")
+    })
+    const current = harness({ visitLifecycle: lifecycle })
+    controller = current.controller
+
+    const older = controller.visit("/older")
+
+    expect(await older).toEqual({
+      source: "visit-lifecycle",
+      status: "canceled",
+      url: "https://example.test/older",
+    })
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe("https://example.test/newer")
+    current.pending[0]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    if (!newer) throw new Error("newer lifecycle visit did not start")
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("gates delegated proposals without publishing a visit start", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const delegated: string[] = []
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal(url) {
+        delegated.push(url)
+      },
+      visit(url, action) {
+        delegated.push(`${action}:${url}`)
+      },
+    }
+    const current = harness({ visitLifecycle: lifecycle })
+
+    expect(await current.controller.visit("https://other.test/path", { navigation })).toMatchObject(
+      {
+        kind: "external",
+        status: "delegated",
+      },
+    )
+    expect(events).toEqual(["before:https://other.test/path"])
+    expect(delegated).toEqual(["https://other.test/path"])
+    expect(current.requestIdCount()).toBe(0)
+  })
+
+  test("orders visit notification after request listeners and before physical fetch", async () => {
+    const order: string[] = []
+    const visitLifecycle = new DocumentVisitLifecycle()
+    const requestLifecycle = new RequestLifecycle()
+    visitLifecycle.subscribe("before-visit", () => {
+      order.push("before-visit")
+    })
+    visitLifecycle.subscribe("visit", (event) => {
+      order.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
+      order.push("before-fetch-request")
+      event.detail.request.setUrl("https://example.test/admitted")
+    })
+    const { controller } = harness({
+      fetch: async (request) => {
+        order.push("fetch")
+        expect(request.url).toBe("https://example.test/admitted")
+        return response('<Gallery><Next id="next" /></Gallery>', { url: request.url })
+      },
+      requestLifecycle,
+      visitLifecycle,
+    })
+
+    expect(await controller.visit("/next")).toMatchObject({ status: "committed" })
+    expect(order).toEqual([
+      "before-visit",
+      "before-fetch-request",
+      "visit:advance:https://example.test/next",
+      "fetch",
+    ])
+  })
+
+  test("notifies visit when request admission cancels before physical fetch", async () => {
+    const events: string[] = []
+    const visitLifecycle = new DocumentVisitLifecycle()
+    const requestLifecycle = new RequestLifecycle()
+    visitLifecycle.subscribe("before-visit", () => {
+      events.push("before-visit")
+    })
+    visitLifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
+      events.push("before-fetch-request")
+      event.preventDefault()
+    })
+    const current = harness({ requestLifecycle, visitLifecycle })
+
+    expect(await current.controller.visit("/canceled")).toMatchObject({ status: "canceled" })
+    expect(events).toEqual(["before-visit", "before-fetch-request", "visit"])
+    expect(current.pending).toHaveLength(0)
+    expect(current.controller.state.status).toBe("canceled")
+  })
+
+  test("emits one visit across cached preview and canonical revalidation", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}`)
+    })
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/next",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    const { controller, pending } = harness({ snapshotCache, visitLifecycle: lifecycle })
+
+    const visiting = controller.visit("/next")
+
+    expect(events).toEqual(["before:https://example.test/next", "visit:advance"])
+    expect(pending).toHaveLength(1)
+    pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    expect(await visiting).toMatchObject({ status: "committed" })
+    expect(events).toEqual(["before:https://example.test/next", "visit:advance"])
+  })
+
+  test("reports traversal as restore without a cancellable before-visit", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}`)
+    })
+    const history = historyFixture(() => undefined, "https://example.test/current", 2)
+    const { controller, pending } = harness({
+      history: history.history,
+      snapshotCache: new DocumentSnapshotCache(),
+      visitLifecycle: lifecycle,
+    })
+
+    const restoring = controller.restoreTraversal({
+      restorationIdentifier: "history-forward",
+      restorationIndex: 3,
+      url: "https://example.test/forward",
+    })
+
+    expect(events).toEqual(["visit:restore"])
+    expect(pending).toHaveLength(1)
+    pending[0]?.resolve(
+      response('<Gallery><Forward id="forward" /></Gallery>', {
+        url: "https://example.test/forward",
+      }),
+    )
+    expect(await restoring).toMatchObject({ source: "network" })
+    expect(events).toEqual(["visit:restore"])
+  })
+
+  test("emits restore for cached explicit visits and cached host traversal", async () => {
+    const explicitLifecycle = new DocumentVisitLifecycle()
+    const explicitEvents: string[] = []
+    explicitLifecycle.subscribe("before-visit", () => {
+      explicitEvents.push("before")
+    })
+    explicitLifecycle.subscribe("visit", (event) => {
+      explicitEvents.push(`visit:${event.detail.action}`)
+    })
+    const explicitCache = new DocumentSnapshotCache()
+    explicitCache.put(
+      "https://example.test/older",
+      parseExpoTurboDocument('<Gallery><Older id="older" /></Gallery>', {
+        url: "https://example.test/older",
+      }),
+    )
+    const explicit = harness({
+      history: historyFixture().history,
+      snapshotCache: explicitCache,
+      visitLifecycle: explicitLifecycle,
+    })
+
+    expect(await explicit.controller.visit("/older", { action: "restore" })).toMatchObject({
+      source: "snapshot",
+      status: "restored",
+    })
+    expect(explicitEvents).toEqual(["before", "visit:restore"])
+    expect(explicit.pending).toHaveLength(0)
+
+    const traversalLifecycle = new DocumentVisitLifecycle()
+    const traversalEvents: string[] = []
+    traversalLifecycle.subscribe("before-visit", () => {
+      traversalEvents.push("before")
+    })
+    traversalLifecycle.subscribe("visit", (event) => {
+      traversalEvents.push(`visit:${event.detail.action}`)
+    })
+    const traversalCache = new DocumentSnapshotCache()
+    traversalCache.put(
+      "https://example.test/back",
+      parseExpoTurboDocument('<Gallery><Back id="back" /></Gallery>', {
+        url: "https://example.test/back",
+      }),
+    )
+    const traversal = harness({
+      history: historyFixture(() => undefined, "https://example.test/current", 2).history,
+      snapshotCache: traversalCache,
+      visitLifecycle: traversalLifecycle,
+    })
+
+    expect(
+      await traversal.controller.restoreTraversal({
+        restorationIdentifier: "history-back",
+        restorationIndex: 1,
+        url: "https://example.test/back",
+      }),
+    ).toMatchObject({ source: "snapshot", status: "restored" })
+    expect(traversalEvents).toEqual(["visit:restore"])
+    expect(traversal.pending).toHaveLength(0)
+  })
+
+  test("emits replace lifecycle for an accepted current-document refresh", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}`)
+    })
+    const current = harness({
+      history: historyFixture().history,
+      visitLifecycle: lifecycle,
+    })
+
+    const refreshing = current.controller.refreshCurrent("https://example.test/current")
+
+    expect(events).toEqual(["before", "visit:replace"])
+    expect(current.pending).toHaveLength(1)
+    current.pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(events).toEqual(["before", "visit:replace"])
+  })
+
+  test("lets a visit observer cancel exact ownership before fetch", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    let controller: DocumentVisitController
+    lifecycle.subscribe("visit", () => {
+      controller.cancel()
+    })
+    const current = harness({ visitLifecycle: lifecycle })
+    controller = current.controller
+
+    expect(await controller.visit("/canceled")).toMatchObject({ status: "canceled" })
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(1)
+    expect(controller.state.status).toBe("canceled")
+  })
+
   test("publishes canceled visit state when response handling is prevented", async () => {
     const lifecycle = new RequestLifecycle()
     lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
@@ -238,24 +563,34 @@ describe("Document visit controller", () => {
     expect(errors).toEqual([])
   })
 
-  test("starts and can cancel a visit while before-fetch-request is paused", async () => {
-    const lifecycle = new RequestLifecycle()
+  test("notifies visit before a paused before-fetch-request resumes", async () => {
+    const requestLifecycle = new RequestLifecycle()
+    const visitLifecycle = new DocumentVisitLifecycle()
     let resume: () => void = () => {
       throw new Error("before-fetch-request did not pause")
     }
-    const { clock, controller, pending } = harness({ requestLifecycle: lifecycle })
+    const { clock, controller, pending } = harness({ requestLifecycle, visitLifecycle })
     const order: string[] = []
     controller.subscribe(() => order.push(`state:${controller.state.status}`))
-    lifecycle.subscribe("before-fetch-request", (event) => {
+    visitLifecycle.subscribe("visit", () => {
+      order.push("visit")
+    })
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
       order.push(`before-fetch-request:${controller.state.status}`)
       event.pause()
       resume = () => event.resume()
-      controller.cancel()
     })
 
     const visit = controller.visit("/paused")
 
-    expect(order).toEqual(["state:started", "before-fetch-request:started", "state:canceled"])
+    expect(order).toEqual(["state:started", "before-fetch-request:started", "visit"])
+    controller.cancel()
+    expect(order).toEqual([
+      "state:started",
+      "before-fetch-request:started",
+      "visit",
+      "state:canceled",
+    ])
     expect(controller.state).toEqual({
       busy: false,
       previewVisible: false,
@@ -263,7 +598,8 @@ describe("Document visit controller", () => {
       revision: 2,
       status: "canceled",
     })
-    expect(clock.timers).toHaveLength(0)
+    expect(clock.timers).toHaveLength(1)
+    expect(clock.timers[0]?.cleared).toBe(true)
     expect(pending).toHaveLength(0)
     expect(await visit).toMatchObject({ status: "canceled" })
     expect(pending).toHaveLength(0)
@@ -4274,5 +4610,32 @@ describe("Document visit controller", () => {
     expect(
       () => new DocumentVisitController(loader, new ManualClock(), { progressDelayMs: Infinity }),
     ).toThrow(RequestError)
+  })
+
+  test("reads controller options once and redacts hostile option boundaries", () => {
+    const { loader } = harness()
+    const lifecycle = new DocumentVisitLifecycle()
+    let lifecycleReads = 0
+    const controller = new DocumentVisitController(loader, new ManualClock(), {
+      get visitLifecycle() {
+        lifecycleReads += 1
+        return lifecycle
+      },
+    })
+
+    expect(controller.state.status).toBe("initialized")
+    expect(lifecycleReads).toBe(1)
+    expect(
+      () =>
+        new DocumentVisitController(loader, new ManualClock(), {
+          visitLifecycle: "secret" as never,
+        }),
+    ).toThrow("Document visit controller visit lifecycle is invalid")
+
+    const revoked = Proxy.revocable({}, {})
+    revoked.revoke()
+    expect(() => new DocumentVisitController(loader, new ManualClock(), revoked.proxy)).toThrow(
+      "Document visit controller options could not be read",
+    )
   })
 })

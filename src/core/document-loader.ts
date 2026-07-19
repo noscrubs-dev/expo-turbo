@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
@@ -102,6 +103,9 @@ export interface DocumentLoadOptions {
   readonly beforeTreeCommit?: (candidate: DocumentTreeCommitCandidate) => undefined
   readonly onRequestStart?: () => undefined
 }
+
+type InternalDocumentLoadOptions = DocumentLoadOptions &
+  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
 
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
@@ -431,6 +435,18 @@ export class DocumentRequestLoader {
         }
         if (!this.owns(active)) return this.canceled(active)
       }
+      const requestDispatched = (): undefined => {
+        const callback = (options as InternalDocumentLoadOptions)[DOCUMENT_LOAD_REQUEST_DISPATCHED]
+        if (callback) {
+          const result = callback()
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => undefined)
+            throw new RequestError("Document request dispatch callback must not return a value", {
+              method: "GET",
+            })
+          }
+        }
+      }
       const startRequest = (effectiveRequest: TurboRequest): boolean => {
         if (!this.owns(active)) return false
         requestedUrl = effectiveRequest.url
@@ -448,6 +464,7 @@ export class DocumentRequestLoader {
             allowedMethods: ["GET"],
             protectedHeaders: Object.keys(request.headers),
           },
+          afterBeforeRequestListeners: requestDispatched,
           beforeFetch: startRequest,
           context: { kind: "document", purpose: "load", requestId },
           fetchAdapter: this.fetchAdapter,
@@ -471,6 +488,7 @@ export class DocumentRequestLoader {
           return prevented
         }
       } else {
+        requestDispatched()
         if (!startRequest(request)) return this.canceled(active)
         const fetched = await settleRequestOperation(active.controller.signal, () =>
           this.fetchAdapter.fetch(request),

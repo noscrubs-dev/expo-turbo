@@ -191,6 +191,8 @@ type RequestLifecycleListener<Type extends RequestLifecycleEventType> = (
 
 export const REQUEST_LIFECYCLE_DISPATCH = Symbol("expo-turbo.request-lifecycle.dispatch")
 
+type RequestLifecycleDispatchCallback = () => undefined
+
 /**
  * Shared host subscription surface for logical request events. Dispatch is
  * independent per request so one paused Frame cannot block another request.
@@ -221,9 +223,24 @@ export class RequestLifecycle {
     }
   }
 
-  async [REQUEST_LIFECYCLE_DISPATCH](event: RequestLifecycleEvent): Promise<void> {
+  async [REQUEST_LIFECYCLE_DISPATCH](
+    event: RequestLifecycleEvent,
+    afterListeners?: RequestLifecycleDispatchCallback,
+  ): Promise<void> {
     const listeners = [...(this.listeners.get(event.type) ?? [])]
-    for (const listener of listeners) await listener(event)
+    let listenerError: unknown
+    let listenerFailed = false
+    try {
+      for (const listener of listeners) {
+        const result = listener(event)
+        if (result !== undefined) await result
+      }
+    } catch (error) {
+      listenerError = error
+      listenerFailed = true
+    }
+    afterListeners?.()
+    if (listenerFailed) throw listenerError
     if (event instanceof PausableEvent) await event.waitUntilResumed()
   }
 }
@@ -296,8 +313,9 @@ export function requestLifecycleDefaultHandlingPrevented(error: unknown): boolea
   return error instanceof RequestLifecycleTransportError && error.defaultHandlingPrevented
 }
 
-export interface FetchWithRequestLifecycleOptions {
+interface FetchWithRequestLifecycleOptions {
   readonly admission: RequestLifecycleAdmission
+  readonly afterBeforeRequestListeners?: RequestLifecycleDispatchCallback
   readonly beforeFetch?: (request: TurboRequest) => boolean | undefined
   readonly context: RequestLifecycleContext
   readonly fetchAdapter: FetchAdapter
@@ -316,6 +334,7 @@ export async function fetchWithRequestLifecycle(
     beforeRequest,
     options.request.signal,
     "Before-fetch-request listener failed",
+    options.afterBeforeRequestListeners,
   )
   if (!(await requestDispatch) || beforeRequest.defaultPrevented) {
     return Object.freeze({ request: options.request, status: "canceled" })
@@ -457,9 +476,10 @@ async function dispatchWithAbort(
   event: RequestLifecycleEvent,
   signal: AbortSignal | undefined,
   failureMessage: string,
+  afterListeners?: RequestLifecycleDispatchCallback,
 ): Promise<boolean> {
   if (signal?.aborted) return false
-  const dispatched = lifecycle[REQUEST_LIFECYCLE_DISPATCH](event).then(
+  const dispatched = lifecycle[REQUEST_LIFECYCLE_DISPATCH](event, afterListeners).then(
     () => true,
     () => {
       throw new RequestError(failureMessage)

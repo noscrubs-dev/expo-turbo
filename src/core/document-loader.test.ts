@@ -3,10 +3,12 @@ import { describe, expect, test } from "bun:test"
 import type { TurboRequest, TurboResponse } from "../adapters"
 import {
   DocumentCommitError,
+  type DocumentLoadOptions,
   DocumentRequestLoader,
   DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
+import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   ContentTypeError,
@@ -21,6 +23,9 @@ import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, DocumentTree, type ProtocolDocument } from "./tree"
+
+type InternalDocumentLoadOptions = DocumentLoadOptions &
+  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
 
 function documentSession(): DocumentSession {
   return new DocumentSession(
@@ -240,7 +245,7 @@ describe("Document request loader", () => {
     expect(session.recentRequestIds.has("request-started")).toBe(true)
   })
 
-  test("acknowledges request ownership before a paused request lifecycle", async () => {
+  test("acknowledges request ownership and dispatch before a paused request lifecycle", async () => {
     const order: string[] = []
     const session = documentSession()
     const lifecycle = new RequestLifecycle()
@@ -266,13 +271,17 @@ describe("Document request loader", () => {
     )
 
     const loading = loader.load("/paused", undefined, {
+      [DOCUMENT_LOAD_REQUEST_DISPATCHED]() {
+        order.push("dispatched")
+        expect(session.recentRequestIds.has("request-paused")).toBe(false)
+      },
       onRequestStart() {
         order.push("start")
         expect(session.recentRequestIds.has("request-paused")).toBe(false)
       },
-    })
+    } as InternalDocumentLoadOptions)
 
-    expect(order).toEqual(["start", "before-fetch-request"])
+    expect(order).toEqual(["start", "before-fetch-request", "dispatched"])
     expect(fetches).toBe(0)
     expect(session.recentRequestIds.has("request-paused")).toBe(false)
 
@@ -281,6 +290,45 @@ describe("Document request loader", () => {
     expect(fetches).toBe(0)
     expect(session.recentRequestIds.has("request-paused")).toBe(false)
     resume()
+  })
+
+  test("publishes request dispatch after lifecycle mutation and before fetch bookkeeping", async () => {
+    const order: string[] = []
+    const session = documentSession()
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      order.push("before-fetch-request")
+      event.detail.request.setUrl("https://example.test/admitted")
+    })
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          order.push("fetch")
+          expect(request.url).toBe("https://example.test/admitted")
+          expect(session.recentRequestIds.has("request-ready")).toBe(true)
+          return response('<Gallery><Ready id="ready" /></Gallery>', { url: request.url })
+        },
+      },
+      { next: () => "request-ready" },
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(
+      await loader.load("/original", undefined, {
+        [DOCUMENT_LOAD_REQUEST_DISPATCHED]() {
+          order.push("dispatched")
+          expect(session.recentRequestIds.has("request-ready")).toBe(false)
+        },
+        onRequestStart() {
+          order.push("start")
+        },
+      } as InternalDocumentLoadOptions),
+    ).toMatchObject({
+      requestedUrl: "https://example.test/admitted",
+      status: "committed",
+    })
+    expect(order).toEqual(["start", "before-fetch-request", "dispatched", "fetch"])
   })
 
   test("restores a cached tree under document ownership and retargets its exact URL", () => {
