@@ -13,6 +13,7 @@ import {
   type FormControlSelection,
   type FormSelectItem,
   type FormSelectOption,
+  MAX_FORM_CONTROL_ENTRIES_PER_CONTROL,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
@@ -208,9 +209,9 @@ describe("native form control registry", () => {
     })
     registry.register("id:disabled", {
       disabled: true,
-      kind: "value",
-      name: "ignored",
-      value: "secret",
+      entries: [{ name: "ignored", value: "secret" }],
+      kind: "entries",
+      validity: { message: "Disabled entry list is invalid", valid: false },
     })
     registry.register("id:unnamed", { kind: "value", value: "ignored" })
     registry.register("id:empty-name", { kind: "value", name: "", value: "ignored" })
@@ -242,6 +243,205 @@ describe("native form control registry", () => {
     const frozen = registry.successfulEntries({ submitter: submitter.selection })
     expect(Object.isFrozen(frozen)).toBe(true)
     expect(frozen.every(Object.isFrozen)).toBe(true)
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
+  })
+
+  test("collects frozen bounded multi-name string entries at the control's document position", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const source = [
+      { name: "profile[given_name]", value: "Ada" },
+      { name: "profile[roles][]", value: "author" },
+      { name: "profile[roles][]", value: "" },
+      { name: "", value: "empty-name" },
+      { name: "_charset_", value: "host-owned" },
+    ]
+    const entryList = registry.register("id:first", {
+      entries: source,
+      kind: "entries",
+      validity: { valid: true },
+    })
+    const submitter = registry.register("id:save", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+    registry.register("id:second", { kind: "value", name: "after", value: "B" })
+
+    const firstSourceEntry = source[0]
+    if (!firstSourceEntry) throw new Error("entry-list fixture is missing")
+    firstSourceEntry.value = "mutated"
+    source.push({ name: "late", value: "ignored" })
+
+    const collected = registry.successfulEntries({ submitter: submitter.selection })
+    expect(collected).toEqual([
+      { name: "profile[given_name]", value: "Ada" },
+      { name: "profile[roles][]", value: "author" },
+      { name: "profile[roles][]", value: "" },
+      { name: "", value: "empty-name" },
+      { name: "_charset_", value: "host-owned" },
+      { name: "after", value: "B" },
+      { name: "commit", value: "save" },
+    ])
+    expect(Object.isFrozen(collected)).toBe(true)
+    expect(collected.every(Object.isFrozen)).toBe(true)
+    const planned = registry.requestPlan({
+      protocol: { requestId: "entry-list" },
+      submitter: submitter.selection,
+    })
+    expect(planned.entries).toEqual(collected)
+    expect(Array.from(new URL(planned.request.url).searchParams.entries())).toEqual(
+      collected.map(({ name, value }) => [name, value]),
+    )
+
+    const updated = [{ name: "replacement[first]", value: "one" }]
+    entryList.update({
+      entries: updated,
+      kind: "entries",
+      validity: { message: "Choose another value", valid: false },
+    })
+    const firstUpdatedEntry = updated[0]
+    if (!firstUpdatedEntry) throw new Error("updated entry-list fixture is missing")
+    firstUpdatedEntry.value = "mutated"
+    expect(registry.successfulEntries()).toEqual([
+      { name: "replacement[first]", value: "one" },
+      { name: "after", value: "B" },
+    ])
+    expect(registry.checkValidity()).toMatchObject({
+      firstInvalid: { message: "Choose another value", nodeKey: "id:first" },
+      valid: false,
+    })
+  })
+
+  test("bounds one multi-name entry-list snapshot and keeps the previous value after rejection", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const admitted = Array.from({ length: MAX_FORM_CONTROL_ENTRIES_PER_CONTROL }, (_, index) => ({
+      name: `field[${index}]`,
+      value: `${index}`,
+    }))
+    const entryList = registry.register("id:first", {
+      entries: admitted,
+      kind: "entries",
+    })
+    expect(registry.successfulEntries()).toHaveLength(MAX_FORM_CONTROL_ENTRIES_PER_CONTROL)
+
+    expect(() =>
+      entryList.update({
+        entries: [
+          ...admitted,
+          {
+            name: "overflow",
+            value: "rejected",
+          },
+        ],
+        kind: "entries",
+      }),
+    ).toThrow(PropsError)
+    expect(registry.successfulEntries()).toHaveLength(MAX_FORM_CONTROL_ENTRIES_PER_CONTROL)
+    expect(registry.successfulEntries().at(-1)).toEqual({
+      name: `field[${MAX_FORM_CONTROL_ENTRIES_PER_CONTROL - 1}]`,
+      value: `${MAX_FORM_CONTROL_ENTRIES_PER_CONTROL - 1}`,
+    })
+  })
+
+  test("uses the captured array length instead of a caller-supplied entry iterator", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const entries = [{ name: "field", value: "admitted" }]
+    const firstEntry = entries[0]
+    if (!firstEntry) throw new Error("custom-iterator fixture is missing")
+    Object.defineProperty(entries, Symbol.iterator, {
+      value: function* customEntries() {
+        yield firstEntry
+        for (let index = 0; index < MAX_FORM_CONTROL_ENTRIES_PER_CONTROL; index += 1) {
+          yield { name: `overflow[${index}]`, value: `${index}` }
+        }
+      },
+    })
+
+    registry.register("id:first", { entries, kind: "entries" })
+
+    expect(registry.successfulEntries()).toEqual([{ name: "field", value: "admitted" }])
+  })
+
+  test("reads each entry name and value once before freezing the snapshot", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    let nameReads = 0
+    let valueReads = 0
+    const entry = {
+      get name(): unknown {
+        nameReads += 1
+        return nameReads === 1 ? "field" : { uri: "file:///name" }
+      },
+      get value(): unknown {
+        valueReads += 1
+        return valueReads === 1 ? "admitted" : { uri: "file:///value" }
+      },
+    }
+
+    registry.register("id:first", {
+      entries: [entry] as unknown as readonly { readonly name: string; readonly value: string }[],
+      kind: "entries",
+    })
+
+    expect(registry.successfulEntries()).toEqual([{ name: "field", value: "admitted" }])
+    expect({ nameReads, valueReads }).toEqual({ nameReads: 1, valueReads: 1 })
+  })
+
+  test("snapshots descriptor kind and disabledness once before normalization", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    let kindReads = 0
+    let disabledReads = 0
+    const disabledValues: readonly unknown[] = [false, false, false, { secret: "not-boolean" }]
+    const descriptor = {
+      get disabled(): unknown {
+        const value = disabledValues[Math.min(disabledReads, disabledValues.length - 1)]
+        disabledReads += 1
+        return value
+      },
+      entries: [{ name: "field", value: "admitted" }],
+      get kind(): unknown {
+        kindReads += 1
+        return kindReads === 1 ? "entries" : "value"
+      },
+    }
+
+    registry.register("id:first", descriptor as unknown as FormControlDescriptor)
+
+    expect(registry.successfulEntries()).toEqual([{ name: "field", value: "admitted" }])
+    expect({ disabledReads, kindReads }).toEqual({ disabledReads: 1, kindReads: 1 })
+  })
+
+  test("reads entry-list validity fields once before freezing the snapshot", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    let messageReads = 0
+    let validReads = 0
+    const validity = {
+      get message(): unknown {
+        messageReads += 1
+        return messageReads === 1 ? "Choose another value" : { secret: "not-string" }
+      },
+      get valid(): unknown {
+        validReads += 1
+        return false
+      },
+    }
+
+    registry.register("id:first", {
+      entries: [{ name: "field", value: "admitted" }],
+      kind: "entries",
+      validity: validity as unknown as { readonly message: string; readonly valid: false },
+    })
+
+    expect(registry.checkValidity()).toMatchObject({
+      firstInvalid: { message: "Choose another value", nodeKey: "id:first" },
+      valid: false,
+    })
+    expect({ messageReads, validReads }).toEqual({ messageReads: 1, validReads: 1 })
   })
 
   test("matches Turbo's manual submitter append without browser image or dirname sidecars", () => {
@@ -286,7 +486,13 @@ describe("native form control registry", () => {
       name: "commit",
       value: "external",
     })
-    registry.register("id:before", { kind: "value", name: "before", value: "A" })
+    registry.register("id:before", {
+      entries: [
+        { name: "before", value: "A" },
+        { name: "", value: "external-empty" },
+      ],
+      kind: "entries",
+    })
     otherRegistry.register("id:other-inside", {
       kind: "value",
       name: "other",
@@ -300,6 +506,7 @@ describe("native form control registry", () => {
 
     expect(registry.successfulEntries({ submitter: submitter.selection })).toEqual([
       { name: "before", value: "A" },
+      { name: "", value: "external-empty" },
       { name: "inside", value: "B" },
       { name: "after", value: "C" },
       { name: "commit", value: "external" },
@@ -945,10 +1152,9 @@ describe("native form control registry", () => {
       value: "ignored",
     })
     registry.register("id:outer-body", {
-      directionality: { name: "outer_body.dir", value: "rtl" },
-      kind: "value",
-      name: "outer_body",
-      value: "ignored",
+      entries: [{ name: "outer_body", value: "ignored" }],
+      kind: "entries",
+      validity: { message: "Disabled outer entries are invalid", valid: false },
     })
     registry.register("id:live-value", {
       kind: "value",
@@ -970,6 +1176,7 @@ describe("native form control registry", () => {
     ])
     expect(registry.controlInheritedDisabled("id:outer-exempt")).toBe(false)
     expect(registry.controlInheritedDisabled("id:outer-body")).toBe(true)
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
     expect(() =>
       registry.register("id:not-associated", {
         kind: "value",
@@ -1034,7 +1241,11 @@ describe("native form control registry", () => {
       value: "outside",
     })
     registry.register("id:before", { kind: "value", name: "before", value: "A" })
-    registry.register("id:value", { kind: "value", name: "value", value: "ignored" })
+    registry.register("id:value", {
+      entries: [{ name: "value", value: "ignored" }],
+      kind: "entries",
+      validity: { message: "Datalist entries are invalid", valid: false },
+    })
     registry.register("id:checkable", {
       checked: true,
       kind: "checkable",
@@ -1061,6 +1272,7 @@ describe("native form control registry", () => {
     registry.register("id:after", { kind: "value", name: "after", value: "Z" })
 
     expect(registry.controlInheritedDisabled("id:value")).toBe(false)
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
     expect(registry.successfulEntries()).toEqual([
       { name: "external_enabled", value: "outside" },
       { name: "before", value: "A" },
@@ -1491,6 +1703,32 @@ describe("native form control registry", () => {
 
     for (const descriptor of malformed) {
       expect(() => registry.register("id:second", descriptor as FormControlDescriptor)).toThrow(
+        PropsError,
+      )
+    }
+  })
+
+  test("rejects malformed multi-name entry-list descriptors", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const sparseEntries = new Array<{ name: string; value: string }>(1)
+    const malformed: unknown[] = [
+      { kind: "entries" },
+      { entries: null, kind: "entries" },
+      { entries: sparseEntries, kind: "entries" },
+      { entries: [null], kind: "entries" },
+      { entries: [{ name: 7, value: "value" }], kind: "entries" },
+      { entries: [{ name: "field", value: 7 }], kind: "entries" },
+      { entries: [{ name: "file", value: { uri: "file:///private" } }], kind: "entries" },
+      { entries: [{ extra: true, name: "field", value: "value" }], kind: "entries" },
+      { entries: [], kind: "entries", name: "container" },
+      { entries: [], kind: "entries", value: { uri: "file:///private" } },
+      { directionality: { name: "field.dir", value: "ltr" }, entries: [], kind: "entries" },
+      { entries: [], kind: "entries", typo: true },
+    ]
+
+    for (const descriptor of malformed) {
+      expect(() => registry.register("id:multiple", descriptor as FormControlDescriptor)).toThrow(
         PropsError,
       )
     }
@@ -2217,20 +2455,25 @@ describe("native form control registry", () => {
     const first = session.tree.getElementById("first")
     if (!first) throw new Error("control fixture is missing")
     const registration = registry.register(first.key, {
-      kind: "value",
-      name: "field",
-      value: "old",
+      entries: [{ name: "field", value: "old" }],
+      kind: "entries",
     })
 
     const source = parseExpoTurboDocument('<DemoInput id="first" />').getElementById("first")
     if (!source) throw new Error("replacement fixture is missing")
     session.mutate((tree) => tree.replaceNodeWithClones(first, [source]))
 
-    expect(() => registration.update({ kind: "value", name: "field", value: "stale" })).toThrow(
-      StateError,
-    )
+    expect(() =>
+      registration.update({
+        entries: [{ name: "field", value: "stale" }],
+        kind: "entries",
+      }),
+    ).toThrow(StateError)
     expect(registry.successfulEntries()).toEqual([])
-    registry.register("id:first", { kind: "value", name: "field", value: "new" })
+    registry.register("id:first", {
+      entries: [{ name: "field", value: "new" }],
+      kind: "entries",
+    })
     expect(registry.successfulEntries()).toEqual([{ name: "field", value: "new" }])
   })
 
@@ -2464,6 +2707,26 @@ const invalidValidMessage: FormControlDescriptor = {
   validity: { message: "Unexpected", valid: true },
 }
 void invalidValidMessage
+
+// @ts-expect-error Entry-list controls own names per entry, not on the container.
+const invalidNamedEntryList: FormControlDescriptor = {
+  entries: [],
+  kind: "entries",
+  name: "container",
+}
+void invalidNamedEntryList
+
+const invalidBinaryEntryList: FormControlDescriptor = {
+  entries: [
+    {
+      name: "file",
+      // @ts-expect-error Entry-list values are strings; native files require upload transport.
+      value: 7,
+    },
+  ],
+  kind: "entries",
+}
+void invalidBinaryEntryList
 
 // @ts-expect-error Select options require an explicit value or a text snapshot.
 const missingSelectOptionValue: FormSelectOption = { kind: "option", selected: true }

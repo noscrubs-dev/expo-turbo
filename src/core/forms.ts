@@ -40,10 +40,23 @@ interface ValidatableFormControlBase extends FormControlBase {
   readonly validity?: FormControlValidity
 }
 
+interface ValidatableFormEntryListBase {
+  readonly disabled?: boolean
+  readonly name?: never
+  readonly validity?: FormControlValidity
+}
+
 export interface FormControlDirectionality {
   readonly name: string
   readonly value: "ltr" | "rtl"
 }
+
+export interface SuccessfulFormEntry {
+  readonly name: string
+  readonly value: string
+}
+
+export const MAX_FORM_CONTROL_ENTRIES_PER_CONTROL = 256
 
 interface FormSelectOptionBase {
   readonly disabled?: boolean
@@ -74,6 +87,10 @@ export type FormControlDescriptor =
       readonly kind: "checkable"
       readonly checked: boolean
       readonly value?: string
+    })
+  | (ValidatableFormEntryListBase & {
+      readonly entries: readonly SuccessfulFormEntry[]
+      readonly kind: "entries"
     })
   | (FormControlBase & {
       readonly directionality?: FormControlDirectionality
@@ -116,11 +133,6 @@ type NormalizedFormControlDescriptor =
       readonly kind: "select"
       readonly options: readonly NormalizedFormSelectItem[]
     })
-
-export interface SuccessfulFormEntry {
-  readonly name: string
-  readonly value: string
-}
 
 export interface SuccessfulFormEntriesOptions {
   readonly submitter?: FormControlSelection
@@ -332,25 +344,28 @@ function normalizeValidity(validity: unknown, nodeKey: string): FormControlValid
     })
   }
   const candidate = validity as Partial<FormControlValidity>
-  if (candidate.valid === true) {
-    if ("message" in candidate) {
+  const valid = candidate.valid
+  const hasMessage = "message" in candidate
+  const message = hasMessage ? candidate.message : undefined
+  if (valid === true) {
+    if (hasMessage) {
       throw new PropsError("Valid form controls must not provide a validation message", {
         target: nodeKey,
       })
     }
     return Object.freeze({ valid: true })
   }
-  if (candidate.valid !== false) {
+  if (valid !== false) {
     throw new PropsError("Form control validity must provide a boolean valid value", {
       target: nodeKey,
     })
   }
-  if (typeof candidate.message !== "string" || candidate.message.trim() === "") {
+  if (typeof message !== "string" || message.trim() === "") {
     throw new PropsError("Invalid form controls require a non-empty validation message", {
       target: nodeKey,
     })
   }
-  return Object.freeze({ message: candidate.message, valid: false })
+  return Object.freeze({ message, valid: false })
 }
 
 function assertNativeTargetAttributes(
@@ -435,18 +450,20 @@ function normalizeDescriptor(
   if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
     throw new PropsError("Form control descriptors must be objects")
   }
-  if (descriptor.name !== undefined && typeof descriptor.name !== "string") {
+  const name = descriptor.name
+  const disabled = descriptor.disabled
+  if (name !== undefined && typeof name !== "string") {
     throw new PropsError("Form control name must be a string", { target: nodeKey })
   }
-  if (descriptor.disabled !== undefined && typeof descriptor.disabled !== "boolean") {
+  if (disabled !== undefined && typeof disabled !== "boolean") {
     throw new PropsError("Form control disabled must be a boolean", {
       target: nodeKey,
     })
   }
 
   const base = {
-    ...(descriptor.name !== undefined ? { name: descriptor.name } : {}),
-    ...(descriptor.disabled !== undefined ? { disabled: descriptor.disabled } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(disabled !== undefined ? { disabled } : {}),
   }
   switch (descriptor.kind) {
     case "checkable": {
@@ -464,9 +481,72 @@ function normalizeDescriptor(
       return Object.freeze({
         ...base,
         checked: descriptor.checked,
-        kind: descriptor.kind,
+        kind: "checkable",
         ...(checkableValidity ? { validity: checkableValidity } : {}),
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
+      })
+    }
+    case "entries": {
+      if ("name" in descriptor) {
+        throw new PropsError("Entry-list form controls must not provide a control name", {
+          target: nodeKey,
+        })
+      }
+      if (
+        Object.keys(descriptor).some(
+          (key) => key !== "disabled" && key !== "entries" && key !== "kind" && key !== "validity",
+        )
+      ) {
+        throw new PropsError("Entry-list form controls contain unsupported fields", {
+          target: nodeKey,
+        })
+      }
+      const sourceEntries = descriptor.entries
+      if (!Array.isArray(sourceEntries)) {
+        throw new PropsError("Entry-list form control entries must be an array", {
+          target: nodeKey,
+        })
+      }
+      const entryCount = sourceEntries.length
+      if (entryCount > MAX_FORM_CONTROL_ENTRIES_PER_CONTROL) {
+        throw new PropsError(
+          `Entry-list form controls support at most ${MAX_FORM_CONTROL_ENTRIES_PER_CONTROL} entries`,
+          { target: nodeKey },
+        )
+      }
+      const entries: SuccessfulFormEntry[] = []
+      for (let index = 0; index < entryCount; index += 1) {
+        const entry = sourceEntries[index]
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          throw new PropsError("Entry-list form control entries must be objects", {
+            target: nodeKey,
+          })
+        }
+        if (Object.keys(entry).some((key) => key !== "name" && key !== "value")) {
+          throw new PropsError("Entry-list form control entries contain unsupported fields", {
+            target: nodeKey,
+          })
+        }
+        const name = entry.name
+        const value = entry.value
+        if (typeof name !== "string") {
+          throw new PropsError("Entry-list form control entry names must be strings", {
+            target: nodeKey,
+          })
+        }
+        if (typeof value !== "string") {
+          throw new PropsError("Entry-list form control entry values must be strings", {
+            target: nodeKey,
+          })
+        }
+        entries.push(Object.freeze({ name, value }))
+      }
+      const entriesValidity = normalizeValidity(descriptor.validity, nodeKey)
+      return Object.freeze({
+        ...(disabled !== undefined ? { disabled } : {}),
+        entries: Object.freeze(entries),
+        kind: "entries",
+        ...(entriesValidity ? { validity: entriesValidity } : {}),
       })
     }
     case "hidden": {
@@ -484,7 +564,7 @@ function normalizeDescriptor(
       return Object.freeze({
         ...base,
         ...(hiddenDirectionality ? { directionality: hiddenDirectionality } : {}),
-        kind: descriptor.kind,
+        kind: "hidden",
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
     }
@@ -503,7 +583,7 @@ function normalizeDescriptor(
       const multipleValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
-        kind: descriptor.kind,
+        kind: "multiple",
         ...(multipleValidity ? { validity: multipleValidity } : {}),
         values: Object.freeze(values),
       })
@@ -594,7 +674,7 @@ function normalizeDescriptor(
       const selectValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
-        kind: descriptor.kind,
+        kind: "select",
         options: Object.freeze(options),
         ...(selectValidity ? { validity: selectValidity } : {}),
       })
@@ -612,7 +692,7 @@ function normalizeDescriptor(
       }
       return Object.freeze({
         ...base,
-        kind: descriptor.kind,
+        kind: "submitter",
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
     case "value": {
@@ -626,7 +706,7 @@ function normalizeDescriptor(
       return Object.freeze({
         ...base,
         ...(admittedDirectionality ? { directionality: admittedDirectionality } : {}),
-        kind: descriptor.kind,
+        kind: "value",
         ...(valueValidity ? { validity: valueValidity } : {}),
         value: descriptor.value,
       })
@@ -1071,12 +1151,15 @@ export class FormControlRegistry {
       const descriptor = record.descriptor
       if (
         this.recordDisabled(record) ||
-        (record !== submitter && this.barredByDatalist(record.node)) ||
-        descriptor.name === undefined ||
-        descriptor.name === ""
+        (record !== submitter && this.barredByDatalist(record.node))
       ) {
         return
       }
+      if (descriptor.kind === "entries") {
+        for (const entry of descriptor.entries) entries.push(entry)
+        return
+      }
+      if (descriptor.name === undefined || descriptor.name === "") return
       switch (descriptor.kind) {
         case "checkable":
           if (descriptor.checked) {
