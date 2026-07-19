@@ -6,7 +6,11 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  DocumentLoadEvent,
+  DocumentRenderEvent,
   DocumentVisitLifecycle,
   documentVisitLifecycleOption,
   LinkClickEvent,
@@ -189,6 +193,44 @@ describe("document visit lifecycle", () => {
       url: "https://example.test/next",
     })
     expect(Object.isFrozen(visit.detail)).toBe(true)
+  })
+
+  test("exposes frozen native document render and load notifications", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("render", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({
+        generation: 4,
+        preview: false,
+        renderMethod: "replace",
+        url: "https://example.test/next",
+      })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
+    lifecycle.subscribe("load", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({ generation: 4, url: "https://example.test/next" })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
+
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH](
+      new DocumentRenderEvent({
+        generation: 4,
+        preview: false,
+        renderMethod: "replace",
+        url: "https://example.test/next",
+      }),
+    )
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH](
+      new DocumentLoadEvent({ generation: 4, url: "https://example.test/next" }),
+    )
+
+    expect(events).toEqual(["render", "load"])
   })
 
   test("emits frozen before-cache notifications through stable listener snapshots", async () => {

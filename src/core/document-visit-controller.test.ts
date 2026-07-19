@@ -20,6 +20,12 @@ import {
   DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
 } from "./document-loader"
+import {
+  acknowledgeDocumentRender,
+  documentRenderLifecycleRevision,
+  retainDocumentRenderer,
+  subscribeDocumentRenderLifecycle,
+} from "./document-render-lifecycle-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
@@ -37,6 +43,17 @@ import { attributeValue, type DocumentTree, isElement } from "./tree"
 interface PendingRequest {
   readonly request: TurboRequest
   readonly resolve: (response: TurboResponse) => void
+}
+
+function waitForDocumentRenderSeal(session: DocumentSession, revision: number): Promise<void> {
+  if (documentRenderLifecycleRevision(session) > revision) return Promise.resolve()
+  return new Promise((resolve) => {
+    const unsubscribe = subscribeDocumentRenderLifecycle(session, () => {
+      if (documentRenderLifecycleRevision(session) <= revision) return
+      unsubscribe()
+      resolve()
+    })
+  })
 }
 
 interface TimerRecord {
@@ -337,6 +354,127 @@ describe("Document visit controller", () => {
       "visit:advance:https://example.test/next",
       "fetch",
     ])
+  })
+
+  test("settles committed document visits and load only after the exact native render", async () => {
+    for (const candidate of [
+      { classification: "success", status: 200, terminal: "completed" },
+      { classification: "client-error", status: 422, terminal: "failed" },
+      { classification: "server-error", status: 500, terminal: "failed" },
+    ] as const) {
+      const lifecycle = new DocumentVisitLifecycle()
+      const current = harness({ visitLifecycle: lifecycle })
+      const releaseRenderer = retainDocumentRenderer(current.session)
+      const events: string[] = []
+      lifecycle.subscribe("render", (event) => {
+        expect(current.controller.state).toMatchObject({ busy: true, status: "started" })
+        expect(event.detail).toMatchObject({ preview: false, renderMethod: "replace" })
+        events.push(`render:${event.detail.generation}`)
+      })
+      lifecycle.subscribe("load", (event) => {
+        expect(current.controller.state).toMatchObject({
+          busy: false,
+          status: candidate.terminal,
+        })
+        events.push(`load:${event.detail.generation}`)
+      })
+      const committed = new Promise<void>((resolve) => {
+        const unsubscribe = current.session.subscribeTreeState(() => {
+          if (current.session.treeGeneration !== 1) return
+          unsubscribe()
+          resolve()
+        })
+      })
+      let settled = false
+      const visit = current.controller.visit(`/render-${candidate.status}`)
+      const renderRevision = documentRenderLifecycleRevision(current.session)
+      void visit.then(() => {
+        settled = true
+      })
+      current.pending[0]?.resolve(
+        response(`<Gallery><Rendered id="render-${candidate.status}" /></Gallery>`, {
+          status: candidate.status,
+          url: `https://example.test/render-${candidate.status}`,
+        }),
+      )
+
+      await committed
+      await waitForDocumentRenderSeal(current.session, renderRevision)
+      expect(current.session.tree.getElementById(`render-${candidate.status}`)).toBeDefined()
+      expect(current.controller.state).toMatchObject({ busy: true, status: "started" })
+      expect({ events, settled }).toEqual({ events: [], settled: false })
+
+      const generation = current.session.treeGeneration
+      const acknowledgement = acknowledgeDocumentRender(
+        current.session,
+        current.session.tree.document,
+        generation,
+        current.session.revision,
+      )
+      expect(events).toEqual([`render:${generation}`])
+      expect(settled).toBe(false)
+      acknowledgement?.finish()
+
+      expect(await visit).toMatchObject({
+        classification: candidate.classification,
+        status: "committed",
+      })
+      expect(events).toEqual([`render:${generation}`, `load:${generation}`])
+      expect(current.controller.state).toMatchObject({
+        busy: false,
+        status: candidate.terminal,
+      })
+      releaseRenderer()
+    }
+  })
+
+  test("releases only the post-commit visual wait when cancellation follows tree installation", async () => {
+    for (const candidate of [
+      { classification: "success", status: 200, terminal: "completed" },
+      { classification: "client-error", status: 422, terminal: "failed" },
+    ] as const) {
+      const lifecycle = new DocumentVisitLifecycle()
+      const current = harness({ visitLifecycle: lifecycle })
+      const releaseRenderer = retainDocumentRenderer(current.session)
+      const events: string[] = []
+      lifecycle.subscribe("render", () => {
+        events.push("render")
+      })
+      lifecycle.subscribe("load", () => {
+        events.push("load")
+      })
+      let canceled = false
+      current.session.subscribeTreeState(() => {
+        if (canceled || current.session.treeGeneration !== 1) return
+        canceled = true
+        current.controller.cancel()
+      })
+
+      const visit = current.controller.visit(`/cancel-after-commit-${candidate.status}`)
+      current.pending[0]?.resolve(
+        response(`<Gallery><Rendered id="cancel-${candidate.status}" /></Gallery>`, {
+          status: candidate.status,
+          url: `https://example.test/cancel-after-commit-${candidate.status}`,
+        }),
+      )
+
+      expect(await visit).toMatchObject({
+        classification: candidate.classification,
+        status: "committed",
+      })
+      expect(current.session.tree.getElementById(`cancel-${candidate.status}`)).toBeDefined()
+      expect(current.controller.state).toMatchObject({ busy: false, status: candidate.terminal })
+      expect(events).toEqual([])
+      expect(
+        acknowledgeDocumentRender(
+          current.session,
+          current.session.tree.document,
+          current.session.treeGeneration,
+          current.session.revision,
+        ),
+      ).toBeUndefined()
+      releaseRenderer()
+    }
   })
 
   test("notifies visit when request admission cancels before physical fetch", async () => {
@@ -1006,6 +1144,93 @@ describe("Document visit controller", () => {
       "completed:canonical",
     ])
     expect(fixture.writes).toHaveLength(1)
+  })
+
+  test("shows a cached preview before starting canonical fetch and loads only the final render", async () => {
+    const url = "https://example.test/next"
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      url,
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', { url }),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    let canonicalRequest: PendingRequest | undefined
+    let notifyCanonicalRequest!: () => void
+    const canonicalRequestStarted = new Promise<void>((resolve) => {
+      notifyCanonicalRequest = resolve
+    })
+    const current = harness({
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => {
+          canonicalRequest = { request, resolve }
+          notifyCanonicalRequest()
+        }),
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    const releaseRenderer = retainDocumentRenderer(current.session)
+    const events: string[] = []
+    lifecycle.subscribe("render", (event) => {
+      expect(current.controller.state.status).toBe("started")
+      events.push(
+        `render:${event.detail.preview ? "preview" : "canonical"}:${event.detail.generation}`,
+      )
+    })
+    lifecycle.subscribe("load", (event) => {
+      expect(current.controller.state.status).toBe("completed")
+      events.push(`load:${event.detail.generation}`)
+    })
+
+    let renderRevision = documentRenderLifecycleRevision(current.session)
+    const visit = current.controller.visit("/next")
+    expect(current.session.tree.getElementById("preview")).toBeDefined()
+    expect(current.session.treeState).toEqual({ generation: 1, preview: true })
+    expect(canonicalRequest).toBeUndefined()
+    await waitForDocumentRenderSeal(current.session, renderRevision)
+
+    const previewAcknowledgement = acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )
+    expect(events).toEqual(["render:preview:1"])
+    previewAcknowledgement?.finish()
+    await canonicalRequestStarted
+    expect(canonicalRequest?.request.url).toBe(url)
+
+    const canonicalCommitted = new Promise<void>((resolve) => {
+      const unsubscribe = current.session.subscribeTreeState(() => {
+        if (current.session.treeGeneration !== 2) return
+        unsubscribe()
+        resolve()
+      })
+    })
+    let settled = false
+    void visit.then(() => {
+      settled = true
+    })
+    renderRevision = documentRenderLifecycleRevision(current.session)
+    canonicalRequest?.resolve(response('<Gallery><Canonical id="canonical" /></Gallery>', { url }))
+    await canonicalCommitted
+    await waitForDocumentRenderSeal(current.session, renderRevision)
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+    expect(current.controller.state).toMatchObject({ busy: true, status: "started" })
+    expect({ events, settled }).toEqual({ events: ["render:preview:1"], settled: false })
+
+    const canonicalAcknowledgement = acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )
+    expect(events).toEqual(["render:preview:1", "render:canonical:2"])
+    canonicalAcknowledgement?.finish()
+
+    expect(await visit).toMatchObject({ classification: "success", status: "committed" })
+    expect(events).toEqual(["render:preview:1", "render:canonical:2", "load:2"])
+    expect(current.controller.state).toMatchObject({ busy: false, status: "completed" })
+    releaseRenderer()
   })
 
   test("revalidates a preview when progress timer setup fails", async () => {

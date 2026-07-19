@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -31,6 +32,13 @@ import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-e
 import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
 import type { DocumentPreloadRequester } from "../core/document-preloader"
+import {
+  acknowledgeDocumentRender,
+  documentRenderLifecycleRevision,
+  hasDocumentRenderTicket,
+  retainDocumentRenderer,
+  subscribeDocumentRenderLifecycle,
+} from "../core/document-render-lifecycle-internal"
 import type {
   DocumentVisitController,
   DocumentVisitDelegation,
@@ -1393,19 +1401,63 @@ interface ConnectedDocumentProps {
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
 }
 
-interface DocumentAutofocusBoundaryProps {
+interface DocumentRenderBoundaryProps {
   readonly children?: ReactNode
   readonly document: ProtocolDocument
   readonly generation: number
 }
 
-function DocumentAutofocusBoundary(props: DocumentAutofocusBoundaryProps): ReactNode {
+function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
   const { autofocus, onError, session } = useRenderer()
+  const subscribeRenderLifecycle = useCallback(
+    (listener: () => void) => subscribeDocumentRenderLifecycle(session, listener),
+    [session],
+  )
+  const renderLifecycleSnapshot = useCallback(
+    () => documentRenderLifecycleRevision(session),
+    [session],
+  )
+  const subscribeRevision = useCallback(
+    (listener: () => void) => session.subscribeRevision(listener),
+    [session],
+  )
+  const revisionSnapshot = useCallback(() => session.revision, [session])
+  const coordinationRevision = useSyncExternalStore(
+    subscribeRenderLifecycle,
+    renderLifecycleSnapshot,
+    renderLifecycleSnapshot,
+  )
+  const revision = useSyncExternalStore(subscribeRevision, revisionSnapshot, revisionSnapshot)
+  useInsertionEffect(() => retainDocumentRenderer(session), [session])
   useLayoutEffect(() => {
-    const candidates = consumeDocumentAutofocus(session, props.document, props.generation)
-    if (!candidates || !autofocus) return
-    applyAutofocus(autofocus, candidates, props.document.key, onError, "Document")
-  }, [autofocus, onError, props.document, props.generation, session])
+    if (coordinationRevision !== documentRenderLifecycleRevision(session)) return
+    const pending = hasDocumentRenderTicket(session, props.document, props.generation)
+    const acknowledgement = acknowledgeDocumentRender(
+      session,
+      props.document,
+      props.generation,
+      revision,
+    )
+    if (pending && !acknowledgement) return
+    try {
+      const candidates = consumeDocumentAutofocus(session, props.document, props.generation)
+      if (candidates && autofocus) {
+        applyAutofocus(autofocus, candidates, props.document.key, onError, "Document")
+      }
+    } catch (error) {
+      acknowledgement?.fail()
+      throw error
+    }
+    acknowledgement?.finish()
+  }, [
+    autofocus,
+    coordinationRevision,
+    onError,
+    props.document,
+    props.generation,
+    revision,
+    session,
+  ])
   return props.children
 }
 
@@ -1574,12 +1626,21 @@ export function ExpoTurboRoot(): ReactNode {
       revision: root.revision,
     },
     createElement(
-      DocumentAutofocusBoundary,
+      DocumentRenderBoundary,
       {
         document: root.node,
         generation: session.treeGeneration,
       },
-      rendered,
+      createElement(
+        NodeErrorBoundary,
+        {
+          nodeKey: root.node.key,
+          onError: context.onError,
+          renderError: context.renderError,
+          revision: root.revision,
+        },
+        rendered,
+      ),
     ),
   )
 }
