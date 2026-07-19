@@ -263,6 +263,7 @@ describe("Frame request loader", () => {
         action: "replace",
         body,
         frameId: "details",
+        reason: "frame-missing",
         response: {
           redirected: false,
           status: 200,
@@ -327,6 +328,7 @@ describe("Frame request loader", () => {
           action: "advance",
           body: primaryBody,
           frameId: "details",
+          reason: "frame-missing",
           response: {
             redirected: false,
             status: 422,
@@ -368,6 +370,234 @@ describe("Frame request loader", () => {
     )
     expect(await recursive.load("details", "/recursive")).toMatchObject({ status: "completed" })
     expect(events).toBe(0)
+  })
+
+  test("promotes exact root visit-control responses before matching Frame extraction", async () => {
+    for (const status of [200, 422, 500]) {
+      const session = documentSession()
+      const frame = session.tree.getElementById("details")
+      const children = frame?.children
+      const visits: unknown[] = []
+      let missingEvents = 0
+      const body =
+        '<Gallery data-turbo-visit-control="reload"><turbo-frame id="details"><Ignored /></turbo-frame></Gallery>'
+      const lifecycle = new FrameLifecycle({
+        visitResponse(request) {
+          visits.push(request)
+        },
+      })
+      lifecycle.subscribe("frame-missing", () => {
+        missingEvents += 1
+      })
+      const loader = new FrameRequestLoader(
+        session,
+        {
+          fetch: async () =>
+            response(body, {
+              redirected: true,
+              status,
+              url: `https://example.test/promoted-${status}`,
+            }),
+        },
+        { next: () => `request-${status}` },
+        { frameLifecycle: lifecycle },
+      )
+
+      expect(await loader.load("details", `/promoted-${status}`)).toEqual({
+        frameId: "details",
+        reason: "visit-control-reload",
+        requestId: `request-${status}`,
+        requestIds: [`request-${status}`],
+        responseStatus: status,
+        status: "promoted",
+        url: `https://example.test/promoted-${status}`,
+      })
+      expect(frame?.children).toBe(children)
+      expect(attributeValue(frame as never, "src")).toBe(`https://example.test/promoted-${status}`)
+      expect(missingEvents).toBe(0)
+      expect(visits).toEqual([
+        {
+          action: "advance",
+          body,
+          frameId: "details",
+          reason: "visit-control-reload",
+          response: {
+            redirected: true,
+            status,
+            url: `https://example.test/promoted-${status}`,
+          },
+        },
+      ])
+    }
+  })
+
+  test("promotes recurse response bytes and metadata after releasing ownership", async () => {
+    const primary = '<Gallery><turbo-frame id="bridge" src="/nested" recurse="details" /></Gallery>'
+    const nested = '<Gallery data-turbo-visit-control="reload"><Nested /></Gallery>'
+    const visits: unknown[] = []
+    let fetches = 0
+    let ownershipReleased = false
+    let loader!: FrameRequestLoader
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        ownershipReleased = !loader.cancel("details")
+        visits.push(request)
+      },
+    })
+    loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async () => {
+          fetches += 1
+          return fetches === 1
+            ? response(primary, { status: 422, url: "https://example.test/primary" })
+            : response(nested, {
+                redirected: true,
+                status: 500,
+                url: "https://example.test/nested-final",
+              })
+        },
+      },
+      { next: () => `request-${fetches + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/primary")).toEqual({
+      frameId: "details",
+      reason: "visit-control-reload",
+      requestId: "request-1",
+      requestIds: ["request-1", "request-2"],
+      responseStatus: 500,
+      status: "promoted",
+      url: "https://example.test/nested-final",
+    })
+    expect({ fetches, ownershipReleased }).toEqual({ fetches: 2, ownershipReleased: true })
+    expect(visits).toEqual([
+      {
+        action: "advance",
+        body: nested,
+        frameId: "details",
+        reason: "visit-control-reload",
+        response: {
+          redirected: true,
+          status: 500,
+          url: "https://example.test/nested-final",
+        },
+      },
+    ])
+  })
+
+  test("fails closed after releasing ownership when automatic promotion is unavailable", async () => {
+    for (const frameLifecycle of [undefined, new FrameLifecycle()] as const) {
+      const session = documentSession()
+      const frame = session.tree.getElementById("details")
+      const children = frame?.children
+      const loader = new FrameRequestLoader(
+        session,
+        {
+          fetch: async () =>
+            response(
+              '<Gallery data-turbo-visit-control="reload"><turbo-frame id="details"><Ignored /></turbo-frame></Gallery>',
+              { url: "https://example.test/promoted" },
+            ),
+        },
+        { next: () => "request-unavailable" },
+        frameLifecycle ? { frameLifecycle } : {},
+      )
+
+      const error = await loader.load("details", "/promoted").catch((failure) => failure)
+      expect(error).toBeInstanceOf(RequestError)
+      expect(error.message).toBe("Frame visit-control response visit failed")
+      expect(error.cause).toBeUndefined()
+      expect(loader.cancel("details")).toBe(false)
+      expect(frame?.children).toBe(children)
+      expect(attributeValue(frame as never, "src")).toBe("https://example.test/promoted")
+    }
+  })
+
+  test("awaits visit-control visitor failure without relabeling it canceled", async () => {
+    let loader!: FrameRequestLoader
+    const lifecycle = new FrameLifecycle({
+      async visitResponse() {
+        expect(loader.cancel("details")).toBe(false)
+        await Promise.resolve()
+        throw new Error("private visitor failure")
+      },
+    })
+    loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async () =>
+          response('<Gallery data-turbo-visit-control="reload"><Ignored /></Gallery>'),
+      },
+      { next: () => "request-failure" },
+      { frameLifecycle: lifecycle },
+    )
+
+    const error = await loader.load("details", "/promoted").catch((failure) => failure)
+    expect(error).toBeInstanceOf(RequestError)
+    expect(error.message).toBe("Frame visit-control response visit failed")
+    expect(String(error)).not.toContain("private")
+  })
+
+  test("allows the automatic visitor to reenter the released Frame destination", async () => {
+    let fetches = 0
+    let newer: Promise<unknown> | undefined
+    let loader!: FrameRequestLoader
+    const lifecycle = new FrameLifecycle({
+      visitResponse() {
+        newer = loader.load("details", "/newer")
+      },
+    })
+    const session = documentSession()
+    loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          fetches += 1
+          return request.url.endsWith("/newer")
+            ? response('<turbo-frame id="details"><Newer /></turbo-frame>', { url: request.url })
+            : response('<Gallery data-turbo-visit-control="reload"><Old /></Gallery>', {
+                url: request.url,
+              })
+        },
+      },
+      { next: () => `request-${fetches + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/older")).toMatchObject({ status: "promoted" })
+    expect(await newer).toMatchObject({ status: "completed" })
+    expect(fetches).toBe(2)
+    expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
+      "Newer",
+    )
+  })
+
+  test("does not promote nested or non-exact visit-control metadata", async () => {
+    for (const root of [
+      '<Gallery data-turbo-visit-control="RELOAD">',
+      '<Gallery data-turbo-visit-control=" reload ">',
+      "<Gallery>",
+    ]) {
+      const body = `${root}<Nested data-turbo-visit-control="reload" /><turbo-frame id="details"><Loaded /></turbo-frame></Gallery>`
+      let visits = 0
+      const loader = new FrameRequestLoader(
+        documentSession(),
+        { fetch: async () => response(body) },
+        { next: () => "request-exact" },
+        {
+          frameLifecycle: new FrameLifecycle({
+            visitResponse() {
+              visits += 1
+            },
+          }),
+        },
+      )
+
+      expect(await loader.load("details", "/frame")).toMatchObject({ status: "completed" })
+      expect(visits).toBe(0)
+    }
   })
 
   test("lets reentrant newer Frame work cancel missing-response handling", async () => {
@@ -473,6 +703,8 @@ describe("Frame request loader", () => {
 
     const report = await loader.load("details", "/frame")
 
+    expect(report.status).toBe("completed")
+    if (report.status === "promoted") throw new Error("Frame response was unexpectedly promoted")
     expect(report.frame?.streams.actions).toEqual([
       {
         action: "refresh",

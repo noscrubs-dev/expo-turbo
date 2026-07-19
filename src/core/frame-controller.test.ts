@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test"
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
 import { consumeFrameAutofocus } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
+import { FrameControllerRegistry } from "./frame-controller-registry"
+import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -114,6 +116,96 @@ describe("Frame controller", () => {
     expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
       "Loaded",
     )
+  })
+
+  test("publishes automatic response promotion as loaded without mutating Frame children", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const children = frame?.children
+    const visits: unknown[] = []
+    const controller = new FrameController(
+      session,
+      "details",
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async () =>
+            response(
+              '<Gallery data-turbo-visit-control="reload"><turbo-frame id="details"><Ignored /></turbo-frame></Gallery>',
+              { url: "https://example.test/promoted" },
+            ),
+        },
+        { next: () => "request-promoted" },
+        {
+          frameLifecycle: new FrameLifecycle({
+            visitResponse(request) {
+              visits.push(request)
+            },
+          }),
+        },
+      ),
+    )
+
+    expect(await controller.connect()).toMatchObject({
+      reason: "visit-control-reload",
+      status: "promoted",
+    })
+    expect(controller.state).toMatchObject({
+      busy: false,
+      complete: true,
+      hasBeenLoaded: true,
+      status: "promoted",
+    })
+    expect(frame?.children).toBe(children)
+    expect(visits).toHaveLength(1)
+  })
+
+  test("settles promoted controller truth when the response visitor replaces the whole document", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const body =
+      '<Gallery data-turbo-visit-control="reload"><PromotedDocument id="promoted-document" /></Gallery>'
+    const errors: Error[] = []
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () => response(body, { url: "https://example.test/promoted" }),
+      },
+      { next: () => "request-document-replacement" },
+      {
+        frameLifecycle: new FrameLifecycle({
+          visitResponse(request) {
+            session.replaceTree(parseExpoTurboDocument(request.body, { url: request.response.url }))
+          },
+        }),
+      },
+    )
+    const controller = new FrameControllerRegistry(session, loader).get("details")
+    controller.subscribeErrors((error) => errors.push(error))
+
+    expect(await controller.connect()).toMatchObject({
+      reason: "visit-control-reload",
+      status: "promoted",
+    })
+    expect(controller.state).toMatchObject({
+      busy: false,
+      complete: true,
+      connected: false,
+      hasBeenLoaded: true,
+      status: "promoted",
+    })
+    expect(session.tree.getElementById("details")).toBeUndefined()
+    expect(session.tree.getElementById("promoted-document")).toBeDefined()
+    expect(errors).toEqual([])
   })
 
   test("publishes each committed autofocus intent once and clears it after consumption", async () => {

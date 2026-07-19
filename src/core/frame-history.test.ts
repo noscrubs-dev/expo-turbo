@@ -22,6 +22,7 @@ import { FormControlRegistry } from "./forms"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
 import { visitFrameWithHistory } from "./frame-history-internal"
+import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -64,6 +65,7 @@ function historyHarness(
   options: Readonly<{
     document?: string
     documentUrl?: string
+    frameLifecycle?: FrameLifecycle
     frameHistory?: boolean
     navigation?: NavigationAdapter
     requestLifecycle?: RequestLifecycle
@@ -108,7 +110,10 @@ function historyHarness(
       },
     },
     { next: () => `frame-request-${++requestId}` },
-    options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
+    {
+      ...(options.frameLifecycle ? { frameLifecycle: options.frameLifecycle } : {}),
+      ...(options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {}),
+    },
   )
   const frameHistory = new FrameHistoryCoordinator(session, {
     history,
@@ -128,6 +133,49 @@ function historyHarness(
 }
 
 describe("promoted Frame history", () => {
+  test("leaves Frame history and snapshots to the automatic response visitor", async () => {
+    const responseVisits: unknown[] = []
+    const frameLifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        responseVisits.push(request)
+      },
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response(
+          '<Gallery data-turbo-visit-control="reload"><turbo-frame id="details"><Ignored /></turbo-frame></Gallery>',
+          { url },
+        ),
+      undefined,
+      { frameLifecycle },
+    )
+
+    await expect(
+      current.registry.visit("/promoted", { action: "replace", frame: "details" }),
+    ).resolves.toMatchObject({
+      action: "replace",
+      load: { reason: "visit-control-reload", status: "promoted" },
+    })
+    expect(responseVisits).toMatchObject([
+      {
+        action: "advance",
+        frameId: "details",
+        reason: "visit-control-reload",
+        response: { status: 200, url: "https://example.test/promoted" },
+      },
+    ])
+    expect(current.writes).toEqual([])
+    expect(current.history.current).toBe(current.initial)
+    expect(current.session.tree.document.url).toBe("https://example.test/current")
+    expect(current.cache.size).toBe(0)
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("Old")
+    expect(attributeValue(current.session.tree.getElementById("details") as never, "src")).toBe(
+      "https://example.test/promoted",
+    )
+  })
+
   test("snapshots and validates the promoted Frame visit lifecycle", () => {
     const current = historyHarness(async ({ url }) => response("<Gallery />", { url }))
     const lifecycle = new DocumentVisitLifecycle()

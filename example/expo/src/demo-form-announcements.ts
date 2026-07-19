@@ -50,7 +50,7 @@ export function demoFormAnnouncement(
           };
     case "unapplied":
       return {
-        message: "Form submission succeeded, but its response was not applied.",
+        message: "Form submission finished, but its response was not applied here.",
         priority: "polite",
       };
   }

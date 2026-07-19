@@ -69,6 +69,9 @@ export {
   type FrameMissingVisitAction,
   type FrameMissingVisitOptions,
   type FrameMissingVisitRequest,
+  type FrameResponseVisitReason,
+  type FrameResponseVisitRequest,
+  type FrameVisitControlReloadRequest,
 } from "./frame-lifecycle"
 export * from "./frame-loader"
 export * from "./frames"

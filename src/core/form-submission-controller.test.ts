@@ -5123,6 +5123,377 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("promotes exact Frame form visit-control responses before matching or Stream application", async () => {
+    for (const fixtureCase of [
+      { classification: "success", status: 200 },
+      { classification: "client-error", status: 422 },
+      { classification: "server-error", status: 500 },
+    ] as const) {
+      const session = fixture()
+      const controls = registry(session, "form-a")
+      const frame = session.tree.getElementById("frame-a")
+      const children = frame?.children
+      const body = `<Gallery data-turbo-visit-control="reload">
+        <turbo-frame id="frame-a"><Ignored id="ignored-${fixtureCase.status}" /></turbo-frame>
+        <turbo-stream action="update" target="status"><template><IgnoredStream id="ignored-stream-${fixtureCase.status}" /></template></turbo-stream>
+      </Gallery>`
+      const visits: unknown[] = []
+      let missingEvents = 0
+      const lifecycle = new FrameLifecycle({
+        visitResponse(request) {
+          visits.push(request)
+        },
+      })
+      lifecycle.subscribe("frame-missing", () => {
+        missingEvents += 1
+      })
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) => response(request, body, { status: fixtureCase.status }),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(controls, `visit-control-${fixtureCase.status}`))
+
+      expect(result).toMatchObject({
+        action: "advance",
+        applicationDestination: { frameId: "frame-a", kind: "frame" },
+        classification: fixtureCase.classification,
+        destination: { frameId: "frame-a", kind: "frame" },
+        reason: "visit-control-reload",
+        responseStatus: fixtureCase.status,
+        status: "promoted",
+      })
+      expect(frame?.children).toBe(children)
+      expect(session.tree.getElementById(`ignored-${fixtureCase.status}`)).toBeUndefined()
+      expect(session.tree.getElementById(`ignored-stream-${fixtureCase.status}`)).toBeUndefined()
+      expect(attributeValue(frame as never, "src")).toBe(
+        fixtureCase.status === 200 ? "https://example.test/submit-a" : "/frame-a",
+      )
+      expect(missingEvents).toBe(0)
+      expect(visits).toEqual([
+        {
+          action: "advance",
+          body,
+          frameId: "frame-a",
+          reason: "visit-control-reload",
+          response: {
+            redirected: false,
+            status: fixtureCase.status,
+            url: "https://example.test/submit-a",
+          },
+        },
+      ])
+      expect(controls.submissionTerminalState).toMatchObject({
+        classification: fixtureCase.classification,
+        reason: "visit-control-reload",
+        responseStatus: fixtureCase.status,
+        status: "unapplied",
+      })
+    }
+  })
+
+  test("leaves successful action Frame form history and snapshots to the visit-control visitor", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "replace")
+    const controls = registry(session, "form-a")
+    const frame = session.tree.getElementById("frame-a")
+    const children = frame?.children
+    const cache = populatedSnapshotCache(session)
+    const current = mountedFrameHistoryFixture(session, "frame-a", cache)
+    const finalUrl = "https://example.test/promoted-success"
+    const body =
+      '<Gallery data-turbo-visit-control="reload"><turbo-frame id="frame-a"><Ignored id="ignored-success" /></turbo-frame></Gallery>'
+    const requests: unknown[] = []
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        requests.push(request)
+        expect(cache.size).toBe(2)
+        expect(current.writes).toEqual([])
+        expect(current.history.current?.url).toBe("https://example.test/current")
+      },
+    })
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => response(request, body, { redirected: true, url: finalUrl }),
+      },
+      {
+        frameControllers: current.frameControllers,
+        frameLifecycle: lifecycle,
+        snapshotCache: cache,
+      },
+    ).submit(proposal(controls, "visit-control-history-success"))
+
+    expect(result).toMatchObject({
+      action: "advance",
+      applicationDestination: { frameId: "frame-a", kind: "frame" },
+      classification: "success",
+      destination: { frameId: "frame-a", kind: "frame" },
+      reason: "visit-control-reload",
+      status: "promoted",
+    })
+    expect(requests).toMatchObject([
+      {
+        action: "advance",
+        frameId: "frame-a",
+        reason: "visit-control-reload",
+        response: { redirected: true, status: 200, url: finalUrl },
+      },
+    ])
+    expect(current.writes).toEqual([])
+    expect(current.history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.document.url).toBe("https://example.test/current")
+    expect(cache.size).toBe(2)
+    expect(frame?.children).toBe(children)
+    expect(session.tree.getElementById("ignored-success")).toBeUndefined()
+    expect(attributeValue(frame as never, "src")).toBe(finalUrl)
+  })
+
+  test("transfers failed cross-target visit-control promotion to the released origin lane", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    session.setAttribute("id:form-a", "data-turbo-frame", "frame-b")
+    session.setAttribute("id:form-a", "data-turbo-action", "replace")
+    const controls = registry(session, "form-a")
+    const origin = session.tree.getElementById("frame-a")
+    const destination = session.tree.getElementById("frame-b")
+    const cache = populatedSnapshotCache(session)
+    const current = mountedFrameHistoryFixture(session, "frame-b", cache)
+    const finalUrl = "https://example.test/promoted-error"
+    let newer: Promise<unknown> | undefined
+    const requests: unknown[] = []
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><Newer id="promoted-origin-newer" /></turbo-frame>',
+          ),
+      },
+      requestIds("promoted-origin"),
+    )
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        requests.push(request)
+        expect(cache.size).toBe(0)
+        expect(attributeValue(origin as never, "src")).toBe(finalUrl)
+        expect(attributeValue(destination as never, "src")).toBe("/frame-b")
+        newer = loader.load("frame-a", "/promoted-origin-newer")
+      },
+    })
+    const body =
+      '<Gallery data-turbo-visit-control="reload"><turbo-frame id="frame-a"><Ignored /></turbo-frame></Gallery>'
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, body, { redirected: true, status: 422, url: finalUrl }),
+      },
+      {
+        frameControllers: current.frameControllers,
+        frameLifecycle: lifecycle,
+        snapshotCache: cache,
+      },
+    ).submit(proposal(controls, "cross-target-visit-control"))
+
+    expect(result).toMatchObject({
+      action: "advance",
+      applicationDestination: { frameId: "frame-a", kind: "frame" },
+      classification: "client-error",
+      destination: { frameId: "frame-b", kind: "frame" },
+      reason: "visit-control-reload",
+      status: "promoted",
+    })
+    expect(requests).toMatchObject([
+      {
+        action: "advance",
+        frameId: "frame-a",
+        reason: "visit-control-reload",
+        response: { redirected: true, status: 422, url: finalUrl },
+      },
+    ])
+    expect(await newer).toMatchObject({ status: "completed" })
+    expect(current.writes).toEqual([])
+    expect(current.history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.getElementById("promoted-origin-newer")).toBeDefined()
+    expect(controls.submissionTerminalState).toMatchObject({ status: "none" })
+  })
+
+  test("cancels cross-target visit-control promotion when transfer starts newer origin work", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    session.setAttribute("id:form-a", "data-turbo-frame", "frame-b")
+    const transport = pendingFetch()
+    const loader = new FrameRequestLoader(session, transport.adapter, requestIds("promotion-race"))
+    const oldOwner = Object.freeze({})
+    const newOwner = Object.freeze({})
+    const oldLoading = loader.load("frame-a", "/old-origin", { owner: oldOwner })
+    const oldRequest = transport.pending[0]
+    if (!oldRequest) throw new Error("old origin request was not captured")
+    let newer: ReturnType<FrameRequestLoader["load"]> | undefined
+    oldRequest.request.signal?.addEventListener(
+      "abort",
+      () => {
+        newer = loader.load("frame-a", "/new-origin", { owner: newOwner })
+      },
+      { once: true },
+    )
+    let visits = 0
+    const submitting = new FormSubmissionController(session, transport.adapter, {
+      frameLifecycle: new FrameLifecycle({
+        visitResponse() {
+          visits += 1
+        },
+      }),
+    }).submit(proposal(registry(session, "form-a"), "promotion-race"))
+    const formRequest = transport.pending[1]
+    if (!formRequest) throw new Error("cross-target form request was not captured")
+    formRequest.response.resolve(
+      response(
+        formRequest.request,
+        '<Gallery data-turbo-visit-control="reload"><Promoted /></Gallery>',
+        { status: 422 },
+      ),
+    )
+
+    expect(await submitting).toMatchObject({ status: "canceled" })
+    expect(visits).toBe(0)
+    oldRequest.response.resolve(response(oldRequest.request, "", { headers: {}, status: 204 }))
+    expect(await oldLoading).toMatchObject({ status: "canceled" })
+    const newerRequest = transport.pending[2]
+    if (!newerRequest || !newer) throw new Error("new origin request was not captured")
+    newerRequest.response.resolve(
+      response(
+        newerRequest.request,
+        '<turbo-frame id="frame-a"><Newer id="promotion-race-newer" /></turbo-frame>',
+      ),
+    )
+    expect(await newer).toMatchObject({ status: "completed" })
+    expect(session.tree.getElementById("promotion-race-newer")).toBeDefined()
+  })
+
+  test("settles visit-control terminal truth only after the released visitor succeeds", async () => {
+    const session = fixture()
+    const controls = registry(session, "form-a")
+    const visitorStarted = deferred<void>()
+    const visitorFinished = deferred<void>()
+    const lifecycle = new FrameLifecycle({
+      async visitResponse() {
+        visitorStarted.resolve()
+        await visitorFinished.promise
+      },
+    })
+    const submitting = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery data-turbo-visit-control="reload"><Promoted /></Gallery>'),
+      },
+      { frameLifecycle: lifecycle },
+    ).submit(proposal(controls, "visit-control-pending"))
+
+    await visitorStarted.promise
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.submissionTerminalState).toEqual({ revision: 0, status: "none" })
+    visitorFinished.resolve()
+    expect(await submitting).toMatchObject({ status: "promoted" })
+    expect(controls.submissionTerminalState).toMatchObject({
+      reason: "visit-control-reload",
+      status: "unapplied",
+    })
+  })
+
+  test("fails automatic Frame form promotion closed and publishes retry truth", async () => {
+    for (const frameLifecycle of [
+      undefined,
+      new FrameLifecycle(),
+      new FrameLifecycle({
+        async visitResponse() {
+          await Promise.resolve()
+          throw new Error("private visitor failure")
+        },
+      }),
+    ]) {
+      const session = fixture()
+      const controls = registry(session, "form-a")
+      const frame = session.tree.getElementById("frame-a")
+      const children = frame?.children
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<Gallery data-turbo-visit-control="reload"><turbo-frame id="frame-a"><Ignored /></turbo-frame></Gallery>',
+            ),
+        },
+        frameLifecycle ? { frameLifecycle } : {},
+      ).submit(proposal(controls, "visit-control-failure"))
+
+      const error = await submitting.catch((failure) => failure)
+      expect(error).toBeInstanceOf(RequestError)
+      expect(error.message).toBe("Frame visit-control response visit failed")
+      expect(String(error)).not.toContain("private")
+      expect(frame?.children).toBe(children)
+      expect(controls.submissionTerminalState).toMatchObject({
+        retryDisposition: "safe",
+        status: "failed",
+      })
+    }
+  })
+
+  test("publishes unsafe retry truth when a POST visit-control visitor fails after cache invalidation", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    session.setAttribute("id:form-a", "data-turbo-action", "replace")
+    const controls = registry(session, "form-a")
+    const frame = session.tree.getElementById("frame-a")
+    const children = frame?.children
+    const cache = populatedSnapshotCache(session)
+    const current = mountedFrameHistoryFixture(session, "frame-a", cache)
+    const finalUrl = "https://example.test/promoted-post-failure"
+    const lifecycle = new FrameLifecycle({
+      visitResponse() {
+        expect(cache.size).toBe(0)
+        throw new Error("private POST visitor failure")
+      },
+    })
+    const submitting = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<Gallery data-turbo-visit-control="reload"><turbo-frame id="frame-a"><Ignored id="ignored-post-failure" /></turbo-frame></Gallery>',
+            { redirected: true, url: finalUrl },
+          ),
+      },
+      {
+        frameControllers: current.frameControllers,
+        frameLifecycle: lifecycle,
+        snapshotCache: cache,
+      },
+    ).submit(proposal(controls, "visit-control-post-failure"))
+
+    const error = await submitting.catch((failure) => failure)
+    expect(error).toBeInstanceOf(RequestError)
+    expect(error.message).toBe("Frame visit-control response visit failed")
+    expect(String(error)).not.toContain("private")
+    expect(cache.size).toBe(0)
+    expect(current.writes).toEqual([])
+    expect(current.history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.document.url).toBe("https://example.test/current")
+    expect(frame?.children).toBe(children)
+    expect(session.tree.getElementById("ignored-post-failure")).toBeUndefined()
+    expect(attributeValue(frame as never, "src")).toBe(finalUrl)
+    expect(controls.submissionTerminalState).toMatchObject({
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+  })
+
   test("lets a Frame-missing form listener prevent default handling and promote buffered XML after release", async () => {
     const session = fixture()
     const missingBody = '<Gallery><PromotedDocument id="promoted-document" /></Gallery>'
@@ -5237,7 +5608,12 @@ describe("FormSubmissionController", () => {
       if (fixtureCase.name === "stream") {
         session.setAttribute("id:form-a", "data-turbo-stream", "")
       }
-      const lifecycle = new FrameLifecycle()
+      let visits = 0
+      const lifecycle = new FrameLifecycle({
+        visitResponse() {
+          visits += 1
+        },
+      })
       let events = 0
       lifecycle.subscribe("frame-missing", () => {
         events += 1
@@ -5261,6 +5637,7 @@ describe("FormSubmissionController", () => {
         })
       }
       expect(events, fixtureCase.name).toBe(0)
+      expect(visits, fixtureCase.name).toBe(0)
     }
   })
 

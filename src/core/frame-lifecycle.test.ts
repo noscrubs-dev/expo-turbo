@@ -4,6 +4,7 @@ import {
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
+  executeFrameVisitControlReload,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   FrameLifecycle,
   FrameMissingEvent,
@@ -149,6 +150,7 @@ describe("Frame lifecycle", () => {
       action: "replace",
       body: "<PrivateCard>trusted XML</PrivateCard>",
       frameId: "details",
+      reason: "frame-missing",
       response: {
         redirected: true,
         status: 404,
@@ -248,6 +250,69 @@ describe("Frame lifecycle", () => {
     expect(error.message).toBe("Frame-missing response visit failed")
     expect(error.cause).toBeUndefined()
     expect(String(error)).not.toContain("secret")
+  })
+
+  test("executes automatic visit-control reload promotion through the trusted visitor", async () => {
+    const requests: unknown[] = []
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        requests.push(request)
+      },
+    })
+
+    await executeFrameVisitControlReload(lifecycle, {
+      body: '<Gallery data-turbo-visit-control="reload" />',
+      frameId: "details",
+      response: {
+        redirected: true,
+        status: 422,
+        url: "https://example.test/final",
+      },
+    })
+
+    expect(requests).toEqual([
+      {
+        action: "advance",
+        body: '<Gallery data-turbo-visit-control="reload" />',
+        frameId: "details",
+        reason: "visit-control-reload",
+        response: {
+          redirected: true,
+          status: 422,
+          url: "https://example.test/final",
+        },
+      },
+    ])
+    expect(Object.isFrozen(requests[0])).toBe(true)
+    expect(Object.isFrozen((requests[0] as { response: object }).response)).toBe(true)
+  })
+
+  test("redacts unavailable and failing visit-control reload visitors", async () => {
+    for (const lifecycle of [
+      new FrameLifecycle(),
+      new FrameLifecycle({
+        visitResponse() {
+          throw new Error("private promotion secret")
+        },
+      }),
+    ]) {
+      const error = await capturedRejection(() =>
+        executeFrameVisitControlReload(lifecycle, {
+          body: "private response body",
+          frameId: "details",
+          response: {
+            redirected: false,
+            status: 500,
+            url: "https://example.test/private?token=secret",
+          },
+        }),
+      )
+      expect(error).toBeInstanceOf(RequestError)
+      expect(error.message).toBe("Frame visit-control response visit failed")
+      expect(error.cause).toBeUndefined()
+      expect(String(error)).not.toContain("private")
+      expect(String(error)).not.toContain("secret")
+    }
   })
 
   test("validates visit options before retaining an intent", () => {

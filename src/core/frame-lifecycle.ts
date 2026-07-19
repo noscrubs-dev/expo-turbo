@@ -20,15 +20,35 @@ export interface FrameMissingEventDetail {
   visit(options?: FrameMissingVisitOptions): void
 }
 
-export interface FrameMissingVisitRequest {
+interface FrameResponseVisitRequestBase {
   readonly action: FrameMissingVisitAction
   readonly body: string
   readonly frameId: string
   readonly response: FrameMissingResponse
 }
 
+export type FrameResponseVisitReason = "frame-missing" | "visit-control-reload"
+
+export type FrameResponseVisitRequest = Readonly<
+  FrameResponseVisitRequestBase & { readonly reason: FrameResponseVisitReason }
+>
+
+export type FrameMissingVisitRequest = FrameResponseVisitRequest & {
+  readonly reason: "frame-missing"
+}
+
+export type FrameVisitControlReloadRequest = FrameResponseVisitRequest & {
+  readonly reason: "visit-control-reload"
+}
+
 export interface FrameLifecycleOptions {
-  readonly visitResponse?: (request: FrameMissingVisitRequest) => Promise<void> | void
+  readonly visitResponse?: (request: FrameResponseVisitRequest) => Promise<void> | void
+}
+
+export interface ExecuteFrameVisitControlReloadOptions {
+  readonly body: string
+  readonly frameId: string
+  readonly response: FrameMissingResponse
 }
 
 interface FrameMissingEventState {
@@ -214,9 +234,43 @@ export function executeFrameMissingVisit(
   const body = state.body
   state.body = undefined
   state.closed = true
-  const execution = executeVisit(lifecycleState.visitResponse, state, body)
+  if (body === undefined) {
+    const execution = failedVisit(state.frameId, state.response, "frame-missing")
+    state.execution = execution
+    return execution
+  }
+  const execution = executeVisit(
+    lifecycleState.visitResponse,
+    Object.freeze({
+      action: state.intent.action,
+      body,
+      frameId: state.frameId,
+      reason: "frame-missing",
+      response: state.response,
+    }),
+  )
   state.execution = execution
   return execution
+}
+
+export function executeFrameVisitControlReload(
+  lifecycle: FrameLifecycle | undefined,
+  options: ExecuteFrameVisitControlReloadOptions,
+): Promise<void> {
+  if (!lifecycle) {
+    return failedVisit(options.frameId, options.response, "visit-control-reload")
+  }
+  const lifecycleState = admittedLifecycleState(lifecycle)
+  return executeVisit(
+    lifecycleState.visitResponse,
+    Object.freeze({
+      action: "advance",
+      body: options.body,
+      frameId: options.frameId,
+      reason: "visit-control-reload",
+      response: cloneResponse(options.response),
+    }),
+  )
 }
 
 export function frameLifecycleOption(options: unknown, owner: string): FrameLifecycle | undefined {
@@ -241,27 +295,42 @@ export function frameLifecycleOption(options: unknown, owner: string): FrameLife
 
 async function executeVisit(
   visitResponse: FrameLifecycleOptions["visitResponse"],
-  state: FrameMissingEventState,
-  body: string | undefined,
+  request: FrameResponseVisitRequest,
 ): Promise<void> {
   try {
-    if (!visitResponse || body === undefined) {
+    if (!visitResponse) {
       throw new Error("Frame response visitor is unavailable")
     }
-    await visitResponse(
-      Object.freeze({
-        action: state.intent?.action ?? "advance",
-        body,
-        frameId: state.frameId,
-        response: state.response,
-      }),
-    )
+    await visitResponse(request)
   } catch {
-    throw new RequestError("Frame-missing response visit failed", {
-      frameId: state.frameId,
-      responseStatus: state.response.status,
-    })
+    throw new RequestError(
+      request.reason === "frame-missing"
+        ? "Frame-missing response visit failed"
+        : "Frame visit-control response visit failed",
+      {
+        frameId: request.frameId,
+        responseStatus: request.response.status,
+      },
+    )
   }
+}
+
+function failedVisit(
+  frameId: string,
+  response: FrameMissingResponse,
+  reason: FrameResponseVisitReason,
+): Promise<never> {
+  return Promise.reject(
+    new RequestError(
+      reason === "frame-missing"
+        ? "Frame-missing response visit failed"
+        : "Frame visit-control response visit failed",
+      {
+        frameId,
+        responseStatus: response.status,
+      },
+    ),
+  )
 }
 
 function admittedLifecycleState(lifecycle: FrameLifecycle): FrameLifecycleState {
