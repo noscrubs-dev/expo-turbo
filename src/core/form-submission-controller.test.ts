@@ -3108,6 +3108,136 @@ describe("FormSubmissionController", () => {
     expect(session.tree.getElementById("ordered")).toBeDefined()
   })
 
+  test("emits before-cache for safe document forms and captures synchronous mutations", async () => {
+    const session = fixture()
+    const currentUrl = session.tree.document.url as string
+    const finalUrl = "https://example.test/before-cache-form"
+    const cache = new DocumentSnapshotCache()
+    const lifecycle = new DocumentVisitLifecycle()
+    const order: string[] = []
+    const history = historyFixture(session, () => {
+      expect(order).toEqual(["before-visit", "visit", "before-cache"])
+      order.push("history")
+    })
+    lifecycle.subscribe("before-visit", () => {
+      order.push("before-visit")
+    })
+    lifecycle.subscribe("visit", () => {
+      order.push("visit")
+    })
+    lifecycle.subscribe("before-cache", () => {
+      expect(cache.size).toBe(0)
+      session.setAttribute("id:status", "data-state", "cached")
+      order.push("before-cache")
+    })
+    session.subscribe("id:document-form", () => {
+      if (!session.tree.getElementById("document-form")) order.push("tree")
+    })
+
+    expect(
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Applied id="applied" /></Gallery>', {
+              url: finalUrl,
+            }),
+        },
+        {
+          history: history.history,
+          snapshotCache: cache,
+          visitLifecycle: lifecycle,
+        },
+      ).submit(proposal(registry(session, "document-form"), "before-cache-form")),
+    ).toMatchObject({ application: "document", status: "applied" })
+
+    expect(order).toEqual(["before-visit", "visit", "before-cache", "history", "tree"])
+    const cached = cache.get(currentUrl)
+    const status = cached?.getElementById("status")
+    expect(status ? attributeValue(status, "data-state") : undefined).toBe("cached")
+  })
+
+  test("keeps safe document form application current after before-cache removes its source", async () => {
+    const session = fixture()
+    const currentUrl = session.tree.document.url as string
+    const cache = new DocumentSnapshotCache()
+    const lifecycle = new DocumentVisitLifecycle()
+    const history = historyFixture(session)
+    lifecycle.subscribe("before-cache", () => {
+      session.mutate((tree) => {
+        const form = tree.getElementById("document-form")
+        if (!form) throw new Error("before-cache fixture requires its source form")
+        tree.removeNode(form)
+        return [form.key]
+      })
+    })
+
+    expect(
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<Gallery><Applied id="applied" /></Gallery>', {
+              url: "https://example.test/after-cleanup",
+            }),
+        },
+        {
+          history: history.history,
+          snapshotCache: cache,
+          visitLifecycle: lifecycle,
+        },
+      ).submit(proposal(registry(session, "document-form"), "before-cache-cleanup")),
+    ).toMatchObject({ application: "document", status: "applied" })
+
+    expect(cache.get(currentUrl)?.getElementById("document-form")).toBeUndefined()
+    expect(history.writes).toHaveLength(1)
+    expect(session.tree.getElementById("applied")?.tagName).toBe("Applied")
+  })
+
+  test("skips before-cache for unsafe, unsuccessful, and initially no-cache form documents", async () => {
+    for (const fixtureCase of [
+      { method: "post", name: "unsafe", status: 200 },
+      { name: "unsuccessful", status: 422 },
+      { cacheControl: "no-cache", name: "no-cache", status: 200 },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.method) {
+        session.setAttribute("id:document-form", "method", fixtureCase.method)
+      }
+      if (fixtureCase.cacheControl) {
+        const root = session.tree.document.children.find(isElement)
+        if (!root) throw new Error("form cache policy fixture requires a document root")
+        session.setAttribute(root.key, "data-turbo-cache-control", fixtureCase.cacheControl)
+      }
+      const lifecycle = new DocumentVisitLifecycle()
+      let events = 0
+      lifecycle.subscribe("before-cache", () => {
+        events += 1
+      })
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, `<Gallery><Result id="${fixtureCase.name}" /></Gallery>`, {
+              redirected: fixtureCase.method === "post",
+              status: fixtureCase.status,
+            }),
+        },
+        {
+          snapshotCache: new DocumentSnapshotCache(),
+          visitLifecycle: lifecycle,
+        },
+      )
+
+      expect(
+        await controller.submit(
+          proposal(registry(session, "document-form"), `before-cache-${fixtureCase.name}`),
+        ),
+      ).toMatchObject({ status: "applied" })
+      expect(events).toBe(0)
+    }
+  })
+
   test("cancels when restoration-ID generation invalidates the exact form proposal", async () => {
     const session = fixture()
     const writes: DocumentHistoryEntry[] = []

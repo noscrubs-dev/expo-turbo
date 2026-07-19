@@ -9,6 +9,7 @@ export * from "./document-refresh-controller"
 export * from "./document-snapshot-cache"
 export * from "./document-visit-controller"
 export {
+  BeforeCacheEvent,
   BeforeVisitEvent,
   DocumentVisitLifecycle,
   type DocumentVisitLifecycleEvent,

@@ -32,7 +32,7 @@ import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
-import { attributeValue, type DocumentTree } from "./tree"
+import { attributeValue, type DocumentTree, isElement } from "./tree"
 
 interface PendingRequest {
   readonly request: TurboRequest
@@ -370,6 +370,9 @@ describe("Document visit controller", () => {
     lifecycle.subscribe("visit", (event) => {
       events.push(`visit:${event.detail.action}`)
     })
+    lifecycle.subscribe("before-cache", () => {
+      events.push("before-cache")
+    })
     const snapshotCache = new DocumentSnapshotCache()
     snapshotCache.put(
       "https://example.test/next",
@@ -381,7 +384,7 @@ describe("Document visit controller", () => {
 
     const visiting = controller.visit("/next")
 
-    expect(events).toEqual(["before:https://example.test/next", "visit:advance"])
+    expect(events).toEqual(["before:https://example.test/next", "visit:advance", "before-cache"])
     expect(pending).toHaveLength(1)
     pending[0]?.resolve(
       response('<Gallery><Canonical id="canonical" /></Gallery>', {
@@ -389,7 +392,7 @@ describe("Document visit controller", () => {
       }),
     )
     expect(await visiting).toMatchObject({ status: "committed" })
-    expect(events).toEqual(["before:https://example.test/next", "visit:advance"])
+    expect(events).toEqual(["before:https://example.test/next", "visit:advance", "before-cache"])
   })
 
   test("emits a final replace visit after a successful redirected document commits", async () => {
@@ -656,6 +659,9 @@ describe("Document visit controller", () => {
     lifecycle.subscribe("visit", (event) => {
       events.push(`visit:${event.detail.action}`)
     })
+    lifecycle.subscribe("before-cache", () => {
+      events.push("before-cache")
+    })
     const history = historyFixture(() => undefined, "https://example.test/current", 2)
     const { controller, pending } = harness({
       history: history.history,
@@ -677,7 +683,7 @@ describe("Document visit controller", () => {
       }),
     )
     expect(await restoring).toMatchObject({ source: "network" })
-    expect(events).toEqual(["visit:restore"])
+    expect(events).toEqual(["visit:restore", "before-cache"])
   })
 
   test("emits restore for cached explicit visits and cached host traversal", async () => {
@@ -688,6 +694,9 @@ describe("Document visit controller", () => {
     })
     explicitLifecycle.subscribe("visit", (event) => {
       explicitEvents.push(`visit:${event.detail.action}`)
+    })
+    explicitLifecycle.subscribe("before-cache", () => {
+      explicitEvents.push("before-cache")
     })
     const explicitCache = new DocumentSnapshotCache()
     explicitCache.put(
@@ -706,7 +715,7 @@ describe("Document visit controller", () => {
       source: "snapshot",
       status: "restored",
     })
-    expect(explicitEvents).toEqual(["before", "visit:restore"])
+    expect(explicitEvents).toEqual(["before", "visit:restore", "before-cache"])
     expect(explicit.pending).toHaveLength(0)
 
     const traversalLifecycle = new DocumentVisitLifecycle()
@@ -716,6 +725,9 @@ describe("Document visit controller", () => {
     })
     traversalLifecycle.subscribe("visit", (event) => {
       traversalEvents.push(`visit:${event.detail.action}`)
+    })
+    traversalLifecycle.subscribe("before-cache", () => {
+      traversalEvents.push("before-cache")
     })
     const traversalCache = new DocumentSnapshotCache()
     traversalCache.put(
@@ -737,7 +749,7 @@ describe("Document visit controller", () => {
         url: "https://example.test/back",
       }),
     ).toMatchObject({ source: "snapshot", status: "restored" })
-    expect(traversalEvents).toEqual(["visit:restore"])
+    expect(traversalEvents).toEqual(["visit:restore", "before-cache"])
     expect(traversal.pending).toHaveLength(0)
   })
 
@@ -749,6 +761,9 @@ describe("Document visit controller", () => {
     })
     lifecycle.subscribe("visit", (event) => {
       events.push(`visit:${event.detail.action}`)
+    })
+    lifecycle.subscribe("before-cache", () => {
+      events.push("before-cache")
     })
     const current = harness({
       history: historyFixture().history,
@@ -3127,11 +3142,139 @@ describe("Document visit controller", () => {
     expect(session.tree.getElementById("old")).toBeUndefined()
   })
 
+  test("emits before-cache outside the commit transaction and captures listener mutations", async () => {
+    const order: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const snapshotCache = new DocumentSnapshotCache()
+    let session: DocumentSession
+    const history = historyFixture(() => {
+      expect(order).toEqual(["before-visit", "visit", "before-cache"])
+      expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      order.push("history")
+    })
+    lifecycle.subscribe("before-visit", () => {
+      order.push("before-visit")
+    })
+    lifecycle.subscribe("visit", () => {
+      order.push("visit")
+    })
+    lifecycle.subscribe("before-cache", () => {
+      expect(snapshotCache.size).toBe(0)
+      expect(session.tree.getElementById("old")).toBeDefined()
+      session.setAttribute("id:old", "data-state", "cached")
+      order.push("before-cache")
+    })
+    const current = harness({
+      history: history.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    session = current.session
+    session.subscribe("id:old", () => {
+      if (!session.tree.getElementById("old")) order.push("tree")
+    })
+
+    const visit = current.controller.visit("/next")
+    current.pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(order).toEqual(["before-visit", "visit", "before-cache", "history", "tree"])
+    const cached = snapshotCache.get("https://example.test/current")
+    const old = cached?.getElementById("old")
+    expect(old ? attributeValue(old, "data-state") : undefined).toBe("cached")
+  })
+
+  test("lets before-cache reentrancy supersede stale capture, history, and tree work", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const snapshotCache = new DocumentSnapshotCache()
+    const history = historyFixture()
+    let controller: DocumentVisitController
+    let newer: Promise<DocumentVisitResult> | undefined
+    let events = 0
+    lifecycle.subscribe("before-cache", () => {
+      events += 1
+      if (events === 1) newer = controller.visit("/newer")
+    })
+    const current = harness({
+      history: history.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    controller = current.controller
+
+    const stale = controller.visit("/stale")
+    current.pending[0]?.resolve(
+      response('<Gallery><Stale id="stale" /></Gallery>', {
+        url: "https://example.test/stale",
+      }),
+    )
+    expect(await stale).toMatchObject({ status: "canceled" })
+    expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toEqual([])
+    expect(current.session.tree.getElementById("old")).toBeDefined()
+
+    const newerRequest = current.pending[1]
+    if (!newerRequest || !newer) throw new Error("before-cache did not start newer work")
+    newerRequest.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(events).toBe(2)
+    expect(history.writes).toHaveLength(1)
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+    expect(current.session.tree.getElementById("stale")).toBeUndefined()
+  })
+
+  test("rechecks outgoing cache policy after before-cache listener mutations", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const snapshotCache = new DocumentSnapshotCache()
+    const history = historyFixture()
+    let events = 0
+    let session: DocumentSession
+    lifecycle.subscribe("before-cache", () => {
+      const root = session.tree.document.children.find(isElement)
+      if (!root) throw new Error("before-cache fixture requires a document root")
+      session.setAttribute(root.key, "data-turbo-cache-control", "no-cache")
+      events += 1
+    })
+    const current = harness({
+      history: history.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    session = current.session
+
+    const visit = current.controller.visit("/next")
+    current.pending[0]?.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visit).toMatchObject({ status: "committed" })
+    expect(events).toBe(1)
+    expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toHaveLength(1)
+    expect(session.tree.getElementById("next")?.tagName).toBe("Next")
+  })
+
   test("commits an advance without caching a no-cache outgoing document", async () => {
     const snapshotCache = new DocumentSnapshotCache()
+    const lifecycle = new DocumentVisitLifecycle()
+    let events = 0
+    lifecycle.subscribe("before-cache", () => {
+      events += 1
+    })
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-cache-control="no-cache"><Old id="old" /></Gallery>',
       snapshotCache,
+      visitLifecycle: lifecycle,
     })
     const visit = controller.visit("/next")
     pending[0]?.resolve(
@@ -3142,6 +3285,7 @@ describe("Document visit controller", () => {
 
     expect(await visit).toMatchObject({ status: "committed" })
     expect(snapshotCache.size).toBe(0)
+    expect(events).toBe(0)
     expect(session.tree.getElementById("next")?.tagName).toBe("Next")
   })
 
@@ -3643,7 +3787,15 @@ describe("Document visit controller", () => {
 
   test("clears fast-visit progress and ignores a manually fired stale timer", async () => {
     const snapshotCache = new DocumentSnapshotCache()
-    const { clock, controller, pending, session } = harness({ snapshotCache })
+    const lifecycle = new DocumentVisitLifecycle()
+    let cacheEvents = 0
+    lifecycle.subscribe("before-cache", () => {
+      cacheEvents += 1
+    })
+    const { clock, controller, pending, session } = harness({
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
     const visit = controller.visit("/empty")
     const timer = clock.timers[0]
 
@@ -3662,6 +3814,7 @@ describe("Document visit controller", () => {
     expect(controller.state.status).toBe("completed")
     expect(session.tree.getElementById("old")?.tagName).toBe("Old")
     expect(snapshotCache.size).toBe(0)
+    expect(cacheEvents).toBe(0)
   })
 
   test("commits authoritative HTTP error documents before publishing failed", async () => {
@@ -3671,9 +3824,15 @@ describe("Document visit controller", () => {
     ] as const) {
       const snapshotCache = new DocumentSnapshotCache()
       const history = historyFixture()
+      const lifecycle = new DocumentVisitLifecycle()
+      let cacheEvents = 0
+      lifecycle.subscribe("before-cache", () => {
+        cacheEvents += 1
+      })
       const { controller, pending, session } = harness({
         history: history.history,
         snapshotCache,
+        visitLifecycle: lifecycle,
       })
       const errors: Error[] = []
       controller.subscribeErrors((error) => errors.push(error))
@@ -3695,6 +3854,7 @@ describe("Document visit controller", () => {
       expect(errors).toHaveLength(0)
       expect(session.tree.getElementById(`error-${fixture.status}`)?.tagName).toBe("Error")
       expect(snapshotCache.has("https://example.test/current")).toBe(true)
+      expect(cacheEvents).toBe(1)
       expect(history.writes).toHaveLength(1)
       expect(history.writes[0]).toMatchObject({
         entry: {
@@ -3728,10 +3888,16 @@ describe("Document visit controller", () => {
     for (const fixture of fixtures) {
       const history = historyFixture()
       const snapshotCache = new DocumentSnapshotCache()
+      const lifecycle = new DocumentVisitLifecycle()
+      let cacheEvents = 0
+      lifecycle.subscribe("before-cache", () => {
+        cacheEvents += 1
+      })
       const { clock, controller, session } = harness({
         fetch: fixture.fetch,
         history: history.history,
         snapshotCache,
+        visitLifecycle: lifecycle,
       })
       const tree = session.tree
       const errors: Error[] = []
@@ -3748,6 +3914,7 @@ describe("Document visit controller", () => {
       expect(clock.timers[0]?.cleared).toBe(true)
       expect(session.tree).toBe(tree)
       expect(snapshotCache.size).toBe(0)
+      expect(cacheEvents).toBe(0)
       expect(history.writes).toEqual([])
     }
   })

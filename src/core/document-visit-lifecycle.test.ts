@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import {
   admitDocumentVisitLifecycle,
+  BeforeCacheEvent,
   BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
@@ -187,6 +189,49 @@ describe("document visit lifecycle", () => {
       url: "https://example.test/next",
     })
     expect(Object.isFrozen(visit.detail)).toBe(true)
+  })
+
+  test("emits frozen before-cache notifications through stable listener snapshots", async () => {
+    const reported: AggregateError[] = []
+    const lifecycle = new DocumentVisitLifecycle({
+      onObserverError(error) {
+        reported.push(error)
+        return undefined
+      },
+    })
+    const calls: string[] = []
+    const late = () => {
+      calls.push("late")
+      return undefined
+    }
+    let removeSecond: () => void = () => undefined
+    lifecycle.subscribe("before-cache", (event) => {
+      calls.push("first")
+      expect(event.type).toBe("before-cache")
+      expect(event.detail).toBeUndefined()
+      expect(Object.isFrozen(event)).toBe(true)
+      removeSecond()
+      lifecycle.subscribe("before-cache", late)
+    })
+    removeSecond = lifecycle.subscribe("before-cache", () => {
+      calls.push("second")
+      throw new Error("private cache observer failure")
+    })
+
+    expect(
+      lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent()),
+    ).toBeUndefined()
+    expect(calls).toEqual(["first", "second"])
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.errors).toHaveLength(1)
+    expect(reported[0]?.errors[0]).toBeInstanceOf(StateError)
+    expect(reported[0]?.errors[0]?.message).toBe("Before-cache listener failed")
+    expect(String(reported[0]?.errors[0])).not.toContain("private")
+
+    calls.length = 0
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent())
+    expect(calls).toEqual(["first", "late"])
+    await Promise.resolve()
   })
 
   test("uses stable listener snapshots across synchronous dispatches", () => {

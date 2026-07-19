@@ -4,9 +4,11 @@ import {
   destinationRequestOwnership,
 } from "./destination-request-ownership"
 import {
+  DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
 } from "./document-loader-lifecycle-internal"
+import { documentCachePolicy } from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
@@ -109,11 +111,16 @@ export interface DocumentLoadOptions {
 
 type InternalDocumentLoadOptions = DocumentLoadOptions &
   Readonly<{
+    [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
     [DOCUMENT_LOAD_DISCARD_HANDLING]?: (
       controller: AbortController,
     ) => undefined | PromiseLike<undefined>
     [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined
   }>
+
+type InternalDocumentSnapshotOptions = Readonly<{
+  [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
+}>
 
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
@@ -163,6 +170,7 @@ export class DocumentSnapshotPreviewCommitError extends StateError {
 }
 
 interface DocumentSnapshotApplicationOptions {
+  readonly [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
   readonly beforeClaim?: () => undefined
   readonly beforeTreeCommit?: () => undefined
   readonly onStart?: () => undefined
@@ -236,6 +244,13 @@ export class DocumentRequestLoader {
     options: DocumentSnapshotRestoreOptions = {},
   ): DocumentSnapshotRestoreReport {
     return this.applySnapshot(cache, url, owner, {
+      ...((options as InternalDocumentSnapshotOptions)[DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]
+        ? {
+            [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: (options as InternalDocumentSnapshotOptions)[
+              DOCUMENT_BEFORE_SNAPSHOT_CAPTURE
+            ],
+          }
+        : {}),
       ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
       ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
       ...(options.onRestoreStart ? { onStart: options.onRestoreStart } : {}),
@@ -253,6 +268,13 @@ export class DocumentRequestLoader {
       url,
       owner,
       {
+        ...((options as InternalDocumentSnapshotOptions)[DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]
+          ? {
+              [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: (options as InternalDocumentSnapshotOptions)[
+                DOCUMENT_BEFORE_SNAPSHOT_CAPTURE
+              ],
+            }
+          : {}),
         ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
         ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
         ...(options.onPreviewStart ? { onStart: options.onPreviewStart } : {}),
@@ -314,6 +336,18 @@ export class DocumentRequestLoader {
           throw new StateError(
             `Document snapshot ${preview ? "preview" : "restore"} start callback must not return a value`,
           )
+        }
+        if (!this.owns(active)) {
+          this.release(active)
+          return canceled
+        }
+      }
+      const beforeSnapshotCapture = options[DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]
+      if (beforeSnapshotCapture && documentCachePolicy(this.session.tree).cacheable) {
+        const result = beforeSnapshotCapture()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new StateError("Document before-cache callback must not return a value")
         }
         if (!this.owns(active)) {
           this.release(active)
@@ -663,6 +697,29 @@ export class DocumentRequestLoader {
         method: "GET",
         responseStatus: commit.response.status,
       })
+    }
+    const beforeSnapshotCapture = (options as InternalDocumentLoadOptions)[
+      DOCUMENT_BEFORE_SNAPSHOT_CAPTURE
+    ]
+    if (beforeSnapshotCapture && documentCachePolicy(this.session.tree).cacheable) {
+      try {
+        const result = beforeSnapshotCapture()
+        if (result !== undefined) {
+          void Promise.resolve(result).catch(() => undefined)
+          throw new RequestError("Document before-cache callback must not return a value", {
+            method: "GET",
+            responseStatus: commit.response.status,
+          })
+        }
+      } catch (error) {
+        this.release(active)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document before-cache callback failed", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
+      if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
     }
     if (options.beforeTreeCommit) {
       const lease = active.lease

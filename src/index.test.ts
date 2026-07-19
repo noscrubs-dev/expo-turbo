@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import {
+  BeforeCacheEvent,
   DocumentHistory,
   EXPO_TURBO_STATUS,
   FormSubmissionController,
@@ -16,6 +17,7 @@ describe("package status", () => {
     expect(FrameCommitError).toBeFunction()
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
+    expect(BeforeCacheEvent).toBeFunction()
   })
 })
 
