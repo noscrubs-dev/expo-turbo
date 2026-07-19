@@ -217,18 +217,30 @@ export interface FormControlSelection {
 }
 
 function submitterSelectionOption(value: unknown): FormControlSelection | undefined {
+  if (!value || typeof value !== "object") {
+    throw new TargetError("Form successful-entry options must be an object")
+  }
+  let array: boolean
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new TargetError("Form successful-entry options must be an object")
-    }
-    if ("submitterNodeKey" in value) {
-      throw new TargetError(
-        "Form submitterNodeKey is unsupported; pass the registration-bound submitter selection",
-      )
-    }
+    array = Array.isArray(value)
+  } catch {
+    throw new TargetError("Form submitter selection could not be read")
+  }
+  if (array) throw new TargetError("Form successful-entry options must be an object")
+  let hasLegacySelection: boolean
+  try {
+    hasLegacySelection = "submitterNodeKey" in value
+  } catch {
+    throw new TargetError("Form submitter selection could not be read")
+  }
+  if (hasLegacySelection) {
+    throw new TargetError(
+      "Form submitterNodeKey is unsupported; pass the registration-bound submitter selection",
+    )
+  }
+  try {
     return (value as SuccessfulFormEntriesOptions).submitter
-  } catch (error) {
-    if (error instanceof TargetError) throw error
+  } catch {
     throw new TargetError("Form submitter selection could not be read")
   }
 }
@@ -307,17 +319,78 @@ function formHasTurboOptIn(form: ProtocolElement): boolean {
   return false
 }
 
-function activeProtocolOptions(
-  value: ActiveFormRequestProtocolOptions,
-): ActiveFormRequestProtocolOptions {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+type ActiveFormOptionsScope = "request plan" | "retry" | "submission proposal" | "submit"
+
+function activeFormOptions<T extends object>(value: T, scope: ActiveFormOptionsScope): T {
+  if (!value || typeof value !== "object") {
+    throw new RequestError(`Active form ${scope} options must be an object`)
+  }
+  let array: boolean
+  try {
+    array = Array.isArray(value)
+  } catch {
+    throw new RequestError(`Active form ${scope} options could not be read`)
+  }
+  if (array) {
+    throw new RequestError(`Active form ${scope} options must be an object`)
+  }
+  return value
+}
+
+function activeFormOption<T extends object, K extends keyof T>(
+  options: T,
+  key: K,
+  scope: ActiveFormOptionsScope,
+): T[K] {
+  try {
+    return options[key]
+  } catch {
+    throw new RequestError(`Active form ${scope} options could not be read`)
+  }
+}
+
+function hasActiveFormOption(
+  options: object,
+  key: PropertyKey,
+  scope: ActiveFormOptionsScope,
+): boolean {
+  try {
+    return key in options
+  } catch {
+    throw new RequestError(`Active form ${scope} options could not be read`)
+  }
+}
+
+function activeProtocolOptions(value: unknown): ActiveFormRequestProtocolOptions {
+  if (!value || typeof value !== "object") {
     throw new RequestError("Active form request protocol metadata must be an object")
   }
-  if ("frameId" in value) {
+  let array: boolean
+  try {
+    array = Array.isArray(value)
+  } catch {
+    throw new RequestError("Active form request protocol metadata could not be read")
+  }
+  if (array) {
+    throw new RequestError("Active form request protocol metadata must be an object")
+  }
+  let hasFrameId: boolean
+  try {
+    hasFrameId = "frameId" in value
+  } catch {
+    throw new RequestError("Active form request protocol metadata could not be read")
+  }
+  if (hasFrameId) {
     throw new RequestError("Active form requests derive Turbo-Frame metadata from data-turbo-frame")
   }
-  const requestId = value.requestId
-  const capabilityHash = value.capabilityHash
+  let capabilityHash: unknown
+  let requestId: unknown
+  try {
+    requestId = (value as ActiveFormRequestProtocolOptions).requestId
+    capabilityHash = (value as ActiveFormRequestProtocolOptions).capabilityHash
+  } catch {
+    throw new RequestError("Active form request protocol metadata could not be read")
+  }
   if (typeof requestId !== "string") {
     throw new RequestError("Active form request ID must be a string")
   }
@@ -957,12 +1030,12 @@ export class FormControlRegistry {
 
   requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
     this.assertActive()
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new RequestError("Active form request plan options must be an object")
-    }
-    const protocol = activeProtocolOptions(options.protocol)
-    const selection = submitterSelectionOption(options)
-    const signal = options.signal
+    const admittedOptions = activeFormOptions(options, "request plan")
+    const protocol = activeProtocolOptions(
+      activeFormOption(admittedOptions, "protocol", "request plan"),
+    )
+    const selection = submitterSelectionOption(admittedOptions)
+    const signal = activeFormOption(admittedOptions, "signal", "request plan")
     this.assertActive()
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new RequestError("Active form request planning requires a document URL")
@@ -979,12 +1052,12 @@ export class FormControlRegistry {
 
   submissionProposal(options: ActiveFormSubmissionProposalOptions): FormSubmissionProposal {
     this.assertActive()
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new RequestError("Active form submission proposal options must be an object")
-    }
-    const protocol = activeProtocolOptions(options.protocol)
-    const selection = submitterSelectionOption(options)
-    const signal = options.signal
+    const admittedOptions = activeFormOptions(options, "submission proposal")
+    const protocol = activeProtocolOptions(
+      activeFormOption(admittedOptions, "protocol", "submission proposal"),
+    )
+    const selection = submitterSelectionOption(admittedOptions)
+    const signal = activeFormOption(admittedOptions, "signal", "submission proposal")
     this.assertActive()
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) {
@@ -1073,14 +1146,12 @@ export class FormControlRegistry {
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new RequestError("Active form submit options must be an object")
-    }
-    if ("signal" in options) {
+    const admittedOptions = activeFormOptions(options, "submit")
+    if (hasActiveFormOption(admittedOptions, "signal", "submit")) {
       throw new RequestError("Active form submission owns its abort signal")
     }
-    const protocol = activeProtocolOptions(options.protocol)
-    const selection = submitterSelectionOption(options)
+    const protocol = activeProtocolOptions(activeFormOption(admittedOptions, "protocol", "submit"))
+    const selection = submitterSelectionOption(admittedOptions)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
     if (
       !hasAttribute(this.form, "novalidate") &&
@@ -1119,10 +1190,8 @@ export class FormControlRegistry {
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
-    if (!options || typeof options !== "object" || Array.isArray(options)) {
-      throw new RequestError("Active form retry options must be an object")
-    }
-    const protocol = activeProtocolOptions(options.protocol)
+    const admittedOptions = activeFormOptions(options, "retry")
+    const protocol = activeProtocolOptions(activeFormOption(admittedOptions, "protocol", "retry"))
     const source = this.submissionActivity.retrySource()
     if (protocol.requestId === source.requestId) {
       throw new RequestError("Form submission retry requires a fresh request ID")
@@ -1296,9 +1365,16 @@ export class FormControlRegistry {
   }
 
   private activeSubmitter(selection: FormControlSelection): FormControlRecord {
-    if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+    if (!selection || typeof selection !== "object") {
       throw new TargetError("Form submitter requires a registration-bound selection")
     }
+    let array: boolean
+    try {
+      array = Array.isArray(selection)
+    } catch {
+      throw new TargetError("Form submitter selection could not be read")
+    }
+    if (array) throw new TargetError("Form submitter requires a registration-bound selection")
     const record = this.selections.get(selection)
     if (!record || this.records.get(record.node) !== record) {
       throw new TargetError("Form submitter selection is no longer active")

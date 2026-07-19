@@ -2152,6 +2152,20 @@ describe("native form control registry", () => {
       } as never),
     ).toThrow(/derive Turbo-Frame metadata/)
 
+    let forbiddenProtocolReads = 0
+    expect(() =>
+      registry.requestPlan({
+        protocol: {
+          frameId: "forged",
+          get requestId() {
+            forbiddenProtocolReads += 1
+            throw new Error("sensitive forbidden metadata detail")
+          },
+        },
+      } as never),
+    ).toThrow(/derive Turbo-Frame metadata/)
+    expect(forbiddenProtocolReads).toBe(0)
+
     const getterProtocol = {
       get requestId() {
         Object.defineProperty(this, "frameId", {
@@ -2306,6 +2320,221 @@ describe("native form control registry", () => {
       }),
     ).toThrow(StateError)
     expect(signalReads).toBe(1)
+  })
+
+  test("stages and redacts active request inputs before composing builder plans", () => {
+    const registry = registryFor(formFixture())
+    const planners = [
+      (options: unknown) => registry.requestPlan(options as never),
+      (options: unknown) => registry.submissionProposal(options as never).plan,
+    ]
+
+    for (const compose of planners) {
+      const reads: Record<string, number> = {}
+      const protocol = {
+        capabilityHash: "capability-before",
+        requestId: "request-before",
+      }
+      const options = {
+        get protocol() {
+          reads.protocol = (reads.protocol ?? 0) + 1
+          return protocol
+        },
+        get signal() {
+          reads.signal = (reads.signal ?? 0) + 1
+          protocol.capabilityHash = "capability-after"
+          protocol.requestId = "request-after"
+          return undefined
+        },
+        get submitter() {
+          reads.submitter = (reads.submitter ?? 0) + 1
+          return undefined
+        },
+      }
+
+      expect(compose(options).request.headers).toMatchObject({
+        "X-Expo-Turbo-Capabilities": "capability-before",
+        "X-Turbo-Request-Id": "request-before",
+      })
+      expect(reads).toEqual({ protocol: 1, signal: 1, submitter: 1 })
+    }
+
+    const revoked = <T extends object>(value: T): T => {
+      const pair = Proxy.revocable(value, {})
+      pair.revoke()
+      return pair.proxy
+    }
+    const sensitiveProtocolOption = new Proxy(
+      { protocol: { requestId: "request" } },
+      {
+        get(target, key, receiver) {
+          if (key === "protocol") throw new Error("sensitive options detail")
+          return Reflect.get(target, key, receiver)
+        },
+      },
+    )
+    const sensitiveRequestId = {
+      get requestId(): string {
+        throw new Error("sensitive protocol detail")
+      },
+    }
+    const hostileOptions = [
+      revoked({}),
+      sensitiveProtocolOption,
+      { protocol: revoked({}) },
+      { protocol: sensitiveRequestId },
+      {
+        protocol: new Proxy(
+          { requestId: "request" },
+          {
+            has() {
+              throw new Error("sensitive protocol ownership detail")
+            },
+          },
+        ),
+      },
+    ]
+    const activeCalls = [
+      (options: unknown) => registry.requestPlan(options as never),
+      (options: unknown) => registry.submissionProposal(options as never),
+      (options: unknown) => registry.submit(options as never),
+      (options: unknown) => registry.retryFailure(options as never),
+    ]
+
+    for (const run of activeCalls) {
+      for (const options of hostileOptions) {
+        let failure: unknown
+        try {
+          run(options)
+        } catch (error) {
+          failure = error
+        }
+        expect(failure).toBeInstanceOf(RequestError)
+        if (!(failure instanceof RequestError)) continue
+        expect(`${failure.message} ${JSON.stringify(failure.context)}`).not.toContain("sensitive")
+      }
+    }
+
+    const revokedSelection = revoked({})
+    for (const run of activeCalls.slice(0, 3)) {
+      let failure: unknown
+      try {
+        run({
+          protocol: { requestId: "revoked-selection" },
+          submitter: revokedSelection,
+        })
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(TargetError)
+      if (!(failure instanceof TargetError)) continue
+      expect(`${failure.message} ${JSON.stringify(failure.context)}`).not.toContain("sensitive")
+    }
+  })
+
+  test("retains one-read active protocol snapshots through submit and retry dispatch", async () => {
+    const session = formFixture()
+    const observed: Array<{
+      readonly capabilityHash: string | undefined
+      readonly requestId: string | undefined
+    }> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        const requestId = request.headers["X-Turbo-Request-Id"]
+        observed.push({
+          capabilityHash: request.headers["X-Expo-Turbo-Capabilities"],
+          requestId,
+        })
+        if (requestId === "retry-source") throw new Error("private network detail")
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const registry = registryFor(session, { submissionController: controller })
+    const submitReads: Record<string, number> = {}
+    const submitProtocol = {
+      get capabilityHash() {
+        submitReads.capabilityHash = (submitReads.capabilityHash ?? 0) + 1
+        return submitReads.capabilityHash === 1 ? "submit-capability" : "changed-capability"
+      },
+      get requestId() {
+        submitReads.requestId = (submitReads.requestId ?? 0) + 1
+        return submitReads.requestId === 1 ? "submit-live" : "changed-request"
+      },
+    }
+
+    await expect(
+      registry.submit({
+        get protocol() {
+          submitReads.protocol = (submitReads.protocol ?? 0) + 1
+          return submitProtocol
+        },
+        get submitter() {
+          submitReads.submitter = (submitReads.submitter ?? 0) + 1
+          return undefined
+        },
+      } as never),
+    ).resolves.toMatchObject({ requestId: "submit-live", status: "empty" })
+    expect(submitReads).toEqual({
+      capabilityHash: 1,
+      protocol: 1,
+      requestId: 1,
+      submitter: 1,
+    })
+    expect(observed.at(-1)).toEqual({
+      capabilityHash: "submit-capability",
+      requestId: "submit-live",
+    })
+
+    await expect(
+      registry.submit({ protocol: { requestId: "retry-source" } }),
+    ).rejects.toBeInstanceOf(RequestError)
+    const retryReads: Record<string, number> = {}
+    const retryProtocol = {
+      get capabilityHash() {
+        retryReads.capabilityHash = (retryReads.capabilityHash ?? 0) + 1
+        return retryReads.capabilityHash === 1 ? "retry-capability" : "changed-capability"
+      },
+      get requestId() {
+        retryReads.requestId = (retryReads.requestId ?? 0) + 1
+        return retryReads.requestId === 1 ? "retry-live" : "changed-request"
+      },
+    }
+    await expect(
+      registry.retryFailure({
+        get protocol() {
+          retryReads.protocol = (retryReads.protocol ?? 0) + 1
+          return retryProtocol
+        },
+      }),
+    ).resolves.toMatchObject({ requestId: "retry-live", status: "empty" })
+    expect(retryReads).toEqual({ capabilityHash: 1, protocol: 1, requestId: 1 })
+    expect(observed.at(-1)).toEqual({
+      capabilityHash: "retry-capability",
+      requestId: "retry-live",
+    })
+
+    const throwingPresence = new Proxy(
+      { protocol: { requestId: "presence" } },
+      {
+        has() {
+          throw new Error("sensitive option ownership detail")
+        },
+      },
+    )
+    try {
+      registry.submit(throwingPresence)
+      throw new Error("throwing option-ownership fixture was accepted")
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequestError)
+      if (!(error instanceof RequestError)) throw error
+      expect(`${error.message} ${JSON.stringify(error.context)}`).not.toContain("sensitive")
+    }
   })
 
   test("reads current form metadata and submitter Stream presence without inventing a fetch", () => {
