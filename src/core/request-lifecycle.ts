@@ -471,6 +471,7 @@ async function dispatchWithAbort(
   const canceled = new Promise<false>((resolve) => {
     cancel = () => resolve(false)
     signal.addEventListener("abort", cancel, { once: true })
+    if (signal.aborted) cancel()
   })
   const result = await Promise.race([dispatched, canceled])
   signal.removeEventListener("abort", cancel)

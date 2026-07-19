@@ -357,6 +357,59 @@ describe("request lifecycle", () => {
     expect(fetches).toBe(0)
   })
 
+  test("settles when a lifecycle listener synchronously aborts before registration", async () => {
+    const requestController = new AbortController()
+    const requestLifecycle = new RequestLifecycle()
+    let fetches = 0
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
+      event.pause()
+      requestController.abort()
+    })
+
+    expect(
+      (
+        await fetchWithRequestLifecycle({
+          admission: admission(),
+          context: { kind: "document", purpose: "load", requestId: "request-1" },
+          fetchAdapter: {
+            fetch: async () => {
+              fetches += 1
+              return response()
+            },
+          },
+          lifecycle: requestLifecycle,
+          request: request("https://example.test/request-abort", requestController.signal),
+        })
+      ).status,
+    ).toBe("canceled")
+    expect(fetches).toBe(0)
+
+    const responseController = new AbortController()
+    const responseLifecycle = new RequestLifecycle()
+    responseLifecycle.subscribe("before-fetch-response", () => {
+      responseController.abort()
+      return new Promise(() => undefined)
+    })
+
+    expect(
+      (
+        await fetchWithRequestLifecycle({
+          admission: admission(),
+          context: { kind: "document", purpose: "load", requestId: "request-1" },
+          fetchAdapter: {
+            fetch: async () => {
+              fetches += 1
+              return response()
+            },
+          },
+          lifecycle: responseLifecycle,
+          request: request("https://example.test/response-abort", responseController.signal),
+        })
+      ).status,
+    ).toBe("canceled")
+    expect(fetches).toBe(1)
+  })
+
   test("redacts listener failures and keeps listener snapshots stable", async () => {
     const lifecycle = new RequestLifecycle()
     const calls: string[] = []
