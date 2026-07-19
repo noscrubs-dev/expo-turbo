@@ -27,6 +27,7 @@ import { DocumentFormControls, FormControlRegistry } from "./forms"
 import { consumeFrameAutofocus } from "./frame-autofocus-internal"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator } from "./frame-history"
+import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
@@ -5085,6 +5086,182 @@ describe("FormSubmissionController", () => {
     ).rejects.toBeInstanceOf(FrameMissingError)
     expect(missing.revision).toBe(revision)
     expect(missing.tree.getElementById("frame-a")).toBe(missingFrame)
+  })
+
+  test("dispatches frozen Frame-missing form metadata before preserving the typed default failure", async () => {
+    for (const status of [200, 422, 500]) {
+      const session = fixture()
+      const lifecycle = new FrameLifecycle()
+      const events: Array<Readonly<{ frameId: string; status: number; url: string }>> = []
+      lifecycle.subscribe("frame-missing", (event) => {
+        expect(Object.isFrozen(event)).toBe(true)
+        expect(Object.isFrozen(event.detail)).toBe(true)
+        expect(Object.isFrozen(event.detail.response)).toBe(true)
+        expect("body" in event.detail.response).toBe(false)
+        events.push({
+          frameId: event.detail.frameId,
+          status: event.detail.response.status,
+          url: event.detail.response.url,
+        })
+      })
+      const finalUrl = `https://example.test/missing-${status}`
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<turbo-frame id="other"><Wrong /></turbo-frame>', {
+              status,
+              url: finalUrl,
+            }),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "form-a"), `missing-${status}`))
+
+      await expect(submitting).rejects.toBeInstanceOf(FrameMissingError)
+      expect(events).toEqual([{ frameId: "frame-a", status, url: finalUrl }])
+      expect(session.tree.getElementById("form-a")).toBeDefined()
+    }
+  })
+
+  test("lets a Frame-missing form listener prevent default handling and promote buffered XML after release", async () => {
+    const session = fixture()
+    const missingBody = '<Gallery><PromotedDocument id="promoted-document" /></Gallery>'
+    let formFetches = 0
+    const visits: string[] = []
+    const lifecycle = new FrameLifecycle({
+      visitResponse: async (request) => {
+        visits.push(`${request.action}:${request.frameId}:${request.response.status}`)
+        expect(request.body).toBe(missingBody)
+        const loader = new FrameRequestLoader(
+          session,
+          {
+            fetch: async (frameRequest) =>
+              response(
+                frameRequest,
+                '<turbo-frame id="frame-a"><VisitorLoaded id="visitor-loaded" /></turbo-frame>',
+              ),
+          },
+          requestIds("visitor"),
+        )
+        expect(await loader.load("frame-a", "/visitor")).toMatchObject({ status: "completed" })
+      },
+    })
+    lifecycle.subscribe("frame-missing", (event) => {
+      event.preventDefault()
+      event.detail.visit({ action: "replace" })
+    })
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => {
+          formFetches += 1
+          return response(request, missingBody, { redirected: true, status: 422 })
+        },
+      },
+      { frameLifecycle: lifecycle },
+    ).submit(proposal(registry(session, "form-a"), "missing-prevented"))
+
+    expect(result).toMatchObject({
+      destination: { frameId: "frame-a", kind: "frame" },
+      redirected: true,
+      responseStatus: 422,
+      status: "prevented",
+    })
+    expect({ formFetches, visits }).toEqual({
+      formFetches: 1,
+      visits: ["replace:frame-a:422"],
+    })
+    expect(session.tree.getElementById("visitor-loaded")).toBeDefined()
+  })
+
+  test("transfers a missing cross-target error to the origin before dispatch", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    session.setAttribute("id:form-a", "data-turbo-frame", "frame-b")
+    const visits: string[] = []
+    let newer: ReturnType<FrameRequestLoader["load"]> | undefined
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><Newer id="missing-origin-newer" /></turbo-frame>',
+          ),
+      },
+      requestIds("missing-origin"),
+    )
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        visits.push(request.frameId)
+      },
+    })
+    lifecycle.subscribe("frame-missing", (event) => {
+      expect(event.detail.frameId).toBe("frame-a")
+      event.preventDefault()
+      event.detail.visit()
+      newer = loader.load("frame-a", "/missing-origin-newer")
+    })
+
+    const submitting = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<turbo-frame id="other"><Wrong /></turbo-frame>', { status: 422 }),
+      },
+      { frameLifecycle: lifecycle },
+    ).submit(proposal(registry(session, "form-a"), "missing-cross-target"))
+
+    expect(await submitting).toMatchObject({
+      destination: { frameId: "frame-b", kind: "frame" },
+      status: "canceled",
+    })
+    expect(visits).toEqual([])
+    expect(await newer).toMatchObject({ status: "completed" })
+    expect(session.tree.getElementById("missing-origin-newer")).toBeDefined()
+  })
+
+  test("keeps non-XML Frame form outcomes out of Frame-missing lifecycle", async () => {
+    for (const fixtureCase of [
+      { body: "", contentType: EXPO_TURBO_MIME_TYPE, name: "empty", status: 204 },
+      {
+        body: '<turbo-stream action="remove" target="status" />',
+        contentType: TURBO_STREAM_MIME_TYPE,
+        name: "stream",
+        status: 200,
+      },
+      { body: "<broken>", contentType: EXPO_TURBO_MIME_TYPE, name: "parse", status: 200 },
+      { body: "wrong", contentType: "text/plain", name: "mime", status: 200 },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.name === "stream") {
+        session.setAttribute("id:form-a", "data-turbo-stream", "")
+      }
+      const lifecycle = new FrameLifecycle()
+      let events = 0
+      lifecycle.subscribe("frame-missing", () => {
+        events += 1
+      })
+      const submitting = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, fixtureCase.body, {
+              headers: { "Content-Type": fixtureCase.contentType },
+              status: fixtureCase.status,
+            }),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "form-a"), `not-missing-${fixtureCase.name}`))
+
+      if (fixtureCase.name === "empty" || fixtureCase.name === "stream") await submitting
+      else {
+        await expect(submitting).rejects.toMatchObject({
+          code: fixtureCase.name === "parse" ? "parse" : "content_type",
+        })
+      }
+      expect(events, fixtureCase.name).toBe(0)
+    }
   })
 
   test("dispatches negotiated Streams across response classifications and isolates actions", async () => {

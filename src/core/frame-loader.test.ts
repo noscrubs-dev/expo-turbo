@@ -4,6 +4,7 @@ import type { TurboRequest, TurboResponse } from "../adapters"
 import { DocumentRequestLoader } from "./document-loader"
 import {
   ContentTypeError,
+  FrameMissingError,
   ParseError,
   PropsError,
   RequestError,
@@ -11,6 +12,7 @@ import {
   TargetError,
 } from "./errors"
 import { FRAME_HISTORY_PLAN_OPTION } from "./frame-history"
+import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -139,6 +141,309 @@ describe("Frame request loader", () => {
 
     expect(await loader.load("details", "/frame")).toMatchObject({ status: "empty" })
     expect(frame?.children).toBe(children)
+  })
+
+  test("dispatches one typed Frame-missing event before the default error", async () => {
+    const fixtures = [
+      {
+        redirected: false,
+        source: "/missing-200",
+        status: 200,
+        url: "https://example.test/missing-200",
+      },
+      {
+        redirected: true,
+        source: "/missing-422",
+        status: 422,
+        url: "https://example.test/redirected-missing-422",
+      },
+    ] as const
+
+    for (const fixture of fixtures) {
+      const events: unknown[] = []
+      const lifecycle = new FrameLifecycle()
+      lifecycle.subscribe("frame-missing", (event) => {
+        events.push({
+          defaultPrevented: event.defaultPrevented,
+          frameId: event.detail.frameId,
+          response: event.detail.response,
+          type: event.type,
+        })
+      })
+      const loader = new FrameRequestLoader(
+        documentSession(),
+        {
+          fetch: async () =>
+            response("<Page><Missing /></Page>", {
+              redirected: fixture.redirected,
+              status: fixture.status,
+              url: fixture.url,
+            }),
+        },
+        { next: () => `request-${fixture.status}` },
+        { frameLifecycle: lifecycle },
+      )
+
+      await expect(loader.load("details", fixture.source)).rejects.toBeInstanceOf(FrameMissingError)
+      expect(events).toEqual([
+        {
+          defaultPrevented: false,
+          frameId: "details",
+          response: {
+            redirected: fixture.redirected,
+            status: fixture.status,
+            url: fixture.url,
+          },
+          type: "frame-missing",
+        },
+      ])
+    }
+  })
+
+  test("returns prevented without changing the active Frame", async () => {
+    const session = documentSession()
+    const frame = session.tree.getElementById("details")
+    const children = frame?.children
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("frame-missing", (event) => {
+      event.preventDefault()
+      return undefined
+    })
+    const loader = new FrameRequestLoader(
+      session,
+      { fetch: async () => response("<Page><Missing /></Page>") },
+      { next: () => "request-prevented" },
+      { frameLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/frame")).toEqual({
+      frameId: "details",
+      requestId: "request-prevented",
+      requestIds: ["request-prevented"],
+      responseStatus: 200,
+      status: "prevented",
+      url: "https://example.test/frame",
+    })
+    expect(frame?.children).toBe(children)
+    expect(attributeValue(frame as never, "src")).toBe("/old")
+  })
+
+  test("visits the buffered response after releasing Frame request ownership", async () => {
+    const body = "<Page><Missing /></Page>"
+    const visits: unknown[] = []
+    let fetches = 0
+    let ownershipReleased = false
+    let loader!: FrameRequestLoader
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        ownershipReleased = !loader.cancel("details")
+        visits.push(request)
+      },
+    })
+    lifecycle.subscribe("frame-missing", (event) => {
+      event.detail.visit({ action: "replace" })
+      event.preventDefault()
+    })
+    loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async () => {
+          fetches += 1
+          return response(body, { url: "https://example.test/missing" })
+        },
+      },
+      { next: () => "request-visit" },
+      { frameLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/missing")).toMatchObject({ status: "prevented" })
+    expect({ fetches, ownershipReleased }).toEqual({ fetches: 1, ownershipReleased: true })
+    expect(visits).toEqual([
+      {
+        action: "replace",
+        body,
+        frameId: "details",
+        response: {
+          redirected: false,
+          status: 200,
+          url: "https://example.test/missing",
+        },
+      },
+    ])
+  })
+
+  test("uses the primary response when recurse lookup ends without a match", async () => {
+    const primaryBody = '<Page><turbo-frame id="bridge" src="/nested" recurse="details" /></Page>'
+
+    for (const terminal of ["missing", "empty"] as const) {
+      const visits: unknown[] = []
+      let events = 0
+      let fetches = 0
+      const lifecycle = new FrameLifecycle({
+        visitResponse(request) {
+          visits.push(request)
+        },
+      })
+      lifecycle.subscribe("frame-missing", (event) => {
+        events += 1
+        event.detail.visit()
+        event.preventDefault()
+      })
+      const loader = new FrameRequestLoader(
+        documentSession(),
+        {
+          fetch: async () => {
+            fetches += 1
+            if (fetches === 1) {
+              return response(primaryBody, {
+                status: 422,
+                url: "https://example.test/primary",
+              })
+            }
+            return terminal === "empty"
+              ? response("", {
+                  headers: {},
+                  status: 204,
+                  url: "https://example.test/nested",
+                })
+              : response("<Page><StillMissing /></Page>", {
+                  url: "https://example.test/nested",
+                })
+          },
+        },
+        { next: () => `request-${fetches + 1}` },
+        { frameLifecycle: lifecycle },
+      )
+
+      expect(await loader.load("details", "/primary")).toMatchObject({
+        requestIds: ["request-1", "request-2"],
+        responseStatus: 422,
+        status: "prevented",
+        url: "https://example.test/primary",
+      })
+      expect({ events, fetches }).toEqual({ events: 1, fetches: 2 })
+      expect(visits).toEqual([
+        {
+          action: "advance",
+          body: primaryBody,
+          frameId: "details",
+          response: {
+            redirected: false,
+            status: 422,
+            url: "https://example.test/primary",
+          },
+        },
+      ])
+    }
+  })
+
+  test("does not dispatch Frame-missing for direct or recursive matches", async () => {
+    let events = 0
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("frame-missing", () => {
+      events += 1
+    })
+
+    const direct = new FrameRequestLoader(
+      documentSession(),
+      { fetch: async () => response('<turbo-frame id="details"><Direct /></turbo-frame>') },
+      { next: () => "direct-request" },
+      { frameLifecycle: lifecycle },
+    )
+    expect(await direct.load("details", "/direct")).toMatchObject({ status: "completed" })
+
+    let fetches = 0
+    const recursive = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async () => {
+          fetches += 1
+          return fetches === 1
+            ? response('<Page><turbo-frame id="bridge" src="/nested" recurse="details" /></Page>')
+            : response('<Page><turbo-frame id="details"><Recursive /></turbo-frame></Page>')
+        },
+      },
+      { next: () => `recursive-request-${fetches + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+    expect(await recursive.load("details", "/recursive")).toMatchObject({ status: "completed" })
+    expect(events).toBe(0)
+  })
+
+  test("lets reentrant newer Frame work cancel missing-response handling", async () => {
+    const visits: unknown[] = []
+    let newer: Promise<unknown> | undefined
+    let loader!: FrameRequestLoader
+    const lifecycle = new FrameLifecycle({
+      visitResponse(request) {
+        visits.push(request)
+      },
+    })
+    lifecycle.subscribe("frame-missing", (event) => {
+      event.detail.visit()
+      event.preventDefault()
+      newer = loader.load("details", "/newer")
+    })
+    loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async (request) =>
+          request.url.endsWith("/older")
+            ? response("<Page><Missing /></Page>", { url: request.url })
+            : response('<turbo-frame id="details"><Newer /></turbo-frame>', {
+                url: request.url,
+              }),
+      },
+      { next: () => "request-reentrant" },
+      { frameLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/older")).toMatchObject({ status: "canceled" })
+    expect(await newer).toMatchObject({ status: "completed" })
+    expect(visits).toEqual([])
+  })
+
+  test("does not dispatch Frame-missing for empty or inadmissible primary responses", async () => {
+    const fixtures = [
+      {
+        error: undefined,
+        response: response("", { headers: {}, status: 204 }),
+        status: "empty",
+      },
+      {
+        error: ContentTypeError,
+        response: response("<Page />", { headers: { "Content-Type": "application/json" } }),
+        status: undefined,
+      },
+      {
+        error: ParseError,
+        response: response("<turbo-frame"),
+        status: undefined,
+      },
+    ] as const
+
+    for (const fixture of fixtures) {
+      let events = 0
+      const lifecycle = new FrameLifecycle()
+      lifecycle.subscribe("frame-missing", () => {
+        events += 1
+      })
+      const loader = new FrameRequestLoader(
+        documentSession(),
+        { fetch: async () => fixture.response },
+        { next: () => "request-primary" },
+        { frameLifecycle: lifecycle },
+      )
+      const loading = loader.load("details", "/primary")
+
+      if (fixture.status) expect(await loading).toMatchObject({ status: fixture.status })
+      else if (fixture.error === ContentTypeError) {
+        await expect(loading).rejects.toBeInstanceOf(ContentTypeError)
+      } else {
+        await expect(loading).rejects.toBeInstanceOf(ParseError)
+      }
+      expect(events).toBe(0)
+    }
   })
 
   test("forwards embedded refresh Streams to the configured session coordinator", async () => {

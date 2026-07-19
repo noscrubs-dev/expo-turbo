@@ -58,6 +58,18 @@ export {
   FrameHistoryCoordinator,
   type FrameHistoryCoordinatorOptions,
 } from "./frame-history"
+export {
+  FrameLifecycle,
+  type FrameLifecycleEvent,
+  type FrameLifecycleEventMap,
+  type FrameLifecycleOptions,
+  FrameMissingEvent,
+  type FrameMissingEventDetail,
+  type FrameMissingResponse,
+  type FrameMissingVisitAction,
+  type FrameMissingVisitOptions,
+  type FrameMissingVisitRequest,
+} from "./frame-lifecycle"
 export * from "./frame-loader"
 export * from "./frames"
 export * from "./inspector"
