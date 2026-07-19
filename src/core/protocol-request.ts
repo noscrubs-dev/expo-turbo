@@ -70,7 +70,7 @@ export function protocolRequestHeaders(
   })
 }
 
-export function responseContentType(response: TurboResponse): string | undefined {
+export function responseContentType(response: Pick<TurboResponse, "headers">): string | undefined {
   const value = Object.entries(response.headers).find(
     ([name]) => name.toLowerCase() === "content-type",
   )?.[1]
