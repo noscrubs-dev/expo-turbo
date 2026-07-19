@@ -13,6 +13,13 @@ import {
   resolveSameOriginProtocolUrl,
   responseContentType,
 } from "./protocol-request"
+import {
+  fetchWithRequestLifecycle,
+  type RequestLifecycle,
+  RequestLifecycleTransportError,
+  requestLifecycleOption,
+  settleRequestOperation,
+} from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import type { DocumentTree } from "./tree"
 import {
@@ -42,6 +49,14 @@ export type DocumentLoadReport =
         candidateStatus: "committed" | "empty"
         status: "discarded"
       }>)
+  | Readonly<{
+      redirected: boolean
+      requestId: string
+      requestedUrl: string
+      responseStatus: number
+      status: "prevented"
+      url: string
+    }>
   | Readonly<{
       requestId: string
       requestedUrl: string
@@ -91,6 +106,7 @@ export interface DocumentLoadOptions {
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
   readonly limits?: Partial<ParseLimits>
+  readonly requestLifecycle?: RequestLifecycle
 }
 
 export interface DocumentCommittedOutcome extends DocumentResponseOutcome {
@@ -149,7 +165,7 @@ interface ActiveDocumentOperation {
 
 interface ActiveDocumentRequest extends ActiveDocumentOperation {
   readonly requestId: string
-  readonly requestedUrl: string
+  requestedUrl: string
 }
 
 function classifyResponse(status: number): DocumentResponseClassification {
@@ -165,6 +181,7 @@ function classifyResponse(status: number): DocumentResponseClassification {
 export class DocumentRequestLoader {
   private active: ActiveDocumentOperation | undefined
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
+  private readonly requestLifecycle: RequestLifecycle | undefined
 
   constructor(
     private readonly session: DocumentSession,
@@ -172,6 +189,7 @@ export class DocumentRequestLoader {
     private readonly requestIds: RequestIdAdapter,
     private readonly options: DocumentRequestLoaderOptions = {},
   ) {
+    this.requestLifecycle = requestLifecycleOption(options, "Document request loader")
     this.ownership = destinationRequestOwnership(session)
   }
 
@@ -348,7 +366,7 @@ export class DocumentRequestLoader {
     options: DocumentLoadOptions = {},
   ): Promise<DocumentLoadReport> {
     const treeGeneration = this.session.treeGeneration
-    const requestedUrl = this.resolveSource(source)
+    let requestedUrl = this.resolveSource(source)
     const requestId = this.requestIds.next()
     const controller = new AbortController()
     const request: TurboRequest = Object.freeze({
@@ -402,20 +420,64 @@ export class DocumentRequestLoader {
       | undefined
 
     try {
-      if (!this.owns(active)) return this.canceled(active)
-      if (options.onRequestStart) {
-        const result = options.onRequestStart()
-        if (result !== undefined) {
-          void Promise.resolve(result).catch(() => undefined)
-          throw new RequestError("Document request start callback must not return a value", {
-            method: "GET",
-          })
+      const startRequest = (effectiveRequest: TurboRequest): boolean => {
+        if (!this.owns(active)) return false
+        requestedUrl = effectiveRequest.url
+        active.requestedUrl = requestedUrl
+        if (options.onRequestStart) {
+          const result = options.onRequestStart()
+          if (result !== undefined) {
+            void Promise.resolve(result).catch(() => undefined)
+            throw new RequestError("Document request start callback must not return a value", {
+              method: "GET",
+            })
+          }
+          if (!this.owns(active)) return false
         }
-        if (!this.owns(active)) return this.canceled(active)
+        beginDocumentNavigation(this.session)
+        this.session.recentRequestIds.add(requestId)
+        return this.owns(active)
       }
-      beginDocumentNavigation(this.session)
-      this.session.recentRequestIds.add(requestId)
-      const response = await this.fetchAdapter.fetch(request)
+      let response: TurboResponse
+      if (this.requestLifecycle) {
+        const fetched = await fetchWithRequestLifecycle({
+          admission: {
+            admitUrl: (url) => this.resolveSource(url),
+            allowBody: false,
+            allowedMethods: ["GET"],
+            protectedHeaders: Object.keys(request.headers),
+          },
+          beforeFetch: startRequest,
+          context: { kind: "document", purpose: "load", requestId },
+          fetchAdapter: this.fetchAdapter,
+          lifecycle: this.requestLifecycle,
+          request,
+        })
+        if (fetched.status === "canceled") return this.canceled(active)
+        response = fetched.response
+        if (fetched.status === "prevented") {
+          responseStatus = response.status
+          const finalUrl = this.finalUrl(response, active)
+          const prevented = Object.freeze({
+            redirected: response.redirected || finalUrl !== requestedUrl,
+            requestId,
+            requestedUrl,
+            responseStatus: response.status,
+            status: "prevented" as const,
+            url: finalUrl,
+          })
+          this.release(active)
+          return prevented
+        }
+      } else {
+        if (!startRequest(request)) return this.canceled(active)
+        const fetched = await settleRequestOperation(active.controller.signal, () =>
+          this.fetchAdapter.fetch(request),
+        )
+        if (fetched.status === "canceled") return this.canceled(active)
+        if (fetched.status === "rejected") throw fetched.error
+        response = fetched.value
+      }
       if (!this.owns(active)) return this.canceled(active)
 
       responseStatus = response.status
@@ -428,14 +490,20 @@ export class DocumentRequestLoader {
       } else {
         let xml: string
         if (response.status === 201) {
-          xml = await response.text()
+          const body = await settleRequestOperation(active.controller.signal, () => response.text())
+          if (body.status === "canceled") return this.canceled(active, finalUrl)
+          if (body.status === "rejected") throw body.error
+          xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
           if (xml.trim() === "") {
             commit = { classification, finalUrl, redirected, response }
           }
         } else {
           this.assertContentType(response)
-          xml = await response.text()
+          const body = await settleRequestOperation(active.controller.signal, () => response.text())
+          if (body.status === "canceled") return this.canceled(active, finalUrl)
+          if (body.status === "rejected") throw body.error
+          xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
         }
         if (!commit) {
@@ -453,6 +521,12 @@ export class DocumentRequestLoader {
         return this.canceled(active)
       }
       this.release(active)
+      if (error instanceof RequestLifecycleTransportError) {
+        throw error.relabel("Document request failed", {
+          method: "GET",
+          ...(responseStatus !== undefined ? { responseStatus } : {}),
+        })
+      }
       if (error instanceof ExpoTurboError) throw error
       throw new RequestError("Document request failed", {
         method: "GET",

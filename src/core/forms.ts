@@ -20,6 +20,7 @@ import type {
 } from "./form-submission-controller"
 import {
   admitFormSubmissionProposal,
+  constrainFormSubmissionProposalToSafeTransport,
   type FormSubmissionProposal,
 } from "./form-submission-proposal"
 import { resolveFormSubmissionDestination } from "./frames"
@@ -1145,6 +1146,14 @@ export class FormControlRegistry {
     options: ActiveFormSubmitOptions,
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
   ): Promise<ActiveFormSubmissionReport> {
+    return this.submitWithTransportConstraint(options, controllerOptions, false)
+  }
+
+  private submitWithTransportConstraint(
+    options: ActiveFormSubmitOptions,
+    controllerOptions: FormSubmissionControllerSubmitOptions,
+    requiresSafeTransport: boolean,
+  ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
     const admittedOptions = activeFormOptions(options, "submit")
     if (hasActiveFormOption(admittedOptions, "signal", "submit")) {
@@ -1174,15 +1183,16 @@ export class FormControlRegistry {
     if (!submissionController) {
       throw new StateError("Active form submission requires a configured submission controller")
     }
-    return submissionController.submit(
-      (signal) =>
-        this.submissionProposal({
-          protocol,
-          signal,
-          ...(selection ? { submitter: selection } : {}),
-        }),
-      controllerOptions,
-    )
+    return submissionController.submit((signal) => {
+      const proposal = this.submissionProposal({
+        protocol,
+        signal,
+        ...(selection ? { submitter: selection } : {}),
+      })
+      return requiresSafeTransport
+        ? constrainFormSubmissionProposalToSafeTransport(proposal)
+        : proposal
+    }, controllerOptions)
   }
 
   retryFailure(
@@ -1202,12 +1212,13 @@ export class FormControlRegistry {
         target: source.submitter.key,
       })
     }
-    return this.submit(
+    return this.submitWithTransportConstraint(
       {
         protocol,
         ...(record ? { submitter: record.selection } : {}),
       },
       controllerOptions,
+      source.requiresSafeTransport,
     )
   }
 

@@ -1,4 +1,4 @@
-import type { FetchAdapter, RequestIdAdapter } from "../adapters"
+import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
@@ -37,13 +37,19 @@ import {
   resolveSameOriginProtocolUrl,
   responseContentType,
 } from "./protocol-request"
+import {
+  fetchWithRequestLifecycle,
+  type RequestLifecycle,
+  requestLifecycleOption,
+  settleRequestOperation,
+} from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import type { StreamActionDispatchOptions } from "./streams"
 import { attributeValue, type ProtocolElement } from "./tree"
 
 export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 
-export type FrameLoadStatus = "canceled" | "completed" | "empty"
+export type FrameLoadStatus = "canceled" | "completed" | "empty" | "prevented"
 
 export interface FrameLoadReport {
   readonly frame?: FrameResponseReport
@@ -100,6 +106,7 @@ export class FrameCommitError extends RequestError {
 export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
   readonly maxRecurseDepth?: number
+  readonly requestLifecycle?: RequestLifecycle
 }
 
 interface ActiveFrameRequest {
@@ -190,6 +197,7 @@ export class FrameRequestLoader {
   private readonly capabilityHash: string | undefined
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
+  private readonly requestLifecycle: RequestLifecycle | undefined
   private readonly streamOptions: StreamActionDispatchOptions
 
   constructor(
@@ -198,6 +206,7 @@ export class FrameRequestLoader {
     private readonly requestIds: RequestIdAdapter,
     options: FrameRequestLoaderOptions = {},
   ) {
+    this.requestLifecycle = requestLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     this.ownership = destinationRequestOwnership(session)
@@ -269,15 +278,11 @@ export class FrameRequestLoader {
     const historyPlan = loadOptions[FRAME_HISTORY_PLAN_OPTION]
 
     try {
-      if (historyPlan) {
-        beginFrameHistoryRequest(historyPlan, this.session, frame, url)
-        if (!this.owns(frameId, active)) {
-          return this.canceled(frameId, [], url, active)
-        }
-      }
       let requestFrameId = frameId
       let requestUrl = url
+      let primaryRequestedUrl = url
       let recurseDepth = 0
+      let historyStarted = false
       let responseStatus: number | undefined
       let responseUrl = url
       let responseRedirected = false
@@ -302,14 +307,94 @@ export class FrameRequestLoader {
             requestId,
           })
         preparedRequest = undefined
-        requestIds.push(requestId)
-        this.session.recentRequestIds.add(requestId)
-        const response = await this.fetchAdapter.fetch({
+        const request: TurboRequest = Object.freeze({
           headers,
           method: "GET",
           signal: active.controller.signal,
           url: requestUrl,
         })
+        const startRequest = (effectiveRequest: TurboRequest): boolean => {
+          if (
+            !this.owns(frameId, active) ||
+            (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
+          ) {
+            return false
+          }
+          if (effectiveRequest.url !== requestUrl) {
+            if (visited.has(effectiveRequest.url)) {
+              throw new FrameMissingError(
+                `Frame ${JSON.stringify(frameId)} has a recurse URL loop`,
+                { frameId },
+              )
+            }
+            requestUrl = effectiveRequest.url
+            visited.add(requestUrl)
+          }
+          if (recurseDepth === 0) primaryRequestedUrl = requestUrl
+          if (historyPlan && recurseDepth === 0 && !historyStarted) {
+            beginFrameHistoryRequest(historyPlan, this.session, frame, requestUrl, url)
+            historyStarted = true
+            if (
+              !this.owns(frameId, active) ||
+              !frameHistoryPlanCurrent(historyPlan, this.session, frame)
+            ) {
+              return false
+            }
+          }
+          requestIds.push(requestId)
+          this.session.recentRequestIds.add(requestId)
+          return true
+        }
+        let response: TurboResponse
+        if (this.requestLifecycle) {
+          const fetched = await fetchWithRequestLifecycle({
+            admission: {
+              admitUrl: (candidate) => this.resolveSameOrigin(candidate, requestUrl, frameId),
+              allowBody: false,
+              allowedMethods: ["GET"],
+              protectedHeaders: Object.keys(headers),
+            },
+            beforeFetch: startRequest,
+            context: {
+              frameId,
+              kind: "frame",
+              recurseDepth,
+              requestFrameId,
+              requestId,
+            },
+            fetchAdapter: this.fetchAdapter,
+            lifecycle: this.requestLifecycle,
+            request,
+          })
+          if (fetched.status === "canceled") {
+            return this.canceled(frameId, requestIds, responseUrl, active)
+          }
+          response = fetched.response
+          if (fetched.status === "prevented") {
+            const finalUrl = this.resolveSameOrigin(response.url, requestUrl, frameId)
+            this.release(frameId, active)
+            return Object.freeze({
+              frameId,
+              requestId: requestIds[0] ?? requestId,
+              requestIds: Object.freeze([...requestIds]),
+              responseStatus: response.status,
+              status: "prevented",
+              url: finalUrl,
+            })
+          }
+        } else {
+          if (!startRequest(request)) {
+            return this.canceled(frameId, requestIds, responseUrl, active)
+          }
+          const fetched = await settleRequestOperation(active.controller.signal, () =>
+            this.fetchAdapter.fetch(request),
+          )
+          if (fetched.status === "canceled") {
+            return this.canceled(frameId, requestIds, responseUrl, active)
+          }
+          if (fetched.status === "rejected") throw fetched.error
+          response = fetched.value
+        }
         if (
           !this.owns(frameId, active) ||
           (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
@@ -322,7 +407,7 @@ export class FrameRequestLoader {
         if (recurseDepth === 0) {
           responseStatus = response.status
           responseUrl = finalUrl
-          responseRedirected = response.redirected || finalUrl !== url
+          responseRedirected = response.redirected || finalUrl !== primaryRequestedUrl
           if (historyPlan && responseRedirected) {
             updateFrameHistoryResponseSource(historyPlan, this.session, frame, finalUrl)
             if (!this.owns(frameId, active)) {
@@ -368,7 +453,12 @@ export class FrameRequestLoader {
             frameId,
           })
         }
-        const xml = await response.text()
+        const body = await settleRequestOperation(active.controller.signal, () => response.text())
+        if (body.status === "canceled") {
+          return this.canceled(frameId, requestIds, responseUrl, active)
+        }
+        if (body.status === "rejected") throw body.error
+        const xml = body.value
         if (
           !this.owns(frameId, active) ||
           (historyPlan && !frameHistoryPlanCurrent(historyPlan, this.session, frame))
@@ -386,7 +476,7 @@ export class FrameRequestLoader {
             redirected: responseRedirected,
             requestId: requestIds[0] ?? requestId,
             requestIds: Object.freeze([...requestIds]),
-            requestedUrl: url,
+            requestedUrl: primaryRequestedUrl,
             responseStatus: responseStatus ?? response.status,
             url: responseUrl,
           })

@@ -1,13 +1,28 @@
-import type { FetchAdapter, TurboResponse } from "../adapters"
+import type { FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
-import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
-import { isAdmittedFormRequestPlan } from "./form-request-plan"
+import {
+  FORM_TEXT_PLAIN,
+  FORM_URL_ENCODED,
+  type FormRequestPlan,
+  type FormSubmissionMethod,
+  MAX_FORM_TEXT_PLAIN_BODY_BYTES,
+} from "./form-request"
+import {
+  isAdmittedFormRequestPlan,
+  admitFormRequestPlan as markFormRequestPlan,
+} from "./form-request-plan"
 import {
   EXPO_TURBO_MIME_TYPE,
   resolveSameOriginProtocolUrl,
   responseContentType,
   TURBO_STREAM_MIME_TYPE,
 } from "./protocol-request"
+import {
+  fetchWithRequestLifecycle,
+  type RequestLifecycle,
+  type RequestLifecycleContext,
+  RequestLifecycleTransportError,
+} from "./request-lifecycle"
 
 export type FormResponseClassification = "client-error" | "server-error" | "success"
 
@@ -16,6 +31,7 @@ interface FormExecutionRequestReport {
   readonly requestId: string
   readonly requestedUrl: string
   readonly sourceMethod: FormSubmissionMethod
+  readonly transportMethod: FormSubmissionMethod
 }
 
 interface FormExecutionResponseReport extends FormExecutionRequestReport {
@@ -48,15 +64,25 @@ export type FormRequestExecutionReport =
   | FormResponseCandidate
   | (FormExecutionRequestReport &
       Readonly<{
+        redirected: boolean
+        responseStatus: number
+        status: "prevented"
+        url: string
+      }>)
+  | (FormExecutionRequestReport &
+      Readonly<{
         status: "canceled"
         url: string
       }>)
 
 export interface FormRequestTransportOwnership {
+  readonly beforeRequest?: (request: TurboRequest) => boolean | undefined
   readonly beforeResponseBody?: (response: FormAdmittedResponse) => undefined
   readonly controller: AbortController
   /** Internal controller mode: the caller releases only after synchronous application. */
   readonly retainCandidate?: boolean
+  readonly requestContext?: Extract<RequestLifecycleContext, Readonly<{ kind: "form" }>>
+  readonly requestLifecycle?: RequestLifecycle
   owns(): boolean
   release(): void
 }
@@ -103,6 +129,13 @@ export function admitFormRequestPlan(value: unknown, signal: AbortSignal): FormR
   return plan as FormRequestPlan
 }
 
+export function replaceAdmittedFormRequest(
+  plan: FormRequestPlan,
+  request: TurboRequest,
+): FormRequestPlan {
+  return markFormRequestPlan(Object.freeze({ ...plan, request }) as FormRequestPlan)
+}
+
 function classifyResponse(
   status: number,
   method: FormSubmissionMethod,
@@ -122,12 +155,8 @@ export async function executeAdmittedFormRequest(
   plan: FormRequestPlan,
   ownership: FormRequestTransportOwnership,
 ): Promise<FormRequestExecutionReport> {
-  const report = Object.freeze({
-    effectiveMethod: plan.effectiveMethod,
-    requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
-    requestedUrl: plan.request.url,
-    sourceMethod: plan.sourceMethod,
-  })
+  let request = plan.request
+  let report = requestReport(plan, request)
   let url = plan.request.url
   let responseStatus: number | undefined
 
@@ -162,14 +191,81 @@ export async function executeAdmittedFormRequest(
 
   try {
     if (!ownership.owns()) return canceled()
-    const fetched = await waitFor(ownership, fetchAdapter.fetch(plan.request))
-    if (fetched.status === "canceled") return canceled()
-    if (fetched.status === "rejected") throw fetched.error
-    const response = fetched.value
+    let response: TurboResponse
+    if (ownership.requestLifecycle) {
+      const fetched = await fetchWithRequestLifecycle({
+        admission: {
+          admitUrl: (candidate) => {
+            const admitted = resolveSameOriginProtocolUrl(
+              candidate,
+              plan.request.url,
+              plan.request.url,
+              { method: plan.effectiveMethod },
+            )
+            if (admitted.includes("#")) {
+              throw new RequestError("Form request lifecycle fragments are unsupported", {
+                method: plan.effectiveMethod,
+              })
+            }
+            return admitted
+          },
+          allowBody: true,
+          allowedMethods: [...METHODS],
+          maxBodyBytes: MAX_FORM_TEXT_PLAIN_BODY_BYTES,
+          protectedHeaders: Object.keys(plan.request.headers).filter(
+            (name) => name.toLowerCase() !== "accept",
+          ),
+        },
+        beforeFetch: (candidate) => {
+          admitLifecycleFormRequest(candidate)
+          return ownership.beforeRequest?.(candidate)
+        },
+        context:
+          ownership.requestContext ??
+          Object.freeze({
+            kind: "form",
+            requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+          }),
+        fetchAdapter,
+        lifecycle: ownership.requestLifecycle,
+        request: plan.request,
+      })
+      request = fetched.request
+      report = requestReport(plan, request)
+      url = request.url
+      if (fetched.status === "canceled") return canceled()
+      response = fetched.response
+      if (fetched.status === "prevented") {
+        responseStatus = response.status
+        url = finalUrl(response, report)
+        release()
+        return Object.freeze({
+          ...report,
+          redirected: response.redirected || url !== report.requestedUrl,
+          responseStatus: response.status,
+          status: "prevented",
+          url,
+        })
+      }
+    } else {
+      if (ownership.beforeRequest) {
+        const proceed = ownership.beforeRequest(request)
+        if (proceed !== undefined && typeof proceed !== "boolean") {
+          throw new RequestError("Form request admission must return a boolean", {
+            method: report.transportMethod,
+          })
+        }
+        if (proceed === false || !ownership.owns()) return canceled()
+      }
+      const fetched = await waitFor(ownership, fetchAdapter.fetch(request))
+      if (fetched.status === "canceled") return canceled()
+      if (fetched.status === "rejected") throw fetched.error
+      response = fetched.value
+    }
 
     responseStatus = response.status
     url = finalUrl(response, report)
-    const classification = classifyResponse(response.status, report.effectiveMethod)
+    const classification = classifyResponse(response.status, report.transportMethod)
     const redirected = response.redirected || url !== report.requestedUrl
     const rawContentType = responseContentType(response)
 
@@ -186,7 +282,7 @@ export async function executeAdmittedFormRequest(
       )
       if (callbackResult !== undefined) {
         throw new RequestError("Form response admission callback must not return a value", {
-          method: report.effectiveMethod,
+          method: report.transportMethod,
           responseStatus: response.status,
         })
       }
@@ -205,7 +301,7 @@ export async function executeAdmittedFormRequest(
 
     let contentType: typeof EXPO_TURBO_MIME_TYPE | typeof TURBO_STREAM_MIME_TYPE | undefined
     if (response.status !== 201) {
-      contentType = admittedContentType(response, report.effectiveMethod, plan)
+      contentType = admittedContentType(response, report.transportMethod, request)
     }
     const buffered = await waitFor(ownership, response.text())
     if (buffered.status === "canceled") return canceled()
@@ -213,7 +309,7 @@ export async function executeAdmittedFormRequest(
     const body = buffered.value
     if (typeof body !== "string") {
       throw new RequestError("Form response body must be text", {
-        method: report.effectiveMethod,
+        method: report.transportMethod,
         responseStatus: response.status,
       })
     }
@@ -226,7 +322,7 @@ export async function executeAdmittedFormRequest(
         url,
       })
     }
-    contentType ??= admittedContentType(response, report.effectiveMethod, plan)
+    contentType ??= admittedContentType(response, report.transportMethod, request)
 
     return complete({
       body,
@@ -240,10 +336,41 @@ export async function executeAdmittedFormRequest(
   } catch (error) {
     if (ownership.controller.signal.aborted || !ownership.owns()) return canceled()
     release()
+    if (error instanceof RequestLifecycleTransportError) {
+      throw error.relabel("Form request failed", {
+        method: report.transportMethod,
+        ...(responseStatus !== undefined ? { responseStatus } : {}),
+      })
+    }
     if (error instanceof ExpoTurboError) throw error
     throw new RequestError("Form request failed", {
-      method: report.effectiveMethod,
+      method: report.transportMethod,
       ...(responseStatus !== undefined ? { responseStatus } : {}),
+    })
+  }
+}
+
+function admitLifecycleFormRequest(request: TurboRequest): void {
+  const accept = requestHeader(request, "accept")
+  const accepted = new Set(accept?.split(",").map((value) => value.trim()))
+  if (!accepted.has(EXPO_TURBO_MIME_TYPE)) {
+    throw new RequestError("Form requests must accept Expo Turbo XML", {
+      method: request.method,
+    })
+  }
+  if (request.method !== "GET" && !accepted.has(TURBO_STREAM_MIME_TYPE)) {
+    throw new RequestError("Unsafe form requests must accept Turbo Streams", {
+      method: request.method,
+    })
+  }
+  if (
+    request.body &&
+    (typeof request.body.value !== "string" ||
+      (request.body.contentType !== `${FORM_URL_ENCODED};charset=UTF-8` &&
+        request.body.contentType !== FORM_TEXT_PLAIN))
+  ) {
+    throw new RequestError("Form request lifecycle body encoding is unsupported", {
+      method: request.method,
     })
   }
 }
@@ -251,7 +378,7 @@ export async function executeAdmittedFormRequest(
 function admittedContentType(
   response: TurboResponse,
   method: FormSubmissionMethod,
-  plan: FormRequestPlan,
+  request: TurboRequest,
 ): typeof EXPO_TURBO_MIME_TYPE | typeof TURBO_STREAM_MIME_TYPE {
   const contentType = responseContentType(response)
   if (contentType !== EXPO_TURBO_MIME_TYPE && contentType !== TURBO_STREAM_MIME_TYPE) {
@@ -261,7 +388,7 @@ function admittedContentType(
       responseStatus: response.status,
     })
   }
-  const accept = plan.request.headers.Accept
+  const accept = requestHeader(request, "accept")
   if (
     contentType === TURBO_STREAM_MIME_TYPE &&
     (typeof accept !== "string" ||
@@ -276,17 +403,39 @@ function admittedContentType(
   return contentType
 }
 
+function requestReport(plan: FormRequestPlan, request: TurboRequest): FormExecutionRequestReport {
+  const transportMethod = request.method.toUpperCase() as FormSubmissionMethod
+  if (!METHODS.has(transportMethod)) {
+    throw new RequestError("Form request transport method is unsupported", {
+      method: request.method,
+    })
+  }
+  return Object.freeze({
+    effectiveMethod: plan.effectiveMethod,
+    requestId: plan.request.headers["X-Turbo-Request-Id"] as string,
+    requestedUrl: request.url,
+    sourceMethod: plan.sourceMethod,
+    transportMethod,
+  })
+}
+
 function finalUrl(response: TurboResponse, report: FormExecutionRequestReport): string {
   if (typeof response.url !== "string" || response.url.trim() === "") {
     throw new RequestError("Form response requires a final URL", {
-      method: report.effectiveMethod,
+      method: report.transportMethod,
       responseStatus: response.status,
     })
   }
   return resolveSameOriginProtocolUrl(response.url, report.requestedUrl, report.requestedUrl, {
-    method: report.effectiveMethod,
+    method: report.transportMethod,
     responseStatus: response.status,
   })
+}
+
+function requestHeader(request: TurboRequest, name: string): string | undefined {
+  return Object.entries(request.headers).find(
+    ([candidate]) => candidate.toLowerCase() === name,
+  )?.[1]
 }
 
 async function waitFor<T>(

@@ -18,6 +18,7 @@ import {
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { RequestError, StateError, TargetError } from "./errors"
 import { resolveProtocolUrl } from "./protocol-request"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
@@ -950,7 +951,7 @@ export class DocumentVisitController {
             throw reported
           }
         }
-        if (report.status === "canceled") this.finish("canceled")
+        if (report.status === "canceled" || report.status === "prevented") this.finish("canceled")
         else this.finish(report.classification === "success" ? "completed" : "failed")
         return report
       },
@@ -977,7 +978,7 @@ export class DocumentVisitController {
               ? "completed"
               : "failed"
           this.finish(status)
-          this.notifyError(reported)
+          if (!requestLifecycleDefaultHandlingPrevented(error)) this.notifyError(reported)
         }
         throw reported
       },

@@ -10,6 +10,7 @@ import { DocumentVisitController } from "./document-visit-controller"
 import { RequestError, StateError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
 
@@ -62,7 +63,7 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
   }
 }
 
-function harness() {
+function harness(requestLifecycle?: RequestLifecycle) {
   const pending: PendingRequest[] = []
   const session = new DocumentSession(
     parseExpoTurboDocument('<Gallery><Old id="old"/><Later id="later"/></Gallery>', {
@@ -79,6 +80,7 @@ function harness() {
         }),
     },
     { next: () => `request-${++requestId}` },
+    requestLifecycle ? { requestLifecycle } : {},
   )
   const clock = new ManualClock()
   const visits = new DocumentVisitController(loader, clock)
@@ -101,6 +103,24 @@ function terminalVisit(visits: DocumentVisitController): Promise<void> {
 }
 
 describe("document refresh controller", () => {
+  test("suppresses default refresh error reporting when fetch-error handling is prevented", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const { clock, errors, pending, refresh, visits } = harness(lifecycle)
+    const terminal = terminalVisit(visits)
+
+    refresh.request({ baseUrl: "https://example.test/current" })
+    clock.fire(0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(pending).toHaveLength(1)
+    pending[0]?.reject(new Error("secret transport failure"))
+    await terminal
+    await Promise.resolve()
+
+    expect(visits.state.status).toBe("failed")
+    expect(errors).toEqual([])
+  })
+
   test("dispatches a plain refresh after Turbo's trailing debounce and ignores target content", async () => {
     const { clock, pending, refresh, session, visits } = harness()
     const report = dispatchTurboStreamFragment(

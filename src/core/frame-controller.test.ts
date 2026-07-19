@@ -5,6 +5,7 @@ import { consumeFrameAutofocus } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
 import { attributeValue, isElement } from "./tree"
@@ -53,6 +54,37 @@ function harness(attributes = 'src="/frame"', visibility?: VisibilityAdapter) {
 }
 
 describe("Frame controller", () => {
+  test("keeps a prevented fetch error rejected while suppressing default error delegation", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const controller = new FrameController(
+      session,
+      "details",
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async () => {
+            throw new Error("secret transport failure")
+          },
+        },
+        { next: () => "request-error" },
+        { requestLifecycle: lifecycle },
+      ),
+    )
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+
+    await expect(controller.connect()).rejects.toThrow("Fetch request failed")
+    expect(controller.state).toMatchObject({ busy: false, status: "error" })
+    expect(errors).toEqual([])
+  })
+
   test("eagerly loads on connect and publishes stable terminal lifecycle state", async () => {
     const { controller, pending, session } = harness()
     const revisions: number[] = []

@@ -2,10 +2,18 @@ import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
 import { DocumentRequestLoader } from "./document-loader"
-import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
+import {
+  ContentTypeError,
+  ParseError,
+  PropsError,
+  RequestError,
+  StateError,
+  TargetError,
+} from "./errors"
 import { FRAME_HISTORY_PLAN_OPTION } from "./frame-history"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
 
@@ -30,6 +38,42 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 }
 
 describe("Frame request loader", () => {
+  test("snapshots and validates the request lifecycle option", async () => {
+    const lifecycle = new RequestLifecycle()
+    let events = 0
+    let reads = 0
+    lifecycle.subscribe("before-fetch-request", () => {
+      events += 1
+    })
+    const loader = new FrameRequestLoader(
+      documentSession(),
+      {
+        fetch: async (request) =>
+          response('<turbo-frame id="details"><Loaded /></turbo-frame>', { url: request.url }),
+      },
+      { next: () => "request-options" },
+      {
+        get requestLifecycle() {
+          reads += 1
+          return lifecycle
+        },
+      },
+    )
+
+    expect(reads).toBe(1)
+    expect(await loader.load("details", "/options")).toMatchObject({ status: "completed" })
+    expect({ events, reads }).toEqual({ events: 1, reads: 1 })
+    expect(
+      () =>
+        new FrameRequestLoader(
+          documentSession(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { next: () => "unused" },
+          { requestLifecycle: null } as never,
+        ),
+    ).toThrow(PropsError)
+  })
+
   test("sends the protocol request contract and commits handled redirected responses", async () => {
     const requests: TurboRequest[] = []
     const session = documentSession()
@@ -142,10 +186,10 @@ describe("Frame request loader", () => {
 
     const older = loader.load("details", "/older")
     const newer = loader.load("details", "/newer")
+    expect(await older).toMatchObject({ status: "canceled" })
     pending[1]?.(response('<turbo-frame id="details"><Newer /></turbo-frame>'))
     expect(await newer).toMatchObject({ status: "completed" })
     pending[0]?.(response('<turbo-frame id="details"><Older /></turbo-frame>'))
-    expect(await older).toMatchObject({ status: "canceled" })
     expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
       "Newer",
     )
@@ -229,7 +273,13 @@ describe("Frame request loader", () => {
 
   test("loads a matching frame through a recurse intermediary", async () => {
     const requests: TurboRequest[] = []
+    const contexts: unknown[] = []
     const session = documentSession()
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      contexts.push(event.detail.context)
+      event.detail.request.setHeader("X-Frame-Hook", "admitted")
+    })
     let requestId = 0
     const loader = new FrameRequestLoader(
       session,
@@ -248,6 +298,7 @@ describe("Frame request loader", () => {
         },
       },
       { next: () => `request-${++requestId}` },
+      { requestLifecycle: lifecycle },
     )
 
     const report = await loader.load("details", "/initial")
@@ -259,6 +310,26 @@ describe("Frame request loader", () => {
       "https://example.test/redirected/nested",
     ])
     expect(requests.map((request) => request.headers["Turbo-Frame"])).toEqual(["details", "bridge"])
+    expect(requests.map((request) => request.headers["X-Frame-Hook"])).toEqual([
+      "admitted",
+      "admitted",
+    ])
+    expect(contexts).toEqual([
+      {
+        frameId: "details",
+        kind: "frame",
+        recurseDepth: 0,
+        requestFrameId: "details",
+        requestId: "request-1",
+      },
+      {
+        frameId: "details",
+        kind: "frame",
+        recurseDepth: 1,
+        requestFrameId: "bridge",
+        requestId: "request-2",
+      },
+    ])
     expect(report).toMatchObject({
       requestId: "request-1",
       requestIds: ["request-1", "request-2"],
@@ -270,6 +341,41 @@ describe("Frame request loader", () => {
     expect(session.recentRequestIds.has("request-2")).toBe(true)
     expect(attributeValue(frame, "src")).toBe("https://example.test/redirected/index")
     expect(frame.children.filter(isElement)[0]?.tagName).toBe("Recursive")
+  })
+
+  test("reports a prevented Frame response without reading or mutating it", async () => {
+    const session = documentSession()
+    const frame = session.tree.getElementById("details")
+    const children = frame?.children
+    const lifecycle = new RequestLifecycle()
+    let reads = 0
+    lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) =>
+          response('<turbo-frame id="details"><Ignored /></turbo-frame>', {
+            text: async () => {
+              reads += 1
+              return '<turbo-frame id="details"><Ignored /></turbo-frame>'
+            },
+            url: request.url,
+          }),
+      },
+      { next: () => "request-prevented" },
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("details", "/prevented")).toEqual({
+      frameId: "details",
+      requestId: "request-prevented",
+      requestIds: ["request-prevented"],
+      responseStatus: 200,
+      status: "prevented",
+      url: "https://example.test/prevented",
+    })
+    expect(reads).toBe(0)
+    expect(frame?.children).toBe(children)
   })
 
   test("rejects recurse URL loops and depth overflow without changing the active frame", async () => {
@@ -328,6 +434,10 @@ describe("Frame request loader", () => {
   })
 
   test("supersedes an in-flight recurse request without committing its late match", async () => {
+    let markRecurseStarted!: () => void
+    const recurseStarted = new Promise<void>((resolve) => {
+      markRecurseStarted = resolve
+    })
     const pending: Array<{
       request: TurboRequest
       resolve: (response: TurboResponse) => void
@@ -340,6 +450,7 @@ describe("Frame request loader", () => {
         fetch: (request) =>
           new Promise<TurboResponse>((resolve) => {
             pending.push({ request, resolve })
+            if (pending.length === 2) markRecurseStarted()
           }),
       },
       { next: () => `request-${++requestId}` },
@@ -349,8 +460,7 @@ describe("Frame request loader", () => {
     pending[0]?.resolve(
       response('<Page><turbo-frame id="bridge" src="/older-nested" recurse="details" /></Page>'),
     )
-    await Promise.resolve()
-    await Promise.resolve()
+    await recurseStarted
     expect(pending).toHaveLength(2)
 
     const newer = loader.load("details", "/newer")

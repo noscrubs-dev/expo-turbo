@@ -19,10 +19,12 @@ import {
 import { StateError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 
 interface PendingRequest {
   readonly request: TurboRequest
+  readonly reject: (reason?: unknown) => void
   readonly resolve: (response: TurboResponse) => void
 }
 
@@ -74,7 +76,7 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function harness(snapshotCache = new DocumentSnapshotCache()) {
+function harness(snapshotCache = new DocumentSnapshotCache(), requestLifecycle?: RequestLifecycle) {
   const pending: PendingRequest[] = []
   const writes: DocumentHistoryEntry[] = []
   const host: DocumentHistoryHostAdapter = {
@@ -101,9 +103,10 @@ function harness(snapshotCache = new DocumentSnapshotCache()) {
     session,
     {
       fetch: (request) =>
-        new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        new Promise<TurboResponse>((resolve, reject) => pending.push({ reject, request, resolve })),
     },
     { next: () => `request-${++requestId}` },
+    requestLifecycle ? { requestLifecycle } : {},
   )
   const controller = new DocumentVisitController(loader, new ManualClock(), {
     history,
@@ -120,6 +123,26 @@ function harness(snapshotCache = new DocumentSnapshotCache()) {
 }
 
 describe("document history traversal subscription", () => {
+  test("suppresses default traversal error reporting when fetch-error handling is prevented", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const fixture = harness(new DocumentSnapshotCache(), lifecycle)
+
+    fixture.source.emit({
+      restorationIdentifier: "back",
+      restorationIndex: 2,
+      url: "https://example.test/back",
+    })
+    await tick()
+    expect(fixture.pending).toHaveLength(1)
+    fixture.pending[0]?.reject(new Error("secret transport failure"))
+    await tick()
+
+    expect(fixture.controller.state.status).toBe("failed")
+    expect(fixture.errors).toEqual([])
+    fixture.unsubscribe()
+  })
+
   test("restores a managed cached entry without another host write", async () => {
     const cache = new DocumentSnapshotCache()
     cache.put(

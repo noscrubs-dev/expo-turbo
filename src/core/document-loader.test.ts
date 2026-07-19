@@ -8,9 +8,17 @@ import {
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
+import {
+  ContentTypeError,
+  ParseError,
+  PropsError,
+  RequestError,
+  StateError,
+  TargetError,
+} from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, DocumentTree, type ProtocolDocument } from "./tree"
 
@@ -35,6 +43,119 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 }
 
 describe("Document request loader", () => {
+  test("snapshots and validates the request lifecycle option", async () => {
+    const lifecycle = new RequestLifecycle()
+    let events = 0
+    let reads = 0
+    lifecycle.subscribe("before-fetch-request", () => {
+      events += 1
+    })
+    const loader = new DocumentRequestLoader(
+      documentSession(),
+      {
+        fetch: async (request) =>
+          response('<Gallery><Loaded id="loaded" /></Gallery>', { url: request.url }),
+      },
+      { next: () => "request-options" },
+      {
+        get requestLifecycle() {
+          reads += 1
+          return lifecycle
+        },
+      },
+    )
+
+    expect(reads).toBe(1)
+    expect(await loader.load("/options")).toMatchObject({ status: "committed" })
+    expect({ events, reads }).toEqual({ events: 1, reads: 1 })
+    expect(
+      () =>
+        new DocumentRequestLoader(
+          documentSession(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { next: () => "unused" },
+          { requestLifecycle: null } as never,
+        ),
+    ).toThrow(PropsError)
+  })
+
+  test("runs one request-local lifecycle around the admitted document GET", async () => {
+    const session = documentSession()
+    const lifecycle = new RequestLifecycle()
+    let fetched: TurboRequest | undefined
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      expect(event.detail.context).toEqual({
+        kind: "document",
+        purpose: "load",
+        requestId: "request-lifecycle",
+      })
+      expect(session.recentRequestIds.has("request-lifecycle")).toBe(false)
+      event.detail.request.setUrl("https://example.test/hooked")
+      event.detail.request.setHeader("X-Document-Hook", "admitted")
+    })
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          fetched = request
+          expect(session.recentRequestIds.has("request-lifecycle")).toBe(true)
+          return response('<Gallery><Hooked id="hooked" /></Gallery>', { url: request.url })
+        },
+      },
+      { next: () => "request-lifecycle" },
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("/original")).toMatchObject({
+      requestedUrl: "https://example.test/hooked",
+      status: "committed",
+      url: "https://example.test/hooked",
+    })
+    expect(fetched).toMatchObject({
+      headers: { "X-Document-Hook": "admitted" },
+      method: "GET",
+      url: "https://example.test/hooked",
+    })
+    expect(session.tree.getElementById("hooked")).toBeDefined()
+  })
+
+  test("reports prevented document handling without reading or committing the response", async () => {
+    const session = documentSession()
+    const previousTree = session.tree
+    const lifecycle = new RequestLifecycle()
+    let reads = 0
+    lifecycle.subscribe("before-fetch-response", (event) => {
+      expect(event.detail.response.status).toBe(200)
+      event.preventDefault()
+    })
+    const loader = new DocumentRequestLoader(
+      session,
+      {
+        fetch: async (request) =>
+          response('<Gallery><Ignored id="ignored" /></Gallery>', {
+            text: async () => {
+              reads += 1
+              return '<Gallery><Ignored id="ignored" /></Gallery>'
+            },
+            url: request.url,
+          }),
+      },
+      { next: () => "request-prevented" },
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await loader.load("/prevented")).toEqual({
+      redirected: false,
+      requestId: "request-prevented",
+      requestedUrl: "https://example.test/prevented",
+      responseStatus: 200,
+      status: "prevented",
+      url: "https://example.test/prevented",
+    })
+    expect(reads).toBe(0)
+    expect(session.tree).toBe(previousTree)
+  })
+
   test("sends document headers and parses before committing the redirected final URL", async () => {
     const requests: TurboRequest[] = []
     const session = documentSession()
@@ -1093,6 +1214,10 @@ describe("Document request loader", () => {
   })
 
   test("supersedes a request while its response body is still being read", async () => {
+    let markOlderBodyStarted!: () => void
+    const olderBodyStarted = new Promise<void>((resolve) => {
+      markOlderBodyStarted = resolve
+    })
     let olderBody:
       | Readonly<{
           resolve: (xml: string) => void
@@ -1108,10 +1233,12 @@ describe("Document request loader", () => {
           if (request.url.endsWith("/older")) {
             olderSignal = request.signal
             return response("", {
-              text: () =>
-                new Promise<string>((resolve) => {
+              text: () => {
+                markOlderBodyStarted()
+                return new Promise<string>((resolve) => {
                   olderBody = { resolve }
-                }),
+                })
+              },
               url: request.url,
             })
           }
@@ -1122,21 +1249,24 @@ describe("Document request loader", () => {
     )
 
     const older = loader.load("/older")
-    await Promise.resolve()
-    await Promise.resolve()
+    await olderBodyStarted
     if (!olderBody) throw new Error("fixture did not begin reading the older response")
 
     const newer = loader.load("/newer")
     expect(olderSignal?.aborted).toBe(true)
-    olderBody.resolve('<Gallery><Older id="older" /></Gallery>')
 
     expect(await older).toMatchObject({ status: "canceled" })
+    olderBody.resolve('<Gallery><Older id="older" /></Gallery>')
     expect(await newer).toMatchObject({ status: "committed" })
     expect(session.tree.getElementById("older")).toBeUndefined()
     expect(session.tree.getElementById("newer")?.tagName).toBe("Newer")
   })
 
   test("reports an aborted response-body read as cancellation after supersession", async () => {
+    let markOlderBodyStarted!: () => void
+    const olderBodyStarted = new Promise<void>((resolve) => {
+      markOlderBodyStarted = resolve
+    })
     let rejectOlderBody: ((error: Error) => void) | undefined
     const session = documentSession()
     let requestId = 0
@@ -1146,10 +1276,12 @@ describe("Document request loader", () => {
         async fetch(request) {
           if (request.url.endsWith("/older")) {
             return response("", {
-              text: () =>
-                new Promise<string>((_resolve, reject) => {
+              text: () => {
+                markOlderBodyStarted()
+                return new Promise<string>((_resolve, reject) => {
                   rejectOlderBody = reject
-                }),
+                })
+              },
               url: request.url,
             })
           }
@@ -1160,19 +1292,23 @@ describe("Document request loader", () => {
     )
 
     const older = loader.load("/older")
-    await Promise.resolve()
-    await Promise.resolve()
+    await olderBodyStarted
     if (!rejectOlderBody) throw new Error("fixture did not begin reading the older response")
 
     const newer = loader.load("/newer")
-    rejectOlderBody(new Error("body read aborted"))
 
     expect(await older).toMatchObject({ status: "canceled" })
+    rejectOlderBody(new Error("body read aborted"))
+    await Promise.resolve()
     expect(await newer).toMatchObject({ status: "committed" })
     expect(session.tree.getElementById("newer")?.tagName).toBe("Newer")
   })
 
   test("invalidates a response while its body is read when another owner replaces the document", async () => {
+    let markBodyStarted!: () => void
+    const bodyStarted = new Promise<void>((resolve) => {
+      markBodyStarted = resolve
+    })
     let resolveBody: ((xml: string) => void) | undefined
     const session = documentSession()
     const loader = new DocumentRequestLoader(
@@ -1180,18 +1316,19 @@ describe("Document request loader", () => {
       {
         fetch: async (request) =>
           response("", {
-            text: () =>
-              new Promise<string>((resolve) => {
+            text: () => {
+              markBodyStarted()
+              return new Promise<string>((resolve) => {
                 resolveBody = resolve
-              }),
+              })
+            },
             url: request.url,
           }),
       },
       { next: () => "request-1" },
     )
     const load = loader.load("/pending")
-    await Promise.resolve()
-    await Promise.resolve()
+    await bodyStarted
     if (!resolveBody) throw new Error("fixture did not begin reading the pending response")
 
     const replacement = parseExpoTurboDocument('<Gallery><Other id="other" /></Gallery>', {

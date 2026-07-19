@@ -15,6 +15,7 @@ import {
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
 import { FrameCommitError, type FrameLoadReport, type FrameRequestLoader } from "./frame-loader"
 import type { FrameResponseReport } from "./frames"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import { attributeValue, type ProtocolElement } from "./tree"
 
@@ -26,6 +27,7 @@ export type FrameControllerStatus =
   | "error"
   | "idle"
   | "loading"
+  | "prevented"
 
 interface PendingFrameAutofocus {
   readonly report: FrameResponseReport
@@ -311,7 +313,9 @@ export class FrameController {
           this.needsLoad = !committed
           this.status = committed ? "completed" : "error"
           this.publish()
-          for (const listener of this.errorListeners) listener(reported)
+          if (!requestLifecycleDefaultHandlingPrevented(error)) {
+            for (const listener of this.errorListeners) listener(reported)
+          }
         }
         throw reported
       },

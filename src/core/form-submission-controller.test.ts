@@ -11,7 +11,7 @@ import {
 import { DocumentRequestLoader } from "./document-loader"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { FrameMissingError, ParseError, RequestError, StateError } from "./errors"
+import { FrameMissingError, ParseError, PropsError, RequestError, StateError } from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
@@ -21,6 +21,7 @@ import { FrameHistoryCoordinator } from "./frame-history"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
 
@@ -176,6 +177,130 @@ function mountedFrameHistoryFixture(
 }
 
 describe("FormSubmissionController", () => {
+  test("snapshots and validates the request lifecycle option", async () => {
+    const session = fixture()
+    const lifecycle = new RequestLifecycle()
+    let events = 0
+    let reads = 0
+    lifecycle.subscribe("before-fetch-request", () => {
+      events += 1
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, "", { headers: {}, status: 204, url: request.url }),
+      },
+      {
+        get requestLifecycle() {
+          reads += 1
+          return lifecycle
+        },
+      },
+    )
+
+    expect(reads).toBe(1)
+    expect(
+      await controller.submit(proposal(registry(session, "document-form"), "request-options")),
+    ).toMatchObject({ status: "empty" })
+    expect({ events, reads }).toEqual({ events: 1, reads: 1 })
+    expect(
+      () =>
+        new FormSubmissionController(
+          fixture(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { requestLifecycle: null } as never,
+        ),
+    ).toThrow(PropsError)
+  })
+
+  test("pauses before pending presentation and starts the exact form only after resume", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const fetchStarted = deferred<void>()
+    const controls = registry(session, "document-form")
+    const lifecycle = new RequestLifecycle()
+    const paused = deferred<void>()
+    let resume: () => void = () => undefined
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      expect(event.detail.context).toEqual({
+        formNodeKey: "id:document-form",
+        kind: "form",
+        requestId: "paused-form",
+      })
+      event.pause()
+      resume = () => event.resume()
+      paused.resolve()
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch(request) {
+          const response = transport.adapter.fetch(request)
+          fetchStarted.resolve()
+          return response
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+
+    const submitting = controller.submit(proposal(controls, "paused-form"))
+    await paused.promise
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(transport.pending).toHaveLength(0)
+
+    resume()
+    await fetchStarted.promise
+    expect(controls.submissionState).toMatchObject({
+      busy: true,
+      requestId: "paused-form",
+      status: "submitting",
+    })
+    const pending = transport.pending[0]
+    if (!pending) throw new Error("resumed form request was not captured")
+    pending.response.resolve(response(pending.request, "", { headers: {}, status: 204 }))
+
+    expect(await submitting).toMatchObject({ status: "empty", transportMethod: "GET" })
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+  })
+
+  test("prevents unsafe response handling, clears caches, and publishes canceled terminal state", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const cache = populatedSnapshotCache(session)
+    const controls = registry(session, "document-form")
+    const lifecycle = new RequestLifecycle()
+    let reads = 0
+    lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, "<Ignored />", {
+            text: async () => {
+              reads += 1
+              return "<Ignored />"
+            },
+          }),
+      },
+      { requestLifecycle: lifecycle, snapshotCache: cache },
+    )
+
+    expect(await controller.submit(proposal(controls, "prevented-unsafe"))).toMatchObject({
+      effectiveMethod: "POST",
+      status: "prevented",
+      transportMethod: "POST",
+    })
+    expect(reads).toBe(0)
+    expect(cache.size).toBe(0)
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.submissionTerminalState).toMatchObject({
+      requestId: "prevented-unsafe",
+      status: "canceled",
+    })
+    expect(session.tree.getElementById("status")?.children).toHaveLength(0)
+  })
+
   test("shares the document lane with GET requests in both directions", async () => {
     {
       const session = fixture()
@@ -243,6 +368,7 @@ describe("FormSubmissionController", () => {
         requestedUrl: "https://example.test/submit-document",
         sourceMethod: "GET",
         status: "canceled",
+        transportMethod: "GET",
       })
 
       getRequest.response.resolve(
@@ -591,6 +717,61 @@ describe("FormSubmissionController", () => {
       expect(Object.isFrozen(terminal.error)).toBe(true)
       expect(Object.isFrozen(terminal.error.context)).toBe(true)
     }
+  })
+
+  test("classifies a lifecycle-mutated GET-to-POST transport failure as unsafe", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      event.detail.request.setMethod("POST")
+      event.detail.request.setHeader("accept", `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`)
+      event.detail.request.setBody({
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "source=lifecycle",
+      })
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async () => {
+          throw new Error("mutated unsafe secret")
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+
+    await expect(
+      controller.submit(proposal(controls, "mutated-unsafe-failure")),
+    ).rejects.toBeInstanceOf(RequestError)
+    expect(controls.submissionTerminalState).toMatchObject({
+      effectiveMethod: "GET",
+      requestId: "mutated-unsafe-failure",
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+  })
+
+  test("keeps a prevented fetch error rejected while suppressing default terminal recovery", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async () => {
+          throw new Error("secret transport failure")
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+
+    await expect(controller.submit(proposal(controls, "suppressed-fetch-error"))).rejects.toThrow(
+      "Form request failed",
+    )
+    expect(controls.submissionState).toMatchObject({ busy: false, status: "idle" })
+    expect(controls.submissionTerminalState).toMatchObject({ status: "none" })
   })
 
   test("redacts response payload identifiers from terminal parse failures", async () => {
@@ -2054,13 +2235,31 @@ describe("FormSubmissionController", () => {
       )
     })
     const transport = pendingFetch()
-    const controller = new FormSubmissionController(session, transport.adapter, {
-      frameControllers: current.frameControllers,
-      snapshotCache: cache,
+    const fetchStarted = deferred<void>()
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      event.detail.request.setUrl("https://example.test/mutated-submit-a")
     })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch(request) {
+          const response = transport.adapter.fetch(request)
+          fetchStarted.resolve()
+          return response
+        },
+      },
+      {
+        frameControllers: current.frameControllers,
+        requestLifecycle: lifecycle,
+        snapshotCache: cache,
+      },
+    )
     const submitting = controller.submit(proposal(registry(session, "form-a"), "frame-history"))
+    await fetchStarted.promise
     const pending = transport.pending[0]
     if (!pending) throw new Error("Frame form request was not captured")
+    expect(pending.request.url).toBe("https://example.test/mutated-submit-a")
 
     session.setAttribute("id:status", "phase", "latest")
     pending.response.resolve(
@@ -3140,6 +3339,7 @@ describe("FormSubmissionController", () => {
       "requestedUrl",
       "sourceMethod",
       "status",
+      "transportMethod",
     ])
     expect(origin?.children).toBe(originChildren)
     expect(session.tree.getElementById("late-origin-error")).toBeUndefined()

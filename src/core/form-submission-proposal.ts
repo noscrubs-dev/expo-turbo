@@ -22,6 +22,7 @@ export interface FormSubmissionProposalIdentity {
   readonly form: ProtocolElement
   readonly originFrame?: ProtocolElement
   readonly originFrameId?: string
+  readonly requiresSafeTransport?: boolean
   readonly session: DocumentSession
   readonly submissionActivity: ExactFormSubmissionActivity
   readonly submitter?: ProtocolElement
@@ -36,6 +37,21 @@ export function admitFormSubmissionProposal(
   identity: FormSubmissionProposalIdentity,
 ): FormSubmissionProposal {
   admittedProposals.set(proposal, Object.freeze({ ...identity }))
+  return proposal
+}
+
+export function constrainFormSubmissionProposalToSafeTransport(
+  proposal: FormSubmissionProposal,
+): FormSubmissionProposal {
+  const identity = admittedProposals.get(proposal)
+  if (!identity) throw new StateError("Form submission proposal is not admitted")
+  admittedProposals.set(
+    proposal,
+    Object.freeze({
+      ...identity,
+      requiresSafeTransport: true,
+    }),
+  )
   return proposal
 }
 

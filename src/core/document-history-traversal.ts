@@ -4,6 +4,7 @@ import type {
   DocumentVisitController,
 } from "./document-visit-controller"
 import { StateError } from "./errors"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
 
 export interface DocumentHistoryTraversalSource {
   subscribe(listener: (entry: DocumentHistoryEntry) => void): DocumentHistoryTraversalUnsubscribe
@@ -60,6 +61,7 @@ export function subscribeDocumentHistoryTraversal(
       },
       (error: unknown) => {
         if (!active || eventEpoch !== epoch) return
+        if (requestLifecycleDefaultHandlingPrevented(error)) return
         const reported =
           error instanceof Error ? error : new StateError("Document history traversal failed")
         try {

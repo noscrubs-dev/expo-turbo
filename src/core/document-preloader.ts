@@ -9,12 +9,20 @@ import {
   resolveSameOriginProtocolUrl,
   responseContentType,
 } from "./protocol-request"
+import {
+  admitRequestLifecycle,
+  fetchWithRequestLifecycle,
+  type RequestLifecycle,
+  RequestLifecycleTransportError,
+  settleRequestOperation,
+} from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import { classifyTopLevelLocation } from "./visitability"
 
 export interface DocumentPreloaderOptions {
   readonly capabilityHash?: string
   readonly limits?: Partial<ParseLimits>
+  readonly requestLifecycle?: RequestLifecycle
 }
 
 type MutableParseLimits = {
@@ -25,7 +33,7 @@ export type DocumentPreloadReport =
   | Readonly<{
       requestId: string
       responseStatus: number
-      status: "cached" | "not-cacheable" | "superseded"
+      status: "cached" | "not-cacheable" | "prevented" | "superseded"
       url: string
     }>
   | Readonly<{
@@ -67,6 +75,7 @@ export class DocumentPreloader {
   private readonly active = new Map<string, ActiveDocumentPreload>()
   private readonly capabilityHash: string | undefined
   private readonly limits: Partial<ParseLimits> | undefined
+  private readonly requestLifecycle: RequestLifecycle | undefined
 
   constructor(
     private readonly session: DocumentSession,
@@ -88,9 +97,11 @@ export class DocumentPreloader {
 
     let capabilityHash: unknown
     let configuredLimits: unknown
+    let requestLifecycle: unknown
     try {
       capabilityHash = options.capabilityHash
       configuredLimits = options.limits
+      requestLifecycle = options.requestLifecycle
     } catch {
       throw new PropsError("Document preloader options could not be read")
     }
@@ -98,6 +109,10 @@ export class DocumentPreloader {
       throw new PropsError("Document preloader capability hash must be a string")
     }
     this.capabilityHash = capabilityHash
+    this.requestLifecycle = admitRequestLifecycle(
+      requestLifecycle,
+      "Document preloader request lifecycle is invalid",
+    )
 
     if (configuredLimits === undefined) {
       this.limits = undefined
@@ -237,9 +252,49 @@ export class DocumentPreloader {
 
     let response: TurboResponse
     try {
-      response = await this.fetchAdapter.fetch(request)
-    } catch {
+      if (this.requestLifecycle) {
+        const fetched = await fetchWithRequestLifecycle({
+          admission: {
+            admitUrl: (candidate) => {
+              if (candidate !== request.url) {
+                throw new RequestError("Document preload lifecycle cannot retarget the cache key", {
+                  method: "GET",
+                })
+              }
+              return candidate
+            },
+            allowBody: false,
+            allowedMethods: ["GET"],
+            protectedHeaders: Object.keys(request.headers),
+          },
+          context: { kind: "document", purpose: "preload", requestId },
+          fetchAdapter: this.fetchAdapter,
+          lifecycle: this.requestLifecycle,
+          request,
+        })
+        if (fetched.status === "canceled") return this.canceled(requestId, request.url)
+        response = fetched.response
+        if (fetched.status === "prevented") {
+          return Object.freeze({
+            requestId,
+            responseStatus: response.status,
+            status: "prevented",
+            url: request.url,
+          })
+        }
+      } else {
+        const fetched = await settleRequestOperation(controller.signal, () =>
+          this.fetchAdapter.fetch(request),
+        )
+        if (fetched.status === "canceled") return this.canceled(requestId, request.url)
+        if (fetched.status === "rejected") throw fetched.error
+        response = fetched.value
+      }
+    } catch (error) {
       if (controller.signal.aborted) return this.canceled(requestId, request.url)
+      if (error instanceof RequestLifecycleTransportError) {
+        throw error.relabel("Document preload request failed", { method: "GET" })
+      }
       throw new RequestError("Document preload request failed", { method: "GET" })
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
@@ -321,7 +376,10 @@ export class DocumentPreloader {
 
     let xml: string
     try {
-      xml = await text.call(response)
+      const body = await settleRequestOperation(controller.signal, () => text.call(response))
+      if (body.status === "canceled") return this.canceled(requestId, request.url)
+      if (body.status === "rejected") throw body.error
+      xml = body.value
     } catch {
       if (controller.signal.aborted) return this.canceled(requestId, request.url)
       throw new RequestError("Document preload response body could not be read", {

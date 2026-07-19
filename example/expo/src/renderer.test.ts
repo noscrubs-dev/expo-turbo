@@ -55,6 +55,7 @@ import {
   parseExpoTurboDocument,
   renderedNodeTextContent,
   RequestError,
+  RequestLifecycle,
   StateError,
   SubscriptionError,
   TargetError,
@@ -615,6 +616,7 @@ function renderPreloadingDocumentLinks(
     documentFetch?: (request: TurboRequest) => Promise<TurboResponse>
     onError?: (event: ExpoTurboRenderError) => void
     prepareSession?: (session: DocumentSession) => void
+    requestLifecycle?: RequestLifecycle
     strict?: boolean
     url?: string
   }> = {},
@@ -640,6 +642,7 @@ function renderPreloadingDocumentLinks(
         { fetch },
         { next: () => `automatic-preload-${++requestIds}` },
         cache,
+        options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
       )
       return {
         documentPreloader: preloader,
@@ -4500,6 +4503,36 @@ describe("React protocol renderer", () => {
     })
     expect(replacedErrors).toEqual([])
     act(() => replaced.renderer.unmount())
+  })
+
+  test("suppresses automatic preload error delegation when fetch-error handling is prevented", async () => {
+    let reject: ((error: unknown) => void) | undefined
+    const errors: ExpoTurboRenderError[] = []
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/failed" data-turbo-preload="" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          reject = fail
+        }),
+      {
+        onError: (event) => errors.push(event),
+        requestLifecycle: lifecycle,
+      },
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    if (!reject) throw new Error("automatic preload request did not start")
+
+    await act(async () => {
+      reject?.(new Error("private automatic preload secret"))
+      await nextTurn()
+    })
+
+    expect(errors).toEqual([])
+    act(() => harness.renderer.unmount())
   })
 
   test("activates a confirm-only top-level document link without subscribing it to visit ticks", async () => {

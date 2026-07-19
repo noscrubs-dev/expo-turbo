@@ -145,6 +145,7 @@ export type FormSubmissionTerminalFailureInput =
     }>
 
 export interface FormSubmissionRetrySource {
+  readonly requiresSafeTransport: boolean
   readonly requestId: string
   readonly submitter: ProtocolElement | undefined
 }
@@ -181,6 +182,7 @@ export class ExactFormSubmissionActivity {
     revision: 0,
     status: "none",
   })
+  private terminalRequiresSafeTransport = false
   private terminalSubmitter: ProtocolElement | undefined
   private readonly unregisterTerminalDisposals: Array<() => void> = []
 
@@ -296,6 +298,7 @@ export class ExactFormSubmissionActivity {
       })
     }
     return Object.freeze({
+      requiresSafeTransport: this.terminalRequiresSafeTransport,
       requestId: snapshot.requestId,
       submitter: this.terminalSubmitter,
     })
@@ -304,14 +307,20 @@ export class ExactFormSubmissionActivity {
   settleFailure(
     lease: FormSubmissionActivityLease,
     failure: FormSubmissionTerminalFailureInput,
+    requiresSafeTransport = false,
   ): void {
     this.finish(lease)
     try {
       if (!this.canSettle(lease)) return
-      this.publishTerminal(failure, lease.submitter)
+      this.publishTerminal(failure, lease.submitter, requiresSafeTransport)
     } finally {
       if (this.latestAttempt === lease) this.latestAttempt = undefined
     }
+  }
+
+  settleSuppressedFailure(lease: FormSubmissionActivityLease): void {
+    this.finish(lease)
+    if (this.latestAttempt === lease) this.latestAttempt = undefined
   }
 
   settleReport(
@@ -399,6 +408,7 @@ export class ExactFormSubmissionActivity {
   }
 
   private clearTerminal(): void {
+    this.terminalRequiresSafeTransport = false
     if (this.terminalSnapshot.status === "none") return
     this.clearTerminalDisposals()
     this.terminalSubmitter = undefined
@@ -430,8 +440,10 @@ export class ExactFormSubmissionActivity {
   private publishTerminal(
     terminal: FormSubmissionTerminalFailureInput | FormSubmissionTerminalReportInput,
     submitter: ProtocolElement | undefined,
+    requiresSafeTransport = false,
   ): void {
     this.clearTerminalDisposals()
+    this.terminalRequiresSafeTransport = requiresSafeTransport
     this.terminalSubmitter = submitter
     this.terminalRevision += 1
     this.terminalSnapshot = Object.freeze({

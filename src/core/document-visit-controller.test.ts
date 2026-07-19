@@ -28,6 +28,7 @@ import {
 import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, type DocumentTree } from "./tree"
 
@@ -159,6 +160,7 @@ function harness(
     onRequestId?: () => void
     onObserverError?: (error: AggregateError) => void
     progressDelayMs?: number
+    requestLifecycle?: RequestLifecycle
     snapshotCache?: DocumentSnapshotCache
     history?: DocumentHistory
   }> = {},
@@ -187,6 +189,7 @@ function harness(
         return `request-${nextRequestId}`
       },
     },
+    options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
   )
   const clock = options.clock ?? new ManualClock()
   const controller = new DocumentVisitController(loader, clock, {
@@ -199,6 +202,42 @@ function harness(
 }
 
 describe("Document visit controller", () => {
+  test("publishes canceled visit state when response handling is prevented", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
+    const { controller, session } = harness({
+      fetch: async (request) =>
+        response('<Gallery><Ignored id="ignored" /></Gallery>', { url: request.url }),
+      requestLifecycle: lifecycle,
+    })
+    const previousTree = session.tree
+
+    expect(await controller.visit("/prevented")).toMatchObject({ status: "prevented" })
+    expect(controller.state).toMatchObject({
+      busy: false,
+      progressVisible: false,
+      status: "canceled",
+    })
+    expect(session.tree).toBe(previousTree)
+  })
+
+  test("keeps a prevented fetch error rejected while suppressing default error delegation", async () => {
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    const { controller } = harness({
+      fetch: async () => {
+        throw new Error("secret transport failure")
+      },
+      requestLifecycle: lifecycle,
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+
+    await expect(controller.visit("/failed")).rejects.toThrow("Document request failed")
+    expect(controller.state).toMatchObject({ busy: false, status: "failed" })
+    expect(errors).toEqual([])
+  })
+
   test("publishes initialized, started, delayed-progress, and completed snapshots", async () => {
     const { clock, controller, pending, session } = harness()
     const revisions: number[] = []

@@ -6,6 +6,7 @@ import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue } from "./tree"
 
@@ -63,6 +64,69 @@ function deferred<T>() {
 }
 
 describe("document preloader", () => {
+  test("emits one lifecycle for a physical preload and none for its cache hit", async () => {
+    const cache = new DocumentSnapshotCache()
+    const lifecycle = new RequestLifecycle()
+    const contexts: unknown[] = []
+    const requests: TurboRequest[] = []
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      contexts.push(event.detail.context)
+      event.detail.request.setHeader("X-Preload-Hook", "admitted")
+    })
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch: async (request) => {
+          requests.push(request)
+          return response('<Gallery><Preloaded id="preloaded" /></Gallery>', request.url)
+        },
+      },
+      requestIds(),
+      cache,
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await preloader.preload("/app/lifecycle")).toMatchObject({ status: "cached" })
+    expect(await preloader.preload("/app/lifecycle")).toEqual({
+      status: "hit",
+      url: "https://example.test/app/lifecycle",
+    })
+    expect(contexts).toEqual([{ kind: "document", purpose: "preload", requestId: "preload-1" }])
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.headers["X-Preload-Hook"]).toBe("admitted")
+  })
+
+  test("does not read or cache a lifecycle-prevented preload response", async () => {
+    const cache = new DocumentSnapshotCache()
+    const lifecycle = new RequestLifecycle()
+    let reads = 0
+    lifecycle.subscribe("before-fetch-response", (event) => event.preventDefault())
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch: async (request) =>
+          response('<Gallery><Ignored id="ignored" /></Gallery>', request.url, {
+            text: async () => {
+              reads += 1
+              return '<Gallery><Ignored id="ignored" /></Gallery>'
+            },
+          }),
+      },
+      requestIds(),
+      cache,
+      { requestLifecycle: lifecycle },
+    )
+
+    expect(await preloader.preload("/app/prevented")).toEqual({
+      requestId: "preload-1",
+      responseStatus: 200,
+      status: "prevented",
+      url: "https://example.test/app/prevented",
+    })
+    expect(reads).toBe(0)
+    expect(cache.size).toBe(0)
+  })
+
   test("preloads a safe full document into the shared snapshot cache without owning navigation", async () => {
     const activeSession = session()
     const activeTree = activeSession.tree
@@ -439,10 +503,10 @@ describe("document preloader", () => {
     const second = preloader.preload("/app/two")
     await Promise.resolve()
     preloader.cancelAll()
-    pending[0]?.resolve(response("<Gallery><One /></Gallery>", "https://example.test/app/one"))
-    pending[1]?.resolve(response("<Gallery><Two /></Gallery>", "https://example.test/app/two"))
     await expect(first).resolves.toMatchObject({ status: "canceled" })
     await expect(second).resolves.toMatchObject({ status: "canceled" })
+    pending[0]?.resolve(response("<Gallery><One /></Gallery>", "https://example.test/app/one"))
+    pending[1]?.resolve(response("<Gallery><Two /></Gallery>", "https://example.test/app/two"))
 
     await expect(preloader.preload("/app/one")).resolves.toMatchObject({
       requestId: "preload-3",
@@ -575,13 +639,14 @@ describe("document preloader", () => {
     const pending = preloader.preload("/app/body")
     await bodyStarted.promise
     expect(preloader.cancel("/app/body")).toBe(true)
-    body.reject(new RequestError("private late body secret"))
 
     await expect(pending).resolves.toEqual({
       requestId: "preload-1",
       status: "canceled",
       url: "https://example.test/app/body",
     })
+    body.reject(new RequestError("private late body secret"))
+    await Promise.resolve()
     expect(cache.has("https://example.test/app/body")).toBe(false)
   })
 
