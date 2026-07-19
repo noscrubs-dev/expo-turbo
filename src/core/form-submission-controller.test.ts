@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { z } from "zod"
 
-import type { FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
+import type { FetchAdapter, NavigationAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
 import {
   DocumentHistory,
@@ -11,7 +11,15 @@ import {
 import { DocumentRequestLoader } from "./document-loader"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { FrameMissingError, ParseError, PropsError, RequestError, StateError } from "./errors"
+import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
+import {
+  FrameMissingError,
+  ParseError,
+  PropsError,
+  RequestError,
+  StateError,
+  TargetError,
+} from "./errors"
 import { FormSubmissionCommitError, FormSubmissionController } from "./form-submission-controller"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
@@ -212,6 +220,614 @@ describe("FormSubmissionController", () => {
           { requestLifecycle: null } as never,
         ),
     ).toThrow(PropsError)
+  })
+
+  test("snapshots and validates the document visit lifecycle option", async () => {
+    const session = fixture()
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    let reads = 0
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`${event.detail.action}:${event.detail.url}`)
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) => response(request, '<Gallery><Visited id="visited" /></Gallery>'),
+      },
+      {
+        get visitLifecycle() {
+          reads += 1
+          return lifecycle
+        },
+      },
+    )
+
+    expect(
+      await controller.submit(proposal(registry(session, "document-form"), "visit-options")),
+    ).toMatchObject({ application: "document", status: "applied" })
+    expect({ events, reads }).toEqual({
+      events: ["advance:https://example.test/submit-document"],
+      reads: 1,
+    })
+    expect(
+      () =>
+        new FormSubmissionController(
+          fixture(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { visitLifecycle: null } as never,
+        ),
+    ).toThrow(PropsError)
+  })
+
+  test("emits successful document form visits after request and activity cleanup", async () => {
+    for (const fixtureCase of [
+      {
+        action: "advance",
+        finalUrl: "https://example.test/submit-document",
+        name: "safe-get",
+        redirected: false,
+      },
+      {
+        action: "replace",
+        finalUrl: "https://example.test/current",
+        method: "post",
+        name: "same-location-redirect",
+        redirected: true,
+      },
+      {
+        action: "replace",
+        finalUrl: "https://example.test/replaced",
+        method: "post",
+        name: "explicit-replace",
+        redirected: true,
+        visitAction: "replace",
+      },
+    ] as const) {
+      const session = fixture()
+      if (fixtureCase.method) session.setAttribute("id:document-form", "method", fixtureCase.method)
+      if (fixtureCase.visitAction) {
+        session.setAttribute("id:document-form", "data-turbo-action", fixtureCase.visitAction)
+      }
+      const controls = registry(session, "document-form")
+      const history = historyFixture(session)
+      const requestLifecycle = new RequestLifecycle()
+      const visitLifecycle = new DocumentVisitLifecycle()
+      const order: string[] = []
+      requestLifecycle.subscribe("before-fetch-request", () => {
+        order.push("before-fetch-request")
+      })
+      requestLifecycle.subscribe("before-fetch-response", () => {
+        order.push("before-fetch-response")
+      })
+      visitLifecycle.subscribe("before-visit", (event) => {
+        expect(controls.submissionState.busy).toBe(false)
+        order.push(`before-visit:${event.detail.url}`)
+      })
+      visitLifecycle.subscribe("visit", (event) => {
+        expect(controls.submissionState.busy).toBe(false)
+        order.push(`visit:${event.detail.action}:${event.detail.url}`)
+      })
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) => {
+            order.push("fetch")
+            return response(request, `<Gallery><Result id="${fixtureCase.name}" /></Gallery>`, {
+              redirected: fixtureCase.redirected,
+              url: fixtureCase.finalUrl,
+            })
+          },
+        },
+        { history: history.history, requestLifecycle, visitLifecycle },
+      )
+
+      expect(await controller.submit(proposal(controls, fixtureCase.name))).toMatchObject({
+        application: "document",
+        responseUrl: fixtureCase.finalUrl,
+        status: "applied",
+      })
+      expect(order).toEqual([
+        "before-fetch-request",
+        "fetch",
+        "before-fetch-response",
+        `before-visit:${fixtureCase.finalUrl}`,
+        `visit:${fixtureCase.action}:${fixtureCase.finalUrl}`,
+      ])
+      expect(session.tree.getElementById(fixtureCase.name)).toBeDefined()
+    }
+  })
+
+  test("lets before-visit cancel successful document form application after unsafe cache invalidation", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const root = session.tree.document.children.find(isElement)
+    if (!root) throw new Error("form visitability fixture requires a document root")
+    session.setAttribute(root.key, "data-turbo-root", "/current")
+    const cache = populatedSnapshotCache(session)
+    const history = historyFixture(session)
+    const lifecycle = new DocumentVisitLifecycle()
+    const visits: string[] = []
+    const navigationCalls: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      expect(cache.size).toBe(0)
+      event.preventDefault()
+    })
+    lifecycle.subscribe("visit", (event) => {
+      visits.push(event.detail.url)
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Canceled id="canceled" /></Gallery>', {
+            redirected: true,
+            url: "https://example.test/outside",
+          }),
+      },
+      {
+        history: history.history,
+        navigation: {
+          back() {},
+          openExternal() {},
+          visit(url) {
+            navigationCalls.push(url)
+          },
+        },
+        snapshotCache: cache,
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    expect(
+      await controller.submit(proposal(registry(session, "document-form"), "canceled-visit")),
+    ).toMatchObject({
+      classification: "success",
+      reason: "visit-prevented",
+      status: "unapplied",
+    })
+    expect(visits).toEqual([])
+    expect(navigationCalls).toEqual([])
+    expect(history.writes).toEqual([])
+    expect(session.tree.getElementById("document-form")).toBeDefined()
+    expect(session.tree.getElementById("canceled")).toBeUndefined()
+    expect(registry(session, "document-form").submissionTerminalState).toMatchObject({
+      classification: "success",
+      reason: "visit-prevented",
+      status: "unapplied",
+    })
+  })
+
+  test("keeps a newer document request authoritative when a form visit observer reenters", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const lifecycle = new DocumentVisitLifecycle()
+    const loader = new DocumentRequestLoader(session, transport.adapter, requestIds("newer"))
+    const events: string[] = []
+    let newer: Promise<unknown> | undefined
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+      newer = loader.load("/newer")
+    })
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      visitLifecycle: lifecycle,
+    })
+
+    const form = controller.submit(
+      proposal(registry(session, "document-form"), "reentrant-form-visit"),
+    )
+    const formRequest = transport.pending[0]
+    if (!formRequest) throw new Error("form request was not captured")
+    formRequest.response.resolve(
+      response(formRequest.request, '<Gallery><Stale id="stale" /></Gallery>'),
+    )
+
+    expect(await form).toMatchObject({ reason: "superseded", status: "unapplied" })
+    expect(events).toEqual(["visit"])
+    const newerRequest = transport.pending[1]
+    if (!newerRequest || !newer) throw new Error("newer document request did not start")
+    newerRequest.response.resolve(
+      response(newerRequest.request, '<Gallery><Newer id="newer" /></Gallery>'),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newer")).toBeDefined()
+    expect(session.tree.getElementById("stale")).toBeUndefined()
+  })
+
+  test("suppresses form visit and application when before-visit starts newer document work", async () => {
+    const session = fixture()
+    const transport = pendingFetch()
+    const lifecycle = new DocumentVisitLifecycle()
+    const loader = new DocumentRequestLoader(session, transport.adapter, requestIds("newer-before"))
+    const events: string[] = []
+    let newer: Promise<unknown> | undefined
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+      newer = loader.load("/newer-before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      visitLifecycle: lifecycle,
+    })
+
+    const form = controller.submit(
+      proposal(registry(session, "document-form"), "reentrant-before-visit"),
+    )
+    const formRequest = transport.pending[0]
+    if (!formRequest) throw new Error("form request was not captured")
+    formRequest.response.resolve(
+      response(formRequest.request, '<Gallery><Stale id="stale" /></Gallery>'),
+    )
+
+    expect(await form).toMatchObject({ reason: "superseded", status: "unapplied" })
+    expect(events).toEqual(["before"])
+    const newerRequest = transport.pending[1]
+    if (!newerRequest || !newer) throw new Error("newer document request did not start")
+    newerRequest.response.resolve(
+      response(newerRequest.request, '<Gallery><Newer id="newer-before-result" /></Gallery>'),
+    )
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("newer-before-result")).toBeDefined()
+    expect(session.tree.getElementById("stale")).toBeUndefined()
+  })
+
+  test("delegates successful unvisitable form locations after before-visit without emitting visit", async () => {
+    for (const fixtureCase of [
+      {
+        action: "advance",
+        finalUrl: "https://example.test/outside",
+        reason: "outside-root",
+      },
+      {
+        action: "replace",
+        finalUrl: "https://example.test/current/result.pdf",
+        reason: "unvisitable-extension",
+        visitAction: "replace",
+      },
+    ] as const) {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      if (fixtureCase.visitAction) {
+        session.setAttribute("id:document-form", "data-turbo-action", fixtureCase.visitAction)
+      }
+      const root = session.tree.document.children.find(isElement)
+      if (!root) throw new Error("form visitability fixture requires a document root")
+      session.setAttribute(root.key, "data-turbo-root", "/current")
+      const cache = populatedSnapshotCache(session)
+      const history = historyFixture(session)
+      const lifecycle = new DocumentVisitLifecycle()
+      const events: string[] = []
+      const navigationCalls: Array<{ action: string; url: string }> = []
+      const navigationStarted = deferred<void>()
+      const navigationRelease = deferred<void>()
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        async visit(url, action) {
+          navigationCalls.push({ action, url })
+          navigationStarted.resolve()
+          await navigationRelease.promise
+        },
+      }
+      lifecycle.subscribe("before-visit", (event) => {
+        expect(cache.size).toBe(0)
+        events.push(`before:${event.detail.url}`)
+      })
+      lifecycle.subscribe("visit", () => {
+        events.push("visit")
+      })
+      const controls = registry(session, "document-form")
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "<Gallery>", {
+              redirected: true,
+              url: fixtureCase.finalUrl,
+            }),
+        },
+        {
+          history: history.history,
+          navigation,
+          snapshotCache: cache,
+          visitLifecycle: lifecycle,
+        },
+      )
+
+      let settled = false
+      const submitting = controller
+        .submit(proposal(controls, `delegated-${fixtureCase.reason}`))
+        .finally(() => {
+          settled = true
+        })
+      await navigationStarted.promise
+      expect(settled).toBe(false)
+      expect(controls.submissionState.busy).toBe(false)
+      expect(events).toEqual([`before:${fixtureCase.finalUrl}`])
+      expect(navigationCalls).toEqual([{ action: fixtureCase.action, url: fixtureCase.finalUrl }])
+      expect(history.writes).toEqual([])
+      navigationRelease.resolve()
+
+      expect(await submitting).toEqual({
+        action: fixtureCase.action,
+        classification: "success",
+        destination: { kind: "document" },
+        effectiveMethod: "POST",
+        reason: fixtureCase.reason,
+        redirected: true,
+        requestId: `delegated-${fixtureCase.reason}`,
+        requestedUrl: "https://example.test/submit-document",
+        responseStatus: 200,
+        responseUrl: fixtureCase.finalUrl,
+        sourceMethod: "POST",
+        status: "unapplied",
+        transportMethod: "POST",
+      })
+      expect(events).toEqual([`before:${fixtureCase.finalUrl}`])
+      expect(controls.submissionTerminalState).toMatchObject({
+        classification: "success",
+        reason: fixtureCase.reason,
+        status: "unapplied",
+      })
+      expect(session.tree.getElementById("document-form")).toBeDefined()
+      expect(session.tree.getElementById("delegated")).toBeUndefined()
+    }
+  })
+
+  test("fails loudly when a successful unvisitable form location has no navigation adapter", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const root = session.tree.document.children.find(isElement)
+    if (!root) throw new Error("form visitability fixture requires a document root")
+    session.setAttribute(root.key, "data-turbo-root", "/current")
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    const controls = registry(session, "document-form")
+
+    let error: unknown
+    try {
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "<Gallery />", {
+              redirected: true,
+              url: "https://example.test/outside",
+            }),
+        },
+        { visitLifecycle: lifecycle },
+      ).submit(proposal(controls, "missing-navigation"))
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(TargetError)
+    expect((error as TargetError).context).toEqual({
+      method: "POST",
+      responseStatus: 200,
+    })
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined()
+    expect(events).toEqual(["before"])
+    expect(controls.submissionTerminalState).toMatchObject({
+      error: { context: { responseStatus: 200 } },
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+    expect(session.tree.getElementById("document-form")).toBeDefined()
+  })
+
+  test("awaits and redacts rejected navigation after a successful unsafe form response", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const root = session.tree.document.children.find(isElement)
+    if (!root) throw new Error("form visitability fixture requires a document root")
+    session.setAttribute(root.key, "data-turbo-root", "/current")
+    const controls = registry(session, "document-form")
+    let navigationFinished = false
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      async visit() {
+        await Promise.resolve()
+        navigationFinished = true
+        throw new Error("sensitive navigation failure")
+      },
+    }
+
+    let error: unknown
+    try {
+      await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, "<Gallery />", {
+              redirected: true,
+              url: "https://example.test/outside",
+            }),
+        },
+        { navigation },
+      ).submit(proposal(controls, "rejected-navigation"))
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(navigationFinished).toBe(true)
+    expect(error).toBeInstanceOf(RequestError)
+    expect((error as Error).message).toBe("Form submission failed")
+    expect((error as RequestError).context).toEqual({
+      method: "POST",
+      responseStatus: 200,
+    })
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined()
+    expect(controls.submissionTerminalState).toMatchObject({
+      error: { context: { responseStatus: 200 } },
+      retryDisposition: "unsafe",
+      status: "failed",
+    })
+    expect(session.tree.getElementById("document-form")).toBeDefined()
+  })
+
+  test("settles superseded navigation promptly and consumes its late rejection", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const root = session.tree.document.children.find(isElement)
+    if (!root) throw new Error("form visitability fixture requires a document root")
+    session.setAttribute(root.key, "data-turbo-root", "/current")
+    const transport = pendingFetch()
+    const navigationStarted = deferred<void>()
+    const navigationSettlement = deferred<void>()
+    const controls = registry(session, "document-form")
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit() {
+        navigationStarted.resolve()
+        return navigationSettlement.promise
+      },
+    }
+    const controller = new FormSubmissionController(session, transport.adapter, { navigation })
+    const loader = new DocumentRequestLoader(
+      session,
+      transport.adapter,
+      requestIds("navigation-supersede"),
+    )
+
+    const form = controller.submit(proposal(controls, "pending-navigation"))
+    const formRequest = transport.pending[0]
+    if (!formRequest) throw new Error("form request was not captured")
+    formRequest.response.resolve(
+      response(formRequest.request, "<Gallery>", {
+        redirected: true,
+        url: "https://example.test/outside",
+      }),
+    )
+    await navigationStarted.promise
+
+    const newer = loader.load("/current/newer")
+    const newerRequest = transport.pending[1]
+    if (!newerRequest) throw new Error("newer document request did not start")
+    expect(await form).toMatchObject({ reason: "superseded", status: "unapplied" })
+    expect(newerRequest.request.signal?.aborted).toBe(false)
+    const terminal = controls.submissionTerminalState
+    expect(terminal).toMatchObject({
+      classification: "success",
+      reason: "superseded",
+      status: "unapplied",
+    })
+
+    navigationSettlement.reject(new Error("sensitive late navigation rejection"))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(controls.submissionTerminalState).toBe(terminal)
+
+    newerRequest.response.resolve(response(newerRequest.request, "", { headers: {}, status: 204 }))
+    expect(await newer).toMatchObject({ status: "empty" })
+    expect(controls.submissionTerminalState).toBe(terminal)
+    expect(session.tree.getElementById("document-form")).toBeDefined()
+  })
+
+  test("retains successful form visit events when strict response parsing later fails", async () => {
+    const session = fixture()
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+
+    await expect(
+      new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) => response(request, "<Gallery>"),
+        },
+        { visitLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "document-form"), "parse-after-visit")),
+    ).rejects.toBeInstanceOf(ParseError)
+    expect(events).toEqual([
+      "before:https://example.test/submit-document",
+      "visit:advance:https://example.test/submit-document",
+    ])
+    expect(session.tree.getElementById("document-form")).toBeDefined()
+  })
+
+  test("keeps non-successful and non-document form outcomes out of visit lifecycle", async () => {
+    const events: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+
+    {
+      const session = fixture()
+      expect(
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(request, '<Gallery><Invalid id="invalid" /></Gallery>', { status: 422 }),
+          },
+          { visitLifecycle: lifecycle },
+        ).submit(proposal(registry(session, "document-form"), "visit-error")),
+      ).toMatchObject({ application: "document", classification: "client-error" })
+    }
+    {
+      const session = fixture()
+      expect(
+        await new FormSubmissionController(
+          session,
+          { fetch: async (request) => response(request, "", { status: 204 }) },
+          { visitLifecycle: lifecycle },
+        ).submit(proposal(registry(session, "document-form"), "visit-empty")),
+      ).toMatchObject({ status: "empty" })
+    }
+    {
+      const session = fixture()
+      session.setAttribute("id:document-form", "method", "post")
+      expect(
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(request, '<turbo-stream action="remove" target="status"></turbo-stream>', {
+                headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+              }),
+          },
+          { visitLifecycle: lifecycle },
+        ).submit(proposal(registry(session, "document-form"), "visit-stream")),
+      ).toMatchObject({ application: "stream" })
+    }
+    {
+      const session = fixture()
+      expect(
+        await new FormSubmissionController(
+          session,
+          {
+            fetch: async (request) =>
+              response(
+                request,
+                '<turbo-frame id="frame-a"><FrameResult id="frame-result" /></turbo-frame>',
+              ),
+          },
+          { visitLifecycle: lifecycle },
+        ).submit(proposal(registry(session, "form-a"), "visit-frame")),
+      ).toMatchObject({ application: "frame" })
+    }
+
+    expect(events).toEqual([])
   })
 
   test("pauses before pending presentation and starts the exact form only after resume", async () => {

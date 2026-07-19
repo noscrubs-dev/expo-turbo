@@ -16,7 +16,10 @@ import {
   DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
-import { DOCUMENT_LOAD_REQUEST_DISPATCHED } from "./document-loader-lifecycle-internal"
+import {
+  DOCUMENT_LOAD_DISCARD_HANDLING,
+  DOCUMENT_LOAD_REQUEST_DISPATCHED,
+} from "./document-loader-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   admitDocumentVisitLifecycle,
@@ -28,7 +31,11 @@ import {
 } from "./document-visit-lifecycle"
 import { PropsError, RequestError, StateError, TargetError } from "./errors"
 import { resolveProtocolUrl } from "./protocol-request"
-import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
+import {
+  type RequestOperationResult,
+  requestLifecycleDefaultHandlingPrevented,
+  settleRequestOperation,
+} from "./request-lifecycle"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
@@ -37,7 +44,12 @@ import {
 export const DOCUMENT_VISIT_PROGRESS_DELAY_MS = 500
 
 type DocumentVisitLoadOptions = DocumentLoadOptions &
-  Readonly<{ [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined }>
+  Readonly<{
+    [DOCUMENT_LOAD_DISCARD_HANDLING]?: (
+      controller: AbortController,
+    ) => undefined | PromiseLike<undefined>
+    [DOCUMENT_LOAD_REQUEST_DISPATCHED]?: () => undefined
+  }>
 
 export type DocumentVisitStatus = "canceled" | "completed" | "failed" | "initialized" | "started"
 
@@ -829,6 +841,8 @@ export class DocumentVisitController {
     let historyPlan = initialHistoryPlan
     let continuationHistoryPlan: DocumentVisitHistoryPlan | undefined
     let redirect: TopLevelLocationDisposition | undefined
+    let redirectDelegation: RequestOperationResult<DocumentVisitDelegation> | undefined
+    let redirectFollowupUrl: string | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
       ...((historyGuard?.kind === "traversal" ||
         historyPlan ||
@@ -884,6 +898,7 @@ export class DocumentVisitController {
             redirect = disposition
             return "discard"
           }
+          if (candidate.status === "committed") redirectFollowupUrl = candidate.url
         }
         if (
           candidate.status === "committed" &&
@@ -990,12 +1005,46 @@ export class DocumentVisitController {
             },
           }
         : {}),
+      ...({
+        [DOCUMENT_LOAD_DISCARD_HANDLING]: async (controller) => {
+          const disposition = redirect
+          if (
+            !disposition ||
+            disposition.classification === "external" ||
+            disposition.classification === "visitable"
+          ) {
+            return undefined
+          }
+          const generation = this.loader.treeState.generation
+          const unsubscribe = this.loader.subscribeTreeState(() => {
+            if (this.loader.treeState.generation !== generation) controller.abort()
+          })
+          try {
+            if (this.loader.treeState.generation !== generation) controller.abort()
+            redirectDelegation = await settleRequestOperation(controller.signal, () =>
+              this.delegateNavigation(disposition, "replace", navigation, controller.signal),
+            )
+          } finally {
+            unsubscribe()
+          }
+          return undefined
+        },
+      } satisfies DocumentVisitLoadOptions),
     } satisfies DocumentVisitLoadOptions)
     if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
         if (epoch === undefined || epoch !== this.visitEpoch) return report
+        if (
+          redirectFollowupUrl &&
+          report.status === "committed" &&
+          report.classification === "success" &&
+          report.redirected
+        ) {
+          this.notifyVisit(redirectFollowupUrl, "replace", epoch)
+          if (epoch !== this.visitEpoch || this.status !== "started") return report
+        }
         if (report.status === "discarded") {
           if (
             !redirect ||
@@ -1010,21 +1059,34 @@ export class DocumentVisitController {
             this.notifyError(error)
             throw error
           }
-          try {
-            const result = await this.delegateNavigation(redirect, "replace", navigation)
-            if (epoch === this.visitEpoch) this.finish("completed")
-            return result
-          } catch (error) {
+          const delegated = redirectDelegation
+          if (!delegated) {
+            const error = new RequestError("Discarded document redirect was not delegated", {
+              method: "GET",
+              responseStatus: report.responseStatus,
+            })
+            this.finish("failed")
+            this.notifyError(error)
+            throw error
+          }
+          if (
+            delegated.status === "canceled" ||
+            epoch !== this.visitEpoch ||
+            this.status !== "started"
+          ) {
+            return report
+          }
+          if (delegated.status === "rejected") {
             const reported =
-              error instanceof Error
-                ? error
+              delegated.error instanceof Error
+                ? delegated.error
                 : new RequestError("Document redirect delegation failed")
-            if (epoch === this.visitEpoch) {
-              this.finish("failed")
-              this.notifyError(reported)
-            }
+            this.finish("failed")
+            this.notifyError(reported)
             throw reported
           }
+          this.finish("completed")
+          return delegated.value
         }
         if (report.status === "canceled" || report.status === "prevented") this.finish("canceled")
         else this.finish(report.classification === "success" ? "completed" : "failed")
@@ -1032,6 +1094,16 @@ export class DocumentVisitController {
       },
       (error: unknown) => {
         const reported = error instanceof Error ? error : new RequestError("Document visit failed")
+        if (
+          redirectFollowupUrl &&
+          epoch !== undefined &&
+          epoch === this.visitEpoch &&
+          error instanceof DocumentCommitError &&
+          error.outcome.classification === "success" &&
+          error.outcome.redirected
+        ) {
+          this.notifyVisit(redirectFollowupUrl, "replace", epoch)
+        }
         if (
           continuation &&
           epoch !== undefined &&
@@ -1243,12 +1315,13 @@ export class DocumentVisitController {
     >,
     action: VisitAction,
     navigation: NavigationAdapter | undefined,
+    signal?: AbortSignal,
   ): Promise<DocumentVisitDelegation> {
     if (!navigation) {
       return Promise.reject(new TargetError("Unvisitable document visits require navigation"))
     }
     return Promise.resolve()
-      .then(() => navigation.visit(disposition.url, action))
+      .then(() => (signal?.aborted ? undefined : navigation.visit(disposition.url, action)))
       .then(() =>
         Object.freeze({
           action,

@@ -5443,7 +5443,9 @@ describe("React protocol renderer", () => {
       {
         back() {},
         openExternal() {},
-        visit: (url, action) => navigation.push({ action, url }),
+        visit: (url, action) => {
+          navigation.push({ action, url })
+        },
       },
     )
 
@@ -5517,7 +5519,9 @@ describe("React protocol renderer", () => {
       {
         back() {},
         openExternal() {},
-        visit: (url, action) => navigation.push({ action, url }),
+        visit: (url, action) => {
+          navigation.push({ action, url })
+        },
       },
       async (request) => {
         frameRequests.push(request)

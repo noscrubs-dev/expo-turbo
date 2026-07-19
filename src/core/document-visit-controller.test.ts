@@ -24,6 +24,7 @@ import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   DOCUMENT_VISIT_PROGRESS_DELAY_MS,
   DocumentVisitController,
+  type DocumentVisitResult,
 } from "./document-visit-controller"
 import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
 import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
@@ -389,6 +390,261 @@ describe("Document visit controller", () => {
     )
     expect(await visiting).toMatchObject({ status: "committed" })
     expect(events).toEqual(["before:https://example.test/next", "visit:advance"])
+  })
+
+  test("emits a final replace visit after a successful redirected document commits", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const history = historyFixture()
+    let current: ReturnType<typeof harness>
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+      if (event.detail.url === "https://example.test/final") {
+        expect(current.session.tree.getElementById("final")).toBeDefined()
+        expect(history.history.current?.url).toBe("https://example.test/final")
+        expect(current.controller.state.status).toBe("started")
+      }
+    })
+    current = harness({ history: history.history, visitLifecycle: lifecycle })
+
+    const visiting = current.controller.visit("/requested")
+
+    expect(events).toEqual([
+      "before:https://example.test/requested",
+      "visit:advance:https://example.test/requested",
+    ])
+    current.pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await visiting).toMatchObject({ redirected: true, status: "committed" })
+    expect(events).toEqual([
+      "before:https://example.test/requested",
+      "visit:advance:https://example.test/requested",
+      "visit:replace:https://example.test/final",
+    ])
+    expect(current.controller.state.status).toBe("completed")
+  })
+
+  test("emits one original visit and one final replace across a redirected preview revalidation", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      "https://example.test/requested",
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', {
+        url: "https://example.test/requested",
+      }),
+    )
+    const current = harness({ snapshotCache, visitLifecycle: lifecycle })
+
+    const visiting = current.controller.visit("/requested")
+
+    expect(events).toEqual([
+      "before:https://example.test/requested",
+      "visit:advance:https://example.test/requested",
+    ])
+    current.pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await visiting).toMatchObject({ redirected: true, status: "committed" })
+    expect(events).toEqual([
+      "before:https://example.test/requested",
+      "visit:advance:https://example.test/requested",
+      "visit:replace:https://example.test/final",
+    ])
+    expect(current.session.tree.getElementById("final")).toBeDefined()
+    expect(current.session.treeState.preview).toBe(false)
+  })
+
+  test("emits redirected refresh follow-up but excludes errors and discarded redirects", async () => {
+    {
+      const lifecycle = new DocumentVisitLifecycle()
+      const events: string[] = []
+      lifecycle.subscribe("before-visit", (event) => {
+        events.push(`before:${event.detail.url}`)
+      })
+      lifecycle.subscribe("visit", (event) => {
+        events.push(`visit:${event.detail.action}:${event.detail.url}`)
+      })
+      const current = harness({
+        history: historyFixture().history,
+        visitLifecycle: lifecycle,
+      })
+
+      const refreshing = current.controller.refreshCurrent("https://example.test/current")
+      current.pending[0]?.resolve(
+        response('<Gallery><Fresh id="fresh" /></Gallery>', {
+          redirected: true,
+          url: "https://example.test/final",
+        }),
+      )
+
+      expect(await refreshing).toMatchObject({ redirected: true, status: "committed" })
+      expect(events).toEqual([
+        "before:https://example.test/current",
+        "visit:replace:https://example.test/current",
+        "visit:replace:https://example.test/final",
+      ])
+    }
+
+    {
+      const lifecycle = new DocumentVisitLifecycle()
+      const visits: string[] = []
+      lifecycle.subscribe("visit", (event) => {
+        visits.push(event.detail.url)
+      })
+      const current = harness({ visitLifecycle: lifecycle })
+      const visiting = current.controller.visit("/error")
+      current.pending[0]?.resolve(
+        response('<Gallery><Invalid id="invalid" /></Gallery>', {
+          redirected: true,
+          status: 422,
+          url: "https://example.test/error-final",
+        }),
+      )
+
+      expect(await visiting).toMatchObject({
+        classification: "client-error",
+        status: "committed",
+      })
+      expect(visits).toEqual(["https://example.test/error"])
+    }
+
+    {
+      const lifecycle = new DocumentVisitLifecycle()
+      const visits: string[] = []
+      lifecycle.subscribe("visit", (event) => {
+        visits.push(event.detail.url)
+      })
+      const delegated: string[] = []
+      const navigation: NavigationAdapter = {
+        back() {},
+        openExternal() {},
+        visit(url, action) {
+          delegated.push(`${action}:${url}`)
+        },
+      }
+      const current = harness({ visitLifecycle: lifecycle })
+      const visiting = current.controller.visit("/requested", { navigation })
+      current.pending[0]?.resolve(
+        response('<Gallery data-turbo-root="/inside"><Discarded /></Gallery>', {
+          redirected: true,
+          url: "https://example.test/outside",
+        }),
+      )
+
+      expect(await visiting).toMatchObject({ kind: "navigation", status: "delegated" })
+      expect(visits).toEqual(["https://example.test/requested"])
+      expect(delegated).toEqual(["replace:https://example.test/outside"])
+    }
+  })
+
+  test("keeps a reentrant newer visit authoritative after redirect follow-up notification", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    let current: ReturnType<typeof harness>
+    let newer: Promise<DocumentVisitResult> | undefined
+    lifecycle.subscribe("visit", (event) => {
+      if (event.detail.url === "https://example.test/final") {
+        newer = current.controller.visit("/newer")
+      }
+    })
+    current = harness({
+      history: historyFixture().history,
+      visitLifecycle: lifecycle,
+    })
+
+    const older = current.controller.visit("/older")
+    current.pending[0]?.resolve(
+      response('<Gallery><Final id="final" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final",
+      }),
+    )
+
+    expect(await older).toMatchObject({ redirected: true, status: "committed" })
+    expect(current.controller.state.status).toBe("started")
+    expect(current.pending).toHaveLength(2)
+    expect(current.pending[1]?.request.url).toBe("https://example.test/newer")
+    current.pending[1]?.resolve(
+      response('<Gallery><Newer id="newer" /></Gallery>', {
+        url: "https://example.test/newer",
+      }),
+    )
+    if (!newer) throw new Error("redirect observer did not start a newer visit")
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(current.controller.state.status).toBe("completed")
+    expect(current.session.tree.getElementById("newer")).toBeDefined()
+  })
+
+  test("emits redirect follow-up from a committed error without settling newer reentrant work", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const history = historyFixture()
+    const events: string[] = []
+    let current: ReturnType<typeof harness>
+    let newer: Promise<DocumentVisitResult> | undefined
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+      if (event.detail.url !== "https://example.test/final-error") return
+      expect(current.session.tree.getElementById("final-error")).toBeDefined()
+      expect(history.history.current?.url).toBe("https://example.test/final-error")
+      expect(current.controller.state.status).toBe("started")
+      newer = current.controller.visit("/newer-after-error")
+    })
+    current = harness({
+      history: history.history,
+      visitLifecycle: lifecycle,
+    })
+    current.session.registerDisposal("id:old", () => {
+      throw new Error("fixture finalization failure")
+    })
+
+    const older = current.controller.visit("/older-error")
+    current.pending[0]?.resolve(
+      response('<Gallery><FinalError id="final-error" /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/final-error",
+      }),
+    )
+
+    await expect(older).rejects.toBeInstanceOf(DocumentCommitError)
+    expect(events).toEqual([
+      "before:https://example.test/older-error",
+      "visit:advance:https://example.test/older-error",
+      "visit:replace:https://example.test/final-error",
+      "before:https://example.test/newer-after-error",
+      "visit:advance:https://example.test/newer-after-error",
+    ])
+    expect(current.controller.state.status).toBe("started")
+    expect(current.pending).toHaveLength(2)
+    current.pending[1]?.resolve(
+      response('<Gallery><Newer id="newer-after-error-result" /></Gallery>', {
+        url: "https://example.test/newer-after-error",
+      }),
+    )
+    if (!newer) throw new Error("committed-error observer did not start a newer visit")
+    expect(await newer).toMatchObject({ status: "committed" })
+    expect(current.controller.state.status).toBe("completed")
+    expect(current.session.tree.getElementById("newer-after-error-result")).toBeDefined()
   })
 
   test("reports traversal as restore without a cancellable before-visit", async () => {
@@ -2381,7 +2637,9 @@ describe("Document visit controller", () => {
       const navigation: NavigationAdapter = {
         back() {},
         openExternal() {},
-        visit: (url, action) => navigationCalls.push({ action, url }),
+        visit: (url, action) => {
+          navigationCalls.push({ action, url })
+        },
       }
       const snapshotCache = new DocumentSnapshotCache()
       const history = historyFixture(undefined, "https://example.test/app/current")
@@ -2424,7 +2682,9 @@ describe("Document visit controller", () => {
       const navigation: NavigationAdapter = {
         back() {},
         openExternal() {},
-        visit: (url, action) => navigationCalls.push({ action, url }),
+        visit: (url, action) => {
+          navigationCalls.push({ action, url })
+        },
       }
       const snapshotCache = new DocumentSnapshotCache()
       const history = historyFixture()
@@ -3815,7 +4075,9 @@ describe("Document visit controller", () => {
     const navigation: NavigationAdapter = {
       back() {},
       openExternal() {},
-      visit: (url) => navigationCalls.push(url),
+      visit: (url) => {
+        navigationCalls.push(url)
+      },
     }
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending } = harness({ snapshotCache })
@@ -4116,8 +4378,12 @@ describe("Document visit controller", () => {
     const externalCalls: string[] = []
     const navigation: NavigationAdapter = {
       back() {},
-      openExternal: (url) => externalCalls.push(url),
-      visit: (url, action) => navigationCalls.push({ action, url }),
+      openExternal: (url) => {
+        externalCalls.push(url)
+      },
+      visit: (url, action) => {
+        navigationCalls.push({ action, url })
+      },
     }
     const { controller, pending } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
@@ -4194,7 +4460,9 @@ describe("Document visit controller", () => {
     const navigation: NavigationAdapter = {
       back() {},
       openExternal() {},
-      visit: (url, action) => navigationCalls.push({ action, url }),
+      visit: (url, action) => {
+        navigationCalls.push({ action, url })
+      },
     }
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
@@ -4232,7 +4500,9 @@ describe("Document visit controller", () => {
     const navigation: NavigationAdapter = {
       back() {},
       openExternal() {},
-      visit: (url) => navigationCalls.push(url),
+      visit: (url) => {
+        navigationCalls.push(url)
+      },
     }
     const { controller, pending, session } = harness({
       documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
@@ -4268,7 +4538,9 @@ describe("Document visit controller", () => {
       const navigation: NavigationAdapter = {
         back() {},
         openExternal() {},
-        visit: (url) => navigationCalls.push(url),
+        visit: (url) => {
+          navigationCalls.push(url)
+        },
       }
       const { controller, pending, session } = harness({
         documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
@@ -4317,7 +4589,9 @@ describe("Document visit controller", () => {
       const navigation: NavigationAdapter = {
         back() {},
         openExternal() {},
-        visit: (url, action) => navigationCalls.push({ action, url }),
+        visit: (url, action) => {
+          navigationCalls.push({ action, url })
+        },
       }
       const { controller, pending, session } = harness({
         documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
@@ -4386,7 +4660,7 @@ describe("Document visit controller", () => {
     }
   })
 
-  test("keeps a newer visit authoritative while stale redirect navigation settles", async () => {
+  test("settles superseded redirect navigation promptly and consumes its late rejection", async () => {
     let rejectNavigation: (error: Error) => void = () => undefined
     let signalNavigationStarted: () => void = () => undefined
     const navigationStarted = new Promise<void>((resolve) => {
@@ -4419,8 +4693,11 @@ describe("Document visit controller", () => {
 
     const current = controller.visit("/app/current")
     const currentStarted = controller.state
+    expect(await stale).toMatchObject({ status: "canceled" })
+    expect(controller.state).toBe(currentStarted)
+
     rejectNavigation(failure)
-    await expect(stale).rejects.toBe(failure)
+    await Promise.resolve()
     expect(controller.state).toBe(currentStarted)
     expect(errors).toEqual([])
 
@@ -4432,6 +4709,179 @@ describe("Document visit controller", () => {
     expect(await current).toMatchObject({ status: "committed" })
     expect(controller.state.status).toBe("completed")
     expect(session.tree.getElementById("current")?.tagName).toBe("Current")
+  })
+
+  test("does not invoke redirect navigation after cancellation wins its queued call", async () => {
+    let navigationCalls = 0
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit: () => {
+        navigationCalls += 1
+      },
+    }
+    const { controller, pending } = harness({
+      documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+    })
+    const visiting = controller.visit("/app/start", { navigation })
+    const xml = '<Gallery data-turbo-root="/other"><Discarded /></Gallery>'
+    pending[0]?.resolve(
+      response(xml, {
+        redirected: true,
+        text: () =>
+          ({
+            // biome-ignore lint/suspicious/noThenProperty: model cancellation between body settlement and queued navigation
+            then(resolve: (value: string) => void) {
+              resolve(xml)
+              queueMicrotask(() => controller.cancel())
+            },
+          }) as Promise<string>,
+        url: "https://example.test/app/final",
+      }),
+    )
+
+    expect(await visiting).toMatchObject({ status: "canceled" })
+    await Promise.resolve()
+    expect(navigationCalls).toBe(0)
+  })
+
+  test("cancels pending redirect navigation without waiting for its adapter", async () => {
+    let rejectNavigation: (error: Error) => void = () => undefined
+    let signalNavigationStarted: () => void = () => undefined
+    const navigationStarted = new Promise<void>((resolve) => {
+      signalNavigationStarted = resolve
+    })
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit: () => {
+        signalNavigationStarted()
+        return new Promise<void>((_resolve, reject) => {
+          rejectNavigation = reject
+        })
+      },
+    }
+    const { controller, pending } = harness({
+      documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const visiting = controller.visit("/app/start", { navigation })
+    pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/other"><Discarded /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/app/final",
+      }),
+    )
+    await navigationStarted
+
+    controller.cancel()
+
+    expect(await visiting).toMatchObject({ status: "canceled" })
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+
+    rejectNavigation(new Error("late secret router failure"))
+    await Promise.resolve()
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    expect(errors).toEqual([])
+  })
+
+  test("settles redirect navigation when a peer document owner supersedes it", async () => {
+    let rejectNavigation: (error: Error) => void = () => undefined
+    let signalNavigationStarted: () => void = () => undefined
+    const navigationStarted = new Promise<void>((resolve) => {
+      signalNavigationStarted = resolve
+    })
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit: () => {
+        signalNavigationStarted()
+        return new Promise<void>((_resolve, reject) => {
+          rejectNavigation = reject
+        })
+      },
+    }
+    const { controller, loader, pending, session } = harness({
+      documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+    })
+    const peer = new DocumentVisitController(loader, new ManualClock())
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const stale = controller.visit("/app/start", { navigation })
+    pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/other"><Discarded /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/app/final",
+      }),
+    )
+    await navigationStarted
+
+    const current = peer.visit("/app/current")
+
+    expect(await stale).toMatchObject({ status: "canceled" })
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    expect(peer.state).toMatchObject({ busy: true, status: "started" })
+
+    rejectNavigation(new Error("late secret router failure"))
+    await Promise.resolve()
+    expect(errors).toEqual([])
+    expect(peer.state).toMatchObject({ busy: true, status: "started" })
+
+    pending[1]?.resolve(
+      response('<Gallery data-turbo-root="/app"><Current id="current" /></Gallery>', {
+        url: "https://example.test/app/current",
+      }),
+    )
+    expect(await current).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("current")?.tagName).toBe("Current")
+  })
+
+  test("settles redirect navigation when the active tree is replaced externally", async () => {
+    let rejectNavigation: (error: Error) => void = () => undefined
+    let signalNavigationStarted: () => void = () => undefined
+    const navigationStarted = new Promise<void>((resolve) => {
+      signalNavigationStarted = resolve
+    })
+    const navigation: NavigationAdapter = {
+      back() {},
+      openExternal() {},
+      visit: () => {
+        signalNavigationStarted()
+        return new Promise<void>((_resolve, reject) => {
+          rejectNavigation = reject
+        })
+      },
+    }
+    const { controller, pending, session } = harness({
+      documentXml: '<Gallery data-turbo-root="/app"><Old id="old" /></Gallery>',
+    })
+    const errors: Error[] = []
+    controller.subscribeErrors((error) => errors.push(error))
+    const visiting = controller.visit("/app/start", { navigation })
+    pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/other"><Discarded /></Gallery>', {
+        redirected: true,
+        url: "https://example.test/app/final",
+      }),
+    )
+    await navigationStarted
+    const replacement = parseExpoTurboDocument(
+      '<Gallery data-turbo-root="/app"><External id="external" /></Gallery>',
+      { url: "https://example.test/app/external" },
+    )
+
+    session.replaceTree(replacement)
+
+    expect(await visiting).toMatchObject({ status: "canceled" })
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    expect(session.tree).toBe(replacement)
+
+    rejectNavigation(new Error("late secret router failure"))
+    await Promise.resolve()
+    expect(controller.state).toMatchObject({ busy: false, status: "canceled" })
+    expect(errors).toEqual([])
+    expect(session.tree).toBe(replacement)
   })
 
   test("rejects cross-origin final redirects without replacing the active document", async () => {
