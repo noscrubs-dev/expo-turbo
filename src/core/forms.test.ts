@@ -1933,9 +1933,20 @@ describe("native form control registry", () => {
 
     field.update({ kind: "value", name: "profile[name]", value: "After" })
     submitter.update({ kind: "submitter", name: "commit", value: "Save now" })
-    expect(() => registry.requestPlan({ protocol: { requestId: "form-enctype" } })).toThrow(
-      /Text form requests/,
-    )
+    expect(registry.requestPlan({ protocol: { requestId: "form-enctype" } })).toMatchObject({
+      effectiveMethod: "POST",
+      encoding: "text/plain",
+      entries: [{ name: "profile[name]", value: "After" }],
+      request: {
+        body: {
+          contentType: "text/plain",
+          value: "profile[name]=After\r\n",
+        },
+        method: "POST",
+        url: "https://example.test/form",
+      },
+      sourceMethod: "POST",
+    })
     const plan = registry.requestPlan({
       protocol: {
         capabilityHash: "capability-hash",

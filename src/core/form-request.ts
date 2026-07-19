@@ -7,6 +7,8 @@ import { protocolRequestHeaders, resolveSameOriginProtocolUrl } from "./protocol
 export const FORM_URL_ENCODED = "application/x-www-form-urlencoded" as const
 export const FORM_TEXT_PLAIN = "text/plain" as const
 export const FORM_MULTIPART = "multipart/form-data" as const
+export const MAX_FORM_REQUEST_ENTRIES = 1_024
+export const MAX_FORM_TEXT_PLAIN_BODY_BYTES = 1_048_576
 
 export type FormSubmissionEncoding =
   | typeof FORM_MULTIPART
@@ -77,28 +79,60 @@ function attributes(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new RequestError(`Form request ${owner} attributes must be an object`)
   }
-  for (const key of ["action", "enctype", "method"] as const) {
-    if (value[key] !== undefined && typeof value[key] !== "string") {
+  let action: unknown
+  let enctype: unknown
+  let method: unknown
+  let name: unknown
+  let streamAttributePresent: unknown
+  let submitterValue: unknown
+  try {
+    action = value.action
+    enctype = value.enctype
+    method = value.method
+    streamAttributePresent = value.streamAttributePresent
+    if (owner === "submitter") {
+      name = (value as ActivatedFormSubmitter).name
+      submitterValue = (value as ActivatedFormSubmitter).value
+    }
+  } catch {
+    throw new RequestError(`Form request ${owner} attributes could not be read`)
+  }
+  for (const [key, candidate] of [
+    ["action", action],
+    ["enctype", enctype],
+    ["method", method],
+  ] as const) {
+    if (candidate !== undefined && typeof candidate !== "string") {
       throw new RequestError(`Form request ${owner} ${key} must be a string`)
     }
   }
-  if (value.streamAttributePresent !== undefined && value.streamAttributePresent !== true) {
+  if (streamAttributePresent !== undefined && streamAttributePresent !== true) {
     throw new RequestError(`Form request ${owner} Stream marker must represent presence`)
   }
-  return value
+  if (owner === "submitter") {
+    for (const [key, candidate] of [
+      ["name", name],
+      ["value", submitterValue],
+    ] as const) {
+      if (candidate !== undefined && typeof candidate !== "string") {
+        throw new RequestError(`Form request submitter ${key} must be a string`)
+      }
+    }
+  }
+  return Object.freeze({
+    ...(typeof action === "string" ? { action } : {}),
+    ...(typeof enctype === "string" ? { enctype } : {}),
+    ...(typeof method === "string" ? { method } : {}),
+    ...(typeof name === "string" ? { name } : {}),
+    ...(streamAttributePresent === true ? { streamAttributePresent } : {}),
+    ...(typeof submitterValue === "string" ? { value: submitterValue } : {}),
+  })
 }
 
 function activatedSubmitter(
   value: ActivatedFormSubmitter | undefined,
 ): ActivatedFormSubmitter | undefined {
-  const admitted = attributes(value, "submitter") as ActivatedFormSubmitter | undefined
-  if (!admitted) return undefined
-  for (const key of ["name", "value"] as const) {
-    if (admitted[key] !== undefined && typeof admitted[key] !== "string") {
-      throw new RequestError(`Form request submitter ${key} must be a string`)
-    }
-  }
-  return admitted
+  return attributes(value, "submitter") as ActivatedFormSubmitter | undefined
 }
 
 function nonEmpty(primary: string | undefined, fallback?: string): string | undefined {
@@ -130,16 +164,67 @@ function canonicalEncoding(
     : FORM_URL_ENCODED
 }
 
-function normalizedLineBreaks(value: string): string {
-  return value.replace(/\r\n|\r|\n/g, "\r\n")
+function normalizedLineBreaks(
+  value: string,
+  maximumUtf8Bytes = Number.POSITIVE_INFINITY,
+): { readonly utf8Bytes: number; readonly value: string } {
+  let normalized = ""
+  let utf8Bytes = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    let bytes: number
+    let scalar: string
+    if (code === 0x0d) {
+      if (value.charCodeAt(index + 1) === 0x0a) index += 1
+      bytes = 2
+      scalar = "\r\n"
+    } else if (code === 0x0a) {
+      bytes = 2
+      scalar = "\r\n"
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes = 4
+        scalar = value.slice(index, index + 2)
+        index += 1
+      } else {
+        bytes = 3
+        scalar = "\ufffd"
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes = 3
+      scalar = "\ufffd"
+    } else {
+      bytes = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3
+      scalar = value.charAt(index)
+    }
+    utf8Bytes += bytes
+    if (utf8Bytes > maximumUtf8Bytes) {
+      throw new RequestError("Text form request body limit exceeded")
+    }
+    normalized += scalar
+  }
+  return Object.freeze({ utf8Bytes, value: normalized })
 }
 
-function admittedEntries(entries: readonly SuccessfulFormEntry[]): readonly SuccessfulFormEntry[] {
+function admittedEntries(
+  entries: readonly SuccessfulFormEntry[],
+  maximumTextPlainBodyBytes?: number,
+): readonly SuccessfulFormEntry[] {
   if (!Array.isArray(entries)) {
     throw new RequestError("Form request entries must be an array")
   }
+  const length = entries.length
+  if (length > MAX_FORM_REQUEST_ENTRIES) {
+    throw new RequestError("Form request entry limit exceeded")
+  }
   const admitted: SuccessfulFormEntry[] = []
-  for (const entry of entries) {
+  let textPlainBodyBytes = 0
+  for (let index = 0; index < length; index += 1) {
+    if (!Object.hasOwn(entries, index)) {
+      throw new RequestError("Form request entries must contain string names and values")
+    }
+    const entry = entries[index]
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       throw new RequestError("Form request entries must contain string names and values")
     }
@@ -148,10 +233,20 @@ function admittedEntries(entries: readonly SuccessfulFormEntry[]): readonly Succ
     if (typeof name !== "string" || typeof value !== "string") {
       throw new RequestError("Form request entries must contain string names and values")
     }
+    const availableBytes =
+      maximumTextPlainBodyBytes === undefined
+        ? Number.POSITIVE_INFINITY
+        : maximumTextPlainBodyBytes - textPlainBodyBytes - 3
+    if (availableBytes < 0) {
+      throw new RequestError("Text form request body limit exceeded")
+    }
+    const admittedName = normalizedLineBreaks(name, availableBytes)
+    const admittedValue = normalizedLineBreaks(value, availableBytes - admittedName.utf8Bytes)
+    textPlainBodyBytes += admittedName.utf8Bytes + admittedValue.utf8Bytes + 3
     admitted.push(
       Object.freeze({
-        name: normalizedLineBreaks(name),
-        value: normalizedLineBreaks(value),
+        name: admittedName.value,
+        value: admittedValue.value,
       }),
     )
   }
@@ -161,14 +256,17 @@ function admittedEntries(entries: readonly SuccessfulFormEntry[]): readonly Succ
 function validateSubmitterEntry(
   submitter: ActivatedFormSubmitter | undefined,
   entries: readonly SuccessfulFormEntry[],
+  maximumTextPlainBodyBytes?: number,
 ): void {
   if (!submitter?.name) return
   const entry = entries.at(-1)
-  if (
-    !entry ||
-    entry.name !== normalizedLineBreaks(submitter.name) ||
-    entry.value !== normalizedLineBreaks(submitter.value ?? "")
-  ) {
+  const availableBytes =
+    maximumTextPlainBodyBytes === undefined
+      ? Number.POSITIVE_INFINITY
+      : maximumTextPlainBodyBytes - 3
+  const name = normalizedLineBreaks(submitter.name, availableBytes)
+  const value = normalizedLineBreaks(submitter.value ?? "", availableBytes - name.utf8Bytes)
+  if (!entry || entry.name !== name.value || entry.value !== value.value) {
     throw new RequestError("Activated named submitter must match the final successful entry")
   }
 }
@@ -229,6 +327,45 @@ function urlEncodedBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBo
   })
 }
 
+function utf8ByteLength(value: string): number {
+  let length = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code <= 0x7f) {
+      length += 1
+    } else if (code <= 0x7ff) {
+      length += 2
+    } else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      length += 4
+      index += 1
+    } else {
+      length += 3
+    }
+  }
+  return length
+}
+
+function textPlainBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBody {
+  const records: string[] = []
+  let bytes = 0
+  for (const entry of entries) {
+    bytes += utf8ByteLength(entry.name) + utf8ByteLength(entry.value) + 3
+    if (bytes > MAX_FORM_TEXT_PLAIN_BODY_BYTES) {
+      throw new RequestError("Text form request body limit exceeded")
+    }
+    records.push(`${entry.name}=${entry.value}\r\n`)
+  }
+  return Object.freeze({
+    contentType: FORM_TEXT_PLAIN,
+    value: records.join(""),
+  })
+}
+
 function requestSignal(value: unknown): AbortSignal | undefined {
   if (value === undefined) return undefined
   try {
@@ -286,6 +423,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   }
 
   const source = sourceMethod(form, submitter)
+  const encoding = canonicalEncoding(form, submitter)
   const action = submitter?.action !== undefined ? submitter.action : (form.action ?? "")
   const resolvedUrl = resolveSameOriginProtocolUrl(
     action,
@@ -300,11 +438,12 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   }
   const url = new URL(resolvedUrl)
 
-  const admitted = admittedEntries(options.entries)
-  validateSubmitterEntry(submitter, admitted)
+  const maximumTextPlainBodyBytes =
+    source !== "GET" && encoding === FORM_TEXT_PLAIN ? MAX_FORM_TEXT_PLAIN_BODY_BYTES : undefined
+  const admitted = admittedEntries(options.entries, maximumTextPlainBodyBytes)
+  validateSubmitterEntry(submitter, admitted, maximumTextPlainBodyBytes)
   const effective =
     unsafeTransport === "direct" ? source : effectiveMethod(source, admitted, submitter)
-  const encoding = canonicalEncoding(form, submitter)
   let requestEntries = admitted
   if (source !== "GET" && unsafeTransport === "rails") {
     if (effective === "GET") {
@@ -313,6 +452,9 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
       })
     }
     requestEntries = railsEntries(admitted, effective)
+    if (requestEntries.length > MAX_FORM_REQUEST_ENTRIES) {
+      throw new RequestError("Form request entry limit exceeded")
+    }
   }
   const headers = protocolRequestHeaders({
     acceptsTurboStream:
@@ -342,12 +484,13 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
         method: effective,
       })
     }
-    if (encoding === FORM_TEXT_PLAIN) {
-      throw new RequestError("Text form requests require a matching Rails decoder", {
+    if (encoding === FORM_TEXT_PLAIN && unsafeTransport === "rails" && effective !== "POST") {
+      throw new RequestError("Text form method overrides require URL-encoded or multipart data", {
         method: effective,
       })
     }
-    const body = urlEncodedBody(requestEntries)
+    const body =
+      encoding === FORM_TEXT_PLAIN ? textPlainBody(requestEntries) : urlEncodedBody(requestEntries)
     request = Object.freeze({
       body,
       headers,
