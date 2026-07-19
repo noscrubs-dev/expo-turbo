@@ -71,12 +71,35 @@ const ENCODINGS = new Set<FormSubmissionEncoding>([
   FORM_URL_ENCODED,
 ])
 
+function redactedArrayCheck(value: unknown, message: string): boolean {
+  try {
+    return Array.isArray(value)
+  } catch {
+    throw new RequestError(message)
+  }
+}
+
+function requestOption(
+  options: BuildFormRequestOptions,
+  key: keyof BuildFormRequestOptions,
+): unknown {
+  try {
+    return options[key]
+  } catch {
+    throw new RequestError("Form request options could not be read")
+  }
+}
+
 function attributes(
   value: FormRequestAttributes | undefined,
   owner: "form" | "submitter",
 ): FormRequestAttributes | undefined {
   if (value === undefined && owner === "submitter") return undefined
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    redactedArrayCheck(value, `Form request ${owner} attributes could not be read`)
+  ) {
     throw new RequestError(`Form request ${owner} attributes must be an object`)
   }
   let action: unknown
@@ -211,25 +234,50 @@ function admittedEntries(
   entries: readonly SuccessfulFormEntry[],
   maximumTextPlainBodyBytes?: number,
 ): readonly SuccessfulFormEntry[] {
-  if (!Array.isArray(entries)) {
+  if (redactedArrayCheck(entries, "Form request entries could not be read") !== true) {
     throw new RequestError("Form request entries must be an array")
   }
-  const length = entries.length
+  let length: unknown
+  try {
+    length = entries.length
+  } catch {
+    throw new RequestError("Form request entries could not be read")
+  }
+  if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+    throw new RequestError("Form request entries must be an array")
+  }
   if (length > MAX_FORM_REQUEST_ENTRIES) {
     throw new RequestError("Form request entry limit exceeded")
   }
   const admitted: SuccessfulFormEntry[] = []
   let textPlainBodyBytes = 0
   for (let index = 0; index < length; index += 1) {
-    if (!Object.hasOwn(entries, index)) {
+    let entry: unknown
+    let ownsEntry: boolean
+    try {
+      ownsEntry = Object.hasOwn(entries, index)
+      if (ownsEntry) entry = entries[index]
+    } catch {
+      throw new RequestError("Form request entries could not be read")
+    }
+    if (!ownsEntry) {
       throw new RequestError("Form request entries must contain string names and values")
     }
-    const entry = entries[index]
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      redactedArrayCheck(entry, "Form request entry could not be read")
+    ) {
       throw new RequestError("Form request entries must contain string names and values")
     }
-    const name = entry.name
-    const value = entry.value
+    let name: unknown
+    let value: unknown
+    try {
+      name = (entry as SuccessfulFormEntry).name
+      value = (entry as SuccessfulFormEntry).value
+    } catch {
+      throw new RequestError("Form request entry could not be read")
+    }
     if (typeof name !== "string" || typeof value !== "string") {
       throw new RequestError("Form request entries must contain string names and values")
     }
@@ -394,53 +442,83 @@ function unsafeMethodTransport(value: unknown): UnsafeFormMethodTransport {
   throw new RequestError("Form request unsafe method transport is unsupported")
 }
 
+function protocolOptions(value: unknown): FormRequestProtocolOptions {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    redactedArrayCheck(value, "Form request protocol metadata could not be read")
+  ) {
+    throw new RequestError("Form request protocol metadata is invalid")
+  }
+  let capabilityHash: unknown
+  let frameId: unknown
+  let requestId: unknown
+  try {
+    capabilityHash = (value as FormRequestProtocolOptions).capabilityHash
+    frameId = (value as FormRequestProtocolOptions).frameId
+    requestId = (value as FormRequestProtocolOptions).requestId
+  } catch {
+    throw new RequestError("Form request protocol metadata could not be read")
+  }
+  if (
+    typeof requestId !== "string" ||
+    (capabilityHash !== undefined && typeof capabilityHash !== "string") ||
+    (frameId !== undefined && typeof frameId !== "string")
+  ) {
+    throw new RequestError("Form request protocol metadata is invalid")
+  }
+  return Object.freeze({
+    ...(typeof capabilityHash === "string" ? { capabilityHash } : {}),
+    ...(typeof frameId === "string" ? { frameId } : {}),
+    requestId,
+  })
+}
+
 /**
  * Builds one immutable transport plan from raw form/submitter attributes and
  * successful string entries. Fetch ownership, multipart uploads, constraint
  * validation, pending UI, and response handling remain separate session work.
  */
 export function buildFormRequest(options: BuildFormRequestOptions): FormRequestPlan {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    redactedArrayCheck(options, "Form request options could not be read")
+  ) {
     throw new RequestError("Form request options must be an object")
   }
-  if (typeof options.documentUrl !== "string") {
+  const documentUrl = requestOption(options, "documentUrl")
+  if (typeof documentUrl !== "string") {
     throw new RequestError("Form request document URL must be a string")
   }
-  const form = attributes(options.form, "form") as FormRequestAttributes
-  const submitter = activatedSubmitter(options.submitter)
-  const signal = requestSignal(options.signal)
-  const unsafeTransport = unsafeMethodTransport(options.unsafeMethodTransport)
-  if (
-    !options.protocol ||
-    typeof options.protocol !== "object" ||
-    Array.isArray(options.protocol) ||
-    typeof options.protocol.requestId !== "string" ||
-    (options.protocol.capabilityHash !== undefined &&
-      typeof options.protocol.capabilityHash !== "string") ||
-    (options.protocol.frameId !== undefined && typeof options.protocol.frameId !== "string")
-  ) {
-    throw new RequestError("Form request protocol metadata is invalid")
-  }
+  const form = attributes(
+    requestOption(options, "form") as FormRequestAttributes,
+    "form",
+  ) as FormRequestAttributes
+  const submitter = activatedSubmitter(
+    requestOption(options, "submitter") as ActivatedFormSubmitter | undefined,
+  )
 
   const source = sourceMethod(form, submitter)
   const encoding = canonicalEncoding(form, submitter)
   const action = submitter?.action !== undefined ? submitter.action : (form.action ?? "")
-  const resolvedUrl = resolveSameOriginProtocolUrl(
-    action,
-    options.documentUrl,
-    options.documentUrl,
-    {
-      method: source,
-    },
-  )
+  const resolvedUrl = resolveSameOriginProtocolUrl(action, documentUrl, documentUrl, {
+    method: source,
+  })
   if (resolvedUrl.includes("#")) {
     throw new TargetError("Form request fragments require navigation support", { method: source })
   }
   const url = new URL(resolvedUrl)
 
+  const protocol = protocolOptions(requestOption(options, "protocol"))
+  const signal = requestSignal(requestOption(options, "signal"))
+  const unsafeTransport = unsafeMethodTransport(requestOption(options, "unsafeMethodTransport"))
   const maximumTextPlainBodyBytes =
     source !== "GET" && encoding === FORM_TEXT_PLAIN ? MAX_FORM_TEXT_PLAIN_BODY_BYTES : undefined
-  const admitted = admittedEntries(options.entries, maximumTextPlainBodyBytes)
+  const admitted = admittedEntries(
+    requestOption(options, "entries") as readonly SuccessfulFormEntry[],
+    maximumTextPlainBodyBytes,
+  )
   validateSubmitterEntry(submitter, admitted, maximumTextPlainBodyBytes)
   const effective =
     unsafeTransport === "direct" ? source : effectiveMethod(source, admitted, submitter)
@@ -461,11 +539,9 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
       source !== "GET" ||
       form.streamAttributePresent === true ||
       submitter?.streamAttributePresent === true,
-    ...(options.protocol.capabilityHash !== undefined
-      ? { capabilityHash: options.protocol.capabilityHash }
-      : {}),
-    ...(options.protocol.frameId !== undefined ? { frameId: options.protocol.frameId } : {}),
-    requestId: options.protocol.requestId,
+    ...(protocol.capabilityHash !== undefined ? { capabilityHash: protocol.capabilityHash } : {}),
+    ...(protocol.frameId !== undefined ? { frameId: protocol.frameId } : {}),
+    requestId: protocol.requestId,
   })
 
   let request: TurboRequest

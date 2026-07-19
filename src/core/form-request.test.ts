@@ -637,6 +637,238 @@ describe("form request construction", () => {
     }
   })
 
+  test("snapshots every top-level and protocol field once before planning", () => {
+    const reads: Record<string, number> = {}
+    const read = (key: string): number => {
+      reads[key] = (reads[key] ?? 0) + 1
+      return reads[key]
+    }
+    const controller = new AbortController()
+    const protocol = {
+      get capabilityHash(): unknown {
+        return read("capabilityHash") === 1 ? "capability-1" : { sensitive: "changed capability" }
+      },
+      get frameId(): unknown {
+        return read("frameId") === 1 ? "frame-1" : { sensitive: "changed frame" }
+      },
+      get requestId(): unknown {
+        return read("requestId") === 1 ? "request-once" : { sensitive: "changed request" }
+      },
+    }
+    const options = {
+      get documentUrl(): unknown {
+        return read("documentUrl") === 1
+          ? "https://example.test/current"
+          : { sensitive: "changed URL" }
+      },
+      get entries(): unknown {
+        return read("entries") === 1
+          ? [
+              { name: "field", value: "value" },
+              { name: "commit", value: "Save" },
+            ]
+          : { sensitive: "changed entries" }
+      },
+      get form(): unknown {
+        return read("form") === 1 ? { method: "POST" } : { sensitive: "changed form" }
+      },
+      get protocol(): unknown {
+        return read("protocol") === 1 ? protocol : { sensitive: "changed protocol" }
+      },
+      get signal(): unknown {
+        return read("signal") === 1 ? controller.signal : { sensitive: "changed signal" }
+      },
+      get submitter(): unknown {
+        return read("submitter") === 1
+          ? { name: "commit", value: "Save" }
+          : { sensitive: "changed submitter" }
+      },
+      get unsafeMethodTransport(): unknown {
+        return read("unsafeMethodTransport") === 1 ? "direct" : { sensitive: "changed transport" }
+      },
+    }
+    const built = buildFormRequest(options as unknown as BuildFormRequestOptions)
+
+    expect(built).toMatchObject({
+      effectiveMethod: "POST",
+      entries: [
+        { name: "field", value: "value" },
+        { name: "commit", value: "Save" },
+      ],
+      request: {
+        headers: {
+          "Turbo-Frame": "frame-1",
+          "X-Expo-Turbo-Capabilities": "capability-1",
+          "X-Turbo-Request-Id": "request-once",
+        },
+        method: "POST",
+        signal: controller.signal,
+        url: "https://example.test/current",
+      },
+    })
+    expect(reads).toEqual({
+      capabilityHash: 1,
+      documentUrl: 1,
+      entries: 1,
+      form: 1,
+      frameId: 1,
+      protocol: 1,
+      requestId: 1,
+      signal: 1,
+      submitter: 1,
+      unsafeMethodTransport: 1,
+    })
+  })
+
+  test("normalizes each compound field before a later option can mutate it", () => {
+    const form = { method: "POST" }
+    const submitter = { name: "commit", value: "Save" }
+    const protocol = {
+      capabilityHash: "capability-before",
+      frameId: "frame-before",
+      requestId: "request-before",
+    }
+    const entries = [
+      { name: "field", value: "before" },
+      { name: "commit", value: "Save" },
+    ]
+    const options = {
+      documentUrl: "https://example.test/current",
+      get entries() {
+        return entries
+      },
+      get form() {
+        return form
+      },
+      get protocol() {
+        submitter.name = "_method"
+        submitter.value = "DELETE"
+        return protocol
+      },
+      get signal() {
+        protocol.capabilityHash = "capability-after"
+        protocol.frameId = "frame-after"
+        protocol.requestId = "request-after"
+        return undefined
+      },
+      get submitter() {
+        form.method = "DELETE"
+        return submitter
+      },
+      unsafeMethodTransport: "direct",
+    }
+    const built = buildFormRequest(options as unknown as BuildFormRequestOptions)
+
+    expect(built).toMatchObject({
+      effectiveMethod: "POST",
+      entries: [
+        { name: "field", value: "before" },
+        { name: "commit", value: "Save" },
+      ],
+      request: {
+        headers: {
+          "Turbo-Frame": "frame-before",
+          "X-Expo-Turbo-Capabilities": "capability-before",
+          "X-Turbo-Request-Id": "request-before",
+        },
+        method: "POST",
+      },
+      sourceMethod: "POST",
+    })
+  })
+
+  test("redacts top-level and protocol getter failures", () => {
+    const throwingOptions = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("sensitive top-level detail")
+        },
+      },
+    )
+    const throwingProtocol = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("sensitive protocol detail")
+        },
+      },
+    )
+
+    for (const options of [
+      throwingOptions,
+      {
+        documentUrl: "https://example.test/current",
+        entries: [],
+        form: {},
+        protocol: throwingProtocol,
+      },
+    ]) {
+      try {
+        buildFormRequest(options as BuildFormRequestOptions)
+        throw new Error("throwing request metadata fixture was accepted")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RequestError)
+        if (!(error instanceof RequestError)) throw error
+        expect(`${error.message} ${JSON.stringify(error.context)}`).not.toContain("sensitive")
+      }
+    }
+  })
+
+  test("redacts revoked and throwing request metadata and entry proxies", () => {
+    const revoked = <T extends object>(value: T): T => {
+      const pair = Proxy.revocable(value, {})
+      pair.revoke()
+      return pair.proxy
+    }
+    const lengthFailure = new Proxy([] as SuccessfulFormEntry[], {
+      get(target, key, receiver) {
+        if (key === "length") throw new Error("sensitive length detail")
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const ownershipFailure = new Proxy([{ name: "field", value: "value" }], {
+      getOwnPropertyDescriptor() {
+        throw new Error("sensitive ownership detail")
+      },
+    })
+    const indexFailure = new Proxy([{ name: "field", value: "value" }], {
+      get(target, key, receiver) {
+        if (key === "0") throw new Error("sensitive index detail")
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    const entryFailure = {
+      get name(): string {
+        throw new Error("sensitive entry detail")
+      },
+      value: "value",
+    }
+
+    const cases = [
+      () => buildFormRequest(revoked({}) as BuildFormRequestOptions),
+      () => plan({ form: revoked({}) }),
+      () => plan({ submitter: revoked({}) }),
+      () => plan({ protocol: revoked({}) as BuildFormRequestOptions["protocol"] }),
+      () => plan({ entries: revoked([]) }),
+      () => plan({ entries: [revoked({}) as SuccessfulFormEntry] }),
+      () => plan({ entries: lengthFailure }),
+      () => plan({ entries: ownershipFailure }),
+      () => plan({ entries: indexFailure }),
+      () => plan({ entries: [entryFailure] }),
+    ]
+    for (const run of cases) {
+      try {
+        run()
+        throw new Error("throwing request metadata fixture was accepted")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RequestError)
+        if (!(error instanceof RequestError)) throw error
+        expect(`${error.message} ${JSON.stringify(error.context)}`).not.toContain("sensitive")
+      }
+    }
+  })
+
   test("rejects control characters in protocol headers without echoing their values", () => {
     for (const protocol of [
       { requestId: "" },
@@ -644,8 +876,10 @@ describe("form request construction", () => {
       { frameId: "", requestId: "request-1" },
       { capabilityHash: "", requestId: "request-1" },
       { requestId: "request\r\nsecret" },
+      { requestId: "request\tsecret" },
       { frameId: "frame\nsecret", requestId: "request-1" },
       { capabilityHash: "hash\u0000secret", requestId: "request-1" },
+      { capabilityHash: "hash\u007fsecret", requestId: "request-1" },
     ]) {
       try {
         plan({ protocol })
@@ -735,6 +969,19 @@ describe("form request construction", () => {
     expect(() =>
       plan({ entries, form: { action: "https://user:secret@outside.test/save" } }),
     ).toThrow(TargetError)
+
+    let topLevelEntryReads = 0
+    const options = {
+      documentUrl: "https://example.test/current",
+      get entries(): readonly SuccessfulFormEntry[] {
+        topLevelEntryReads += 1
+        throw new Error("sensitive top-level entries were inspected")
+      },
+      form: { action: "https://user:secret@outside.test/save" },
+      protocol: { requestId: "request-1" },
+    }
+    expect(() => buildFormRequest(options)).toThrow(TargetError)
+    expect(topLevelEntryReads).toBe(0)
 
     try {
       plan({ form: { action: "https://user:secret@outside.test/save" } })
