@@ -15,6 +15,7 @@ import { z } from "zod"
 
 import {
   type AutofocusAdapter,
+  type CableAdapter,
   defineStyleAdapter,
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
@@ -26,6 +27,7 @@ import {
 import {
   applyFrameResponse,
   attributeValue,
+  CableStreamSourceRegistry,
   dispatchTurboStreamFragment,
   DocumentFormControls,
   DocumentHistory,
@@ -52,6 +54,7 @@ import {
   parseExpoTurboDocument,
   renderedNodeTextContent,
   StateError,
+  SubscriptionError,
   TargetError,
 } from "expo-turbo/core"
 import {
@@ -159,6 +162,7 @@ function render(
     navigation?: NavigationAdapter
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
+    streamSources?: ExpoTurboProviderProps["streamSources"]
   }> = {},
 ): ReactTestRenderer {
   let renderer: ReactTestRenderer | undefined
@@ -593,6 +597,235 @@ describe("React protocol renderer", () => {
     expect(output).toContain("Frame text")
     expect(output).not.toContain("Template text")
     expect(output).not.toContain("DemoChannel")
+  })
+
+  test("connects only rendered Cable sources and coalesces Strict Mode/provider leases", async () => {
+    const tree = parseExpoTurboDocument(`<Gallery>
+      <DemoText id="status">old</DemoText>
+      <turbo-cable-stream-source id="first" channel="DemoChannel" data-room-name="one" />
+      <turbo-cable-stream-source id="second" data-room-name="one" channel="DemoChannel" />
+      <turbo-cable-stream-source id="outer" channel="DemoChannel" data-room-name="one">
+        <turbo-cable-stream-source id="nested-source" channel="NestedChannel" />
+      </turbo-cable-stream-source>
+      <template>
+        <turbo-cable-stream-source id="template-source" channel="TemplateChannel" />
+      </template>
+      <turbo-stream action="append" target="status">
+        <template>
+          <turbo-cable-stream-source id="stream-source" channel="StreamChannel" />
+        </template>
+      </turbo-stream>
+    </Gallery>`)
+    const session = new DocumentSession(tree)
+    const subscriptions: {
+      callbacks: Parameters<CableAdapter["subscribe"]>[1]
+      identifier: string
+      unsubscribeCalls: number
+    }[] = []
+    const cable: CableAdapter = {
+      subscribe(identifier, callbacks) {
+        const record = { callbacks, identifier, unsubscribeCalls: 0 }
+        subscriptions.push(record)
+        return {
+          unsubscribe() {
+            record.unsubscribeCalls += 1
+          },
+        }
+      },
+    }
+    const errors: Error[] = []
+    const streamSources = new CableStreamSourceRegistry(session, cable, {
+      onError: (error) => {
+        errors.push(error)
+      },
+    })
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            Fragment,
+            null,
+            ...[registryWithCounters(), registryWithCounters()].map((registry, index) =>
+              createElement(
+                ExpoTurboProvider,
+                {
+                  key: `registry-${index}`,
+                  registry,
+                  session,
+                  streamSources,
+                },
+                createElement(ExpoTurboRoot),
+              ),
+            ),
+          ),
+        ),
+      )
+      await Promise.resolve()
+    })
+
+    expect(subscriptions).toHaveLength(1)
+    expect(subscriptions[0]?.identifier).toBe(
+      JSON.stringify({
+        channel: "DemoChannel",
+        signed_stream_name: null,
+        room_name: "one",
+      }),
+    )
+    expect(JSON.stringify(renderer?.toJSON())).not.toContain("turbo-cable-stream-source")
+
+    act(() => {
+      subscriptions[0]?.callbacks.received(
+        '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
+      )
+    })
+    expect(JSON.stringify(renderer?.toJSON())).toContain("fresh")
+
+    await act(async () => {
+      session.setAttribute("id:first", "channel", "OtherChannel")
+      await Promise.resolve()
+    })
+    expect(subscriptions).toHaveLength(2)
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(0)
+    expect(subscriptions[1]?.identifier).toContain("OtherChannel")
+
+    act(() => {
+      session.mutate((activeTree) => {
+        const second = activeTree.getElementById("second")
+        return second ? activeTree.removeNode(second) : []
+      })
+      session.mutate((activeTree) => {
+        const outer = activeTree.getElementById("outer")
+        return outer ? activeTree.removeNode(outer) : []
+      })
+    })
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(1)
+
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
+    expect(subscriptions[1]?.unsubscribeCalls).toBe(1)
+    expect(errors).toEqual([])
+  })
+
+  test("contains invalid Cable sources locally and reconnects after correction", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(`<Gallery>
+        <DemoText id="status">still rendered</DemoText>
+        <turbo-cable-stream-source id="source" />
+      </Gallery>`),
+    )
+    const identifiers: string[] = []
+    const cable: CableAdapter = {
+      subscribe(identifier) {
+        identifiers.push(identifier)
+        return { unsubscribe: () => undefined }
+      },
+    }
+    const errors: Error[] = []
+    const streamSources = new CableStreamSourceRegistry(session, cable, {
+      onError: (error) => errors.push(error),
+    })
+    const renderErrors: Error[] = []
+    const renderer = render(session, registryWithCounters(), {
+      onError: ({ error }) => renderErrors.push(error),
+      streamSources,
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("still rendered")
+    expect(identifiers).toEqual([])
+
+    act(() => {
+      session.setAttribute("id:source", "channel", "RecoveredChannel")
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("still rendered")
+    expect(identifiers).toEqual([
+      JSON.stringify({ channel: "RecoveredChannel", signed_stream_name: null }),
+    ])
+    expect(errors).toEqual([
+      new SubscriptionError("Cable stream source channel must be a nonblank token", {
+        target: "id:source",
+      }),
+    ])
+    expect(renderErrors).toEqual([])
+
+    await act(async () => {
+      renderer.unmount()
+      await Promise.resolve()
+    })
+  })
+
+  test("retries a failed Cable source when the injected registry changes", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(`<Gallery>
+        <DemoText id="status">still rendered</DemoText>
+        <turbo-cable-stream-source id="source" channel="DemoChannel" />
+      </Gallery>`),
+    )
+    const failingErrors: Error[] = []
+    const failingSources = new CableStreamSourceRegistry(
+      session,
+      {
+        subscribe() {
+          throw new Error("secret adapter details")
+        },
+      },
+      { onError: (error) => failingErrors.push(error) },
+    )
+    const identifiers: string[] = []
+    const workingSources = new CableStreamSourceRegistry(
+      session,
+      {
+        subscribe(identifier) {
+          identifiers.push(identifier)
+          return { unsubscribe: () => undefined }
+        },
+      },
+      { onError: (error) => failingErrors.push(error) },
+    )
+    const registry = registryWithCounters()
+    const renderErrors: Error[] = []
+    const renderRoot = (streamSources: CableStreamSourceRegistry) =>
+      createElement(
+        ExpoTurboProvider,
+        {
+          onError: ({ error }) => renderErrors.push(error),
+          registry,
+          session,
+          streamSources,
+        },
+        createElement(ExpoTurboRoot),
+      )
+    let renderer: ReactTestRenderer | undefined
+
+    act(() => {
+      renderer = create(renderRoot(failingSources))
+    })
+    expect(JSON.stringify(renderer?.toJSON())).toContain("still rendered")
+    expect(failingErrors).toEqual([
+      new SubscriptionError("Cable stream source subscription failed", {
+        target: "id:source",
+      }),
+    ])
+    expect(renderErrors).toEqual([])
+    expect(session.revision).toBe(0)
+
+    act(() => {
+      renderer?.update(renderRoot(workingSources))
+    })
+    expect(identifiers).toEqual([
+      JSON.stringify({ channel: "DemoChannel", signed_stream_name: null }),
+    ])
+    expect(session.revision).toBe(0)
+
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
   })
 
   test("resolves explicit semantic tokens without treating structural class as native style", () => {
