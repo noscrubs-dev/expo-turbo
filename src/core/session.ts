@@ -7,6 +7,7 @@ import {
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
+import { markSessionCommitError } from "./session-commit-error-internal"
 import { type DocumentTree, isElement, type ProtocolNode } from "./tree"
 import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
@@ -307,7 +308,7 @@ export class DocumentSession {
       errors.unshift(...disposalErrors)
     }
     if (errors.length > 0) {
-      throw new SessionCommitError(errors)
+      throw markSessionCommitError(new SessionCommitError(errors))
     }
   }
 }

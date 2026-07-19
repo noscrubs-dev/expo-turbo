@@ -4,10 +4,24 @@ import type {
   DefinedStreamAction,
 } from "./custom-stream-actions"
 import type { DocumentRefreshRequester } from "./document-refresh-controller"
-import { ActionError, ExpoTurboError } from "./errors"
+import { ActionError, type ExpoTurboError } from "./errors"
+import { isExpoTurboError } from "./expo-turbo-error-internal"
 import { type ParseOptions, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
 import { type DocumentSession, SessionCommitError } from "./session"
+import { isSessionCommitError, markSessionCommitError } from "./session-commit-error-internal"
+import {
+  createBeforeStreamRenderEvent,
+  createStreamActionEvent,
+  STREAM_LIFECYCLE_ACTION_DISPATCH,
+  STREAM_LIFECYCLE_BEFORE_DISPATCH,
+  type StreamLifecycle,
+  type StreamRenderContext,
+  type StreamRenderer,
+  type StreamRenderResult,
+  streamLifecycleOption,
+} from "./stream-lifecycle"
+import { consumeThenableResult } from "./thenable-result"
 import {
   attributeValue,
   type DocumentTree,
@@ -28,7 +42,7 @@ const BUILT_IN_ACTIONS = new Set([
   "update",
 ])
 
-export type StreamActionStatus = "applied" | "error" | "noop"
+export type StreamActionStatus = "applied" | "canceled" | "error" | "noop"
 
 export interface StreamActionReport {
   readonly action: string
@@ -43,6 +57,7 @@ export interface StreamActionDispatchOptions {
   readonly customActions?: CustomStreamActionRegistry<DefinedStreamAction>
   readonly onActionError?: (report: StreamActionReport) => void
   readonly refresh?: DocumentRefreshRequester
+  readonly streamLifecycle?: StreamLifecycle
 }
 
 export interface StreamDispatchOptions extends ParseOptions, StreamActionDispatchOptions {}
@@ -63,6 +78,10 @@ function actionError(message: string, action: string, target?: string): ActionEr
     action,
     ...(target ? { target } : {}),
   })
+}
+
+function streamCommitError(message: string, action: string): SessionCommitError {
+  return markSessionCommitError(new SessionCommitError([new ActionError(message, { action })]))
 }
 
 function templatePayload(stream: ProtocolElement, action: string): readonly ProtocolNode[] {
@@ -112,22 +131,36 @@ function dispatchCustomAction(
     attributeValue(stream, "target") !== undefined ||
     attributeValue(stream, "targets") !== undefined
   const targets = hasTarget ? resolveTargets(session.tree, stream, action) : []
-  const params = definition.decodeParams(customParams(stream))
-  const result = definition.handler(
-    Object.freeze({
-      action,
-      params,
-      session,
-      stream,
-      targets: Object.freeze([...targets]),
-      template: Object.freeze([...templatePayload(stream, action)]),
-    }),
-  )
-  const maybePromise = result as unknown as Readonly<{ then?: unknown }> | undefined
-  if (typeof maybePromise?.then === "function") {
-    throw new Error("Custom Stream action handlers must be synchronous")
+  const revision = session.revision
+  try {
+    const params = definition.decodeParams(customParams(stream))
+    const result = definition.handler(
+      Object.freeze({
+        action,
+        params,
+        session,
+        stream,
+        targets: Object.freeze([...targets]),
+        template: Object.freeze([...templatePayload(stream, action)]),
+      }),
+    )
+    if (consumeThenableResult(result)) {
+      if (session.revision !== revision) {
+        throw streamCommitError("Asynchronous custom Stream action mutated the session", action)
+      }
+      throw actionError("Custom Stream action handlers must be synchronous", action)
+    }
+    return Object.freeze({
+      ...customResult(result, targets.length),
+      matchedTargets: targets.length,
+    })
+  } catch (error) {
+    if (isSessionCommitError(error)) throw error
+    if (session.revision !== revision) {
+      throw streamCommitError("Custom Stream action failed after mutating the session", action)
+    }
+    throw actionError("Custom Stream action failed", action)
   }
-  return Object.freeze({ ...customResult(result, targets.length), matchedTargets: targets.length })
 }
 
 function resolveTargets(
@@ -281,99 +314,268 @@ function applyToTarget(
   return true
 }
 
+interface StreamActionProgress {
+  appliedTargets: number
+  matchedTargets: number
+  ownershipInterrupted: boolean
+}
+
+interface StreamActionDispatchResult {
+  readonly ownershipInterrupted: boolean
+  readonly report: StreamActionReport
+}
+
+const STREAM_RENDER_INTERRUPTED = Symbol("expo-turbo.stream-render-interrupted")
+
+function renderAction(
+  session: DocumentSession,
+  stream: ProtocolElement,
+  action: string,
+  options: StreamActionDispatchOptions,
+  progress: StreamActionProgress,
+  control?: StreamDispatchControl,
+): StreamRenderResult {
+  if (!action) throw actionError("Turbo Stream action must not be blank", action)
+  if (action === "refresh") {
+    if (!options.refresh) {
+      throw actionError("Turbo Stream refresh requires a document refresh controller", action)
+    }
+    const baseUrl = session.tree.document.url
+    if (!baseUrl) throw actionError("Turbo Stream refresh requires an active document URL", action)
+    const method = attributeValue(stream, "method")
+    const requestId = attributeValue(stream, "request-id")
+    const scroll = attributeValue(stream, "scroll")
+    options.refresh.request(
+      Object.freeze({
+        baseUrl,
+        ...(method !== undefined ? { method } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+        ...(scroll !== undefined ? { scroll } : {}),
+      }),
+    )
+    return Object.freeze({ appliedTargets: 0, matchedTargets: 0, status: "applied" })
+  }
+  if (!BUILT_IN_ACTIONS.has(action)) {
+    const customAction = options.customActions?.resolve(action)
+    if (!customAction) {
+      throw actionError(`Unknown Turbo Stream action ${JSON.stringify(action)}`, action)
+    }
+    const result = dispatchCustomAction(session, stream, customAction)
+    progress.appliedTargets = result.appliedTargets
+    progress.matchedTargets = result.matchedTargets
+    return result
+  }
+  if (
+    (action === "replace" || action === "update") &&
+    attributeValue(stream, "method") === "morph"
+  ) {
+    throw actionError("Native Turbo Stream morph method requires morph support", action)
+  }
+  const targets = resolveTargets(session.tree, stream, action)
+  const payload = action === "remove" ? [] : templatePayload(stream, action)
+  progress.matchedTargets = targets.length
+  if (targets.length > 1 && allIds(payload).length > 0) {
+    throw actionError("Multi-target Turbo Stream payloads must not declare ids", action)
+  }
+
+  for (const target of targets) {
+    if (control && !control.shouldContinue()) {
+      progress.ownershipInterrupted = true
+      break
+    }
+    if (!session.tree.contains(target)) continue
+    if (applyToTarget(session, action, target, payload)) progress.appliedTargets += 1
+  }
+
+  return Object.freeze({
+    appliedTargets: progress.appliedTargets,
+    matchedTargets: progress.matchedTargets,
+    status: progress.appliedTargets === 0 ? "noop" : "applied",
+  })
+}
+
 function dispatchAction(
   session: DocumentSession,
   stream: ProtocolElement,
   index: number,
   options: StreamActionDispatchOptions,
+  lifecycle: StreamLifecycle | undefined,
   control?: StreamDispatchControl,
-): StreamActionReport {
+): StreamActionDispatchResult {
   const action = attributeValue(stream, "action") ?? ""
-  let matchedTargets = 0
-  let appliedTargets = 0
-  try {
-    if (!action) throw actionError("Turbo Stream action must not be blank", action)
-    if (action === "refresh") {
-      if (!options.refresh) {
-        throw actionError("Turbo Stream refresh requires a document refresh controller", action)
-      }
-      const baseUrl = session.tree.document.url
-      if (!baseUrl)
-        throw actionError("Turbo Stream refresh requires an active document URL", action)
-      const method = attributeValue(stream, "method")
-      const requestId = attributeValue(stream, "request-id")
-      const scroll = attributeValue(stream, "scroll")
-      options.refresh.request(
-        Object.freeze({
-          baseUrl,
-          ...(method !== undefined ? { method } : {}),
-          ...(requestId !== undefined ? { requestId } : {}),
-          ...(scroll !== undefined ? { scroll } : {}),
-        }),
-      )
-      return Object.freeze({
-        action,
-        appliedTargets: 0,
-        index,
-        matchedTargets: 0,
-        status: "applied",
-      })
-    }
-    if (!BUILT_IN_ACTIONS.has(action)) {
-      const customAction = options.customActions?.resolve(action)
-      if (!customAction) {
-        throw actionError(`Unknown Turbo Stream action ${JSON.stringify(action)}`, action)
-      }
-      const result = dispatchCustomAction(session, stream, customAction)
-      return Object.freeze({
-        action,
-        appliedTargets: result.appliedTargets,
-        index,
-        matchedTargets: result.matchedTargets,
-        status: result.status,
-      })
-    }
-    if (
-      (action === "replace" || action === "update") &&
-      attributeValue(stream, "method") === "morph"
-    ) {
-      throw actionError("Native Turbo Stream morph method requires morph support", action)
-    }
-    const targets = resolveTargets(session.tree, stream, action)
-    const payload = action === "remove" ? [] : templatePayload(stream, action)
-    matchedTargets = targets.length
-    if (targets.length > 1 && allIds(payload).length > 0) {
-      throw actionError("Multi-target Turbo Stream payloads must not declare ids", action)
-    }
-
-    for (const target of targets) {
-      if (control && !control.shouldContinue()) break
-      if (!session.tree.contains(target)) continue
-      if (applyToTarget(session, action, target, payload)) appliedTargets += 1
-    }
-
-    return Object.freeze({
-      action,
-      appliedTargets,
-      index,
-      matchedTargets,
-      status: appliedTargets === 0 ? "noop" : "applied",
-    })
-  } catch (error) {
-    if (error instanceof SessionCommitError) throw error
-    const protocolError =
-      error instanceof ExpoTurboError
-        ? error
-        : actionError(error instanceof Error ? error.message : "Turbo Stream action failed", action)
-    return Object.freeze({
-      action,
-      appliedTargets,
-      error: protocolError,
-      index,
-      matchedTargets,
-      status: "error",
-    })
+  const progress: StreamActionProgress = {
+    appliedTargets: 0,
+    matchedTargets: 0,
+    ownershipInterrupted: false,
   }
+  let ownershipInterrupted = false
+  let report: StreamActionReport
+  try {
+    if (control && !control.shouldContinue()) {
+      ownershipInterrupted = true
+      throw STREAM_RENDER_INTERRUPTED
+    }
+    let result: StreamRenderResult
+    if (!lifecycle) {
+      result = renderAction(session, stream, action, options, progress, control)
+    } else {
+      let defaultResult: StreamRenderResult | undefined
+      let defaultRendered = false
+      let defaultFailure: unknown
+      let fatalDefaultError: unknown
+      let renderInterrupted = false
+      let rendering = true
+      const context = Object.freeze({
+        action,
+        index,
+        newStream: stream,
+        renderDefault(): StreamRenderResult {
+          if (!rendering) {
+            throw actionError("The Stream render context is no longer active", action)
+          }
+          if (defaultRendered) {
+            throw actionError("The default Stream renderer may run only once", action)
+          }
+          if (control && !control.shouldContinue()) {
+            ownershipInterrupted = true
+            renderInterrupted = true
+            throw STREAM_RENDER_INTERRUPTED
+          }
+          defaultRendered = true
+          try {
+            defaultResult = renderAction(session, stream, action, options, progress, control)
+            return defaultResult
+          } catch (error) {
+            defaultFailure = error
+            if (isSessionCommitError(error)) fatalDefaultError = error
+            throw error
+          }
+        },
+        session,
+      }) satisfies StreamRenderContext
+      const defaultRenderer: StreamRenderer = (activeContext) => {
+        if (activeContext !== context) {
+          throw actionError("Stream renderer received an invalid context", action)
+        }
+        return activeContext.renderDefault()
+      }
+      const event = createBeforeStreamRenderEvent(action, index, stream, defaultRenderer)
+      const beforeRevision = session.revision
+      try {
+        lifecycle[STREAM_LIFECYCLE_BEFORE_DISPATCH](event)
+      } catch (error) {
+        if (isSessionCommitError(error)) throw error
+        if (session.revision !== beforeRevision) {
+          throw streamCommitError("Before-stream-render failed after mutating the session", action)
+        }
+        throw error
+      }
+      if (control && !control.shouldContinue()) {
+        ownershipInterrupted = true
+        throw STREAM_RENDER_INTERRUPTED
+      }
+      if (event.defaultPrevented) {
+        throw STREAM_RENDER_INTERRUPTED
+      }
+      const renderer = event.detail.render
+      const rendererRevision = session.revision
+      let candidate: unknown
+      try {
+        try {
+          candidate = renderer(context)
+        } finally {
+          rendering = false
+        }
+      } catch (error) {
+        if (fatalDefaultError) throw fatalDefaultError
+        if (renderInterrupted) throw STREAM_RENDER_INTERRUPTED
+        if (renderer === defaultRenderer && error === defaultFailure) throw error
+        throw actionError("Stream renderer failed", action)
+      }
+      if (fatalDefaultError) throw fatalDefaultError
+      if (renderInterrupted) throw STREAM_RENDER_INTERRUPTED
+      if (consumeThenableResult(candidate)) {
+        if (session.revision !== rendererRevision) {
+          throw streamCommitError("Asynchronous Stream renderer mutated the session", action)
+        }
+        throw actionError("Stream renderers must be synchronous", action)
+      }
+      if (defaultRendered && candidate !== defaultResult) {
+        throw actionError("A wrapped Stream renderer must return the default result", action)
+      }
+      result = admitRenderResult(candidate, action)
+    }
+    report = actionReport(action, index, result)
+  } catch (error) {
+    if (isSessionCommitError(error)) throw error
+    if (error === STREAM_RENDER_INTERRUPTED) {
+      report = Object.freeze({
+        action,
+        appliedTargets: progress.appliedTargets,
+        index,
+        matchedTargets: progress.matchedTargets,
+        status: "canceled",
+      })
+    } else {
+      const protocolError = isExpoTurboError(error)
+        ? (error as ExpoTurboError)
+        : actionError("Turbo Stream action failed", action)
+      report = Object.freeze({
+        action,
+        appliedTargets: progress.appliedTargets,
+        error: protocolError,
+        index,
+        matchedTargets: progress.matchedTargets,
+        status: "error",
+      })
+    }
+  }
+  lifecycle?.[STREAM_LIFECYCLE_ACTION_DISPATCH](createStreamActionEvent(stream, report))
+  return Object.freeze({
+    ownershipInterrupted: ownershipInterrupted || progress.ownershipInterrupted,
+    report,
+  })
+}
+
+function actionReport(
+  action: string,
+  index: number,
+  result: StreamRenderResult,
+): StreamActionReport {
+  return Object.freeze({ action, index, ...result })
+}
+
+function admitRenderResult(candidate: unknown, action: string): StreamRenderResult {
+  let appliedTargets: unknown
+  let matchedTargets: unknown
+  let status: unknown
+  try {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new TypeError("invalid result")
+    }
+    appliedTargets = (candidate as StreamRenderResult).appliedTargets
+    matchedTargets = (candidate as StreamRenderResult).matchedTargets
+    status = (candidate as StreamRenderResult).status
+  } catch (error) {
+    if (isSessionCommitError(error)) throw error
+    throw actionError("Stream renderer returned an invalid result", action)
+  }
+  if (
+    !Number.isInteger(appliedTargets) ||
+    (appliedTargets as number) < 0 ||
+    !Number.isInteger(matchedTargets) ||
+    (matchedTargets as number) < 0 ||
+    (appliedTargets as number) > (matchedTargets as number) ||
+    (status !== "applied" && status !== "noop") ||
+    (status === "noop" && appliedTargets !== 0)
+  ) {
+    throw actionError("Stream renderer returned an invalid result", action)
+  }
+  return Object.freeze({
+    appliedTargets: appliedTargets as number,
+    matchedTargets: matchedTargets as number,
+    status,
+  })
 }
 
 export function dispatchTurboStreamFragment(
@@ -403,6 +605,7 @@ export function dispatchGuardedTurboStreamElements(
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
 ): StreamDispatchReport {
+  const lifecycle = streamLifecycleOption(options, "Turbo Stream dispatcher")
   const actions: StreamActionReport[] = []
   let interrupted = false
   for (const [index, stream] of streams.entries()) {
@@ -410,13 +613,14 @@ export function dispatchGuardedTurboStreamElements(
       interrupted = true
       break
     }
-    const report = dispatchAction(session, stream, index, options, control)
+    const dispatched = dispatchAction(session, stream, index, options, lifecycle, control)
+    const report = dispatched.report
     actions.push(report)
     if (report.status === "error") options.onActionError?.(report)
     if (
       control &&
       !control.shouldContinue() &&
-      (report.appliedTargets < report.matchedTargets || index + 1 < streams.length)
+      (dispatched.ownershipInterrupted || index + 1 < streams.length)
     ) {
       interrupted = true
     }

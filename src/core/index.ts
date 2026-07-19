@@ -77,6 +77,19 @@ export * from "./serializer"
 export * from "./session"
 export * from "./state"
 export {
+  type BeforeStreamRenderEvent,
+  type BeforeStreamRenderEventDetail,
+  type StreamActionEvent,
+  type StreamActionEventDetail,
+  StreamLifecycle,
+  type StreamLifecycleEvent,
+  type StreamLifecycleEventMap,
+  type StreamLifecycleOptions,
+  type StreamRenderContext,
+  type StreamRenderer,
+  type StreamRenderResult,
+} from "./stream-lifecycle"
+export {
   dispatchTurboStreamElements,
   dispatchTurboStreamFragment,
   type StreamActionDispatchOptions,

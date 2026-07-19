@@ -8,6 +8,7 @@ import {
   FormLinkSubmissionController,
   parseExpoTurboDocument,
   subscribeDocumentHistoryTraversal,
+  StreamLifecycle,
   type FormSubmissionController,
   type FrameControllerRegistry,
 } from "expo-turbo/core";
@@ -54,6 +55,7 @@ export interface DemoRuntime {
   readonly refresh: DocumentRefreshController;
   readonly session: DocumentSession;
   readonly submissionLifecycle: FormSubmissionLifecycle;
+  readonly streamLifecycle: StreamLifecycle;
   readonly visibility: DemoVisibilityRegistry;
   dispose(): void;
 }
@@ -91,6 +93,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   const focus = new DemoFocusRegistry();
   const visibility = new DemoVisibilityRegistry();
   const submissionLifecycle = new FormSubmissionLifecycle();
+  const streamLifecycle = new StreamLifecycle();
   const frames = createDemoFrameControllers(
     session,
     navigation,
@@ -99,6 +102,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     documentRuntime.history,
     documentRuntime.snapshotCache,
     documentRuntime.visitLifecycle,
+    streamLifecycle,
     visibility,
   );
   const formController = createDemoFormController(
@@ -109,6 +113,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     navigation,
     documentRuntime.visitLifecycle,
     submissionLifecycle,
+    streamLifecycle,
   );
   const forms = new DocumentFormControls(session, {
     focus,
@@ -141,6 +146,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     refresh,
     session,
     submissionLifecycle,
+    streamLifecycle,
     visibility,
     dispose(): void {
       if (disposed) return;

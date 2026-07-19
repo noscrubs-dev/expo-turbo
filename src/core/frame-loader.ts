@@ -44,6 +44,7 @@ import {
   settleRequestOperation,
 } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
+import { streamLifecycleOption } from "./stream-lifecycle"
 import type { StreamActionDispatchOptions } from "./streams"
 import { attributeValue, type ProtocolElement } from "./tree"
 
@@ -207,6 +208,7 @@ export class FrameRequestLoader {
     options: FrameRequestLoaderOptions = {},
   ) {
     this.requestLifecycle = requestLifecycleOption(options, "Frame request loader")
+    const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     this.ownership = destinationRequestOwnership(session)
@@ -214,6 +216,7 @@ export class FrameRequestLoader {
       ...(options.customActions ? { customActions: options.customActions } : {}),
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
+      ...(streamLifecycle ? { streamLifecycle } : {}),
     })
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")

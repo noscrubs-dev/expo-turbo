@@ -1,3 +1,5 @@
+import { markExpoTurboError } from "./expo-turbo-error-internal"
+
 export type ExpoTurboErrorCode =
   | "action"
   | "auth"
@@ -44,6 +46,7 @@ export class ExpoTurboError extends Error {
       ...context,
       ...(context.location ? { location: Object.freeze({ ...context.location }) } : {}),
     })
+    markExpoTurboError(this)
   }
 }
 
