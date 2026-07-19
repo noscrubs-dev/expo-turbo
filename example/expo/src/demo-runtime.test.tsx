@@ -219,7 +219,7 @@ function routeTree(
 }
 
 describe("demo app runtime ownership", () => {
-  test("focuses the real gallery input after its Frame link replaces the mounted Frame", async () => {
+  test("focuses real initial-document and replacement-Frame inputs once in order", async () => {
     const runtime = createDemoRuntime();
     const nativeFocuses: string[] = [];
     let renderer: ReactTestRenderer | undefined;
@@ -262,6 +262,8 @@ describe("demo app runtime ownership", () => {
       await Promise.resolve();
     });
     if (!renderer) throw new Error("renderer was not created");
+    expect(nativeFocuses).toEqual(["First name"]);
+    expect(runtime.focus.getFocusedId()).toBe("id:first-name");
 
     const frameLink = renderer.root
       .findAll((node) => String(node.type) === "pressable")
@@ -283,7 +285,7 @@ describe("demo app runtime ownership", () => {
       await Promise.resolve();
     });
 
-    expect(nativeFocuses).toEqual(["Autofocused Frame field"]);
+    expect(nativeFocuses).toEqual(["First name", "Autofocused Frame field"]);
     expect(runtime.focus.getFocusedId()).toBe("id:frame-autofocus-name");
 
     await act(async () => {

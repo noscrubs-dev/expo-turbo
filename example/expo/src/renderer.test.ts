@@ -5520,6 +5520,248 @@ describe("React protocol renderer", () => {
     return { frames, loaded: controller.connect(), session }
   }
 
+  function documentAutofocusFixture(xml: string) {
+    const mounted = new Set<string>()
+    const focused: string[] = []
+    function FocusTarget(props: Readonly<{ focusKey: string; focusable: boolean }>): ReactNode {
+      const nodeKey = `id:${props.focusKey}`
+      useLayoutEffect(() => {
+        if (!props.focusable) return
+        mounted.add(nodeKey)
+        return () => {
+          mounted.delete(nodeKey)
+        }
+      }, [nodeKey, props.focusable])
+      return createElement("document-focus-target", { nodeKey })
+    }
+    const focusTarget = defineComponent({
+      attributes: {
+        "focus-key": { codec: stringCodec, prop: "focusKey" },
+        focusable: { codec: presenceCodec, prop: "focusable" },
+      },
+      children: "none",
+      component: FocusTarget,
+      schema: z.object({
+        focusKey: z.string(),
+        focusable: z.boolean().default(false),
+      }),
+      tag: "DocumentFocusTarget",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [focusTarget],
+        name: "document-autofocus-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(xml, { url: "https://example.test/document" }),
+    )
+    const autofocus: AutofocusAdapter = {
+      canFocus: (nodeKey) => mounted.has(nodeKey),
+      focus: (nodeKey) => {
+        focused.push(nodeKey)
+      },
+    }
+    return { autofocus, focused, mounted, registry, session }
+  }
+
+  test("focuses the first available initial document candidate once across StrictMode and providers", () => {
+    const fixture = documentAutofocusFixture(
+      `<Gallery>
+        <DocumentFocusTarget id="unavailable" focus-key="unavailable" autofocus="" />
+        <turbo-frame id="nested">
+          <DocumentFocusTarget id="available" focus-key="available" focusable="" autofocus="" />
+        </turbo-frame>
+        <DocumentFocusTarget id="later" focus-key="later" focusable="" autofocus="false" />
+      </Gallery>`,
+    )
+    let first: ReactTestRenderer | undefined
+    let second: ReactTestRenderer | undefined
+    act(() => {
+      first = create(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              autofocus: fixture.autofocus,
+              registry: fixture.registry,
+              session: fixture.session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+    })
+    act(() => {
+      second = create(
+        createElement(
+          ExpoTurboProvider,
+          {
+            autofocus: fixture.autofocus,
+            registry: fixture.registry,
+            session: fixture.session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+
+    expect(fixture.mounted).toEqual(new Set(["id:available", "id:later"]))
+    expect(fixture.focused).toEqual(["id:available"])
+
+    act(() => second?.unmount())
+    act(() => first?.unmount())
+  })
+
+  test("consumes missing document adapters and focuses each whole-tree generation, not Streams", () => {
+    const fixture = documentAutofocusFixture(
+      '<Gallery id="gallery"><DocumentFocusTarget id="initial" focus-key="initial" focusable="" autofocus="" /></Gallery>',
+    )
+    const renderer = render(fixture.session, fixture.registry)
+
+    act(() => {
+      renderer.update(
+        createElement(
+          ExpoTurboProvider,
+          {
+            autofocus: fixture.autofocus,
+            registry: fixture.registry,
+            session: fixture.session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    expect(fixture.focused).toEqual([])
+
+    act(() => {
+      fixture.session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery id="gallery"><DocumentFocusTarget id="replacement" focus-key="replacement" focusable="" autofocus="" /></Gallery>',
+          { url: "https://example.test/replacement" },
+        ),
+      )
+    })
+    expect(fixture.focused).toEqual(["id:replacement"])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="streamed" focus-key="streamed" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+    })
+    expect(fixture.focused).toEqual(["id:replacement"])
+
+    act(() => {
+      fixture.session.replaceTree(fixture.session.tree)
+    })
+    expect(fixture.focused).toEqual(["id:replacement", "id:replacement"])
+
+    act(() => renderer.unmount())
+  })
+
+  test("reports redacted document autofocus failures without rolling back the rendered tree", async () => {
+    for (const autofocus of [
+      {
+        canFocus() {
+          throw new Error("secret document availability failure")
+        },
+        focus: () => undefined,
+      },
+      {
+        canFocus: (() => "secret nonboolean result") as unknown as () => boolean,
+        focus: () => undefined,
+      },
+      {
+        canFocus: () => true,
+        focus: (() =>
+          Promise.reject(new Error("secret document focus failure"))) as unknown as () => void,
+      },
+    ] satisfies AutofocusAdapter[]) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoText id="candidate" autofocus="">After</DemoText></Gallery>',
+          { url: "https://example.test/document" },
+        ),
+      )
+      const errors: ExpoTurboRenderError[] = []
+      let renderer: ReactTestRenderer | undefined
+      await act(async () => {
+        renderer = create(
+          createElement(
+            ExpoTurboProvider,
+            {
+              autofocus,
+              onError: (event) => errors.push(event),
+              registry: registryWithCounters(),
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        )
+        await Promise.resolve()
+      })
+      if (!renderer) throw new Error("renderer was not created")
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+      act(() => renderer?.unmount())
+    }
+  })
+
+  test("contains a throwing document autofocus observer once behind a redacted fallback", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoText id="candidate" autofocus="">After</DemoText></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    const fallbacks: ExpoTurboRenderError[] = []
+    let reports = 0
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          ExpoTurboProvider,
+          {
+            autofocus: {
+              canFocus() {
+                throw new Error("secret adapter failure")
+              },
+              focus: () => undefined,
+            },
+            onError() {
+              reports += 1
+              throw new Error("secret observer failure")
+            },
+            registry: registryWithCounters(),
+            renderError: (event) => {
+              fallbacks.push(event)
+              return createElement("render-error", { message: event.error.message })
+            },
+            session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("renderer was not created")
+
+    expect(reports).toBe(1)
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]?.error).toBeInstanceOf(StateError)
+    expect(String(fallbacks[0]?.error)).toContain("Document autofocus error reporting failed")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("secret")
+
+    act(() => renderer?.unmount())
+  })
+
   test("focuses the first mounted stable-id candidate once during StrictMode Frame mount", async () => {
     const mounted = new Set<string>()
     const focused: string[] = []
