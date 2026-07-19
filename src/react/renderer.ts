@@ -27,6 +27,8 @@ import {
   resolveComponentStyle,
   type StyleAdapter,
 } from "../adapters/styles"
+import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal"
+import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
 import type {
   DocumentVisitController,
@@ -196,6 +198,7 @@ interface RendererContextValue {
   readonly session: DocumentSession
   readonly scopes: DocumentStateScopes | undefined
   readonly state: DocumentStateStore | undefined
+  readonly streamSources: CableStreamSourceCollection | undefined
   readonly styles: StyleAdapter | undefined
 }
 
@@ -249,6 +252,7 @@ export interface ExpoTurboProviderProps {
   readonly scopes?: DocumentStateScopes
   readonly session: DocumentSession
   readonly state?: DocumentStateStore
+  readonly streamSources?: CableStreamSourceCollection
   readonly styles?: StyleAdapter
 }
 
@@ -289,6 +293,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       scopes: props.scopes,
       session: props.session,
       state: props.state,
+      streamSources: props.streamSources,
       styles: props.styles,
     }),
     [
@@ -308,6 +313,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.scopes,
       props.session,
       props.state,
+      props.streamSources,
       props.styles,
     ],
   )
@@ -961,24 +967,36 @@ interface ErrorBoundaryProps {
   readonly nodeKey: string
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+  readonly resetIdentity?: unknown
   readonly revision: number | string
 }
 
 interface ErrorBoundaryState {
   readonly error: Error | null
+  readonly resetIdentity: unknown
   readonly revision: number | string
 }
 
 const alreadyReportedRenderErrors = new WeakSet<Error>()
 
 class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { error: null, revision: this.props.revision }
+  state: ErrorBoundaryState = {
+    error: null,
+    resetIdentity: this.props.resetIdentity,
+    revision: this.props.revision,
+  }
 
   static getDerivedStateFromProps(
     props: ErrorBoundaryProps,
     state: ErrorBoundaryState,
   ): ErrorBoundaryState | null {
-    return state.revision === props.revision ? null : { error: null, revision: props.revision }
+    return state.revision === props.revision && state.resetIdentity === props.resetIdentity
+      ? null
+      : {
+          error: null,
+          resetIdentity: props.resetIdentity,
+          revision: props.revision,
+        }
   }
 
   static getDerivedStateFromError(error: Error): Pick<ErrorBoundaryState, "error"> {
@@ -1247,17 +1265,48 @@ function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
   return createElement(DocumentContext.Provider, { value: binding }, rendered)
 }
 
+interface ConnectedCableStreamSourceProps {
+  readonly node: ProtocolElement
+  readonly streamSources: CableStreamSourceCollection
+}
+
+function ConnectedCableStreamSource(props: ConnectedCableStreamSourceProps): ReactNode {
+  useLayoutEffect(() => {
+    try {
+      return props.streamSources.retain(props.node)
+    } catch (error) {
+      if (error instanceof Error && wasCableStreamSourceErrorReported(error)) {
+        alreadyReportedRenderErrors.add(error)
+      }
+      throw error
+    }
+  }, [props.node, props.streamSources])
+  return null
+}
+
 function ProtocolElementView(
   props: Readonly<{ node: ProtocolElement; revision: number }>,
 ): ReactNode {
   const context = useRenderer()
-  if (
-    props.node.kind === "stream" ||
-    props.node.kind === "stream-source" ||
-    props.node.kind === "template"
-  ) {
-    return null
+  if (props.node.kind === "stream-source") {
+    return context.streamSources
+      ? createElement(
+          NodeErrorBoundary,
+          {
+            nodeKey: props.node.key,
+            onError: context.onError,
+            renderError: context.renderError,
+            resetIdentity: context.streamSources,
+            revision: props.revision,
+          },
+          createElement(ConnectedCableStreamSource, {
+            node: props.node,
+            streamSources: context.streamSources,
+          }),
+        )
+      : null
   }
+  if (props.node.kind === "stream" || props.node.kind === "template") return null
   if (props.node.kind === "frame") {
     const frameId = attributeValue(props.node, "id")
     const rendered =
