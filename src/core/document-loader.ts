@@ -60,6 +60,12 @@ export interface DocumentSnapshotRestoreOptions {
   readonly onRestoreStart?: () => undefined
 }
 
+export interface DocumentSnapshotPreviewOptions {
+  readonly beforeClaim?: () => undefined
+  readonly beforeTreeCommit?: () => undefined
+  readonly onPreviewStart?: () => undefined
+}
+
 export type DocumentCommitCandidate =
   | (DocumentResponseReport &
       Readonly<{
@@ -118,6 +124,22 @@ export class DocumentSnapshotRestoreCommitError extends StateError {
   }
 }
 
+/** A cached preview replaced the document, but synchronous finalization failed. */
+export class DocumentSnapshotPreviewCommitError extends StateError {
+  readonly outcome: DocumentSnapshotRestoreReport
+
+  constructor(outcome: DocumentSnapshotRestoreReport) {
+    super("Document snapshot preview committed but session finalization failed")
+    this.outcome = outcome
+  }
+}
+
+interface DocumentSnapshotApplicationOptions {
+  readonly beforeClaim?: () => undefined
+  readonly beforeTreeCommit?: () => undefined
+  readonly onStart?: () => undefined
+}
+
 interface ActiveDocumentOperation {
   readonly controller: AbortController
   lease?: DestinationRequestLease
@@ -161,6 +183,18 @@ export class DocumentRequestLoader {
     return this.session.tree.document.url
   }
 
+  get documentClaimSerial(): number {
+    return this.ownership.currentDocumentClaimSerial
+  }
+
+  get treeState(): DocumentSession["treeState"] {
+    return this.session.treeState
+  }
+
+  subscribeTreeState(listener: () => void): () => void {
+    return this.session.subscribeTreeState(listener)
+  }
+
   captureCurrentSnapshot(cache: DocumentSnapshotCache): void {
     this.session.captureSnapshot(cache)
   }
@@ -171,8 +205,41 @@ export class DocumentRequestLoader {
     owner?: object,
     options: DocumentSnapshotRestoreOptions = {},
   ): DocumentSnapshotRestoreReport {
+    return this.applySnapshot(cache, url, owner, {
+      ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
+      ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
+      ...(options.onRestoreStart ? { onStart: options.onRestoreStart } : {}),
+    })
+  }
+
+  previewSnapshot(
+    cache: DocumentSnapshotCache,
+    url: string,
+    owner?: object,
+    options: DocumentSnapshotPreviewOptions = {},
+  ): DocumentSnapshotRestoreReport {
+    return this.applySnapshot(
+      cache,
+      url,
+      owner,
+      {
+        ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
+        ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
+        ...(options.onPreviewStart ? { onStart: options.onPreviewStart } : {}),
+      },
+      true,
+    )
+  }
+
+  private applySnapshot(
+    cache: DocumentSnapshotCache,
+    url: string,
+    owner: object | undefined,
+    options: DocumentSnapshotApplicationOptions,
+    preview = false,
+  ): DocumentSnapshotRestoreReport {
     const restoredUrl = this.resolveSource(url)
-    const cached = cache.get(restoredUrl)
+    const cached = preview ? cache.getPreview(restoredUrl) : cache.get(restoredUrl)
     if (!cached) return Object.freeze({ status: "miss", url: restoredUrl })
 
     const tree = cached.clone({ documentUrl: restoredUrl })
@@ -210,11 +277,13 @@ export class DocumentRequestLoader {
         this.release(active)
         return canceled
       }
-      if (options.onRestoreStart) {
-        const result = options.onRestoreStart()
+      if (options.onStart) {
+        const result = options.onStart()
         if (result !== undefined) {
           void Promise.resolve(result).catch(() => undefined)
-          throw new StateError("Document snapshot restore start callback must not return a value")
+          throw new StateError(
+            `Document snapshot ${preview ? "preview" : "restore"} start callback must not return a value`,
+          )
         }
         if (!this.owns(active)) {
           this.release(active)
@@ -243,15 +312,18 @@ export class DocumentRequestLoader {
       }
       this.release(active)
       try {
-        this.session.replaceTree(tree)
+        if (preview) this.session.replaceTreePreview(tree)
+        else this.session.replaceTree(tree)
       } catch {
-        throw new DocumentSnapshotRestoreCommitError(committed)
+        throw preview
+          ? new DocumentSnapshotPreviewCommitError(committed)
+          : new DocumentSnapshotRestoreCommitError(committed)
       }
       return committed
     } catch (error) {
       this.release(active)
       if (error instanceof ExpoTurboError) throw error
-      throw new StateError("Document snapshot restore failed")
+      throw new StateError(`Document snapshot ${preview ? "preview" : "restore"} failed`)
     }
   }
 

@@ -24,6 +24,33 @@ function response(xml: string, url: string): TurboResponse {
 }
 
 describe("document session snapshots", () => {
+  test("publishes frozen preview provenance only for whole-document replacements", () => {
+    const document = session('<Gallery><Panel id="panel" /></Gallery>')
+    const states: Array<Readonly<{ generation: number; preview: boolean }>> = []
+    const initial = document.treeState
+    const unsubscribe = document.subscribeTreeState(() => states.push(document.treeState))
+
+    expect(initial).toEqual({ generation: 0, preview: false })
+    expect(Object.isFrozen(initial)).toBe(true)
+    document.setAttribute("id:panel", "data-state", "mutated")
+    expect(document.treeState).toBe(initial)
+    expect(states).toEqual([])
+
+    document.replaceTreePreview(
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>'),
+    )
+    document.replaceTree(parseExpoTurboDocument('<Gallery><Canonical id="canonical" /></Gallery>'))
+    unsubscribe()
+    document.replaceTree(parseExpoTurboDocument('<Gallery><Later id="later" /></Gallery>'))
+
+    expect(states).toEqual([
+      { generation: 1, preview: true },
+      { generation: 2, preview: false },
+    ])
+    expect(states.every(Object.isFrozen)).toBe(true)
+    expect(document.treeState).toEqual({ generation: 3, preview: false })
+  })
+
   test("captures an independent tree and restores fresh clones repeatedly", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Panel id="panel" data-state="original" /></Gallery>', {

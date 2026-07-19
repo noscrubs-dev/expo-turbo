@@ -5,6 +5,7 @@ import { attributeValue, type ProtocolElement } from "./tree"
 export interface DestinationRequestLease {
   readonly controller: AbortController
   readonly destination: "document" | "frame"
+  readonly documentClaimSerial?: number
   readonly frame?: ProtocolElement
   readonly frameId?: string
   readonly sourceOwner?: object
@@ -20,6 +21,7 @@ export interface FrameRequestCheckpoint {
 
 class DestinationRequestOwnership {
   private document: DestinationRequestLease | undefined
+  private documentClaimSerial = 0
   private documentCommit: DestinationRequestLease | undefined
   private frameCommit: DestinationRequestLease | undefined
   private readonly frameGenerations = new WeakMap<ProtocolElement, number>()
@@ -27,6 +29,10 @@ class DestinationRequestOwnership {
   private readonly sourceOwners = new WeakMap<object, DestinationRequestLease>()
 
   constructor(private readonly session: DocumentSession) {}
+
+  get currentDocumentClaimSerial(): number {
+    return this.documentClaimSerial
+  }
 
   claimDocument(
     controller: AbortController,
@@ -39,6 +45,7 @@ class DestinationRequestOwnership {
     const lease: DestinationRequestLease = Object.freeze({
       controller,
       destination: "document",
+      documentClaimSerial: this.documentClaimSerial + 1,
       ...(sourceOwner ? { sourceOwner } : {}),
       treeGeneration,
     })
@@ -200,6 +207,12 @@ class DestinationRequestOwnership {
     if (this.frameCommit) {
       throw new StateError("Destination requests cannot start during a Frame commit transaction")
     }
+    if (
+      lease.destination === "document" &&
+      lease.documentClaimSerial !== this.documentClaimSerial + 1
+    ) {
+      throw new StateError("Document destination claim serial is invalid")
+    }
     const displaced = new Set<DestinationRequestLease>()
     const destinationLease =
       lease.destination === "document"
@@ -220,6 +233,9 @@ class DestinationRequestOwnership {
       }
     }
     if (lease.sourceOwner) this.sourceOwners.set(lease.sourceOwner, lease)
+    if (lease.destination === "document") {
+      this.documentClaimSerial = lease.documentClaimSerial as number
+    }
 
     // Install the new lease before aborting displaced work. Abort listeners may
     // synchronously start newer work, which must be able to supersede this one.

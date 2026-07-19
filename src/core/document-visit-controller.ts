@@ -11,6 +11,7 @@ import {
   DocumentCommitError,
   type DocumentLoadReport,
   type DocumentRequestLoader,
+  DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
@@ -28,6 +29,7 @@ export type DocumentVisitStatus = "canceled" | "completed" | "failed" | "initial
 
 export interface DocumentVisitSnapshot {
   readonly busy: boolean
+  readonly previewVisible: boolean
   readonly progressVisible: boolean
   readonly revision: number
   readonly status: DocumentVisitStatus
@@ -66,8 +68,15 @@ export type DocumentCachedVisitResult = Readonly<{
   url: string
 }>
 
+export type DocumentPreviewVisitResult = Readonly<{
+  source: "preview"
+  status: "canceled"
+  url: string
+}>
+
 export type DocumentVisitResult =
   | DocumentCachedVisitResult
+  | DocumentPreviewVisitResult
   | DocumentLoadReport
   | DocumentVisitDelegation
 
@@ -103,7 +112,17 @@ interface DocumentVisitHistoryGuard {
   readonly traversalEpoch?: number
 }
 
+interface DocumentPreviewContinuation {
+  readonly documentClaimSerial: number
+  readonly epoch: number
+  readonly generation: number
+  readonly history?: DocumentHistory
+  readonly historyEntry?: DocumentHistoryEntry
+  readonly url: string
+}
+
 export class DocumentVisitController {
+  private attemptEpoch = 0
   private readonly errorListeners = new Set<DocumentVisitErrorListener>()
   private readonly history: DocumentHistory | undefined
   private readonly listeners = new Set<DocumentVisitListener>()
@@ -111,13 +130,16 @@ export class DocumentVisitController {
   private readonly progressDelayMs: number
   private readonly requestOwner = Object.freeze({})
   private readonly snapshotCache: DocumentSnapshotCache | undefined
+  private notifiedPreviewVisible: boolean
   private progressHandle: unknown
   private progressVisible = false
+  private previewContinuationEpoch: number | undefined
   private revision = 0
   private snapshot: DocumentVisitSnapshot
   private status: DocumentVisitStatus = "initialized"
   private traversalEntry: DocumentHistoryEntry | undefined
   private traversalEpoch = 0
+  private treeStateUnsubscribe: (() => void) | undefined
   private visitEpoch = 0
 
   constructor(
@@ -133,13 +155,17 @@ export class DocumentVisitController {
       throw new RequestError("Document visit progress delay must be a non-negative number")
     }
     this.snapshot = this.createSnapshot()
+    this.notifiedPreviewVisible = this.snapshot.previewVisible
   }
 
   get state(): DocumentVisitSnapshot {
+    this.syncTreeState()
     return this.snapshot
   }
 
   visit(source: string, options: DocumentVisitOptions = {}): Promise<DocumentVisitResult> {
+    const documentClaimSerial = this.loader.documentClaimSerial
+    const treeGeneration = this.loader.treeState.generation
     const action = options.action ?? "advance"
     if (action !== "advance" && action !== "replace" && action !== "restore") {
       return Promise.reject(new TargetError("Document visit action is unsupported"))
@@ -170,15 +196,40 @@ export class DocumentVisitController {
       if (!historyPlan) {
         return Promise.reject(new TargetError("Document restore visits require configured history"))
       }
-      return this.startRestoreVisit(admission.url, options.navigation, historyPlan)
+      return this.startRestoreVisit(
+        admission.url,
+        options.navigation,
+        historyPlan,
+        documentClaimSerial,
+        treeGeneration,
+      )
+    }
+    const attemptEpoch = ++this.attemptEpoch
+    const cache = this.snapshotCache
+    if (cache && new URL(admission.url).hash === "") {
+      return this.startPreviewableVisit(
+        admission.url,
+        options.navigation,
+        cache,
+        historyPlan,
+        action,
+        attemptEpoch,
+        documentClaimSerial,
+        treeGeneration,
+      )
     }
     return this.startVisit(
       admission.url,
       options.navigation,
-      this.snapshotCache,
+      cache,
       historyPlan,
       undefined,
       action,
+      undefined,
+      attemptEpoch,
+      undefined,
+      documentClaimSerial,
+      treeGeneration,
     )
   }
 
@@ -190,6 +241,8 @@ export class DocumentVisitController {
     if (this.status === "started") {
       return Promise.resolve(undefined)
     }
+    const documentClaimSerial = this.loader.documentClaimSerial
+    const treeGeneration = this.loader.treeState.generation
     let currentUrl: string | undefined
     let historyPlan: DocumentVisitHistoryPlan | undefined
     try {
@@ -201,7 +254,19 @@ export class DocumentVisitController {
     } catch (error) {
       return Promise.reject(error)
     }
-    return this.startVisit(currentUrl, undefined, undefined, historyPlan, undefined, "replace")
+    return this.startVisit(
+      currentUrl,
+      undefined,
+      undefined,
+      historyPlan,
+      undefined,
+      "replace",
+      undefined,
+      undefined,
+      undefined,
+      documentClaimSerial,
+      treeGeneration,
+    )
   }
 
   /**
@@ -210,6 +275,8 @@ export class DocumentVisitController {
    * history-neutral GET.
    */
   restoreTraversal(entry: DocumentHistoryEntry): Promise<DocumentTraversalRestoreResult> {
+    const documentClaimSerial = this.loader.documentClaimSerial
+    const treeGeneration = this.loader.treeState.generation
     const traversalEpoch = ++this.traversalEpoch
     let direction: DocumentHistoryTraversalDirection
     let history: DocumentHistory
@@ -274,6 +341,8 @@ export class DocumentVisitController {
       try {
         const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
           beforeClaim: () => {
+            this.assertDocumentClaimSerial(documentClaimSerial)
+            this.assertTreeGeneration(treeGeneration)
             if (traversalEpoch !== this.traversalEpoch) {
               throw new StateError("Document snapshot traversal was superseded before ownership")
             }
@@ -295,6 +364,7 @@ export class DocumentVisitController {
             if (traversalEpoch !== this.traversalEpoch) {
               throw new StateError("Document snapshot traversal was superseded")
             }
+            this.previewContinuationEpoch = undefined
             epoch = ++this.visitEpoch
             this.progressVisible = false
             this.status = "started"
@@ -335,7 +405,19 @@ export class DocumentVisitController {
       kind: "traversal",
       traversalEpoch,
     }
-    return this.startVisit(restoredEntry.url, undefined, cache, undefined, historyGuard).then(
+    return this.startVisit(
+      restoredEntry.url,
+      undefined,
+      cache,
+      undefined,
+      historyGuard,
+      "advance",
+      undefined,
+      undefined,
+      undefined,
+      documentClaimSerial,
+      treeGeneration,
+    ).then(
       (result) => {
         this.reconcileTraversal(restoredEntry)
         return Object.freeze({
@@ -356,15 +438,37 @@ export class DocumentVisitController {
   cancel(): void {
     if (this.status !== "started") return
     const epoch = this.visitEpoch
-    if (!this.loader.cancel(this.requestOwner)) return
+    const continuationPending = this.previewContinuationEpoch === epoch
+    if (!this.loader.cancel(this.requestOwner) && !continuationPending) return
     if (epoch !== this.visitEpoch || this.status !== "started") return
+    if (continuationPending) this.previewContinuationEpoch = undefined
+    this.attemptEpoch += 1
     this.visitEpoch += 1
     this.finish("canceled")
   }
 
   subscribe(listener: DocumentVisitListener): () => void {
+    const wasEmpty = this.listeners.size === 0
+    if (wasEmpty) {
+      this.syncTreeState()
+      this.notifiedPreviewVisible = this.snapshot.previewVisible
+    }
     this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+    if (wasEmpty) {
+      this.treeStateUnsubscribe = this.loader.subscribeTreeState(() => {
+        const previewVisible = this.loader.treeState.preview
+        if (this.notifiedPreviewVisible === previewVisible) return
+        this.notifiedPreviewVisible = previewVisible
+        this.publish()
+      })
+    }
+    return () => {
+      this.listeners.delete(listener)
+      if (this.listeners.size === 0) {
+        this.treeStateUnsubscribe?.()
+        this.treeStateUnsubscribe = undefined
+      }
+    }
   }
 
   subscribeErrors(listener: DocumentVisitErrorListener): () => void {
@@ -372,10 +476,193 @@ export class DocumentVisitController {
     return () => this.errorListeners.delete(listener)
   }
 
+  private startPreviewableVisit(
+    source: string,
+    navigation: NavigationAdapter | undefined,
+    cache: DocumentSnapshotCache,
+    historyPlan: DocumentVisitHistoryPlan | undefined,
+    action: Extract<VisitAction, "advance" | "replace">,
+    attemptEpoch: number,
+    documentClaimSerial: number,
+    treeGeneration: number,
+  ): Promise<DocumentVisitResult> {
+    let epoch: number | undefined
+    let historyEntry: DocumentHistoryEntry | undefined
+    let previewClaimSerial: number | undefined
+    let previewFinalizationError: DocumentSnapshotPreviewCommitError | undefined
+    let previewGeneration: number | undefined
+    let report: ReturnType<DocumentRequestLoader["previewSnapshot"]> | undefined
+    try {
+      report = this.loader.previewSnapshot(cache, source, this.requestOwner, {
+        beforeClaim: () => {
+          this.assertAttemptEpoch(attemptEpoch)
+          this.assertDocumentClaimSerial(documentClaimSerial)
+          this.assertTreeGeneration(treeGeneration)
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
+          return undefined
+        },
+        beforeTreeCommit: () => {
+          this.assertAttemptEpoch(attemptEpoch)
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
+          this.loader.captureCurrentSnapshot(cache)
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
+          if (historyPlan) historyEntry = historyPlan.history.commitProposal(historyPlan.proposal)
+          if (epoch === undefined) {
+            throw new StateError("Document preview started without a visit lifecycle")
+          }
+          previewClaimSerial = this.loader.documentClaimSerial
+          previewGeneration = this.loader.treeState.generation + 1
+          this.previewContinuationEpoch = epoch
+          return undefined
+        },
+        onPreviewStart: () => {
+          this.assertAttemptEpoch(attemptEpoch)
+          if (historyPlan) this.assertHistoryPlan(historyPlan)
+          this.previewContinuationEpoch = undefined
+          epoch = ++this.visitEpoch
+          this.progressVisible = false
+          this.status = "started"
+          this.publish()
+          return undefined
+        },
+      })
+    } catch (error) {
+      const reported =
+        error instanceof Error ? error : new StateError("Document snapshot preview failed")
+      if (error instanceof DocumentSnapshotPreviewCommitError) {
+        report = error.outcome
+        previewFinalizationError = error
+      } else {
+        if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+          this.previewContinuationEpoch = undefined
+          this.finish("failed")
+          this.notifyError(reported)
+        }
+        return Promise.reject(reported)
+      }
+    }
+
+    if (!report) {
+      if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+        this.previewContinuationEpoch = undefined
+        this.finish("failed")
+      }
+      return Promise.reject(new StateError("Document snapshot preview produced no result"))
+    }
+
+    if (report.status === "miss") {
+      try {
+        this.assertAttemptEpoch(attemptEpoch)
+        this.assertDocumentClaimSerial(documentClaimSerial)
+        this.assertTreeGeneration(treeGeneration)
+      } catch (error) {
+        return Promise.reject(error)
+      }
+      return this.startVisit(
+        source,
+        navigation,
+        cache,
+        historyPlan,
+        undefined,
+        action,
+        undefined,
+        attemptEpoch,
+        undefined,
+        documentClaimSerial,
+        treeGeneration,
+      )
+    }
+
+    const canceled = Object.freeze({
+      source: "preview" as const,
+      status: "canceled" as const,
+      url: report.url,
+    })
+    if (report.status === "canceled" || epoch === undefined) {
+      if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
+        this.previewContinuationEpoch = undefined
+        this.finish("canceled")
+      }
+      return Promise.resolve(canceled)
+    }
+
+    if (previewClaimSerial === undefined || previewGeneration === undefined) {
+      if (epoch === this.visitEpoch && this.status === "started") {
+        this.previewContinuationEpoch = undefined
+        this.finish("failed")
+      }
+      return Promise.reject(new StateError("Document preview continuation checkpoint is missing"))
+    }
+
+    const continuation: DocumentPreviewContinuation = {
+      documentClaimSerial: previewClaimSerial,
+      epoch,
+      generation: previewGeneration,
+      ...(historyPlan ? { history: historyPlan.history } : {}),
+      ...(historyEntry ? { historyEntry } : {}),
+      url: report.url,
+    }
+    if (!this.previewContinuationCurrent(continuation)) {
+      if (epoch === this.visitEpoch && this.status === "started") {
+        this.previewContinuationEpoch = undefined
+        this.finish("canceled")
+        if (previewFinalizationError) this.notifyError(previewFinalizationError)
+      }
+      if (previewFinalizationError) return Promise.reject(previewFinalizationError)
+      return Promise.resolve(canceled)
+    }
+
+    if (previewFinalizationError) {
+      this.notifyError(previewFinalizationError)
+      if (!this.previewContinuationCurrent(continuation)) {
+        if (epoch === this.visitEpoch && this.status === "started") {
+          this.previewContinuationEpoch = undefined
+          this.finish("canceled")
+        }
+        return Promise.reject(previewFinalizationError)
+      }
+    }
+
+    this.scheduleProgress(epoch, false)
+    if (!this.previewContinuationCurrent(continuation)) {
+      if (epoch === this.visitEpoch && this.status === "started") {
+        this.previewContinuationEpoch = undefined
+        this.finish("canceled")
+      }
+      return Promise.resolve(canceled)
+    }
+
+    const revalidation = this.startVisit(
+      source,
+      navigation,
+      undefined,
+      undefined,
+      undefined,
+      action,
+      undefined,
+      undefined,
+      continuation,
+    ).catch((error: unknown) => {
+      if (epoch !== this.visitEpoch) return canceled
+      throw error
+    })
+    if (!previewFinalizationError) return revalidation
+    return revalidation.then(
+      () => {
+        throw previewFinalizationError
+      },
+      (error: unknown) => {
+        throw error
+      },
+    )
+  }
+
   private startRestoreVisit(
     source: string,
     navigation: NavigationAdapter | undefined,
     historyPlan: DocumentVisitHistoryPlan,
+    documentClaimSerial: number,
+    treeGeneration: number,
   ): Promise<DocumentVisitResult> {
     const restoreEpoch = this.visitEpoch
     const cache = this.snapshotCache
@@ -388,6 +675,10 @@ export class DocumentVisitController {
         undefined,
         "restore",
         restoreEpoch,
+        undefined,
+        undefined,
+        documentClaimSerial,
+        treeGeneration,
       )
     }
 
@@ -396,6 +687,8 @@ export class DocumentVisitController {
       const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
         beforeClaim: () => {
           this.assertRestoreEpoch(restoreEpoch)
+          this.assertDocumentClaimSerial(documentClaimSerial)
+          this.assertTreeGeneration(treeGeneration)
           this.assertHistoryPlan(historyPlan)
           return undefined
         },
@@ -408,6 +701,7 @@ export class DocumentVisitController {
         onRestoreStart: () => {
           this.assertRestoreEpoch(restoreEpoch)
           this.assertHistoryPlan(historyPlan)
+          this.previewContinuationEpoch = undefined
           epoch = ++this.visitEpoch
           this.progressVisible = false
           this.status = "started"
@@ -417,6 +711,8 @@ export class DocumentVisitController {
       })
       if (report.status === "miss") {
         this.assertRestoreEpoch(restoreEpoch)
+        this.assertDocumentClaimSerial(documentClaimSerial)
+        this.assertTreeGeneration(treeGeneration)
         return this.startVisit(
           source,
           navigation,
@@ -425,6 +721,10 @@ export class DocumentVisitController {
           undefined,
           "restore",
           restoreEpoch,
+          undefined,
+          undefined,
+          documentClaimSerial,
+          treeGeneration,
         )
       }
       if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
@@ -456,13 +756,31 @@ export class DocumentVisitController {
     historyGuard?: DocumentVisitHistoryGuard,
     action: VisitAction = "advance",
     restoreEpoch?: number,
+    attemptEpoch?: number,
+    continuation?: DocumentPreviewContinuation,
+    expectedDocumentClaimSerial?: number,
+    expectedTreeGeneration?: number,
   ): Promise<DocumentVisitResult> {
-    let epoch: number | undefined
+    let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
+    let continuationHistoryPlan: DocumentVisitHistoryPlan | undefined
     let redirect: TopLevelLocationDisposition | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
-      ...((historyGuard?.kind === "traversal" || historyPlan) && {
+      ...((historyGuard?.kind === "traversal" ||
+        historyPlan ||
+        attemptEpoch !== undefined ||
+        continuation ||
+        expectedDocumentClaimSerial !== undefined ||
+        expectedTreeGeneration !== undefined) && {
         beforeClaim: () => {
+          if (attemptEpoch !== undefined) this.assertAttemptEpoch(attemptEpoch)
+          if (continuation) this.assertPreviewContinuation(continuation, "pending")
+          if (expectedDocumentClaimSerial !== undefined) {
+            this.assertDocumentClaimSerial(expectedDocumentClaimSerial)
+          }
+          if (expectedTreeGeneration !== undefined) {
+            this.assertTreeGeneration(expectedTreeGeneration)
+          }
           if (restoreEpoch !== undefined) this.assertRestoreEpoch(restoreEpoch)
           if (
             historyGuard?.kind === "traversal" &&
@@ -475,6 +793,7 @@ export class DocumentVisitController {
         },
       }),
       beforeCommit: (candidate) => {
+        if (continuation) this.assertPreviewContinuation(continuation, "claimed")
         if (action === "restore" && candidate.url.includes("#")) {
           throw new TargetError("Document restore fragments require anchor restoration support")
         }
@@ -513,10 +832,24 @@ export class DocumentVisitController {
             proposal: historyPlan.history.retargetProposal(historyPlan.proposal, candidate.url),
           }
         }
+        if (
+          candidate.status === "committed" &&
+          continuation?.history &&
+          continuation.historyEntry &&
+          candidate.url !== continuation.historyEntry.url
+        ) {
+          continuationHistoryPlan = {
+            base: continuation.historyEntry,
+            history: continuation.history,
+            proposal: continuation.history.proposeReplace(candidate.url),
+          }
+          this.assertPreviewContinuation(continuation, "claimed")
+        }
         return "commit"
       },
-      ...((snapshotCache || historyPlan || historyGuard) && {
+      ...((snapshotCache || historyPlan || historyGuard || continuation) && {
         beforeTreeCommit: (candidate: DocumentTreeCommitCandidate) => {
+          if (continuation) this.assertPreviewContinuation(continuation, "claimed")
           if (
             historyGuard?.kind === "traversal" &&
             historyGuard.traversalEpoch !== this.traversalEpoch
@@ -534,6 +867,15 @@ export class DocumentVisitController {
           if (historyPlan && historyPlan.proposal.entry.url !== candidate.url) {
             throw new StateError("Document history proposal no longer matches the commit candidate")
           }
+          if (continuationHistoryPlan) this.assertHistoryPlan(continuationHistoryPlan)
+          if (
+            continuationHistoryPlan &&
+            continuationHistoryPlan.proposal.entry.url !== candidate.url
+          ) {
+            throw new StateError(
+              "Document preview redirect proposal no longer matches the commit candidate",
+            )
+          }
           if (snapshotCache) this.loader.captureCurrentSnapshot(snapshotCache)
           if (
             historyGuard?.kind === "traversal" &&
@@ -550,37 +892,30 @@ export class DocumentVisitController {
           }
           if (historyPlan) this.assertHistoryPlan(historyPlan)
           if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
+          if (continuationHistoryPlan) {
+            continuationHistoryPlan.history.commitProposal(continuationHistoryPlan.proposal)
+          }
         },
       }),
       onRequestStart: () => {
+        if (continuation) {
+          this.assertPreviewContinuation(continuation, "claimed")
+          this.previewContinuationEpoch = undefined
+          return undefined
+        }
         if (
           historyGuard?.kind === "traversal" &&
           historyGuard.traversalEpoch !== this.traversalEpoch
         ) {
           throw new StateError("Document traversal request was superseded before starting")
         }
+        this.previewContinuationEpoch = undefined
         epoch = ++this.visitEpoch
         this.progressVisible = false
         this.status = "started"
       },
     })
-    if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-      this.clearProgress()
-    }
-    if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-      const progressHandle = this.clock.setTimeout(() => {
-        if (epoch !== this.visitEpoch || this.status !== "started") return
-        this.progressHandle = undefined
-        this.progressVisible = true
-        this.publish()
-      }, this.progressDelayMs)
-      if (epoch !== this.visitEpoch || this.status !== "started") {
-        this.clock.clearTimeout(progressHandle)
-      } else {
-        this.progressHandle = progressHandle
-        this.publish()
-      }
-    }
+    if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, true)
 
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
@@ -621,6 +956,21 @@ export class DocumentVisitController {
       },
       (error: unknown) => {
         const reported = error instanceof Error ? error : new RequestError("Document visit failed")
+        if (
+          continuation &&
+          epoch !== undefined &&
+          epoch === this.visitEpoch &&
+          this.status === "started" &&
+          this.previewContinuationEpoch === epoch &&
+          !this.previewContinuationCurrent(continuation)
+        ) {
+          this.finish("canceled")
+          return Object.freeze({
+            source: "preview" as const,
+            status: "canceled" as const,
+            url: continuation.url,
+          })
+        }
         if (epoch !== undefined && epoch === this.visitEpoch) {
           const status =
             error instanceof DocumentCommitError && error.outcome.classification === "success"
@@ -662,6 +1012,59 @@ export class DocumentVisitController {
       this.canonicalDocumentUrl(this.loader.currentUrl) !== plan.base.url
     ) {
       throw new StateError("Document history or the active document changed during the visit")
+    }
+  }
+
+  private assertAttemptEpoch(epoch: number): void {
+    if (epoch !== this.attemptEpoch) {
+      throw new StateError("Document visit attempt was superseded before ownership")
+    }
+  }
+
+  private assertDocumentClaimSerial(serial: number): void {
+    if (this.loader.documentClaimSerial !== serial) {
+      throw new StateError("Document destination ownership changed before the visit could claim it")
+    }
+  }
+
+  private assertTreeGeneration(generation: number): void {
+    if (this.loader.treeState.generation !== generation) {
+      throw new StateError("Document tree changed before the visit could claim it")
+    }
+  }
+
+  private assertPreviewContinuation(
+    continuation: DocumentPreviewContinuation,
+    phase: "claimed" | "pending" = "pending",
+  ): void {
+    const treeState = this.loader.treeState
+    const expectedClaimSerial = continuation.documentClaimSerial + (phase === "claimed" ? 1 : 0)
+    if (
+      continuation.epoch !== this.visitEpoch ||
+      this.status !== "started" ||
+      this.loader.documentClaimSerial !== expectedClaimSerial ||
+      treeState.generation !== continuation.generation ||
+      !treeState.preview ||
+      this.canonicalDocumentUrl(this.loader.currentUrl) !== continuation.url
+    ) {
+      throw new StateError("Document preview revalidation was superseded")
+    }
+    if (
+      continuation.history &&
+      (!continuation.historyEntry ||
+        continuation.history.current !== continuation.historyEntry ||
+        continuation.historyEntry.url !== continuation.url)
+    ) {
+      throw new StateError("Document preview history changed before revalidation")
+    }
+  }
+
+  private previewContinuationCurrent(continuation: DocumentPreviewContinuation): boolean {
+    try {
+      this.assertPreviewContinuation(continuation)
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -755,16 +1158,56 @@ export class DocumentVisitController {
   private clearProgress(): void {
     const handle = this.progressHandle
     this.progressHandle = undefined
-    if (handle !== undefined) this.clock.clearTimeout(handle)
+    if (handle !== undefined) this.clearProgressHandle(handle)
+  }
+
+  private clearProgressHandle(handle: unknown): void {
+    try {
+      this.clock.clearTimeout(handle)
+    } catch {
+      this.notifyError(new StateError("Document visit progress timer cleanup failed"))
+    }
+  }
+
+  private scheduleProgress(epoch: number, publish: boolean): void {
+    if (epoch !== this.visitEpoch || this.status !== "started") return
+    this.clearProgress()
+    if (epoch !== this.visitEpoch || this.status !== "started") return
+    let progressHandle: unknown
+    try {
+      progressHandle = this.clock.setTimeout(() => {
+        if (epoch !== this.visitEpoch || this.status !== "started") return
+        this.progressHandle = undefined
+        this.progressVisible = true
+        this.publish()
+      }, this.progressDelayMs)
+    } catch {
+      this.notifyError(new StateError("Document visit progress timer setup failed"))
+      if (publish && epoch === this.visitEpoch && this.status === "started") this.publish()
+      return
+    }
+    if (epoch !== this.visitEpoch || this.status !== "started") {
+      this.clearProgressHandle(progressHandle)
+      return
+    }
+    this.progressHandle = progressHandle
+    if (publish) this.publish()
   }
 
   private createSnapshot(): DocumentVisitSnapshot {
     return Object.freeze({
       busy: this.status === "started",
+      previewVisible: this.loader.treeState.preview,
       progressVisible: this.status === "started" && this.progressVisible,
       revision: this.revision,
       status: this.status,
     })
+  }
+
+  private syncTreeState(): void {
+    if (this.snapshot.previewVisible === this.loader.treeState.preview) return
+    this.revision += 1
+    this.snapshot = this.createSnapshot()
   }
 
   private finish(status: Extract<DocumentVisitStatus, "canceled" | "completed" | "failed">): void {
@@ -772,6 +1215,7 @@ export class DocumentVisitController {
     const epoch = this.visitEpoch
     this.clearProgress()
     if (epoch !== this.visitEpoch || this.status !== "started") return
+    if (this.previewContinuationEpoch === epoch) this.previewContinuationEpoch = undefined
     this.progressVisible = false
     this.status = status
     this.publish()
