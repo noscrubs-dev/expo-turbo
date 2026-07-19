@@ -23,6 +23,11 @@ import {
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
 } from "./document-loader-lifecycle-internal"
+import {
+  DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
+  dispatchDocumentLoad,
+  type PreparedDocumentRender,
+} from "./document-render-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { registerDocumentVisitControllerLifecycle } from "./document-visit-controller-internal"
 import {
@@ -184,6 +189,9 @@ export class DocumentVisitController {
   private readonly requestOwner = Object.freeze({})
   private readonly snapshotCache: DocumentSnapshotCache | undefined
   private notifiedPreviewVisible: boolean
+  private pendingDocumentRender:
+    | Readonly<{ epoch: number; prepared: PreparedDocumentRender }>
+    | undefined
   private progressHandle: unknown
   private progressVisible = false
   private previewContinuationEpoch: number | undefined
@@ -354,7 +362,7 @@ export class DocumentVisitController {
    * supplied entry. Cached restoration is final; a miss performs one guarded
    * history-neutral GET.
    */
-  restoreTraversal(entry: DocumentHistoryEntry): Promise<DocumentTraversalRestoreResult> {
+  async restoreTraversal(entry: DocumentHistoryEntry): Promise<DocumentTraversalRestoreResult> {
     const documentClaimSerial = this.loader.documentClaimSerial
     const treeGeneration = this.loader.treeState.generation
     const traversalEpoch = ++this.traversalEpoch
@@ -418,6 +426,7 @@ export class DocumentVisitController {
     const cache = this.snapshotCache
     if (cache) {
       let epoch: number | undefined
+      let render: PreparedDocumentRender | undefined
       try {
         const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
           ...(this.visitLifecycle
@@ -442,6 +451,15 @@ export class DocumentVisitController {
             if (traversalEpoch !== this.traversalEpoch || history.current !== restoredEntry) {
               throw new StateError("Document history changed during snapshot restoration")
             }
+            if (this.visitLifecycle) {
+              render = this.trackDocumentRender(
+                this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                  preview: false,
+                  url: restoredEntry.url,
+                }),
+                epoch,
+              )
+            }
           },
           onRestoreStart: () => {
             if (traversalEpoch !== this.traversalEpoch) {
@@ -458,28 +476,40 @@ export class DocumentVisitController {
         if (report.status !== "miss") {
           this.reconcileTraversal(restoredEntry)
           if (epoch !== undefined && epoch === this.visitEpoch) {
-            this.clearProgress()
-            this.finish(report.status === "committed" ? "completed" : "canceled")
+            const rendering = this.documentRenderResult(render, epoch)
+            const rendered = typeof rendering === "boolean" ? rendering : await rendering
+            this.finishAfterDocumentRender(
+              render,
+              rendered,
+              epoch,
+              report.status === "committed" ? "completed" : "canceled",
+              report.status === "committed",
+            )
           }
-          return Promise.resolve(
-            Object.freeze({
-              direction,
-              entry: restoredEntry,
-              restorationData,
-              source: "snapshot" as const,
-              status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
-            }),
-          )
+          return Object.freeze({
+            direction,
+            entry: restoredEntry,
+            restorationData,
+            source: "snapshot" as const,
+            status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
+          })
         }
       } catch (error) {
         const reported = error instanceof Error ? error : new StateError("Document restore failed")
         this.reconcileTraversal(restoredEntry)
         if (epoch !== undefined && epoch === this.visitEpoch) {
-          this.clearProgress()
-          this.finish(error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed")
+          const rendering = this.documentRenderResult(render, epoch)
+          const rendered = typeof rendering === "boolean" ? rendering : await rendering
+          this.finishAfterDocumentRender(
+            render,
+            rendered,
+            epoch,
+            error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed",
+            error instanceof DocumentSnapshotRestoreCommitError,
+          )
           this.notifyError(reported)
         }
-        return Promise.reject(reported)
+        throw reported
       }
     }
 
@@ -524,8 +554,13 @@ export class DocumentVisitController {
     if (this.status !== "started") return
     const epoch = this.visitEpoch
     const continuationPending = this.previewContinuationEpoch === epoch
-    if (!this.loader.cancel(this.requestOwner) && !continuationPending) return
+    const pendingDocumentRender =
+      this.pendingDocumentRender?.epoch === epoch ? this.pendingDocumentRender : undefined
+    const requestCanceled = this.loader.cancel(this.requestOwner)
+    if (!requestCanceled && !continuationPending && !pendingDocumentRender) return
     if (epoch !== this.visitEpoch || this.status !== "started") return
+    pendingDocumentRender?.prepared.cancel()
+    if (!requestCanceled && !continuationPending) return
     if (continuationPending) this.previewContinuationEpoch = undefined
     this.attemptEpoch += 1
     this.visitEpoch += 1
@@ -561,7 +596,7 @@ export class DocumentVisitController {
     return () => this.errorListeners.delete(listener)
   }
 
-  private startPreviewableVisit(
+  private async startPreviewableVisit(
     source: string,
     navigation: NavigationAdapter | undefined,
     cache: DocumentSnapshotCache,
@@ -576,6 +611,7 @@ export class DocumentVisitController {
     let previewClaimSerial: number | undefined
     let previewFinalizationError: DocumentSnapshotPreviewCommitError | undefined
     let previewGeneration: number | undefined
+    let render: PreparedDocumentRender | undefined
     let report: ReturnType<DocumentRequestLoader["previewSnapshot"]> | undefined
     try {
       report = this.loader.previewSnapshot(cache, source, this.requestOwner, {
@@ -601,6 +637,15 @@ export class DocumentVisitController {
           previewClaimSerial = this.loader.documentClaimSerial
           previewGeneration = this.loader.treeState.generation + 1
           this.previewContinuationEpoch = epoch
+          if (this.visitLifecycle) {
+            render = this.trackDocumentRender(
+              this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                preview: true,
+                url: source,
+              }),
+              epoch,
+            )
+          }
           return undefined
         },
         onPreviewStart: () => {
@@ -683,6 +728,9 @@ export class DocumentVisitController {
       return Promise.reject(new StateError("Document preview continuation checkpoint is missing"))
     }
 
+    const previewRendering = this.documentRenderResult(render, epoch)
+    if (typeof previewRendering !== "boolean") await previewRendering
+
     const continuation: DocumentPreviewContinuation = {
       documentClaimSerial: previewClaimSerial,
       epoch,
@@ -746,7 +794,7 @@ export class DocumentVisitController {
     )
   }
 
-  private startRestoreVisit(
+  private async startRestoreVisit(
     source: string,
     navigation: NavigationAdapter | undefined,
     historyPlan: DocumentVisitHistoryPlan,
@@ -773,6 +821,7 @@ export class DocumentVisitController {
     }
 
     let epoch: number | undefined
+    let render: PreparedDocumentRender | undefined
     try {
       const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
         ...(this.visitLifecycle
@@ -791,6 +840,15 @@ export class DocumentVisitController {
           this.loader.captureCurrentSnapshot(cache)
           this.assertHistoryPlan(historyPlan)
           historyPlan.history.commitProposal(historyPlan.proposal)
+          if (this.visitLifecycle) {
+            render = this.trackDocumentRender(
+              this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                preview: false,
+                url: source,
+              }),
+              epoch,
+            )
+          }
         },
         onRestoreStart: () => {
           this.assertAttemptEpoch(attemptEpoch)
@@ -824,23 +882,37 @@ export class DocumentVisitController {
         )
       }
       if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-        this.finish(report.status === "committed" ? "completed" : "canceled")
+        const rendering = this.documentRenderResult(render, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        this.finishAfterDocumentRender(
+          render,
+          rendered,
+          epoch,
+          report.status === "committed" ? "completed" : "canceled",
+          report.status === "committed",
+        )
       }
-      return Promise.resolve(
-        Object.freeze({
-          source: "snapshot" as const,
-          status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
-          url: report.url,
-        }),
-      )
+      return Object.freeze({
+        source: "snapshot" as const,
+        status: report.status === "committed" ? ("restored" as const) : ("canceled" as const),
+        url: report.url,
+      })
     } catch (error) {
       const reported =
         error instanceof Error ? error : new StateError("Document restore visit failed")
       if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-        this.finish(error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed")
+        const rendering = this.documentRenderResult(render, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        this.finishAfterDocumentRender(
+          render,
+          rendered,
+          epoch,
+          error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed",
+          error instanceof DocumentSnapshotRestoreCommitError,
+        )
         this.notifyError(reported)
       }
-      return Promise.reject(reported)
+      throw reported
     }
   }
 
@@ -864,6 +936,7 @@ export class DocumentVisitController {
     let redirect: TopLevelLocationDisposition | undefined
     let redirectDelegation: RequestOperationResult<DocumentVisitDelegation> | undefined
     let redirectFollowupUrl: string | undefined
+    let render: PreparedDocumentRender | undefined
     const loaded = this.loader.load(source, this.requestOwner, {
       ...(snapshotCache && this.visitLifecycle
         ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
@@ -950,7 +1023,7 @@ export class DocumentVisitController {
         }
         return "commit"
       },
-      ...((snapshotCache || historyPlan || historyGuard || continuation) && {
+      ...((snapshotCache || historyPlan || historyGuard || continuation || this.visitLifecycle) && {
         beforeTreeCommit: (candidate: DocumentTreeCommitCandidate) => {
           if (continuation) this.assertPreviewContinuation(continuation, "claimed")
           if (
@@ -997,6 +1070,15 @@ export class DocumentVisitController {
           if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
           if (continuationHistoryPlan) {
             continuationHistoryPlan.history.commitProposal(continuationHistoryPlan.proposal)
+          }
+          if (this.visitLifecycle) {
+            render = this.trackDocumentRender(
+              this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                preview: false,
+                url: candidate.url,
+              }),
+              epoch,
+            )
           }
         },
       }),
@@ -1060,6 +1142,9 @@ export class DocumentVisitController {
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
         if (epoch === undefined || epoch !== this.visitEpoch) return report
+        const rendering = this.documentRenderResult(render, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        if (epoch !== this.visitEpoch || this.status !== "started") return report
         if (
           redirectFollowupUrl &&
           report.status === "committed" &&
@@ -1079,7 +1164,7 @@ export class DocumentVisitController {
               method: "GET",
               responseStatus: report.responseStatus,
             })
-            this.finish("failed")
+            this.finishAfterDocumentRender(render, rendered, epoch, "failed", false)
             this.notifyError(error)
             throw error
           }
@@ -1089,7 +1174,7 @@ export class DocumentVisitController {
               method: "GET",
               responseStatus: report.responseStatus,
             })
-            this.finish("failed")
+            this.finishAfterDocumentRender(render, rendered, epoch, "failed", false)
             this.notifyError(error)
             throw error
           }
@@ -1105,19 +1190,30 @@ export class DocumentVisitController {
               delegated.error instanceof Error
                 ? delegated.error
                 : new RequestError("Document redirect delegation failed")
-            this.finish("failed")
+            this.finishAfterDocumentRender(render, rendered, epoch, "failed", false)
             this.notifyError(reported)
             throw reported
           }
-          this.finish("completed")
+          this.finishAfterDocumentRender(render, rendered, epoch, "completed", false)
           return delegated.value
         }
-        if (report.status === "canceled" || report.status === "prevented") this.finish("canceled")
-        else this.finish(report.classification === "success" ? "completed" : "failed")
+        if (report.status === "canceled" || report.status === "prevented") {
+          this.finishAfterDocumentRender(render, rendered, epoch, "canceled", false)
+        } else {
+          this.finishAfterDocumentRender(
+            render,
+            rendered,
+            epoch,
+            report.classification === "success" ? "completed" : "failed",
+            report.status === "committed",
+          )
+        }
         return report
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         const reported = error instanceof Error ? error : new RequestError("Document visit failed")
+        const rendering = this.documentRenderResult(render, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
         if (
           redirectFollowupUrl &&
           epoch !== undefined &&
@@ -1148,7 +1244,13 @@ export class DocumentVisitController {
             error instanceof DocumentCommitError && error.outcome.classification === "success"
               ? "completed"
               : "failed"
-          this.finish(status)
+          this.finishAfterDocumentRender(
+            render,
+            rendered,
+            epoch,
+            status,
+            error instanceof DocumentCommitError,
+          )
           if (!requestLifecycleDefaultHandlingPrevented(error)) this.notifyError(reported)
         }
         throw reported
@@ -1419,6 +1521,62 @@ export class DocumentVisitController {
     if (this.snapshot.previewVisible === this.loader.treeState.preview) return
     this.revision += 1
     this.snapshot = this.createSnapshot()
+  }
+
+  private documentRenderResult(
+    prepared: PreparedDocumentRender | undefined,
+    epoch: number | undefined,
+  ): boolean | Promise<boolean> {
+    if (!prepared) return false
+    prepared.seal()
+    if (this.loader.treeState.generation !== prepared.commit.generation) prepared.cancel()
+    if (prepared.outcome !== undefined) return prepared.outcome === "rendered"
+    if (this.pendingDocumentRender?.prepared !== prepared) {
+      this.trackDocumentRender(prepared, epoch)
+    }
+    const pending = this.pendingDocumentRender
+    if (!pending || pending.prepared !== prepared) {
+      throw new StateError("Document render tracking was lost before acknowledgement")
+    }
+    return prepared.rendered.then((outcome) => {
+      if (this.pendingDocumentRender === pending) this.pendingDocumentRender = undefined
+      return outcome === "rendered"
+    })
+  }
+
+  private trackDocumentRender(
+    prepared: PreparedDocumentRender,
+    epoch: number | undefined,
+  ): PreparedDocumentRender {
+    if (epoch === undefined || epoch !== this.visitEpoch || this.status !== "started") {
+      prepared.cancel()
+      throw new StateError("Document render prepared without an active visit")
+    }
+    const pending = Object.freeze({ epoch, prepared })
+    if (prepared.outcome === undefined) this.pendingDocumentRender = pending
+    return prepared
+  }
+
+  private finishAfterDocumentRender(
+    prepared: PreparedDocumentRender | undefined,
+    rendered: boolean,
+    epoch: number,
+    status: Extract<DocumentVisitStatus, "canceled" | "completed" | "failed">,
+    load: boolean,
+  ): void {
+    if (epoch !== this.visitEpoch || this.status !== "started") return
+    this.finish(status)
+    if (
+      !load ||
+      !rendered ||
+      !prepared ||
+      epoch !== this.visitEpoch ||
+      this.snapshot.status !== status ||
+      this.loader.treeState.generation !== prepared.commit.generation
+    ) {
+      return
+    }
+    this.visitLifecycle && dispatchDocumentLoad(this.visitLifecycle, prepared.commit)
   }
 
   private finish(status: Extract<DocumentVisitStatus, "canceled" | "completed" | "failed">): void {

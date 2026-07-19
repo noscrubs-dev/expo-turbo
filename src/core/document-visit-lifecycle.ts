@@ -52,9 +52,39 @@ export class VisitEvent extends NotificationEvent<
   }
 }
 
+export type DocumentRenderMethod = "replace"
+
+export interface DocumentRenderEventDetail {
+  readonly generation: number
+  readonly preview: boolean
+  readonly renderMethod: DocumentRenderMethod
+  readonly url: string
+}
+
+export class DocumentRenderEvent extends NotificationEvent<"render", DocumentRenderEventDetail> {
+  constructor(detail: DocumentRenderEventDetail) {
+    super("render", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
+export interface DocumentLoadEventDetail {
+  readonly generation: number
+  readonly url: string
+}
+
+export class DocumentLoadEvent extends NotificationEvent<"load", DocumentLoadEventDetail> {
+  constructor(detail: DocumentLoadEventDetail) {
+    super("load", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
 export type DocumentVisitLifecycleEvent =
   | BeforeCacheEvent
   | BeforeVisitEvent
+  | DocumentLoadEvent
+  | DocumentRenderEvent
   | LinkClickEvent
   | VisitEvent
 
@@ -62,6 +92,8 @@ export interface DocumentVisitLifecycleEventMap {
   readonly "before-cache": BeforeCacheEvent
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
+  readonly load: DocumentLoadEvent
+  readonly render: DocumentRenderEvent
   readonly visit: VisitEvent
 }
 
@@ -87,11 +119,17 @@ export const DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.visit-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.render-dispatch",
+)
+export const DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.load-dispatch",
+)
 
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
- * Click and before-visit listeners may cancel admission; visit and before-cache
- * listeners are notification observers.
+ * Click and before-visit listeners may cancel admission; visit, before-cache,
+ * render, and load listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -112,6 +150,8 @@ export class DocumentVisitLifecycle {
       type !== "before-cache" &&
       type !== "before-visit" &&
       type !== "click" &&
+      type !== "load" &&
+      type !== "render" &&
       type !== "visit"
     ) {
       throw new StateError("Document visit lifecycle event type is invalid")
@@ -173,9 +213,17 @@ export class DocumentVisitLifecycle {
     this.dispatchNotification("visit", event, "Visit listener failed")
   }
 
+  [DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH](event: DocumentRenderEvent): void {
+    this.dispatchNotification("render", event, "Render listener failed")
+  }
+
+  [DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH](event: DocumentLoadEvent): void {
+    this.dispatchNotification("load", event, "Load listener failed")
+  }
+
   private dispatchNotification(
-    type: "before-cache" | "visit",
-    event: BeforeCacheEvent | VisitEvent,
+    type: "before-cache" | "load" | "render" | "visit",
+    event: BeforeCacheEvent | DocumentLoadEvent | DocumentRenderEvent | VisitEvent,
     listenerFailure: string,
   ): void {
     const errors: StateError[] = []
@@ -188,10 +236,7 @@ export class DocumentVisitLifecycle {
         continue
       }
       try {
-        rejectListenerResult(
-          result,
-          `${type === "visit" ? "Visit" : "Before-cache"} listener must return undefined`,
-        )
+        rejectListenerResult(result, `${notificationName(type)} listener must return undefined`)
       } catch {
         errors.push(new StateError(listenerFailure))
       }
@@ -218,6 +263,11 @@ export class DocumentVisitLifecycle {
       surfaceObserverError(observerReporterError(errors))
     }
   }
+}
+
+function notificationName(type: "before-cache" | "load" | "render" | "visit"): string {
+  if (type === "before-cache") return "Before-cache"
+  return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
 }
 
 export function admitDocumentVisitLifecycle(

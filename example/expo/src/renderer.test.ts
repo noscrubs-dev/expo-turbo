@@ -499,8 +499,10 @@ function renderDocumentLinks(
   createFormLinks?: (session: DocumentSession) => FormLinkSubmissionController,
   controllerOptions?: DocumentVisitControllerOptions,
   createProviderOptions?: (session: DocumentSession) => Readonly<{
+    autofocus?: AutofocusAdapter
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     onError?: (event: ExpoTurboRenderError) => void
+    renderError?: (event: ExpoTurboRenderError) => ReactNode
     strict?: boolean
   }>,
 ) {
@@ -4203,7 +4205,7 @@ describe("React protocol renderer", () => {
     await act(async () => {
       await nextTurn()
     })
-    expect(activeRevisionSubscriptions).toBe(0)
+    expect(activeRevisionSubscriptions).toBe(1)
     expect(activeNodeSubscriptions.get("id:first-unrelated")).toBe(1)
     expect(activeNodeSubscriptions.get("id:second-unrelated")).toBe(1)
 
@@ -4212,14 +4214,14 @@ describe("React protocol renderer", () => {
       await nextTurn()
     })
 
-    expect(activeRevisionSubscriptions).toBe(0)
+    expect(activeRevisionSubscriptions).toBe(1)
     expect(unmarked.requestIdCount()).toBe(0)
 
     await act(async () => {
       unmarked.session.setAttribute("id:plain", "data-turbo-preload", "")
       await nextTurn()
     })
-    expect(activeRevisionSubscriptions).toBe(1)
+    expect(activeRevisionSubscriptions).toBe(2)
     expect(activeNodeSubscriptions.get("id:first-unrelated")).toBe(1)
     expect(activeNodeSubscriptions.get("id:second-unrelated")).toBe(1)
 
@@ -4227,7 +4229,7 @@ describe("React protocol renderer", () => {
       unmarked.session.removeAttribute("id:plain", "data-turbo-preload")
       await nextTurn()
     })
-    expect(activeRevisionSubscriptions).toBe(0)
+    expect(activeRevisionSubscriptions).toBe(1)
     act(() => unmarked.renderer.unmount())
 
     const requests: TurboRequest[] = []
@@ -4265,7 +4267,7 @@ describe("React protocol renderer", () => {
       await nextTurn()
     })
     expect(requests).toEqual([])
-    expect(activeRevisionSubscriptions).toBe(2)
+    expect(activeRevisionSubscriptions).toBe(3)
     expect(activeNodeSubscriptions.get("id:source")).toBe(1)
     expect(activeNodeSubscriptions.get("id:other")).toBe(1)
 
@@ -4281,7 +4283,7 @@ describe("React protocol renderer", () => {
       "https://example.test/app/late",
     ])
     expect(insertedTarget.requestIdCount()).toBe(1)
-    expect(activeRevisionSubscriptions).toBe(2)
+    expect(activeRevisionSubscriptions).toBe(3)
     expect(activeNodeSubscriptions.get("id:late")).toBe(1)
     act(() => insertedTarget.renderer.unmount())
     expect(activeRevisionSubscriptions).toBe(0)
@@ -4578,6 +4580,400 @@ describe("React protocol renderer", () => {
     expect(harness.renderCount()).toBe(2)
 
     act(() => harness.renderer.unmount())
+  })
+
+  test("orders one StrictMode document render before autofocus, completion, and load", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const order: string[] = []
+    let harness: ReturnType<typeof renderDocumentLinks> | undefined
+    lifecycle.subscribe("render", (event) => {
+      expect(harness?.controller.state).toMatchObject({ busy: true, status: "started" })
+      expect(JSON.stringify(harness?.renderer.toJSON())).toContain("After")
+      order.push(`render:${event.detail.generation}`)
+    })
+    lifecycle.subscribe("load", (event) => {
+      expect(harness?.controller.state).toMatchObject({ busy: false, status: "completed" })
+      expect(order).toEqual([`render:${event.detail.generation}`, "focus:id:focus"])
+      order.push(`load:${event.detail.generation}`)
+    })
+    harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /><DemoText>Before</DemoText></Gallery>',
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({
+        autofocus: {
+          canFocus: () => true,
+          focus: (nodeKey) => {
+            order.push(`focus:${nodeKey}`)
+          },
+        },
+        strict: true,
+      }),
+    )
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness?.activation("/next")()
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DemoText id="focus" autofocus="">After</DemoText></Gallery>',
+        url: "https://example.test/next",
+      })
+      await visit
+    })
+
+    expect(order).toEqual(["render:1", "focus:id:focus", "load:1"])
+    expect(harness.controller.state).toMatchObject({ busy: false, status: "completed" })
+    act(() => harness?.renderer.unmount())
+  })
+
+  test("retains document rendering before a child layout effect starts a cached visit", async () => {
+    const currentUrl = "https://example.test/current"
+    const nextUrl = "https://example.test/next"
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      nextUrl,
+      parseExpoTurboDocument('<Gallery><DemoText>Preview</DemoText></Gallery>', {
+        url: nextUrl,
+      }),
+    )
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><VisitOnMount /></Gallery>', { url: currentUrl }),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("render", (event) => {
+      events.push(`render:${event.detail.preview ? "preview" : "canonical"}`)
+    })
+    lifecycle.subscribe("load", () => {
+      events.push("load")
+    })
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => "initial-layout-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { snapshotCache, visitLifecycle: lifecycle },
+    )
+    let visit: Promise<unknown> | undefined
+    function VisitOnMount(): ReactNode {
+      useLayoutEffect(() => {
+        visit = controller.visit(nextUrl)
+      }, [])
+      return createElement("visit-on-mount")
+    }
+    const visitOnMount = defineComponent({
+      attributes: {},
+      children: "none",
+      component: VisitOnMount,
+      schema: z.object({}),
+      tag: "VisitOnMount",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [visitOnMount],
+        name: "initial-layout-visit",
+        version: "0.1.0",
+      }),
+    )
+
+    const renderer = render(session, componentRegistry, {
+      documentController: controller,
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(events).toEqual(["render:preview"])
+    expect(JSON.stringify(renderer.toJSON())).toContain("Preview")
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe(nextUrl)
+
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DemoText>Canonical</DemoText></Gallery>',
+        url: nextUrl,
+      })
+      await visit
+    })
+
+    expect(events).toEqual(["render:preview", "render:canonical", "load"])
+    expect(JSON.stringify(renderer.toJSON())).toContain("Canonical")
+    expect(controller.state).toMatchObject({ busy: false, status: "completed" })
+    act(() => renderer.unmount())
+  })
+
+  test("waits for an exact response revision before consuming document autofocus", async () => {
+    const currentUrl = "https://example.test/current"
+    const nextUrl = "https://example.test/next"
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><VisitOnMount /></Gallery>', { url: currentUrl }),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    const order: string[] = []
+    lifecycle.subscribe("render", () => {
+      order.push("render")
+    })
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => "layout-revision-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { visitLifecycle: lifecycle },
+    )
+    let visit: Promise<unknown> | undefined
+    function VisitOnMount(): ReactNode {
+      useLayoutEffect(() => {
+        visit = controller.visit(nextUrl)
+      }, [])
+      return createElement("visit-on-mount")
+    }
+    function LayoutMutation(): ReactNode {
+      useLayoutEffect(() => {
+        order.push("layout")
+        const gallery = session.tree.getElementById("gallery")
+        if (gallery) session.setAttribute(gallery.key, "data-layout", "true")
+      }, [])
+      return createElement("layout-mutation")
+    }
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: VisitOnMount,
+            schema: z.object({}),
+            tag: "VisitOnMount",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: LayoutMutation,
+            schema: z.object({}),
+            tag: "LayoutMutation",
+          }),
+        ],
+        name: "layout-revision-fixture",
+        version: "0.1.0",
+      }),
+    )
+
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: () => true,
+        focus: (nodeKey) => {
+          order.push(`focus:${nodeKey}`)
+        },
+      },
+      documentController: controller,
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(pending).toHaveLength(1)
+
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery id="gallery"><LayoutMutation /><DemoText id="focus" autofocus="">After</DemoText></Gallery>',
+        url: nextUrl,
+      })
+      await visit
+    })
+
+    expect(order).toEqual(["layout", "render", "focus:id:focus"])
+    expect(controller.state).toMatchObject({ busy: false, status: "completed" })
+    act(() => renderer.unmount())
+  })
+
+  test("does not consume response autofocus after post-commit cancellation suppresses render", async () => {
+    const currentUrl = "https://example.test/current"
+    const nextUrl = "https://example.test/next"
+    const pending: {
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><VisitOnMount /></Gallery>', { url: currentUrl }),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const focused: string[] = []
+    lifecycle.subscribe("render", () => {
+      events.push("render")
+    })
+    lifecycle.subscribe("load", () => {
+      events.push("load")
+    })
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () => new Promise<TurboResponse>((resolve) => pending.push({ resolve })),
+        },
+        { next: () => "cancelled-render-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { visitLifecycle: lifecycle },
+    )
+    let canceled = false
+    session.subscribe(session.tree.document.key, () => {
+      if (canceled || session.treeGeneration !== 1) return
+      canceled = true
+      controller.cancel()
+    })
+    let visit: Promise<unknown> | undefined
+    function VisitOnMount(): ReactNode {
+      useLayoutEffect(() => {
+        visit = controller.visit(nextUrl)
+      }, [])
+      return createElement("visit-on-mount")
+    }
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: VisitOnMount,
+            schema: z.object({}),
+            tag: "VisitOnMount",
+          }),
+        ],
+        name: "cancelled-render-fixture",
+        version: "0.1.0",
+      }),
+    )
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: () => true,
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+      },
+      documentController: controller,
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(pending).toHaveLength(1)
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DemoText id="focus" autofocus="">After</DemoText></Gallery>',
+        url: nextUrl,
+      })
+      await visit
+    })
+
+    expect(controller.state).toMatchObject({ busy: false, status: "completed" })
+    expect(canceled).toBe(true)
+    expect(events).toEqual([])
+    expect(focused).toEqual([])
+    act(() => renderer.unmount())
+  })
+
+  test("acknowledges a root render-error fallback without hanging document load", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    const errors: ExpoTurboRenderError[] = []
+    let harness: ReturnType<typeof renderDocumentLinks> | undefined
+    lifecycle.subscribe("render", (event) => {
+      expect(harness?.controller.state.status).toBe("started")
+      expect(JSON.stringify(harness?.renderer.toJSON())).toContain("Document fallback")
+      events.push(`render:${event.detail.generation}`)
+    })
+    lifecycle.subscribe("load", (event) => {
+      expect(harness?.controller.state.status).toBe("completed")
+      events.push(`load:${event.detail.generation}`)
+    })
+    harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/broken" /></Gallery>',
+      (request) => new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({
+        onError: (event) => errors.push(event),
+        renderError: () => createElement("document-fallback", null, "Document fallback"),
+      }),
+    )
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness?.activation("/broken")()
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => "<Gallery><Unknown /></Gallery>",
+        url: "https://example.test/broken",
+      })
+      await visit
+    })
+
+    expect(events).toEqual(["render:1", "load:1"])
+    expect(errors).toHaveLength(1)
+    expect(JSON.stringify(harness.renderer.toJSON())).toContain("Document fallback")
+    act(() => harness?.renderer.unmount())
   })
 
   test("emits native click before document visit lifecycle and lets cancellation start no work", async () => {

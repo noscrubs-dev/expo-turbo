@@ -10,7 +10,13 @@ import {
 } from "./document-loader-lifecycle-internal"
 import { documentCachePolicy } from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
+import {
+  DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
+  type PreparedDocumentRender,
+  prepareDocumentRender,
+} from "./document-render-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+import type { DocumentVisitLifecycle } from "./document-visit-lifecycle"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import {
@@ -235,6 +241,13 @@ export class DocumentRequestLoader {
 
   captureCurrentSnapshot(cache: DocumentSnapshotCache): void {
     this.session.captureSnapshot(cache)
+  }
+
+  [DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](
+    lifecycle: DocumentVisitLifecycle,
+    detail: Readonly<{ preview: boolean; url: string }>,
+  ): PreparedDocumentRender {
+    return prepareDocumentRender(this.session, lifecycle, detail)
   }
 
   restoreSnapshot(

@@ -10,6 +10,12 @@ import {
 } from "./document-history"
 import { DocumentRequestLoader } from "./document-loader"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
+import {
+  acknowledgeDocumentRender,
+  documentRenderLifecycleRevision,
+  retainDocumentRenderer,
+  subscribeDocumentRenderLifecycle,
+} from "./document-render-lifecycle-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
 import {
@@ -44,6 +50,17 @@ function deferred<T>() {
     reject = rejectPromise
   })
   return { promise, reject, resolve }
+}
+
+function waitForDocumentRenderSeal(session: DocumentSession, revision: number): Promise<void> {
+  if (documentRenderLifecycleRevision(session) > revision) return Promise.resolve()
+  return new Promise((resolve) => {
+    const unsubscribe = subscribeDocumentRenderLifecycle(session, () => {
+      if (documentRenderLifecycleRevision(session) <= revision) return
+      unsubscribe()
+      resolve()
+    })
+  })
 }
 
 interface PendingRequest {
@@ -624,6 +641,157 @@ describe("FormSubmissionController", () => {
           { visitLifecycle: null } as never,
         ),
     ).toThrow(PropsError)
+  })
+
+  test("settles document forms after native render and loads only successful responses", async () => {
+    for (const candidate of [
+      { classification: "success", load: true, status: 200 },
+      { classification: "client-error", load: false, status: 422 },
+      { classification: "server-error", load: false, status: 500 },
+    ] as const) {
+      const session = fixture()
+      const controls = registry(session, "document-form")
+      const lifecycle = new DocumentVisitLifecycle()
+      const releaseRenderer = retainDocumentRenderer(session)
+      const events: string[] = []
+      lifecycle.subscribe("render", (event) => {
+        expect(settled).toBe(false)
+        events.push(`render:${event.detail.generation}`)
+      })
+      lifecycle.subscribe("load", (event) => {
+        expect(controls.submissionState.busy).toBe(false)
+        expect(settled).toBe(false)
+        events.push(`load:${event.detail.generation}`)
+      })
+      const committed = new Promise<void>((resolve) => {
+        const unsubscribe = session.subscribeTreeState(() => {
+          if (session.treeGeneration !== 1) return
+          unsubscribe()
+          resolve()
+        })
+      })
+      const controller = new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              `<Gallery><RenderedForm id="render-${candidate.status}" /></Gallery>`,
+              { status: candidate.status },
+            ),
+        },
+        { visitLifecycle: lifecycle },
+      )
+      let settled = false
+      const renderRevision = documentRenderLifecycleRevision(session)
+      const submission = controller.submit(
+        proposal(controls, `document-render-${candidate.status}`),
+      )
+      void submission.then(() => {
+        settled = true
+      })
+
+      await committed
+      await waitForDocumentRenderSeal(session, renderRevision)
+      expect(session.tree.getElementById(`render-${candidate.status}`)).toBeDefined()
+      expect({ events, settled }).toEqual({ events: [], settled: false })
+
+      const generation = session.treeGeneration
+      const acknowledgement = acknowledgeDocumentRender(
+        session,
+        session.tree.document,
+        generation,
+        session.revision,
+      )
+      expect(events).toEqual([`render:${generation}`])
+      acknowledgement?.finish()
+
+      expect(await submission).toMatchObject({
+        application: "document",
+        classification: candidate.classification,
+        status: "applied",
+      })
+      expect(events).toEqual(
+        candidate.load ? [`render:${generation}`, `load:${generation}`] : [`render:${generation}`],
+      )
+      releaseRenderer()
+    }
+  })
+
+  test("waits for embedded document Streams to reach the sealed visual revision", async () => {
+    const session = fixture()
+    const lifecycle = new DocumentVisitLifecycle()
+    const releaseRenderer = retainDocumentRenderer(session)
+    const events: string[] = []
+    lifecycle.subscribe("render", (event) => {
+      events.push(`render:${event.detail.generation}`)
+    })
+    lifecycle.subscribe("load", (event) => {
+      events.push(`load:${event.detail.generation}`)
+    })
+    const earlyAcknowledgements: unknown[] = []
+    const unsubscribe = session.subscribeRevision(() => {
+      if (session.treeGeneration !== 1) return
+      earlyAcknowledgements.push(
+        acknowledgeDocumentRender(
+          session,
+          session.tree.document,
+          session.treeGeneration,
+          session.revision,
+        ),
+      )
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            `<Gallery>
+              <Target id="document-target"><Old /></Target>
+              <turbo-stream action="update" target="document-target">
+                <template><EmbeddedResult id="document-stream-result" /></template>
+              </turbo-stream>
+            </Gallery>`,
+          ),
+      },
+      { visitLifecycle: lifecycle },
+    )
+    const renderRevision = documentRenderLifecycleRevision(session)
+    let settled = false
+    const submission = controller.submit(
+      proposal(registry(session, "document-form"), "document-render-with-stream"),
+    )
+    void submission.then(() => {
+      settled = true
+    })
+
+    await waitForDocumentRenderSeal(session, renderRevision)
+    expect(session.tree.getElementById("document-stream-result")).toBeDefined()
+    expect(earlyAcknowledgements.length).toBeGreaterThan(0)
+    expect(earlyAcknowledgements.every((acknowledgement) => acknowledgement === undefined)).toBe(
+      true,
+    )
+    expect({ events, settled }).toEqual({ events: [], settled: false })
+
+    const generation = session.treeGeneration
+    const acknowledgement = acknowledgeDocumentRender(
+      session,
+      session.tree.document,
+      generation,
+      session.revision,
+    )
+    expect(events).toEqual([`render:${generation}`])
+    acknowledgement?.finish()
+
+    expect(await submission).toMatchObject({
+      application: "document",
+      status: "applied",
+      streams: { actions: [{ action: "update", status: "applied" }] },
+    })
+    expect(events).toEqual([`render:${generation}`, `load:${generation}`])
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("emits successful document form visits after request and activity cleanup", async () => {

@@ -19,6 +19,11 @@ import {
   beginDocumentNavigation,
   currentDocumentNavigationEpoch,
 } from "./document-navigation-epoch"
+import {
+  dispatchDocumentLoad,
+  type PreparedDocumentRender,
+  prepareDocumentRender,
+} from "./document-render-lifecycle-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
   BeforeCacheEvent,
@@ -735,6 +740,8 @@ export class FormSubmissionController {
       }
 
       let missingEvent: FrameMissingEvent | undefined
+      let documentRender: PreparedDocumentRender | undefined
+      let documentRendered = false
       let visitControlReload:
         | Readonly<{
             body: string
@@ -921,21 +928,29 @@ export class FormSubmissionController {
         application = visitControlReload
           ? this.promoted(response, proposal.destination, visitControlReload.frameId)
           : missingEvent
-            ? settle(this.prevented(response, proposal.destination))
-            : settle(
-                await this.apply(
-                  response,
-                  proposal,
-                  identity,
-                  activeLease,
-                  preparedFrame,
-                  historyPlan,
-                  frameHistoryPlan,
-                ),
+            ? this.prevented(response, proposal.destination)
+            : await this.apply(
+                response,
+                proposal,
+                identity,
+                activeLease,
+                preparedFrame,
+                historyPlan,
+                frameHistoryPlan,
+                (prepared) => {
+                  documentRender = prepared
+                },
               )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
         this.ownership.release(activeLease)
+        if (documentRender) {
+          documentRender.seal()
+          if (this.session.treeGeneration !== documentRender.commit.generation) {
+            documentRender.cancel()
+          }
+          documentRendered = (await documentRender.rendered) === "rendered"
+        }
       }
       if (missingEvent && this.options.frameLifecycle) {
         await executeFrameMissingVisit(this.options.frameLifecycle, missingEvent)
@@ -944,7 +959,17 @@ export class FormSubmissionController {
         await executeFrameVisitControlReload(this.options.frameLifecycle, visitControlReload)
         return settle(application)
       }
-      return application
+      const settled = settle(application)
+      if (
+        documentRendered &&
+        documentRender &&
+        response.classification === "success" &&
+        this.session.treeGeneration === documentRender.commit.generation &&
+        this.options.visitLifecycle
+      ) {
+        dispatchDocumentLoad(this.options.visitLifecycle, documentRender.commit)
+      }
+      return settled
     } catch (error) {
       controller.abort()
       const reported =
@@ -1082,6 +1107,7 @@ export class FormSubmissionController {
     preparedFrame?: PreparedFrameResponse,
     historyPlan?: DocumentFormHistoryPlan,
     frameHistoryPlan?: FrameFormHistoryPlan,
+    onDocumentRender?: (prepared: PreparedDocumentRender) => void,
   ): Promise<FormSubmissionReport> {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
@@ -1361,6 +1387,14 @@ export class FormSubmissionController {
         if (!current) return this.canceled(candidate, destination)
       }
       try {
+        if (this.options.visitLifecycle) {
+          onDocumentRender?.(
+            prepareDocumentRender(this.session, this.options.visitLifecycle, {
+              preview: false,
+              url: appliedUrl,
+            }),
+          )
+        }
         this.session.replaceTree(tree)
       } finally {
         if (candidate.classification !== "success" && this.session.tree === tree) {

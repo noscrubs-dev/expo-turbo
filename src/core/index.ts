@@ -11,6 +11,11 @@ export * from "./document-visit-controller"
 export {
   BeforeCacheEvent,
   BeforeVisitEvent,
+  DocumentLoadEvent,
+  type DocumentLoadEventDetail,
+  DocumentRenderEvent,
+  type DocumentRenderEventDetail,
+  type DocumentRenderMethod,
   DocumentVisitLifecycle,
   type DocumentVisitLifecycleEvent,
   type DocumentVisitLifecycleEventMap,
