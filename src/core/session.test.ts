@@ -51,6 +51,44 @@ describe("document session snapshots", () => {
     expect(document.treeState).toEqual({ generation: 3, preview: false })
   })
 
+  test("publishes one session revision notification for each logical commit", () => {
+    const document = session('<Gallery><Panel id="panel" /></Gallery>')
+    const revisions: number[] = []
+    const unsubscribe = document.subscribeRevision(() => revisions.push(document.revision))
+
+    document.setAttribute("id:panel", "data-state", "changed")
+    document.mutate((tree) => {
+      const panel = tree.getElementById("panel")
+      if (!panel) throw new TargetError("Expected panel fixture")
+      tree.setAttribute(panel, "data-extra", "present")
+      return ["id:panel", "id:panel"]
+    })
+    document.replaceTreePreview(
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>'),
+    )
+    document.replaceTree(parseExpoTurboDocument('<Gallery><Canonical id="canonical" /></Gallery>'))
+    unsubscribe()
+    document.setAttribute("id:canonical", "data-state", "ignored")
+
+    expect(revisions).toEqual([1, 2, 3, 4])
+  })
+
+  test("keeps a revision committed when its session-wide listener fails", () => {
+    const document = session('<Gallery><Panel id="panel" /></Gallery>')
+    document.subscribeRevision(() => {
+      throw new Error("revision listener failed")
+    })
+
+    expect(() => document.setAttribute("id:panel", "data-state", "committed")).toThrow(
+      SessionCommitError,
+    )
+
+    expect(document.revision).toBe(1)
+    expect(document.tree.getElementById("panel")?.attributes).toContainEqual(
+      expect.objectContaining({ name: "data-state", value: "committed" }),
+    )
+  })
+
   test("captures an independent tree and restores fresh clones repeatedly", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Panel id="panel" data-state="original" /></Gallery>', {

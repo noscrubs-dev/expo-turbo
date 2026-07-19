@@ -4,6 +4,7 @@ import {
   type DocumentHistoryHostAdapter,
   type DocumentHistoryState,
   type DocumentLoadReport,
+  DocumentPreloader,
   DocumentRequestLoader,
   type DocumentSession,
   DocumentSnapshotCache,
@@ -38,6 +39,7 @@ export interface DemoDocumentRuntime {
   ): DemoDocumentBootstrap;
   readonly controller: DocumentVisitController;
   readonly history: DocumentHistory;
+  readonly preloader: DocumentPreloader;
   readonly snapshotCache: DocumentSnapshotCache;
   dispose(): void;
 }
@@ -87,6 +89,13 @@ export function createDemoDocumentRuntime(
     historyHost,
   );
   const snapshotCache = new DocumentSnapshotCache();
+  let preloadRequestId = 0;
+  const preloader = new DocumentPreloader(
+    session,
+    fetchAdapter,
+    { next: () => `demo-document-preload-${++preloadRequestId}` },
+    snapshotCache,
+  );
   const loader = new DocumentRequestLoader(
     session,
     fetchAdapter,
@@ -160,10 +169,12 @@ export function createDemoDocumentRuntime(
     },
     controller,
     dispose(): void {
+      preloader.cancelAll();
       controller.cancel();
       loader.cancel();
     },
     history,
+    preloader,
     snapshotCache,
   });
 }

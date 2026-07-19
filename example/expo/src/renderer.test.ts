@@ -33,6 +33,7 @@ import {
   DocumentHistory,
   type DocumentHistoryEntry,
   type DocumentHistoryWriteMethod,
+  DocumentPreloader,
   DocumentRequestLoader,
   DocumentSnapshotCache,
   DocumentStateScopes,
@@ -53,6 +54,7 @@ import {
   FrameRequestLoader,
   parseExpoTurboDocument,
   renderedNodeTextContent,
+  RequestError,
   StateError,
   SubscriptionError,
   TargetError,
@@ -99,6 +101,7 @@ const globalWithAct = globalThis as typeof globalThis & {
 }
 globalWithAct.IS_REACT_ACT_ENVIRONMENT = true
 const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html"
+const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 function host(type: string, props: Readonly<{ children?: ReactNode }>): ReactNode {
   return createElement(type, null, props.children)
@@ -155,6 +158,7 @@ function render(
     autofocus?: AutofocusAdapter
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
+    documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
@@ -162,18 +166,19 @@ function render(
     navigation?: NavigationAdapter
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
+    strict?: boolean
     streamSources?: ExpoTurboProviderProps["streamSources"]
   }> = {},
 ): ReactTestRenderer {
   let renderer: ReactTestRenderer | undefined
+  const { strict, ...providerOptions } = options
   act(() => {
-    renderer = create(
-      createElement(
-        ExpoTurboProvider,
-        { registry, session, ...options },
-        createElement(ExpoTurboRoot),
-      ),
+    const provider = createElement(
+      ExpoTurboProvider,
+      { registry, session, ...providerOptions },
+      createElement(ExpoTurboRoot),
     )
+    renderer = create(strict ? createElement(StrictMode, null, provider) : provider)
   })
   if (!renderer) throw new Error("renderer was not created")
   return renderer
@@ -491,6 +496,11 @@ function renderDocumentLinks(
   frameFetch?: (request: TurboRequest) => Promise<TurboResponse>,
   createFormLinks?: (session: DocumentSession) => FormLinkSubmissionController,
   controllerOptions?: DocumentVisitControllerOptions,
+  createProviderOptions?: (session: DocumentSession) => Readonly<{
+    documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
+    onError?: (event: ExpoTurboRenderError) => void
+    strict?: boolean
+  }>,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
   let documentRequestIds = 0
@@ -529,6 +539,7 @@ function renderDocumentLinks(
     tag: "DocumentLink",
   })
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
+  const providerOptions = createProviderOptions?.(session) ?? {}
   const formLinks = createFormLinks?.(session)
   const controller = new DocumentVisitController(
     new DocumentRequestLoader(
@@ -555,17 +566,21 @@ function renderDocumentLinks(
         controller,
       )
     : undefined
-  const renderer = render(
-    session,
-    registryWithCounters().use(
-      defineComponentModule({
-        components: [link],
-        name: "document-link-component",
-        version: "0.1.0",
-      }),
-    ),
-    { documentController: controller, formLinks, frames, navigation },
+  const componentRegistry = registryWithCounters().use(
+    defineComponentModule({
+      components: [link],
+      name: "document-link-component",
+      version: "0.1.0",
+    }),
   )
+  const rendererOptions = {
+    documentController: controller,
+    formLinks,
+    frames,
+    navigation,
+    ...providerOptions,
+  }
+  const renderer = render(session, componentRegistry, rendererOptions)
   return {
     activation(href: string) {
       const activation = activations.get(href)
@@ -579,7 +594,62 @@ function renderDocumentLinks(
     renderCount: () => renders,
     renderer,
     session,
+    updateErrorObserver(onError: (event: ExpoTurboRenderError) => void) {
+      const { strict, ...options } = rendererOptions
+      const provider = createElement(
+        ExpoTurboProvider,
+        { registry: componentRegistry, session, ...options, onError },
+        createElement(ExpoTurboRoot),
+      )
+      act(() => {
+        renderer.update(strict ? createElement(StrictMode, null, provider) : provider)
+      })
+    },
   }
+}
+
+function renderPreloadingDocumentLinks(
+  xml: string,
+  fetch: (request: TurboRequest) => Promise<TurboResponse>,
+  options: Readonly<{
+    documentFetch?: (request: TurboRequest) => Promise<TurboResponse>
+    onError?: (event: ExpoTurboRenderError) => void
+    prepareSession?: (session: DocumentSession) => void
+    strict?: boolean
+    url?: string
+  }> = {},
+) {
+  const cache = new DocumentSnapshotCache()
+  let requestIds = 0
+  let preloader: DocumentPreloader | undefined
+  const harness = renderDocumentLinks(
+    xml,
+    options.documentFetch ??
+      (async () => {
+        throw new Error("automatic preload invoked the document visit transport")
+      }),
+    options.url,
+    undefined,
+    undefined,
+    undefined,
+    { snapshotCache: cache },
+    (session) => {
+      options.prepareSession?.(session)
+      preloader = new DocumentPreloader(
+        session,
+        { fetch },
+        { next: () => `automatic-preload-${++requestIds}` },
+        cache,
+      )
+      return {
+        documentPreloader: preloader,
+        ...(options.onError ? { onError: options.onError } : {}),
+        ...(options.strict ? { strict: true } : {}),
+      }
+    },
+  )
+  if (!preloader) throw new Error("automatic document preloader was not created")
+  return { ...harness, cache, preloader, requestIdCount: () => requestIds }
 }
 
 describe("React protocol renderer", () => {
@@ -3899,6 +3969,537 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
     expect(boundaryUnmounts).toEqual([1])
     expect(probeUnmounts).toEqual([1, 2])
+  })
+
+  test("automatically preloads marked rendered document links through one shared cache", async () => {
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <DocumentLink id="first" href="/app/first" data-turbo-preload="" />
+        <DocumentLink id="duplicate" href="./first" data-turbo-preload="false" />
+        <DocumentLink id="self" href="/app/self" target="_self" data-turbo-preload="" />
+        <turbo-frame id="frame">
+          <DocumentLink id="top" href="/app/top" data-turbo-frame="_top" data-turbo-preload="" />
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery data-turbo-root="/app"><DemoText>Cached</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      { strict: true, url: "https://example.test/app/current" },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/app/first",
+      "https://example.test/app/self",
+      "https://example.test/app/top",
+    ])
+    expect(requests).toHaveLength(3)
+    expect(harness.requestIdCount()).toBe(3)
+    for (const request of requests) {
+      expect(request).toMatchObject({
+        headers: { Accept: EXPO_TURBO_MIME_TYPE, "X-Sec-Purpose": "prefetch" },
+        method: "GET",
+      })
+    }
+    expect(harness.cache.has("https://example.test/app/first")).toBe(true)
+    expect(harness.cache.has("https://example.test/app/self")).toBe(true)
+    expect(harness.cache.has("https://example.test/app/top")).toBe(true)
+    expect(harness.session.revision).toBe(0)
+    expect(harness.session.tree.document.url).toBe("https://example.test/app/current")
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("uses an automatically preloaded snapshot as the next document visit preview", async () => {
+    const documentRequests: TurboRequest[] = []
+    let resolveDocument: ((response: TurboResponse) => void) | undefined
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery data-turbo-root="/app"><DocumentLink href="/app/next" data-turbo-preload="" /></Gallery>',
+      async (request) => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery data-turbo-root="/app"><DemoText id="preloaded">Preloaded preview</DemoText></Gallery>',
+        url: request.url,
+      }),
+      {
+        documentFetch: (request) => {
+          documentRequests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveDocument = resolve
+          })
+        },
+        url: "https://example.test/app/current",
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(harness.cache.has("https://example.test/app/next")).toBe(true)
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness.activation("/app/next")()
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(harness.session.treeState.preview).toBe(true)
+    expect(harness.session.tree.getElementById("preloaded")).toBeDefined()
+    expect(documentRequests.map((request) => request.url)).toEqual([
+      "https://example.test/app/next",
+    ])
+    expect(harness.requestIdCount()).toBe(1)
+
+    await act(async () => {
+      if (!resolveDocument || !documentRequests[0] || !visit) {
+        throw new Error("canonical preview revalidation did not start")
+      }
+      resolveDocument({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery data-turbo-root="/app"><DemoText id="canonical">Canonical</DemoText></Gallery>',
+        url: documentRequests[0].url,
+      })
+      await visit
+    })
+    expect(harness.session.treeState.preview).toBe(false)
+    expect(harness.session.tree.getElementById("canonical")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("skips markers that do not represent a supported document preload", async () => {
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      `<Gallery id="gallery" data-turbo-root="/app">
+        <DocumentLink href="/app/plain" />
+        <DocumentLink disabled="" href="/app/disabled" data-turbo-preload="" />
+        <Gallery id="opted-out-owner" data-turbo="false">
+          <DocumentLink href="/app/opted-out" data-turbo-preload="" />
+        </Gallery>
+        <DocumentLink href="/app/method" data-turbo-method="" data-turbo-preload="" />
+        <DocumentLink href="/app/stream" data-turbo-stream="false" data-turbo-preload="" />
+        <DocumentLink download="" href="/app/download" data-turbo-preload="" />
+        <DocumentLink href="/app/target" target="_blank" data-turbo-preload="" />
+        <turbo-frame id="frame">
+          <DocumentLink href="/app/frame" data-turbo-preload="" />
+        </turbo-frame>
+        <DocumentLink href="/app/named" data-turbo-frame="destination" data-turbo-preload="" />
+        <turbo-frame id="destination" />
+        <DocumentLink href="#" data-turbo-preload="" />
+        <DocumentLink href="/app/empty-fragment#" data-turbo-preload="" />
+        <DocumentLink href="/app/fragment#section" data-turbo-preload="" />
+        <DocumentLink href="/app/&#x9;control" data-turbo-preload="" />
+        <DocumentLink href="/outside" data-turbo-preload="" />
+        <DocumentLink href="/app/archive.pdf" data-turbo-preload="" />
+        <DocumentLink href="https://outside.test/app/external" data-turbo-preload="" />
+        <template><DocumentLink href="/app/template" data-turbo-preload="" /></template>
+        <turbo-stream action="append" target="gallery">
+          <template><DocumentLink href="/app/stream-template" data-turbo-preload="" /></template>
+        </turbo-stream>
+        <turbo-cable-stream-source channel="DemoChannel">
+          <DocumentLink href="/app/source" data-turbo-preload="" />
+        </turbo-cable-stream-source>
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery data-turbo-root="/app"><DemoText>Cached</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      { url: "https://example.test/app/current" },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    await act(async () => {
+      harness.session.removeAttribute("id:opted-out-owner", "data-turbo")
+      harness.session.setAttribute("id:destination", "disabled", "")
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/app/named",
+      "https://example.test/app/opted-out",
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("subscribes only marked links while noticing target Frames inserted elsewhere", async () => {
+    const response = (request: TurboRequest): TurboResponse => ({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery data-turbo-root="/app"><DemoText>Cached</DemoText></Gallery>',
+      url: request.url,
+    })
+    let activeRevisionSubscriptions = 0
+    const activeNodeSubscriptions = new Map<string, number>()
+    const trackRevisionSubscriptions = (session: DocumentSession) => {
+      const subscribe = session.subscribe.bind(session)
+      const subscribeRevision = session.subscribeRevision.bind(session)
+      session.subscribe = (key, listener) => {
+        activeNodeSubscriptions.set(key, (activeNodeSubscriptions.get(key) ?? 0) + 1)
+        const unsubscribe = subscribe(key, listener)
+        let active = true
+        return () => {
+          if (!active) return
+          active = false
+          activeNodeSubscriptions.set(key, (activeNodeSubscriptions.get(key) ?? 1) - 1)
+          unsubscribe()
+        }
+      }
+      session.subscribeRevision = (listener) => {
+        activeRevisionSubscriptions += 1
+        const unsubscribe = subscribeRevision(listener)
+        let active = true
+        return () => {
+          if (!active) return
+          active = false
+          activeRevisionSubscriptions -= 1
+          unsubscribe()
+        }
+      }
+    }
+    const unmarked = renderPreloadingDocumentLinks(
+      `<Gallery>
+        <DocumentLink id="plain" href="/plain" />
+        <DocumentLink id="other-plain" href="/other-plain" />
+        <turbo-frame id="first-unrelated" />
+        <turbo-frame id="second-unrelated" />
+      </Gallery>`,
+      async (request) => response(request),
+      { prepareSession: trackRevisionSubscriptions },
+    )
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(activeRevisionSubscriptions).toBe(0)
+    expect(activeNodeSubscriptions.get("id:first-unrelated")).toBe(1)
+    expect(activeNodeSubscriptions.get("id:second-unrelated")).toBe(1)
+
+    await act(async () => {
+      unmarked.session.setAttribute("id:first-unrelated", "disabled", "")
+      await nextTurn()
+    })
+
+    expect(activeRevisionSubscriptions).toBe(0)
+    expect(unmarked.requestIdCount()).toBe(0)
+
+    await act(async () => {
+      unmarked.session.setAttribute("id:plain", "data-turbo-preload", "")
+      await nextTurn()
+    })
+    expect(activeRevisionSubscriptions).toBe(1)
+    expect(activeNodeSubscriptions.get("id:first-unrelated")).toBe(1)
+    expect(activeNodeSubscriptions.get("id:second-unrelated")).toBe(1)
+
+    await act(async () => {
+      unmarked.session.removeAttribute("id:plain", "data-turbo-preload")
+      await nextTurn()
+    })
+    expect(activeRevisionSubscriptions).toBe(0)
+    act(() => unmarked.renderer.unmount())
+
+    const requests: TurboRequest[] = []
+    const insertedTarget = renderPreloadingDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <turbo-frame id="source">
+          <DocumentLink
+            id="late-link"
+            href="/app/late"
+            data-turbo-frame="late"
+            data-turbo-preload=""
+          />
+        </turbo-frame>
+        <DocumentLink
+          id="local-link"
+          href="/app/local"
+          data-turbo-frame="source"
+          data-turbo-preload=""
+        />
+        <DocumentLink id="plain-link" href="/app/plain" />
+        <turbo-frame id="other" />
+        <Gallery id="sibling" />
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return response(request)
+      },
+      {
+        prepareSession: trackRevisionSubscriptions,
+        url: "https://example.test/app/current",
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(requests).toEqual([])
+    expect(activeRevisionSubscriptions).toBe(2)
+    expect(activeNodeSubscriptions.get("id:source")).toBe(1)
+    expect(activeNodeSubscriptions.get("id:other")).toBe(1)
+
+    await act(async () => {
+      dispatchTurboStreamFragment(
+        insertedTarget.session,
+        '<turbo-stream action="append" target="sibling"><template><turbo-frame id="late" disabled="" /></template></turbo-stream>',
+      )
+      await nextTurn()
+    })
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/app/late",
+    ])
+    expect(insertedTarget.requestIdCount()).toBe(1)
+    expect(activeRevisionSubscriptions).toBe(2)
+    expect(activeNodeSubscriptions.get("id:late")).toBe(1)
+    act(() => insertedTarget.renderer.unmount())
+    expect(activeRevisionSubscriptions).toBe(0)
+    expect([...activeNodeSubscriptions.values()].every((count) => count === 0)).toBe(true)
+  })
+
+  test("discovers newly rendered markers without canceling earlier shared preload work", async () => {
+    const requests: TurboRequest[] = []
+    let resolveFirst: ((response: TurboResponse) => void) | undefined
+    const cachedResponse = (request: TurboRequest): TurboResponse => ({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery data-turbo-root="/app"><DemoText>Cached</DemoText></Gallery>',
+      url: request.url,
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery id="gallery" data-turbo-root="/app"><DocumentLink id="dynamic" href="/app/first" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        if (request.url === "https://example.test/app/first") {
+          return new Promise<TurboResponse>((resolve) => {
+            resolveFirst = resolve
+          })
+        }
+        return cachedResponse(request)
+      },
+      { url: "https://example.test/app/current" },
+    )
+
+    expect(requests).toEqual([])
+    await act(async () => {
+      harness.session.setAttribute("id:dynamic", "data-turbo-preload", "")
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual(["https://example.test/app/first"])
+
+    await act(async () => {
+      harness.session.removeAttribute("id:dynamic", "data-turbo-preload")
+      harness.session.setAttribute("id:dynamic", "href", "/app/second")
+      await nextTurn()
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+
+    await act(async () => {
+      harness.session.setAttribute("id:dynamic", "data-turbo-preload", "false")
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/app/first",
+      "https://example.test/app/second",
+    ])
+
+    await act(async () => {
+      dispatchTurboStreamFragment(
+        harness.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentLink id="streamed" href="/app/streamed" data-turbo-preload="" /></template></turbo-stream>',
+      )
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/app/first",
+      "https://example.test/app/second",
+      "https://example.test/app/streamed",
+    ])
+
+    await act(async () => {
+      harness.session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery data-turbo-root="/app"><DocumentLink href="/app/replaced" data-turbo-preload="" /></Gallery>',
+          { url: "https://example.test/app/current" },
+        ),
+      )
+      await nextTurn()
+    })
+    await act(async () => {
+      harness.session.replaceTreePreview(
+        parseExpoTurboDocument(
+          '<Gallery data-turbo-root="/app"><DocumentLink href="/app/previewed" data-turbo-preload="" /></Gallery>',
+          { url: "https://example.test/app/current" },
+        ),
+      )
+      await nextTurn()
+    })
+    await act(async () => {
+      harness.session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery data-turbo-root="/app"><turbo-frame id="replacement-frame" /></Gallery>',
+          { url: "https://example.test/app/current" },
+        ),
+      )
+      applyFrameResponse(
+        harness.session,
+        "replacement-frame",
+        '<turbo-frame id="replacement-frame"><DocumentLink href="/app/framed" data-turbo-frame="_top" data-turbo-preload="" /></turbo-frame>',
+      )
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/app/first",
+      "https://example.test/app/second",
+      "https://example.test/app/streamed",
+      "https://example.test/app/replaced",
+      "https://example.test/app/previewed",
+      "https://example.test/app/framed",
+    ])
+    expect(harness.requestIdCount()).toBe(6)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+
+    await act(async () => {
+      if (!resolveFirst || !requests[0]) throw new Error("first automatic preload did not start")
+      resolveFirst(cachedResponse(requests[0]))
+      await nextTurn()
+    })
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("reports one current redacted preload failure and suppresses stale link failures", async () => {
+    let reject: ((error: unknown) => void) | undefined
+    const originalErrors: ExpoTurboRenderError[] = []
+    const currentErrors: ExpoTurboRenderError[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/failed" data-turbo-preload="" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          reject = fail
+        }),
+      { onError: (event) => originalErrors.push(event), strict: true },
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    if (!reject) throw new Error("automatic preload request did not start")
+    harness.updateErrorObserver((event) => currentErrors.push(event))
+    expect(harness.requestIdCount()).toBe(1)
+
+    await act(async () => {
+      reject?.(new Error("private automatic preload secret"))
+      await nextTurn()
+    })
+
+    expect(originalErrors).toEqual([])
+    expect(currentErrors).toHaveLength(1)
+    expect(currentErrors[0]).toMatchObject({
+      error: new RequestError("Document preload request failed", { method: "GET" }),
+      nodeKey: "id:link",
+    })
+    expect(currentErrors[0]?.error.cause).toBeUndefined()
+    act(() => harness.renderer.unmount())
+
+    let lateReject: ((error: unknown) => void) | undefined
+    const lateErrors: ExpoTurboRenderError[] = []
+    const unmounted = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="late" href="/late" data-turbo-preload="" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          lateReject = fail
+        }),
+      { onError: (event) => lateErrors.push(event) },
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    if (!lateReject) throw new Error("late automatic preload request did not start")
+    act(() => unmounted.renderer.unmount())
+    await act(async () => {
+      lateReject?.(new Error("private late preload secret"))
+      await nextTurn()
+    })
+    expect(lateErrors).toEqual([])
+
+    let changedReject: ((error: unknown) => void) | undefined
+    const changedErrors: ExpoTurboRenderError[] = []
+    const changed = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="changed" href="/before-change" data-turbo-preload="" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          changedReject = fail
+        }),
+      { onError: (event) => changedErrors.push(event) },
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    if (!changedReject) throw new Error("changed automatic preload request did not start")
+    await act(async () => {
+      changed.session.removeAttribute("id:changed", "data-turbo-preload")
+      changed.session.setAttribute("id:changed", "href", "/after-change")
+      changedReject?.(new Error("private changed preload secret"))
+      await nextTurn()
+    })
+    expect(changedErrors).toEqual([])
+    act(() => changed.renderer.unmount())
+
+    let replacedReject: ((error: unknown) => void) | undefined
+    const replacedErrors: ExpoTurboRenderError[] = []
+    const replaced = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="replaced" href="/replaced" data-turbo-preload="" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          replacedReject = fail
+        }),
+      { onError: (event) => replacedErrors.push(event) },
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    if (!replacedReject) throw new Error("replaced automatic preload request did not start")
+    await act(async () => {
+      replaced.session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery><DocumentLink id="replaced" href="/replaced" /></Gallery>',
+          { url: "https://example.test/current" },
+        ),
+      )
+      replacedReject?.(new Error("private replaced preload secret"))
+      await nextTurn()
+    })
+    expect(replacedErrors).toEqual([])
+    act(() => replaced.renderer.unmount())
   })
 
   test("activates a confirm-only top-level document link without subscribing it to visit ticks", async () => {

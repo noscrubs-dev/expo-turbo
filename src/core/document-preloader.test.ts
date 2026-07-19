@@ -171,9 +171,12 @@ describe("document preloader", () => {
     )
 
     for (const source of [
+      "",
+      "/app/\tcontrol",
       "https://other.test/app/next",
       "/outside",
       "/app/export.csv",
+      "/app/next#",
       "/app/next#anchor",
     ]) {
       await expect(preloader.preload(source)).rejects.toBeInstanceOf(TargetError)
