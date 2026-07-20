@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { TargetError } from "./errors"
-import { resolveDocumentLinkUrl } from "./protocol-request"
+import { resolveDocumentLinkAnchor, resolveDocumentLinkUrl } from "./protocol-request"
 
 describe("document link URL admission", () => {
   test("admits normalized mail and telephone schemes without weakening protocol URLs", () => {
@@ -86,5 +86,32 @@ describe("document link URL admission", () => {
         TargetError,
       )
     }
+  })
+
+  test("resolves only nonempty decoded fragments on the active document", () => {
+    const documentUrl = "https://example.test/current?tab=one"
+
+    expect(resolveDocumentLinkAnchor("#section", documentUrl)).toEqual({
+      targetId: "section",
+      url: "https://example.test/current?tab=one#section",
+    })
+    expect(resolveDocumentLinkAnchor("./current?tab=one#section%20two", documentUrl)).toEqual({
+      targetId: "section two",
+      url: "https://example.test/current?tab=one#section%20two",
+    })
+    expect(resolveDocumentLinkAnchor("#section%2520two", documentUrl)).toEqual({
+      targetId: "section%20two",
+      url: "https://example.test/current?tab=one#section%2520two",
+    })
+    expect(resolveDocumentLinkAnchor("#section+two", documentUrl)).toEqual({
+      targetId: "section+two",
+      url: "https://example.test/current?tab=one#section+two",
+    })
+    expect(resolveDocumentLinkAnchor("#", documentUrl)).toBeUndefined()
+    expect(resolveDocumentLinkAnchor("/other#section", documentUrl)).toBeUndefined()
+    expect(resolveDocumentLinkAnchor("/current?tab=two#section", documentUrl)).toBeUndefined()
+    expect(() => resolveDocumentLinkAnchor("#%", documentUrl)).toThrow(TargetError)
+    expect(() => resolveDocumentLinkAnchor("#%00", documentUrl)).toThrow(TargetError)
+    expect(() => resolveDocumentLinkAnchor("#%20", documentUrl)).toThrow(TargetError)
   })
 })

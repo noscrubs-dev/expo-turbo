@@ -114,6 +114,11 @@ export interface ScrollAdapter {
   scrollTo(id: string, alignment: ScrollAlignment): Promise<void> | void
 }
 
+/** Host-owned synchronous request for a same-document anchor scroll. */
+export interface DocumentAnchorScrollAdapter {
+  scrollTo(id: string, alignment: "start"): undefined
+}
+
 export type FrameAutoscrollBehavior = "auto" | "smooth"
 
 export interface FrameAutoscrollRequest {

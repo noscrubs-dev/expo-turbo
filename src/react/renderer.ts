@@ -17,6 +17,7 @@ import {
 
 import type {
   AutofocusAdapter,
+  DocumentAnchorScrollAdapter,
   DocumentHistoryScrollAdapter,
   DocumentRefreshScrollAdapter,
   FormSubmissionAnnouncementAdapter,
@@ -101,6 +102,7 @@ import type { FrameAutoscrollIntent } from "../core/frame-response-application"
 import { resolveFormSubmissionDestination } from "../core/frames"
 import {
   type ExternalDocumentLinkScheme,
+  resolveDocumentLinkAnchor,
   resolveDocumentLinkUrl,
   resolveProtocolUrl,
 } from "../core/protocol-request"
@@ -227,6 +229,7 @@ interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
   readonly autofocus: AutofocusAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
+  readonly documentAnchorScroll: DocumentAnchorScrollAdapter | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
@@ -293,6 +296,40 @@ function hasProtocolAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
 }
 
+function isTopLevelApplicationElement(node: ProtocolElement): boolean {
+  let current: ProtocolNode | null = node
+  while (current && current.kind !== "document") {
+    if (!isElement(current) || current.kind !== "element") return false
+    current = current.parent
+  }
+  return current?.kind === "document"
+}
+
+function documentLinkCaptureContext(node: ProtocolElement): Readonly<{
+  elementTarget: string | undefined
+  nearestFrameId: string | null | undefined
+  optedOut: boolean
+}> {
+  let current: ProtocolNode | null = node
+  let foundTurboSetting = false
+  let nearestFrameId: string | null | undefined
+  let optedOut = false
+  while (current && current.kind !== "document") {
+    if (current.kind === "frame" && nearestFrameId === undefined) {
+      nearestFrameId = attributeValue(current, "id") || null
+    }
+    if (!foundTurboSetting && isElement(current)) {
+      const setting = attributeValue(current, "data-turbo")
+      if (setting !== undefined) {
+        foundTurboSetting = true
+        optedOut = setting === "false"
+      }
+    }
+    current = current.parent
+  }
+  return { elementTarget: attributeValue(node, "data-turbo-frame"), nearestFrameId, optedOut }
+}
+
 function canonicalDocumentPreloadUrl(source: string, documentUrl: string): string {
   if (
     typeof source !== "string" ||
@@ -308,6 +345,24 @@ function canonicalDocumentPreloadUrl(source: string, documentUrl: string): strin
   const url = new URL(resolved.url)
   url.hash = ""
   return url.toString()
+}
+
+function requestDocumentAnchorScroll(
+  adapter: DocumentAnchorScrollAdapter | undefined,
+  targetId: string,
+): void {
+  if (!adapter)
+    throw new TargetError("Document link anchors require provider documentAnchorScroll support")
+  let result: unknown
+  try {
+    result = adapter.scrollTo(targetId, "start")
+  } catch {
+    throw new StateError("Document link anchor scrolling failed")
+  }
+  if (result !== undefined) {
+    consumeUnexpectedAdapterResult(result)
+    throw new StateError("Document link anchor scrolling failed")
+  }
 }
 
 function automaticDocumentPreloadUrl(
@@ -448,6 +503,7 @@ export interface ExpoTurboProviderProps {
   readonly autofocus?: AutofocusAdapter
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
+  readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
   readonly documentController?: DocumentVisitController
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentPreloader?: DocumentPreloadRequester
@@ -494,6 +550,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       actions: props.actions,
       autofocus: props.autofocus,
       documentComponent: props.documentComponent,
+      documentAnchorScroll: props.documentAnchorScroll,
       documentController: props.documentController,
       documentHistoryScroll: props.documentHistoryScroll,
       documentPreloader: props.documentPreloader,
@@ -518,6 +575,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.actions,
       props.autofocus,
       props.documentComponent,
+      props.documentAnchorScroll,
       props.documentController,
       props.documentHistoryScroll,
       props.documentPreloader,
@@ -1025,8 +1083,16 @@ export type ExpoTurboDocumentLinkDelegation =
       url: string
     }>
 
+export type ExpoTurboDocumentLinkAnchor = Readonly<{
+  kind: "anchor"
+  status: "requested"
+  targetId: string
+  url: string
+}>
+
 export type ExpoTurboDocumentLinkResult =
   | DocumentVisitResult
+  | ExpoTurboDocumentLinkAnchor
   | ExpoTurboDocumentLinkDelegation
   | FormSubmissionReport
   | Readonly<{
@@ -1043,8 +1109,15 @@ export type ExpoTurboDocumentLinkResult =
 export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLinkResult>
 
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
-  const { documentController, documentPreloader, formLinks, frames, onError, session } =
-    useRenderer()
+  const {
+    documentAnchorScroll,
+    documentController,
+    documentPreloader,
+    formLinks,
+    frames,
+    onError,
+    session,
+  } = useRenderer()
   const navigation = useContext(NavigationContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
@@ -1137,6 +1210,76 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     const action = exactVisitAction(actionValue)
     const documentUrl = session.tree.document.url
     if (!documentUrl) throw new TargetError("Document links require an active document URL")
+    const anchor = href.includes("#") ? resolveDocumentLinkAnchor(href, documentUrl) : undefined
+    const captureContext = documentLinkCaptureContext(node)
+    const { elementTarget, nearestFrameId, optedOut } = captureContext
+    if (
+      anchor &&
+      !optedOut &&
+      nearestFrameId === undefined &&
+      elementTarget === undefined &&
+      actionValue === undefined &&
+      !UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))
+    ) {
+      const target = session.tree.getElementById(anchor.targetId)
+      if (!isTopLevelApplicationElement(node) || !target || !isTopLevelApplicationElement(target)) {
+        throw new TargetError("Document link anchor target is unavailable")
+      }
+      if (!dispatchDocumentVisitLinkClick(documentController, nodeKey, anchor.url)) {
+        return Object.freeze({
+          kind: "link" as const,
+          status: "canceled" as const,
+          url: anchor.url,
+        })
+      }
+      if (
+        session.tree.getNodeByKey(nodeKey) !== node ||
+        attributeValue(node, "href") !== rawHref ||
+        attributeValue(node, "disabled") !== undefined
+      ) {
+        throw new TargetError("Document link anchor changed before activation")
+      }
+      const confirmedDocumentUrl = session.tree.document.url
+      if (!confirmedDocumentUrl) {
+        throw new TargetError("Document links require an active document URL")
+      }
+      const confirmedAnchor = href.includes("#")
+        ? resolveDocumentLinkAnchor(href, confirmedDocumentUrl)
+        : undefined
+      const confirmedCaptureContext = documentLinkCaptureContext(node)
+      const confirmedTarget = confirmedAnchor
+        ? session.tree.getElementById(confirmedAnchor.targetId)
+        : undefined
+      const confirmedBrowserTarget = attributeValue(node, "target")
+      if (
+        !confirmedAnchor ||
+        confirmedAnchor.targetId !== anchor.targetId ||
+        confirmedAnchor.url !== anchor.url ||
+        (confirmedBrowserTarget !== undefined &&
+          confirmedBrowserTarget !== "" &&
+          confirmedBrowserTarget !== "_self") ||
+        confirmedCaptureContext.optedOut ||
+        confirmedCaptureContext.nearestFrameId !== undefined ||
+        confirmedCaptureContext.elementTarget !== undefined ||
+        attributeValue(node, "data-turbo-action") !== undefined ||
+        UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name)) ||
+        !isTopLevelApplicationElement(node) ||
+        !confirmedTarget ||
+        !isTopLevelApplicationElement(confirmedTarget)
+      ) {
+        throw new TargetError("Document link anchor changed before activation")
+      }
+      if (documentController.state.busy) {
+        throw new TargetError("Document link anchors require an idle document")
+      }
+      requestDocumentAnchorScroll(documentAnchorScroll, anchor.targetId)
+      return Object.freeze({
+        kind: "anchor" as const,
+        status: "requested" as const,
+        targetId: anchor.targetId,
+        url: anchor.url,
+      })
+    }
     const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
     if (linkUrl.kind === "external") {
       if (!navigation) throw new TargetError("Document link delegation requires host navigation")
@@ -1149,24 +1292,6 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         url: linkUrl.url,
       })
     }
-    let current: ProtocolNode | null = node
-    let foundTurboSetting = false
-    let nearestFrameId: string | null | undefined
-    let optedOut = false
-    while (current && current.kind !== "document") {
-      if (current.kind === "frame" && nearestFrameId === undefined) {
-        nearestFrameId = attributeValue(current, "id") || null
-      }
-      if (!foundTurboSetting && isElement(current)) {
-        const setting = attributeValue(current, "data-turbo")
-        if (setting !== undefined) {
-          foundTurboSetting = true
-          optedOut = setting === "false"
-        }
-      }
-      current = current.parent
-    }
-    const elementTarget = attributeValue(node, "data-turbo-frame")
     const resolved = linkUrl.resolution
     const documentVisitOptions = navigation ? { navigation } : {}
     const disposition = classifyTopLevelLocation(session.tree, resolved.url)
@@ -1272,7 +1397,18 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       ...(action !== undefined ? { action } : {}),
       ...documentVisitOptions,
     })
-  }, [documentController, formLinks, frames, href, navigation, node, nodeKey, rawHref, session])
+  }, [
+    documentAnchorScroll,
+    documentController,
+    formLinks,
+    frames,
+    href,
+    navigation,
+    node,
+    nodeKey,
+    rawHref,
+    session,
+  ])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
   }
