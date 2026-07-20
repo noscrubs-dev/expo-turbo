@@ -180,7 +180,7 @@ describe("standalone Stream autofocus", () => {
     ])
   })
 
-  test("excludes permanent-bearing and unsupported morph, canceled, and no-op stream actions", () => {
+  test("excludes permanent-bearing Stream autofocus", () => {
     const permanentMorphSession = sessionFor(
       '<Gallery><Panel id="panel"><Field id="permanent" data-turbo-permanent="" /><Field id="eligible" /></Panel></Gallery>',
     )
@@ -194,17 +194,36 @@ describe("standalone Stream autofocus", () => {
       consumeStandaloneStreamAutofocus(permanentMorphSession, permanentMorphSession.revision),
     ).toBeUndefined()
 
-    const unsupportedMorphSession = sessionFor('<Gallery id="gallery" />')
-    const unsupportedMorphReport = dispatchTurboStreamFragment(
-      unsupportedMorphSession,
+    const permanentInsertionSession = sessionFor(
+      '<Gallery id="gallery"><Field id="permanent" data-turbo-permanent="" /></Gallery>',
+    )
+    const permanentInsertionReport = dispatchTurboStreamFragment(
+      permanentInsertionSession,
+      '<turbo-stream action="append" target="gallery" method="morph"><template><Field id="permanent" data-turbo-permanent="" autofocus="" /></template></turbo-stream>',
+    )
+    expect(permanentInsertionReport.actions).toMatchObject([{ status: "applied" }])
+    expect(
+      consumeStandaloneStreamAutofocus(
+        permanentInsertionSession,
+        permanentInsertionSession.revision,
+      ),
+    ).toBeUndefined()
+  })
+
+  test("treats inert insertion method=morph as structural Stream autofocus", () => {
+    const inertMorphSession = sessionFor('<Gallery id="gallery" />')
+    const inertMorphReport = dispatchTurboStreamFragment(
+      inertMorphSession,
       '<turbo-stream action="append" target="gallery" method="morph"><template><Field id="morph" autofocus="" /></template></turbo-stream>',
     )
-    expect(unsupportedMorphReport.actions).toMatchObject([{ status: "applied" }])
-    expect(unsupportedMorphSession.tree.getElementById("morph")).toBeDefined()
-    expect(
-      consumeStandaloneStreamAutofocus(unsupportedMorphSession, unsupportedMorphSession.revision),
-    ).toBeUndefined()
+    expect(inertMorphReport.actions).toMatchObject([{ status: "applied" }])
+    expect(inertMorphSession.tree.getElementById("morph")).toBeDefined()
+    expect(consumeStandaloneStreamAutofocus(inertMorphSession, inertMorphSession.revision)).toEqual(
+      ["id:morph"],
+    )
+  })
 
+  test("excludes canceled and no-op stream actions", () => {
     const canceledSession = sessionFor('<Gallery id="gallery" />')
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
