@@ -41,11 +41,22 @@ export interface StreamActionEventDetail {
 
 export type StreamActionEvent = NotificationEvent<"stream-action", StreamActionEventDetail>
 
-export type StreamLifecycleEvent = BeforeStreamRenderEvent | StreamActionEvent
+export type StreamMorphAction = "replace" | "update"
+
+export interface StreamMorphEventDetail {
+  readonly action: StreamMorphAction
+  readonly index: number
+  readonly targetId: string
+}
+
+export type StreamMorphEvent = NotificationEvent<"stream-morph", StreamMorphEventDetail>
+
+export type StreamLifecycleEvent = BeforeStreamRenderEvent | StreamActionEvent | StreamMorphEvent
 
 export interface StreamLifecycleEventMap {
   readonly "before-stream-render": BeforeStreamRenderEvent
   readonly "stream-action": StreamActionEvent
+  readonly "stream-morph": StreamMorphEvent
 }
 
 export interface StreamLifecycleOptions {
@@ -143,12 +154,20 @@ class ExactStreamActionEvent extends NotificationEvent<"stream-action", StreamAc
   }
 }
 
+class ExactStreamMorphEvent extends NotificationEvent<"stream-morph", StreamMorphEventDetail> {
+  constructor(action: StreamMorphAction, index: number, targetId: string) {
+    super("stream-morph", Object.freeze({ action, index, targetId }))
+    Object.freeze(this)
+  }
+}
+
 export const STREAM_LIFECYCLE_BEFORE_DISPATCH = Symbol(
   "expo-turbo.stream-lifecycle.before-dispatch",
 )
 export const STREAM_LIFECYCLE_ACTION_DISPATCH = Symbol(
   "expo-turbo.stream-lifecycle.action-dispatch",
 )
+export const STREAM_LIFECYCLE_MORPH_DISPATCH = Symbol("expo-turbo.stream-lifecycle.morph-dispatch")
 
 /**
  * Synchronous logical lifecycle for one ordered Turbo Stream action. Before
@@ -171,7 +190,7 @@ export class StreamLifecycle {
     type: Type,
     listener: StreamLifecycleListener<Type>,
   ): () => void {
-    if (type !== "before-stream-render" && type !== "stream-action") {
+    if (type !== "before-stream-render" && type !== "stream-action" && type !== "stream-morph") {
       throw new StateError("Stream lifecycle event type is invalid")
     }
     if (typeof listener !== "function") {
@@ -211,27 +230,43 @@ export class StreamLifecycle {
   }
 
   [STREAM_LIFECYCLE_ACTION_DISPATCH](event: StreamActionEvent): void {
+    this.dispatchNotification("stream-action", event)
+  }
+
+  [STREAM_LIFECYCLE_MORPH_DISPATCH](event: StreamMorphEvent): void {
+    this.dispatchNotification("stream-morph", event)
+  }
+
+  private dispatchNotification(
+    type: "stream-action" | "stream-morph",
+    event: StreamActionEvent | StreamMorphEvent,
+  ): void {
+    const listenerName = type === "stream-action" ? "Stream-action" : "Stream-morph"
+    const aggregateMessage =
+      type === "stream-action"
+        ? "Stream action notification observers failed"
+        : "Stream morph notification observers failed"
     const errors: StateError[] = []
-    for (const listener of [...(this.listeners.get("stream-action") ?? [])]) {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
       let result: unknown
       try {
         result = listener(event)
       } catch {
-        errors.push(new StateError("Stream-action listener failed"))
+        errors.push(new StateError(`${listenerName} listener failed`))
         continue
       }
       if (result === undefined) continue
       try {
         consumeUnexpectedResult(result)
       } catch {
-        errors.push(new StateError("Stream-action listener failed"))
+        errors.push(new StateError(`${listenerName} listener failed`))
         continue
       }
-      errors.push(new StateError("Stream-action listener must return undefined"))
+      errors.push(new StateError(`${listenerName} listener must return undefined`))
     }
     if (errors.length === 0) return
 
-    const aggregate = new AggregateError(errors, "Stream action notification observers failed")
+    const aggregate = new AggregateError(errors, aggregateMessage)
     if (!this.onObserverError) {
       surfaceObserverError(aggregate)
       return
@@ -270,6 +305,14 @@ export function createStreamActionEvent(
   report: StreamActionReport,
 ): StreamActionEvent {
   return new ExactStreamActionEvent(newStream, report)
+}
+
+export function createStreamMorphEvent(
+  action: StreamMorphAction,
+  index: number,
+  targetId: string,
+): StreamMorphEvent {
+  return new ExactStreamMorphEvent(action, index, targetId)
 }
 
 export function streamLifecycleOption(

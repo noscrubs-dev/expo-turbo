@@ -15,9 +15,12 @@ import { stageStandaloneStreamAutofocus } from "./stream-autofocus-internal"
 import {
   createBeforeStreamRenderEvent,
   createStreamActionEvent,
+  createStreamMorphEvent,
   STREAM_LIFECYCLE_ACTION_DISPATCH,
   STREAM_LIFECYCLE_BEFORE_DISPATCH,
+  STREAM_LIFECYCLE_MORPH_DISPATCH,
   type StreamLifecycle,
+  type StreamMorphEvent,
   type StreamRenderContext,
   type StreamRenderer,
   type StreamRenderResult,
@@ -401,7 +404,7 @@ interface StreamActionDispatchResult {
   readonly report: StreamActionReport
 }
 
-type StreamAutofocusMode = "embedded" | "standalone"
+type StreamDispatchMode = "embedded" | "standalone"
 
 const STREAM_RENDER_INTERRUPTED = Symbol("expo-turbo.stream-render-interrupted")
 
@@ -492,6 +495,7 @@ function dispatchAction(
   options: StreamActionDispatchOptions,
   lifecycle: StreamLifecycle | undefined,
   control?: StreamDispatchControl,
+  mode: StreamDispatchMode = "standalone",
 ): StreamActionDispatchResult {
   const action = attributeValue(stream, "action") ?? ""
   const progress: StreamActionProgress = {
@@ -502,17 +506,19 @@ function dispatchAction(
   }
   let ownershipInterrupted = false
   let report: StreamActionReport
+  let streamMorph: StreamMorphEvent | undefined
   try {
     if (control && !control.shouldContinue()) {
       ownershipInterrupted = true
       throw STREAM_RENDER_INTERRUPTED
     }
     let result: StreamRenderResult
+    let defaultRendered = false
     if (!lifecycle) {
       result = renderAction(session, stream, action, options, progress, control)
+      defaultRendered = true
     } else {
       let defaultResult: StreamRenderResult | undefined
-      let defaultRendered = false
       let defaultFailure: unknown
       let fatalDefaultError: unknown
       let renderInterrupted = false
@@ -598,6 +604,9 @@ function dispatchAction(
       result = admitRenderResult(candidate, action)
     }
     report = actionReport(action, index, result)
+    if (lifecycle && defaultRendered && mode === "standalone") {
+      streamMorph = completedStreamMorph(stream, action, index, result)
+    }
   } catch (error) {
     if (isSessionCommitError(error)) throw error
     if (error === STREAM_RENDER_INTERRUPTED) {
@@ -622,12 +631,33 @@ function dispatchAction(
       })
     }
   }
+  if (streamMorph) lifecycle?.[STREAM_LIFECYCLE_MORPH_DISPATCH](streamMorph)
   lifecycle?.[STREAM_LIFECYCLE_ACTION_DISPATCH](createStreamActionEvent(stream, report))
   return Object.freeze({
     autofocusCandidates: Object.freeze([...progress.autofocusCandidates]),
     ownershipInterrupted: ownershipInterrupted || progress.ownershipInterrupted,
     report,
   })
+}
+
+function completedStreamMorph(
+  stream: ProtocolElement,
+  action: string,
+  index: number,
+  result: StreamRenderResult,
+): StreamMorphEvent | undefined {
+  if (
+    (action !== "replace" && action !== "update") ||
+    attributeValue(stream, "method") !== "morph" ||
+    result.status !== "applied" ||
+    result.appliedTargets !== 1 ||
+    result.matchedTargets !== 1
+  ) {
+    return undefined
+  }
+  const targetId = attributeValue(stream, "target")
+  if (targetId === undefined) return undefined
+  return createStreamMorphEvent(action, index, targetId)
 }
 
 function actionReport(
@@ -707,7 +737,7 @@ export function dispatchGuardedTurboStreamElements(
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
-  autofocusMode: StreamAutofocusMode = "standalone",
+  mode: StreamDispatchMode = "standalone",
 ): StreamDispatchReport {
   const revision = session.revision
   const lifecycle = streamLifecycleOption(options, "Turbo Stream dispatcher")
@@ -722,12 +752,12 @@ export function dispatchGuardedTurboStreamElements(
     }
     const action = attributeValue(stream, "action") ?? ""
     const candidate =
-      !autofocusCandidateClaimed && autofocusMode === "standalone"
+      !autofocusCandidateClaimed && mode === "standalone"
         ? standaloneStreamAutofocusCandidate(stream, action)
         : undefined
     const candidateBefore = candidate ? session.tree.getNodeByKey(candidate.key) : undefined
     if (candidate) autofocusCandidateClaimed = true
-    const dispatched = dispatchAction(session, stream, index, options, lifecycle, control)
+    const dispatched = dispatchAction(session, stream, index, options, lifecycle, control, mode)
     const report = dispatched.report
     actions.push(report)
     if (candidate && report.status === "applied") {
@@ -750,7 +780,7 @@ export function dispatchGuardedTurboStreamElements(
     }
   }
   if (
-    autofocusMode === "standalone" &&
+    mode === "standalone" &&
     session.revision !== revision &&
     !interrupted &&
     (!control || control.shouldContinue())
