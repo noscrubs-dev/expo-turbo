@@ -4629,7 +4629,7 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("skips unsafe press-in document link prefetches", async () => {
+  test("prefetches document-targeted Frame links and skips unsafe press-in document links", async () => {
     const requests: TurboRequest[] = []
     const harness = renderPreloadingDocumentLinks(
       `<Gallery id="gallery" data-turbo-root="/app">
@@ -4640,7 +4640,7 @@ describe("React protocol renderer", () => {
         <DocumentLink data-turbo-confirm="" href="/app/confirm" />
         <DocumentLink data-turbo-method="get" href="/app/method" />
         <DocumentLink data-turbo-stream="" href="/app/stream" />
-        <DocumentLink data-turbo-frame="_top" href="/app/frame-target" />
+        <DocumentLink data-turbo-frame="_top" href="/app/top-level-target" />
         <DocumentLink download="" href="/app/download" />
         <DocumentLink href="/app/target" target="_self" />
         <DocumentLink data-remote="true" href="/app/remote" />
@@ -4656,9 +4656,24 @@ describe("React protocol renderer", () => {
             <DocumentLink href="/app/turbo-override" />
           </Gallery>
         </Gallery>
+        <turbo-frame id="document-frame" target="_top">
+          <DocumentLink href="/app/frame-default-top" />
+        </turbo-frame>
+        <turbo-frame id="explicit-document-frame">
+          <DocumentLink data-turbo-frame="_top" href="/app/frame-explicit-top" />
+        </turbo-frame>
+        <turbo-frame id="parent-document-frame">
+          <DocumentLink data-turbo-frame="_parent" href="/app/frame-parent-top" />
+        </turbo-frame>
         <turbo-frame id="frame">
           <DocumentLink href="/app/frame" />
+          <DocumentLink data-turbo-frame="_self" href="/app/frame-self" />
+          <turbo-frame id="nested-frame">
+            <DocumentLink data-turbo-frame="_parent" href="/app/frame-parent" />
+          </turbo-frame>
         </turbo-frame>
+        <turbo-frame id="named-frame" />
+        <DocumentLink data-turbo-frame="named-frame" href="/app/named-frame" />
         <DocumentLink href="/app/archive.pdf" />
         <DocumentLink href="/outside" />
         <DocumentLink href="https://outside.test/app/external" />
@@ -4686,7 +4701,7 @@ describe("React protocol renderer", () => {
         "/app/confirm",
         "/app/method",
         "/app/stream",
-        "/app/frame-target",
+        "/app/top-level-target",
         "/app/download",
         "/app/target",
         "/app/remote",
@@ -4694,7 +4709,13 @@ describe("React protocol renderer", () => {
         "/app/prefetch-override",
         "/app/turbo-opted-out",
         "/app/turbo-override",
+        "/app/frame-default-top",
+        "/app/frame-explicit-top",
+        "/app/frame-parent-top",
         "/app/frame",
+        "/app/frame-self",
+        "/app/frame-parent",
+        "/app/named-frame",
         "/app/archive.pdf",
         "/outside",
         "https://outside.test/app/external",
@@ -4708,12 +4729,16 @@ describe("React protocol renderer", () => {
 
     expect(requests.map((request) => request.url).sort()).toEqual([
       "https://example.test/app/eligible",
+      "https://example.test/app/frame-default-top",
+      "https://example.test/app/frame-explicit-top",
+      "https://example.test/app/frame-parent-top",
       "https://example.test/app/prefetch-override",
+      "https://example.test/app/top-level-target",
       "https://example.test/app/turbo-override",
     ])
-    expect(harness.requestIdCount()).toBe(3)
+    expect(harness.requestIdCount()).toBe(7)
     expect(harness.session.revision).toBe(0)
-    expect(harness.cache.size).toBe(3)
+    expect(harness.cache.size).toBe(7)
 
     act(() => harness.renderer.unmount())
   })
