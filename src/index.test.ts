@@ -23,6 +23,7 @@ describe("package status", () => {
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
     expect(BeforeCacheEvent).toBeFunction()
+    expect("morphStreamReplaceElement" in core).toBe(false)
     expect("morphStreamUpdateChildren" in core).toBe(false)
   })
 })

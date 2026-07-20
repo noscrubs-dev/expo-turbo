@@ -26,6 +26,7 @@ import {
   attributeValue,
   type DocumentTree,
   isElement,
+  morphStreamReplaceElement,
   morphStreamUpdateChildren,
   type ProtocolElement,
   type ProtocolNode,
@@ -273,6 +274,10 @@ function applyToTarget(
   }
 
   if (action === "replace") {
+    if (morph) {
+      mutate(session, (activeTree) => morphStreamReplaceElement(activeTree, target, payload))
+      return true
+    }
     assertIdsAvailable(tree, payload, [target], action)
     mutate(session, (activeTree) => activeTree.replaceNodeWithClones(target, payload))
     return true
@@ -372,11 +377,12 @@ function renderAction(
     return result
   }
   const morph = attributeValue(stream, "method") === "morph"
-  if (action === "replace" && morph) {
-    throw actionError("Native Turbo Stream replace morph requires outer morph support", action)
-  }
-  if (action === "update" && morph && attributeValue(stream, "target") === undefined) {
-    throw actionError("Native Turbo Stream child morph requires an exact target", action)
+  if (
+    (action === "replace" || action === "update") &&
+    morph &&
+    attributeValue(stream, "target") === undefined
+  ) {
+    throw actionError("Native Turbo Stream morph requires an exact target", action)
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)

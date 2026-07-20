@@ -259,6 +259,7 @@ type StreamChildMorpher = (
 ) => readonly string[]
 
 const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
+const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 
 /** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
 export function morphStreamUpdateChildren(
@@ -269,6 +270,17 @@ export function morphStreamUpdateChildren(
   const morph = streamChildMorphers.get(tree)
   if (!morph) throw new TargetError("Native Stream child morph requires an active document tree")
   return morph(parent, sources)
+}
+
+/** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
+export function morphStreamReplaceElement(
+  tree: DocumentTree,
+  target: ProtocolElement,
+  sources: readonly ProtocolNode[],
+): readonly string[] {
+  const morph = streamOuterMorphers.get(tree)
+  if (!morph) throw new TargetError("Native Stream outer morph requires an active document tree")
+  return morph(target, sources)
 }
 
 export class DocumentTree {
@@ -293,6 +305,9 @@ export class DocumentTree {
     this.rebuildIndexes()
     streamChildMorphers.set(this, (parent, sources) =>
       this.morphStreamUpdateChildren(parent, sources),
+    )
+    streamOuterMorphers.set(this, (target, sources) =>
+      this.morphStreamReplaceElement(target, sources),
     )
   }
 
@@ -466,25 +481,42 @@ export class DocumentTree {
 
     this.assertMorphSources(parent, sources)
     const plans = this.buildMorphPlans(parent, sources)
-    const previousKeys = parent.children.flatMap(subtreeKeys)
-    const previousMutationKey = this.mutationKey
-    const transaction: MorphTransaction = {
-      attributes: new Map(),
-      children: new Map(),
-      parents: new Map(),
+    return this.commitMorphPlans(parent, plans)
+  }
+
+  /**
+   * Reconciles one exact Stream `replace method="morph"` application-element root.
+   * The target retains identity only when its replacement root has the same exact shape.
+   */
+  private morphStreamReplaceElement(
+    target: ProtocolElement,
+    sources: readonly ProtocolNode[],
+  ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
+    this.assertActiveParent(target)
+    const targetId = attributeValue(target, "id")
+    const source = sources.length === 1 ? sources[0] : undefined
+    if (
+      target.kind !== "element" ||
+      !targetId ||
+      !source ||
+      !isElement(source) ||
+      source.kind !== "element" ||
+      !isCompatibleMorphElement(target, source)
+    ) {
+      throw new TargetError(
+        "Native Stream outer morph requires one compatible application-element root",
+        { ...(targetId ? { target: targetId } : {}) },
+      )
+    }
+    if (hasTurboPermanent(target) || hasTurboPermanent(source)) {
+      throw new TargetError("Native Stream outer morph does not support data-turbo-permanent", {
+        target: targetId,
+      })
     }
 
-    try {
-      this.applyMorphChildren(parent, plans, transaction)
-      this.rebuildIndexes()
-    } catch (error) {
-      this.mutationKey = previousMutationKey
-      this.restoreMorphTransaction(transaction)
-      this.rebuildIndexes()
-      throw error
-    }
-
-    return [parent.key, ...previousKeys, ...parent.children.flatMap(subtreeKeys)]
+    this.assertMorphSources(target, source.children)
+    return this.commitMorphPlans(target, this.buildMorphPlans(target, source.children), source)
   }
 
   replaceNodeWithClones(node: ProtocolNode, sources: readonly ProtocolNode[]): readonly string[] {
@@ -668,6 +700,36 @@ export class DocumentTree {
       this.recordMorphParent(child, transaction)
       setProtocolNodeParent(child, null)
     }
+  }
+
+  private commitMorphPlans(
+    parent: ProtocolElement,
+    plans: readonly MorphPlan[],
+    source?: ProtocolElement,
+  ): readonly string[] {
+    const previousKeys = parent.children.flatMap(subtreeKeys)
+    const previousMutationKey = this.mutationKey
+    const transaction: MorphTransaction = {
+      attributes: new Map(),
+      children: new Map(),
+      parents: new Map(),
+    }
+
+    try {
+      if (source) {
+        transaction.attributes.set(parent, parent.attributes)
+        setProtocolElementAttributes(parent, source.attributes)
+      }
+      this.applyMorphChildren(parent, plans, transaction)
+      this.rebuildIndexes()
+    } catch (error) {
+      this.mutationKey = previousMutationKey
+      this.restoreMorphTransaction(transaction)
+      this.rebuildIndexes()
+      throw error
+    }
+
+    return [parent.key, ...previousKeys, ...parent.children.flatMap(subtreeKeys)]
   }
 
   private materializeMorphPlan(

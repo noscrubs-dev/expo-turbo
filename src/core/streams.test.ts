@@ -107,7 +107,7 @@ describe("Turbo Stream dispatcher", () => {
     expect(notifications).toBe(2)
   })
 
-  test("supports identity-safe child morph only for exact update targets", () => {
+  test("supports identity-safe outer and child morph only for exact targets", () => {
     const document = session(
       '<Gallery><Panel id="replace"><Old id="old-replace"/></Panel><Panel id="update"><Old id="old-update"/></Panel><Later id="later"/></Gallery>',
     )
@@ -120,15 +120,50 @@ describe("Turbo Stream dispatcher", () => {
        <turbo-stream action="remove" target="later"/>`,
     ).actions
 
-    expect(reports.map((report) => report.status)).toEqual(["error", "applied", "applied"])
-    expect(reports[0]?.error?.message).toContain("replace morph")
+    expect(reports.map((report) => report.status)).toEqual(["applied", "applied", "applied"])
     expect(document.tree.getElementById("replace")).toBe(originalReplace)
     expect(document.tree.getElementById("update")).toBe(originalUpdate)
-    expect(document.tree.getElementById("old-replace")).toBeDefined()
+    expect(document.tree.getElementById("old-replace")).toBeUndefined()
     expect(document.tree.getElementById("old-update")).toBeUndefined()
-    expect(document.tree.getElementById("new-replace")).toBeUndefined()
+    expect(document.tree.getElementById("new-replace")).toBeDefined()
     expect(document.tree.getElementById("new-update")).toBeDefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("retains compatible outer morph ownership while reconciling attributes and children", () => {
+    const document = session(
+      '<Gallery><DemoForm id="form" legacy="remove" tone="muted"><DemoInput id="email" tone="muted"/><DemoText id="copy">Before</DemoText></DemoForm></Gallery>',
+    )
+    const form = document.tree.getElementById("form")
+    const email = document.tree.getElementById("email")
+    if (!form || !email) throw new Error("outer morph fixture is missing")
+    const formSnapshot = document.getNodeSnapshot(form.key)
+    const emailSnapshot = document.getNodeSnapshot(email.key)
+    const scopes = new DocumentStateScopes(document)
+    const formScope = scopes.scopeFor(form.key, "form", { draft: "kept" })
+    const controls = new FormControlRegistry(document, form.key)
+    controls.register(email.key, { kind: "value", name: "email", value: "ada@example.test" })
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form" tone="accent"><DemoInput id="email" tone="accent"/><DemoText id="copy">After</DemoText></DemoForm></template></turbo-stream>',
+    ).actions[0]
+    const currentForm = document.tree.getElementById("form")
+    const currentEmail = document.tree.getElementById("email")
+    if (!currentForm || !currentEmail) throw new Error("outer-morphed nodes are missing")
+
+    expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+    expect(currentForm).toBe(form)
+    expect(currentEmail).toBe(email)
+    expect(document.getNodeSnapshot(form.key)?.identity).toBe(formSnapshot?.identity)
+    expect(document.getNodeSnapshot(email.key)?.identity).toBe(emailSnapshot?.identity)
+    expect(attributeValue(currentForm, "tone")).toBe("accent")
+    expect(attributeValue(currentForm, "legacy")).toBeUndefined()
+    expect(attributeValue(currentEmail, "tone")).toBe("accent")
+    expect(scopes.scopeFor(form.key, "form")).toBe(formScope)
+    expect(formScope.state.get("draft")).toBe("kept")
+    expect(formScope.state.isDisposed).toBe(false)
+    expect(controls.successfulEntries()).toEqual([{ name: "email", value: "ada@example.test" }])
   })
 
   test("retains compatible nested IDs and host form/state ownership during child morph", () => {
@@ -292,6 +327,91 @@ describe("Turbo Stream dispatcher", () => {
         name: "reparented id through an unkeyed wrapper",
         stream:
           '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoGroup><DemoInput id="field"/></DemoGroup></DemoGroup><DemoGroup id="right"/></template></turbo-stream>',
+      },
+    ]
+
+    for (const fixtureCase of cases) {
+      const document = fixture(fixtureCase.permanent)
+      const form = document.tree.getElementById("form")
+      const before = document.getNodeSnapshot("id:form")
+      const reports = dispatchTurboStreamFragment(
+        document,
+        `${fixtureCase.stream}<turbo-stream action="remove" target="later"/>`,
+      ).actions
+
+      expect(reports[0]?.status, fixtureCase.name).toBe("error")
+      expect(document.tree.getElementById("form")).toBe(form)
+      expect(document.getNodeSnapshot("id:form"), fixtureCase.name).toBe(before)
+      expect(document.revision, fixtureCase.name).toBe(1)
+      expect(document.tree.getElementById("later"), fixtureCase.name).toBeUndefined()
+    }
+  })
+
+  test("rejects unsupported outer morph boundaries atomically and continues later Streams", () => {
+    const fixture = (permanent = false) =>
+      session(
+        `<Gallery><Outside id="outside"/><DemoForm id="form"${permanent ? ' data-turbo-permanent=""' : ""}><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/></DemoForm><turbo-frame id="frame"><DemoText id="frame-child"/></turbo-frame><Later id="later"/></Gallery>`,
+      )
+    const cases: readonly {
+      readonly name: string
+      readonly permanent?: boolean
+      readonly stream: string
+    }[] = [
+      {
+        name: "selector",
+        stream:
+          '<turbo-stream action="replace" targets="DemoForm" method="morph"><template><DemoForm id="form"/></template></turbo-stream>',
+      },
+      {
+        name: "empty root",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template/></turbo-stream>',
+      },
+      {
+        name: "multiple roots",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"/><DemoText/></template></turbo-stream>',
+      },
+      {
+        name: "non-element root",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template>replacement</template></turbo-stream>',
+      },
+      {
+        name: "different root id",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="different"/></template></turbo-stream>',
+      },
+      {
+        name: "incompatible root shape",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoGroup id="form"/></template></turbo-stream>',
+      },
+      {
+        name: "Frame target",
+        stream:
+          '<turbo-stream action="replace" target="frame" method="morph"><template><turbo-frame id="frame"><DemoText/></turbo-frame></template></turbo-stream>',
+      },
+      {
+        name: "permanent active node",
+        permanent: true,
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/></DemoForm></template></turbo-stream>',
+      },
+      {
+        name: "permanent payload node",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText data-turbo-permanent=""/></DemoForm></template></turbo-stream>',
+      },
+      {
+        name: "external id",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoInput id="outside"/></DemoForm></template></turbo-stream>',
+      },
+      {
+        name: "reparented id",
+        stream:
+          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoGroup id="left"/><DemoGroup id="right"><DemoInput id="field"/></DemoGroup></DemoForm></template></turbo-stream>',
       },
     ]
 

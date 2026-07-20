@@ -3798,7 +3798,7 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1, 2, 3, 4])
   })
 
-  test("keeps compatible native component state through an exact Stream child morph", () => {
+  test("keeps compatible native component state through exact Stream child and outer morph", () => {
     let nextInstance = 0
     const disposed: number[] = []
     const unmounted: number[] = []
@@ -3813,53 +3813,59 @@ describe("React protocol renderer", () => {
       useNodeDisposal(() => disposed.push(instance))
       return createElement("section", { instance, title: props.title }, props.children)
     }
-    const panel = defineComponent({
-      attributes: {},
-      children: "nodes",
-      component: (props) => host("panel", props),
-      schema: z.object({}),
-      tag: "Panel",
-    })
     const stateful = defineComponent({
       attributes: { title: { codec: stringCodec, prop: "title" } },
-      children: "text",
+      children: "nodes",
       component: Stateful,
       schema: z.object({ title: z.string() }),
       tag: "Stateful",
     })
     const componentRegistry = registryWithCounters().use(
       defineComponentModule({
-        components: [panel, stateful],
-        name: "stream-child-morph-component",
+        components: [stateful],
+        name: "stream-morph-component",
         version: "0.1.0",
       }),
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><Panel id="panel"><Stateful id="left" title="Before">Before</Stateful><Stateful id="right" title="Right">Right</Stateful></Panel></Gallery>',
+        '<Gallery><Stateful id="panel" title="Panel"><Stateful id="left" title="Before"/><Stateful id="right" title="Right"/></Stateful></Gallery>',
       ),
     )
     const renderer = render(session, componentRegistry)
     const instances = () =>
       renderer.root.findAllByType("section").map((section) => section.props.instance as number)
 
-    expect(instances()).toEqual([1, 2])
+    expect(instances()).toEqual([1, 2, 3])
     act(() => {
       dispatchTurboStreamFragment(
         session,
-        '<turbo-stream action="update" target="panel" method="morph"><template><Stateful id="right" title="Right">Right</Stateful><Stateful id="left" title="After">After</Stateful></template></turbo-stream>',
+        '<turbo-stream action="update" target="panel" method="morph"><template><Stateful id="right" title="Right"/><Stateful id="left" title="After"/></template></turbo-stream>',
       )
     })
 
     const rendered = renderer.root.findAllByType("section")
-    expect(instances()).toEqual([2, 1])
-    expect(rendered.map((section) => section.props.title)).toEqual(["Right", "After"])
+    expect(instances()).toEqual([1, 3, 2])
+    expect(rendered.map((section) => section.props.title)).toEqual(["Panel", "Right", "After"])
+    expect(disposed).toEqual([])
+    expect(unmounted).toEqual([])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="panel" method="morph"><template><Stateful id="panel" title="Outer"><Stateful id="left" title="Left"/><Stateful id="right" title="Right"/></Stateful></template></turbo-stream>',
+      )
+    })
+
+    const outerRendered = renderer.root.findAllByType("section")
+    expect(instances()).toEqual([1, 2, 3])
+    expect(outerRendered.map((section) => section.props.title)).toEqual(["Outer", "Left", "Right"])
     expect(disposed).toEqual([])
     expect(unmounted).toEqual([])
 
     act(() => renderer.unmount())
-    expect([...disposed].sort()).toEqual([1, 2])
-    expect([...unmounted].sort()).toEqual([1, 2])
+    expect([...disposed].sort()).toEqual([1, 2, 3])
+    expect([...unmounted].sort()).toEqual([1, 2, 3])
   })
 
   test("exposes document visit accessibility and progress without remounting its boundary", async () => {
