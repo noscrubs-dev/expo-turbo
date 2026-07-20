@@ -37,7 +37,11 @@ module ExpoTurbo
         )
         raise TemplateError, "Expo Turbo templates must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
 
+        XmlFragments.parse_document(body)
+
         render plain: body, content_type: MIME_TYPE, status: status
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo templates must render well-formed UTF-8 XML"
       end
 
       def expo_turbo_frame_request?
