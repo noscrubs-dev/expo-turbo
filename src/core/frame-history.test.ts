@@ -24,6 +24,12 @@ import { FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-hist
 import { visitFrameWithHistory } from "./frame-history-internal"
 import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
+import {
+  acknowledgeFrameRender,
+  frameRenderLifecycleRevision,
+  retainFrameRenderer,
+  subscribeFrameRenderLifecycle,
+} from "./frame-render-lifecycle-internal"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
@@ -402,6 +408,50 @@ describe("promoted Frame history", () => {
     expect(
       current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
     ).toBe("ListenerFailed")
+  })
+
+  test("settles Frame visual lifecycle after promoted history finalization fails", async () => {
+    const visitLifecycle = new DocumentVisitLifecycle()
+    visitLifecycle.subscribe("before-visit", () => {
+      throw new Error("sensitive promoted Frame listener failure")
+    })
+    const frameLifecycle = new FrameLifecycle()
+    const events: string[] = []
+    frameLifecycle.subscribe("frame-render", () => {
+      events.push("render")
+    })
+    frameLifecycle.subscribe("frame-load", () => {
+      events.push("load")
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response('<turbo-frame id="details"><ListenerFailed /></turbo-frame>', { url }),
+      undefined,
+      { frameLifecycle, visitLifecycle },
+    )
+    const frame = current.session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const releaseRenderer = retainFrameRenderer(current.session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(current.session)
+    const unsubscribe = subscribeFrameRenderLifecycle(current.session, () => {
+      if (frameRenderLifecycleRevision(current.session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(current.session)
+      acknowledgeFrameRender(current.session, frame, "details", current.session.revision)?.finish()
+    })
+    const controller = current.registry.get("details")
+
+    await expect(
+      current.registry.visit("/listener-failed-visual", {
+        action: "advance",
+        frame: "details",
+      }),
+    ).rejects.toBeInstanceOf(FrameCommitError)
+
+    expect(events).toEqual(["render", "load"])
+    expect(controller.state).toMatchObject({ busy: false, complete: true, status: "completed" })
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("freezes the initial relative Turbo root while awaiting outside-root navigation", async () => {

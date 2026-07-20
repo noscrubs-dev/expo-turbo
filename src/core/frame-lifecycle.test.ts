@@ -5,9 +5,13 @@ import {
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
   executeFrameVisitControlReload,
+  FRAME_LIFECYCLE_LOAD_DISPATCH,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
+  FRAME_LIFECYCLE_RENDER_DISPATCH,
   FrameLifecycle,
+  FrameLoadEvent,
   FrameMissingEvent,
+  FrameRenderEvent,
   frameLifecycleOption,
   hasFrameMissingVisitIntent,
 } from "./frame-lifecycle"
@@ -28,6 +32,20 @@ async function capturedRejection(operation: () => Promise<unknown>): Promise<Err
     if (error instanceof Error) return error
   }
   throw new Error("Expected operation to reject with an Error")
+}
+
+function surfacedErrors(operation: () => unknown): Error[] {
+  const scheduled: (() => void)[] = []
+  const original = globalThis.queueMicrotask
+  globalThis.queueMicrotask = (callback) => {
+    scheduled.push(callback)
+  }
+  try {
+    operation()
+  } finally {
+    globalThis.queueMicrotask = original
+  }
+  return scheduled.map((callback) => capturedError(callback))
 }
 
 function missingEvent(body = '<PrivateCard token="secret" />'): FrameMissingEvent {
@@ -91,6 +109,143 @@ describe("Frame lifecycle", () => {
     calls.length = 0
     lifecycle[FRAME_LIFECYCLE_MISSING_DISPATCH](missingEvent())
     expect(calls).toEqual(["first", "late"])
+  })
+
+  test("emits frozen Frame render and load notifications", () => {
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("frame-render", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({
+        frameId: "details",
+        renderMethod: "replace",
+        url: "https://example.test/details",
+      })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({
+        frameId: "details",
+        url: "https://example.test/details",
+      })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
+
+    expect(
+      lifecycle[FRAME_LIFECYCLE_RENDER_DISPATCH](
+        new FrameRenderEvent({
+          frameId: "details",
+          renderMethod: "replace",
+          url: "https://example.test/details",
+        }),
+      ),
+    ).toBeUndefined()
+    expect(
+      lifecycle[FRAME_LIFECYCLE_LOAD_DISPATCH](
+        new FrameLoadEvent({ frameId: "details", url: "https://example.test/details" }),
+      ),
+    ).toBeUndefined()
+
+    expect(events).toEqual(["frame-render", "frame-load"])
+  })
+
+  test("reports redacted render observer faults without interrupting notifications", async () => {
+    const reported: AggregateError[] = []
+    const lifecycle = new FrameLifecycle({
+      onObserverError(error) {
+        reported.push(error)
+        return undefined
+      },
+    })
+    const calls: string[] = []
+    const late = () => {
+      calls.push("late")
+      return undefined
+    }
+    let removeSecond: () => void = () => undefined
+    lifecycle.subscribe("frame-render", () => {
+      calls.push("first")
+      removeSecond()
+      lifecycle.subscribe("frame-render", late)
+    })
+    removeSecond = lifecycle.subscribe("frame-render", () => {
+      calls.push("second")
+      throw new Error("private Frame observer secret")
+    })
+    lifecycle.subscribe("frame-render", (() => {
+      calls.push("third")
+      return Promise.reject(new Error("private rejected Frame observer secret"))
+    }) as never)
+
+    lifecycle[FRAME_LIFECYCLE_RENDER_DISPATCH](
+      new FrameRenderEvent({
+        frameId: "details",
+        renderMethod: "replace",
+        url: "https://example.test/private?token=secret",
+      }),
+    )
+
+    expect(calls).toEqual(["first", "second", "third"])
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.message).toBe("Frame lifecycle notification observers failed")
+    expect(reported[0]?.errors).toHaveLength(2)
+    for (const error of reported[0]?.errors ?? []) {
+      expect(error).toBeInstanceOf(StateError)
+      expect(error.message).toBe("Frame-render listener failed")
+      expect(error.cause).toBeUndefined()
+      expect(String(error)).not.toContain("secret")
+    }
+
+    calls.length = 0
+    lifecycle[FRAME_LIFECYCLE_RENDER_DISPATCH](
+      new FrameRenderEvent({
+        frameId: "details",
+        renderMethod: "replace",
+        url: "https://example.test/details",
+      }),
+    )
+    expect(calls).toEqual(["first", "third", "late"])
+    await Promise.resolve()
+  })
+
+  test("surfaces unhandled and reporter failures asynchronously through redacted errors", async () => {
+    const unreported = new FrameLifecycle()
+    unreported.subscribe("frame-load", () => {
+      throw new Error("secret unreported Frame observer failure")
+    })
+    const unreportedErrors = surfacedErrors(() =>
+      unreported[FRAME_LIFECYCLE_LOAD_DISPATCH](
+        new FrameLoadEvent({ frameId: "details", url: "https://example.test/details" }),
+      ),
+    )
+    expect(unreportedErrors).toHaveLength(1)
+    expect(unreportedErrors[0]).toBeInstanceOf(AggregateError)
+    expect(unreportedErrors[0]?.message).toBe("Frame lifecycle notification observers failed")
+    expect(String(unreportedErrors[0])).not.toContain("secret")
+
+    const rejected = new FrameLifecycle({
+      onObserverError() {
+        return Promise.reject(new Error("secret Frame observer reporter rejection")) as never
+      },
+    })
+    rejected.subscribe("frame-load", (() => false) as never)
+    const rejectedErrors = surfacedErrors(() =>
+      rejected[FRAME_LIFECYCLE_LOAD_DISPATCH](
+        new FrameLoadEvent({ frameId: "details", url: "https://example.test/details" }),
+      ),
+    )
+    expect(rejectedErrors).toHaveLength(1)
+    expect(rejectedErrors[0]).toBeInstanceOf(AggregateError)
+    expect(rejectedErrors[0]?.message).toBe(
+      "Frame lifecycle notification observer reporting failed",
+    )
+    expect(String(rejectedErrors[0])).not.toContain("secret")
+    await Promise.resolve()
   })
 
   test("requires synchronous undefined listeners and redacts failures", async () => {
@@ -350,6 +505,9 @@ describe("Frame lifecycle", () => {
   test("rejects invalid lifecycle construction and subscriptions", () => {
     expect(() => new FrameLifecycle({ visitResponse: "private" as never })).toThrow(
       "Frame lifecycle response visitor must be a function",
+    )
+    expect(() => new FrameLifecycle({ onObserverError: "private" as never })).toThrow(
+      "Frame lifecycle error observer must be a function",
     )
     const revoked = Proxy.revocable({}, {})
     revoked.revoke()

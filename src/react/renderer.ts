@@ -83,6 +83,13 @@ import type {
 import { consumeFrameAutofocus } from "../core/frame-autofocus-internal"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
+import {
+  acknowledgeFrameRender,
+  frameRenderLifecycleRevision,
+  hasFrameRenderTicket,
+  retainFrameRenderer,
+  subscribeFrameRenderLifecycle,
+} from "../core/frame-render-lifecycle-internal"
 import { resolveFormSubmissionDestination } from "../core/frames"
 import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
 import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
@@ -1340,8 +1347,28 @@ function applyAutofocus(
 }
 
 function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
+  const { session } = useRenderer()
   const controller = props.frames.get(props.frameId)
   const state = useFrameControllerState(controller)
+  const subscribeRenderLifecycle = useCallback(
+    (listener: () => void) => subscribeFrameRenderLifecycle(session, listener),
+    [session],
+  )
+  const renderLifecycleSnapshot = useCallback(
+    () => frameRenderLifecycleRevision(session),
+    [session],
+  )
+  const subscribeRevision = useCallback(
+    (listener: () => void) => session.subscribeRevision(listener),
+    [session],
+  )
+  const revisionSnapshot = useCallback(() => session.revision, [session])
+  const coordinationRevision = useSyncExternalStore(
+    subscribeRenderLifecycle,
+    renderLifecycleSnapshot,
+    renderLifecycleSnapshot,
+  )
+  const revision = useSyncExternalStore(subscribeRevision, revisionSnapshot, revisionSnapshot)
   const accessibilityState = useMemo<ExpoTurboFrameAccessibilityState>(
     () => Object.freeze({ busy: state.busy }),
     [state.busy],
@@ -1361,18 +1388,41 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
       }),
     [controller, props.node.key, props.onError],
   )
+  useInsertionEffect(() => retainFrameRenderer(session, props.node), [session, props.node])
   useLayoutEffect(() => {
-    const candidates = consumeFrameAutofocus(controller, state.revision)
-    if (!candidates || !props.autofocus) return
-    applyAutofocus(
-      props.autofocus,
-      candidates,
-      props.node.key,
-      props.onError,
-      "Frame",
-      props.frameId,
-    )
-  }, [controller, props.autofocus, props.frameId, props.node.key, props.onError, state.revision])
+    if (coordinationRevision !== frameRenderLifecycleRevision(session)) return
+    const pending = hasFrameRenderTicket(session, props.node, props.frameId)
+    const acknowledgement = acknowledgeFrameRender(session, props.node, props.frameId, revision)
+    if (pending && !acknowledgement) return
+    try {
+      const candidates = consumeFrameAutofocus(controller, state.revision)
+      if (candidates && props.autofocus) {
+        applyAutofocus(
+          props.autofocus,
+          candidates,
+          props.node.key,
+          props.onError,
+          "Frame",
+          props.frameId,
+        )
+      }
+    } catch (error) {
+      acknowledgement?.fail()
+      throw error
+    }
+    acknowledgement?.finish()
+  }, [
+    controller,
+    coordinationRevision,
+    props.autofocus,
+    props.frameId,
+    props.node,
+    props.node.key,
+    props.onError,
+    revision,
+    session,
+    state.revision,
+  ])
   const children = useMemo(
     () => createElement(Fragment, null, renderChildren(props.node.children)),
     [props.node.children],

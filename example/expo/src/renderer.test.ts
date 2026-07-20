@@ -51,6 +51,7 @@ import {
   type FrameController,
   type FrameControllerCollection,
   FrameControllerRegistry,
+  FrameLifecycle,
   FrameMissingError,
   FrameRequestLoader,
   parseExpoTurboDocument,
@@ -7577,6 +7578,105 @@ describe("React protocol renderer", () => {
 
       act(() => renderer?.unmount())
     }
+  })
+
+  test("acknowledges a mounted Frame response before autofocus and Frame load", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const events: string[] = []
+    const mounted = new Set<string>()
+    function FrameRenderProbe(): ReactNode {
+      useLayoutEffect(() => {
+        events.push("child-layout")
+      }, [])
+      return createElement("frame-render-probe")
+    }
+    function FocusTarget(props: Readonly<{ focusKey: string }>): ReactNode {
+      const nodeKey = `id:${props.focusKey}`
+      useLayoutEffect(() => {
+        mounted.add(nodeKey)
+        return () => {
+          mounted.delete(nodeKey)
+        }
+      }, [nodeKey])
+      return createElement("focus-target", { nodeKey })
+    }
+    const probe = defineComponent({
+      attributes: {},
+      children: "none",
+      component: FrameRenderProbe,
+      schema: z.object({}),
+      tag: "FrameRenderProbe",
+    })
+    const focusTarget = defineComponent({
+      attributes: { "focus-key": { codec: stringCodec, prop: "focusKey" } },
+      children: "none",
+      component: FocusTarget,
+      schema: z.object({ focusKey: z.string() }),
+      tag: "FocusTarget",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [probe, focusTarget],
+        name: "frame-render-lifecycle-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("frame-render", () => {
+      events.push("render")
+    })
+    lifecycle.subscribe("frame-load", () => {
+      events.push("load")
+    })
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${pending.length + 1}` },
+        { frameLifecycle: lifecycle },
+      ),
+    )
+    const renderer = render(session, registry, {
+      autofocus: {
+        canFocus: (nodeKey) => mounted.has(nodeKey),
+        focus: (nodeKey) => {
+          events.push(`focus:${nodeKey}`)
+        },
+      },
+      frames,
+    })
+    const controller = frames.get("frame")
+
+    expect(pending).toHaveLength(1)
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<turbo-frame id="frame"><FrameRenderProbe /><FocusTarget id="focus" focus-key="focus" autofocus="" /></turbo-frame>',
+        url: "https://example.test/frame",
+      })
+      await nextTurn()
+    })
+    await controller.loaded
+
+    expect(events).toEqual(["child-layout", "render", "focus:id:focus", "load"])
+    expect(controller.state.status).toBe("completed")
+    act(() => renderer.unmount())
   })
 
   test("exposes Frame GET busy accessibility without remounting stable native boundaries", async () => {

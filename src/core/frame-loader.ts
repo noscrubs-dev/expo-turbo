@@ -24,6 +24,7 @@ import {
   updateFrameHistoryResponseSource,
 } from "./frame-history"
 import { registerFrameCommitProtection } from "./frame-history-internal"
+import type { FrameRenderEventDetail } from "./frame-lifecycle"
 import {
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
@@ -34,6 +35,11 @@ import {
   type FrameMissingEvent,
   frameLifecycleOption,
 } from "./frame-lifecycle"
+import {
+  dispatchFrameLoad,
+  type PreparedFrameRender,
+  prepareFrameRender,
+} from "./frame-render-lifecycle-internal"
 import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
@@ -97,6 +103,19 @@ export interface FrameTreeCommitCandidate {
   readonly url: string
 }
 
+/** @internal Coordinates renderer acknowledgement for controller-owned Frame loads. */
+export const FRAME_RENDER_PREPARE_OPTION = Symbol("expo-turbo.frame-render.prepare")
+
+/** @internal Lets the Frame controller obtain a render ticket from this loader's lifecycle. */
+export const FRAME_REQUEST_LOADER_PREPARE_RENDER = Symbol(
+  "expo-turbo.frame-request-loader.prepare-render",
+)
+
+/** @internal Dispatches load from this loader's admitted lifecycle after renderer acknowledgement. */
+export const FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD = Symbol(
+  "expo-turbo.frame-request-loader.dispatch-render-load",
+)
+
 export interface FrameLoadOptions {
   /**
    * Runs synchronously after response extraction and structural preflight but before the
@@ -106,6 +125,11 @@ export interface FrameLoadOptions {
   readonly beforeFrameCommit?: (candidate: FrameTreeCommitCandidate) => undefined
   /** Exact owner token used by cancellation and controller lifecycle coordination. */
   readonly owner?: object
+  /** @internal */
+  readonly [FRAME_RENDER_PREPARE_OPTION]?: (
+    frame: ProtocolElement,
+    candidate: FrameTreeCommitCandidate,
+  ) => undefined
 }
 
 interface InternalFrameLoadOptions extends FrameLoadOptions {
@@ -203,7 +227,11 @@ function frameLoadOptions(options: FrameLoadOptions): InternalFrameLoadOptions {
   const keys = Reflect.ownKeys(descriptors)
   if (
     keys.some(
-      (key) => key !== "beforeFrameCommit" && key !== "owner" && key !== FRAME_HISTORY_PLAN_OPTION,
+      (key) =>
+        key !== "beforeFrameCommit" &&
+        key !== "owner" &&
+        key !== FRAME_HISTORY_PLAN_OPTION &&
+        key !== FRAME_RENDER_PREPARE_OPTION,
     )
   ) {
     throw new RequestError("Frame load options contain unsupported fields", { method: "GET" })
@@ -229,6 +257,12 @@ function frameLoadOptions(options: FrameLoadOptions): InternalFrameLoadOptions {
   if (historyPlan !== undefined) {
     assertFrameHistoryCommitPlan(historyPlan)
   }
+  const prepareRender = descriptors[FRAME_RENDER_PREPARE_OPTION]?.value
+  if (prepareRender !== undefined && typeof prepareRender !== "function") {
+    throw new RequestError("Frame render preparation callback must be a function", {
+      method: "GET",
+    })
+  }
   if (historyPlan && beforeFrameCommit) {
     throw new RequestError("Frame history plans cannot be combined with commit callbacks", {
       method: "GET",
@@ -238,6 +272,7 @@ function frameLoadOptions(options: FrameLoadOptions): InternalFrameLoadOptions {
     ...(beforeFrameCommit ? { beforeFrameCommit } : {}),
     ...(owner ? { owner } : {}),
     ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
+    ...(prepareRender ? { [FRAME_RENDER_PREPARE_OPTION]: prepareRender } : {}),
   })
 }
 
@@ -289,6 +324,23 @@ export class FrameRequestLoader {
     }
     if (this.active.get(frameId) === active) this.active.delete(frameId)
     return true
+  }
+
+  [FRAME_REQUEST_LOADER_PREPARE_RENDER](
+    frame: ProtocolElement,
+    candidate: FrameTreeCommitCandidate,
+  ): PreparedFrameRender | undefined {
+    const lifecycle = this.frameLifecycle
+    if (!lifecycle) return undefined
+    return prepareFrameRender(this.session, lifecycle, {
+      frame,
+      frameId: candidate.frameId,
+      url: candidate.url,
+    })
+  }
+
+  [FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD](commit: FrameRenderEventDetail): void {
+    if (this.frameLifecycle) dispatchFrameLoad(this.frameLifecycle, commit)
   }
 
   async load(
@@ -606,7 +658,11 @@ export class FrameRequestLoader {
             ...(documentUrl ? { documentUrl } : {}),
             finalUrl: responseUrl,
           })
-          if (loadOptions.beforeFrameCommit || historyPlan) {
+          if (
+            loadOptions.beforeFrameCommit ||
+            historyPlan ||
+            loadOptions[FRAME_RENDER_PREPARE_OPTION]
+          ) {
             const lease = active.lease
             if (!lease) {
               throw new RequestError("Frame commit requires active request ownership", {
@@ -636,6 +692,18 @@ export class FrameRequestLoader {
                     )
                     throw callbackContractError
                   }
+                }
+                const renderResult = loadOptions[FRAME_RENDER_PREPARE_OPTION]?.(frame, candidate)
+                if (renderResult !== undefined) {
+                  callbackContractError = new RequestError(
+                    "Frame render preparation callback must not return a value",
+                    {
+                      frameId,
+                      method: "GET",
+                      responseStatus: candidate.responseStatus,
+                    },
+                  )
+                  throw callbackContractError
                 }
               })
               if (!acquired) return this.canceled(frameId, requestIds, responseUrl, active)

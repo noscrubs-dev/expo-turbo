@@ -15,7 +15,18 @@ import {
   prepareFrameHistoryCommit,
 } from "./frame-history"
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
-import { FrameCommitError, type FrameLoadReport, type FrameRequestLoader } from "./frame-loader"
+import {
+  FRAME_RENDER_PREPARE_OPTION,
+  FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD,
+  FRAME_REQUEST_LOADER_PREPARE_RENDER,
+  FrameCommitError,
+  type FrameLoadReport,
+  type FrameRequestLoader,
+} from "./frame-loader"
+import {
+  clearFrameRenderSuppression,
+  type PreparedFrameRender,
+} from "./frame-render-lifecycle-internal"
 import type { FrameResponseReport } from "./frames"
 import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
@@ -76,6 +87,7 @@ export class FrameController {
   private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
   private pendingAutofocus: PendingFrameAutofocus | undefined
+  private pendingFrameRender: Readonly<{ epoch: number; prepared: PreparedFrameRender }> | undefined
   private visitFinalization: AbortController | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
   private visibilityUnsubscribe: Unsubscribe | undefined
@@ -158,8 +170,14 @@ export class FrameController {
   cancel(): void {
     this.cancelVisitFinalization()
     const epoch = this.loadEpoch
-    if (!this.loader.cancel(this.frameId, this.requestOwner)) return
+    const pendingFrameRender =
+      this.pendingFrameRender?.epoch === epoch ? this.pendingFrameRender : undefined
+    const requestCanceled = this.loader.cancel(this.frameId, this.requestOwner)
+    if (!requestCanceled && !pendingFrameRender) return
     if (epoch !== this.loadEpoch) return
+    pendingFrameRender?.prepared.cancel()
+    if (this.pendingFrameRender === pendingFrameRender) this.pendingFrameRender = undefined
+    if (!requestCanceled) return
     this.loadEpoch += 1
     if (this.status === "loading") {
       this.needsLoad = true
@@ -284,6 +302,10 @@ export class FrameController {
   ): Promise<FrameLoadReport | undefined> {
     this.assertLoadAdmission()
     this.cancelVisitFinalization()
+    const priorFrameRender = this.pendingFrameRender
+    priorFrameRender?.prepared.cancel()
+    if (this.pendingFrameRender === priorFrameRender) this.pendingFrameRender = undefined
+    clearFrameRenderSuppression(this.session, this.frameNode)
     const visitFinalization = historyPlan ? new AbortController() : undefined
     this.visitFinalization = visitFinalization
     const epoch = ++this.loadEpoch
@@ -295,25 +317,27 @@ export class FrameController {
     const request = this.loader.load(this.frameId, source, {
       ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
       owner: this.requestOwner,
+      [FRAME_RENDER_PREPARE_OPTION]: (frame, candidate) => {
+        this.trackFrameRender(
+          this.loader[FRAME_REQUEST_LOADER_PREPARE_RENDER](frame, candidate),
+          epoch,
+        )
+        return undefined
+      },
     })
     if (historyPlan && epoch === this.loadEpoch) this.publish()
     const loaded = request.then(
       async (report) => {
         if (epoch !== this.loadEpoch) return report
+        const prepared =
+          this.pendingFrameRender?.epoch === epoch ? this.pendingFrameRender.prepared : undefined
+        if (!prepared) {
+          return this.finishLoadWithoutRender(report, epoch, historyPlan, visitFinalization)
+        }
         if (report.status !== "promoted" && report.frame && this.connected) {
           stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
         }
-        this.status = report.status
-        if (
-          report.status === "completed" ||
-          report.status === "empty" ||
-          report.status === "promoted"
-        ) {
-          this.hasBeenLoaded = true
-          this.needsLoad = false
-        } else {
-          this.needsLoad = true
-        }
+        let committedHistoryFailure: FrameCommitError | undefined
         if (historyPlan && report.status === "completed") {
           try {
             this.publish()
@@ -323,30 +347,52 @@ export class FrameController {
               visitFinalization?.signal,
             )
           } catch {
-            const committed = new FrameCommitError(frameHistoryCommittedCandidate(historyPlan))
-            if (epoch === this.loadEpoch) {
-              for (const listener of this.errorListeners) listener(committed)
-            }
-            throw committed
+            committedHistoryFailure = new FrameCommitError(
+              frameHistoryCommittedCandidate(historyPlan),
+            )
           } finally {
             if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
           }
-        } else {
-          this.publish()
         }
         if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
+        const rendering = this.frameRenderResult(prepared, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        this.finishAfterFrameRender(
+          prepared,
+          rendered,
+          epoch,
+          committedHistoryFailure?.outcome ?? report,
+        )
+        if (committedHistoryFailure) {
+          if (epoch === this.loadEpoch) {
+            for (const listener of this.errorListeners) listener(committedHistoryFailure)
+          }
+          throw committedHistoryFailure
+        }
         return report
       },
       async (error: unknown) => {
         const reported = error instanceof Error ? error : new Error("Frame source load failed")
         const committed = error instanceof FrameCommitError
+        const prepared =
+          this.pendingFrameRender?.epoch === epoch ? this.pendingFrameRender.prepared : undefined
         let publicationFailure: unknown
         try {
+          let rendered = false
+          if (committed) {
+            const rendering = this.frameRenderResult(prepared, epoch)
+            rendered = typeof rendering === "boolean" ? rendering : await rendering
+          } else {
+            prepared?.cancel()
+          }
           if (epoch === this.loadEpoch) {
-            this.hasBeenLoaded ||= committed
-            this.needsLoad = !committed
-            this.status = committed ? "completed" : "error"
-            this.publish()
+            if (committed) {
+              this.finishAfterFrameRender(prepared, rendered, epoch, error.outcome)
+            } else {
+              this.needsLoad = true
+              this.status = "error"
+              this.publish()
+            }
           }
         } catch (failure) {
           publicationFailure = failure
@@ -362,6 +408,104 @@ export class FrameController {
     )
     this.loadedPromise = loaded
     return loaded
+  }
+
+  private async finishLoadWithoutRender(
+    report: FrameLoadReport,
+    epoch: number,
+    historyPlan: FrameHistoryCommitPlan | undefined,
+    visitFinalization: AbortController | undefined,
+  ): Promise<FrameLoadReport> {
+    if (report.status !== "promoted" && report.frame && this.connected) {
+      stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
+    }
+    this.applyLoadReport(report)
+    if (historyPlan && report.status === "completed") {
+      try {
+        this.publish()
+        await finalizeFrameHistoryVisit(
+          historyPlan,
+          () => epoch === this.loadEpoch && this.connected,
+          visitFinalization?.signal,
+        )
+      } catch {
+        const committed = new FrameCommitError(frameHistoryCommittedCandidate(historyPlan))
+        if (epoch === this.loadEpoch) {
+          for (const listener of this.errorListeners) listener(committed)
+        }
+        throw committed
+      } finally {
+        if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
+      }
+    } else {
+      this.publish()
+    }
+    if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
+    return report
+  }
+
+  private frameRenderResult(
+    prepared: PreparedFrameRender | undefined,
+    epoch: number,
+  ): boolean | Promise<boolean> {
+    if (!prepared) return false
+    prepared.seal()
+    if (prepared.outcome !== undefined) return prepared.outcome === "rendered"
+    if (this.pendingFrameRender?.prepared !== prepared) this.trackFrameRender(prepared, epoch)
+    const pending = this.pendingFrameRender
+    if (!pending || pending.prepared !== prepared) {
+      throw new StateError("Frame render tracking was lost before acknowledgement", {
+        frameId: this.frameId,
+      })
+    }
+    return prepared.rendered.then((outcome) => {
+      if (this.pendingFrameRender === pending) this.pendingFrameRender = undefined
+      return outcome === "rendered"
+    })
+  }
+
+  private trackFrameRender(
+    prepared: PreparedFrameRender | undefined,
+    epoch: number,
+  ): PreparedFrameRender | undefined {
+    if (!prepared) return undefined
+    if (epoch !== this.loadEpoch || this.status !== "loading") {
+      prepared.cancel()
+      throw new StateError("Frame render prepared without an active load", {
+        frameId: this.frameId,
+      })
+    }
+    if (prepared.outcome === undefined) this.pendingFrameRender = Object.freeze({ epoch, prepared })
+    return prepared
+  }
+
+  private finishAfterFrameRender(
+    prepared: PreparedFrameRender | undefined,
+    rendered: boolean,
+    epoch: number,
+    report: Extract<FrameLoadReport, Readonly<{ status: "completed" }>> | FrameLoadReport,
+  ): void {
+    if (epoch !== this.loadEpoch || this.status !== "loading") return
+    this.applyLoadReport(report)
+    this.publish()
+    if (!rendered || !prepared || report.status !== "completed" || epoch !== this.loadEpoch) {
+      return
+    }
+    this.loader[FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD](prepared.commit)
+  }
+
+  private applyLoadReport(report: FrameLoadReport): void {
+    this.status = report.status
+    if (
+      report.status === "completed" ||
+      report.status === "empty" ||
+      report.status === "promoted"
+    ) {
+      this.hasBeenLoaded = true
+      this.needsLoad = false
+    } else {
+      this.needsLoad = true
+    }
   }
 
   private cancelVisitFinalization(): void {
