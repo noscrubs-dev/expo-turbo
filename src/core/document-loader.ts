@@ -3,7 +3,10 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
-import { documentLoadRenderMethod } from "./document-load-render-method-internal"
+import {
+  documentLoadRefreshScroll,
+  documentLoadRenderMethod,
+} from "./document-load-render-method-internal"
 import {
   createDocumentTransportError,
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
@@ -14,6 +17,11 @@ import {
 } from "./document-loader-lifecycle-internal"
 import { documentCachePolicy } from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
+import {
+  discardDocumentRefreshScroll,
+  prepareDocumentRefreshScroll,
+  suppressPreparedDocumentRefreshScroll,
+} from "./document-refresh-scroll-internal"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
   type PreparedDocumentRender,
@@ -242,6 +250,10 @@ export class DocumentRequestLoader {
 
   subscribeTreeState(listener: () => void): () => void {
     return this.session.subscribeTreeState(listener)
+  }
+
+  discardDocumentRefreshScroll(generation: number): void {
+    discardDocumentRefreshScroll(this.session, generation)
   }
 
   captureCurrentSnapshot(cache: DocumentSnapshotCache): void {
@@ -806,11 +818,17 @@ export class DocumentRequestLoader {
       }
       if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
     }
+    const refreshScroll = documentLoadRefreshScroll(options)
+    if (refreshScroll === "reset" && commit.classification === "success") {
+      prepareDocumentRefreshScroll(this.session)
+    }
     this.release(active)
     try {
       if (effectiveRenderMethod === "morph") morphCurrentDocument(this.session, commit.tree)
       else this.session.replaceTree(commit.tree)
     } catch {
+      suppressPreparedDocumentRefreshScroll(this.session)
+      discardDocumentRefreshScroll(this.session, this.session.treeGeneration)
       throw new DocumentCommitError(report)
     }
     return report

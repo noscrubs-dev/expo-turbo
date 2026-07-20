@@ -42,7 +42,7 @@ interface DocumentRenderBinding {
 
 export interface DocumentRenderAcknowledgement {
   readonly fail: () => void
-  readonly finish: () => void
+  readonly finish: () => boolean
   readonly status: "render"
 }
 
@@ -272,18 +272,19 @@ function finishAcknowledgement(
   binding: DocumentRenderBinding,
   pending: PendingDocumentRender,
   outcome: Extract<DocumentRenderOutcome, "failed" | "rendered">,
-): void {
-  if (pending.outcome !== undefined) return
+): boolean {
+  if (pending.outcome !== undefined) return false
   if (session.treeGeneration !== pending.commit.generation || session.tree.document !== document) {
     settle(binding, pending, "superseded")
-    return
+    return false
   }
   if (session.revision !== revision) {
     pending.revision = session.revision
     pending.acknowledged = false
-    return
+    return false
   }
   settle(binding, pending, outcome)
+  return outcome === "rendered"
 }
 
 function notifySubscribers(binding: DocumentRenderBinding): void {

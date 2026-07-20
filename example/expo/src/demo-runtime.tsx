@@ -28,6 +28,7 @@ import {
   DemoFrameAutoscrollProvider,
   DemoVisibilityProvider,
 } from "./demo-boundaries";
+import { DemoDocumentRefreshScrollRegistry } from "./demo-document-refresh-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
   createDemoDocumentRuntime,
@@ -48,6 +49,7 @@ type DemoActionRuntime = ReturnType<typeof createDemoActionRuntime>;
 export interface DemoRuntime {
   readonly actionRuntime: DemoActionRuntime;
   readonly documentRuntime: DemoDocumentRuntime;
+  readonly documentRefreshScroll: DemoDocumentRefreshScrollRegistry;
   readonly frameAutoscroll: DemoFrameAutoscrollRegistry;
   readonly formController: FormSubmissionController;
   readonly formLinks: FormLinkSubmissionController;
@@ -93,6 +95,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     DEMO_CLOCK,
   );
   const actionRuntime = createDemoActionRuntime();
+  const documentRefreshScroll = new DemoDocumentRefreshScrollRegistry();
   const focus = new DemoFocusRegistry();
   const frameAutoscroll = new DemoFrameAutoscrollRegistry();
   const visibility = new DemoVisibilityRegistry();
@@ -141,6 +144,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   return Object.freeze({
     actionRuntime,
     documentRuntime,
+    documentRefreshScroll,
     frameAutoscroll,
     formController,
     formLinks,
@@ -159,6 +163,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       unsubscribeTraversal();
       navigation.dispose();
       forms.dispose();
+      documentRefreshScroll.dispose();
       focus.dispose();
       frameAutoscroll.dispose();
       visibility.dispose();
@@ -207,6 +212,7 @@ export function DemoRuntimeProvider({
               documentComponent={DemoDocumentBoundary}
               documentController={runtime.documentRuntime.controller}
               documentPreloader={runtime.documentRuntime.preloader}
+              documentRefreshScroll={runtime.documentRefreshScroll}
               frameAutoscroll={runtime.frameAutoscroll}
               frameComponent={DemoFrameBoundary}
               formComponent={DemoFormBoundary}

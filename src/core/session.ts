@@ -4,6 +4,7 @@ import {
   stageDocumentAutofocus,
   suppressDocumentAutofocus,
 } from "./document-autofocus-internal"
+import { stageDocumentRefreshScroll } from "./document-refresh-scroll-internal"
 import { registerDocumentSessionMorpher } from "./document-session-morph-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
@@ -133,6 +134,7 @@ export class DocumentSession {
     this.currentTreeGeneration = generation
     this.currentTreeState = Object.freeze({ generation, preview: false })
     suppressDocumentAutofocus(this)
+    stageDocumentRefreshScroll(this, this.currentTree, generation)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()
@@ -164,6 +166,7 @@ export class DocumentSession {
     this.currentTreeState = Object.freeze({ generation, preview })
     if (autofocus) stageDocumentAutofocus(this, autofocus)
     else suppressDocumentAutofocus(this)
+    stageDocumentRefreshScroll(this, tree, generation)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     this.snapshots.clear()
