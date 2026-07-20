@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add public package-boundary checks over source imports, manifest dependency sections, compiled artifacts, and source-map source content.
+
 - Add immediate and debounced Expo Refresh broadcast helpers. They resolve the canonical Expo stream name, capture the request ID, build/validate the XML tag, and preserve only strings before the delayed callback and Active Job enqueue. Turbo's caller-thread debouncer uses the exact stream-name/request-ID pair, so repeated matching refreshes on that thread collapse while different streams or request IDs remain independent.
 
 - Add XML-only Expo Stream rendering variants without delegating to the HTML Turbo renderer. Explicit XML partials now share their confined resolver with inferred records, `layout:` wraps a captured block through a confined XML layout partial, and XML-format `render_in` objects receive a narrow partial/capture context rather than the host's general view renderer. Their output still receives strict Stream-fragment admission; host templates and renderables remain trusted Ruby code, not a sandbox.
