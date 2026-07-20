@@ -273,7 +273,6 @@ const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
   "data-method",
   "data-remote",
   "data-turbo-confirm",
-  "data-turbo-frame",
   "data-turbo-method",
   "data-turbo-stream",
 ] as const
@@ -383,7 +382,6 @@ function pressInDocumentPrefetchUrl(
   let foundPrefetchSetting = false
   let foundTurboSetting = false
   while (current && current.kind !== "document") {
-    if (current.kind === "frame") return undefined
     if (isElement(current)) {
       if (!foundPrefetchSetting) {
         const setting = attributeValue(current, "data-turbo-prefetch")
@@ -406,6 +404,11 @@ function pressInDocumentPrefetchUrl(
   try {
     const documentUrl = session.tree.document.url
     if (!documentUrl) return undefined
+    const frameTarget = attributeValue(node, "data-turbo-frame")
+    const destination = resolveFormSubmissionDestination(session.tree, node, {
+      ...(frameTarget !== undefined ? { formTarget: frameTarget } : {}),
+    })
+    if (destination.kind !== "document") return undefined
     const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
     if (linkUrl.kind !== "protocol") return undefined
     const disposition = classifyTopLevelLocation(session.tree, linkUrl.resolution.url)
