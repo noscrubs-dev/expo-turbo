@@ -17,6 +17,7 @@ export interface PreparedFrameRender {
   readonly outcome: FrameRenderOutcome | undefined
   readonly rendered: Promise<FrameRenderOutcome>
   cancel(): void
+  isCurrent(): boolean
   seal(): void
 }
 
@@ -25,9 +26,8 @@ interface PendingFrameRender {
   readonly commit: FrameRenderEventDetail
   readonly frame: ProtocolElement
   readonly handle: PreparedFrameRender
-  readonly lifecycle: FrameLifecycle
+  readonly ownerIsCurrent: (() => boolean) | undefined
   outcome: FrameRenderOutcome | undefined
-  renderDispatched: boolean
   revision: number | undefined
   readonly resolve: (outcome: FrameRenderOutcome) => void
   readonly treeGeneration: number
@@ -108,8 +108,12 @@ export function retainFrameRenderer(session: DocumentSession, frame: ProtocolEle
 
 export function prepareFrameRender(
   session: DocumentSession,
-  lifecycle: FrameLifecycle,
-  detail: Readonly<{ frame: ProtocolElement; frameId: string; url: string }>,
+  detail: Readonly<{
+    frame: ProtocolElement
+    frameId: string
+    ownerIsCurrent?: () => boolean
+    url: string
+  }>,
 ): PreparedFrameRender {
   const binding = bindingFor(session)
   settleStaleFrameRenders(session, binding)
@@ -141,6 +145,7 @@ export function prepareFrameRender(
     get outcome() {
       return pending.outcome
     },
+    isCurrent: () => frameRenderIsCurrent(session, handle),
     rendered,
     seal: () => sealFrameRender(session, handle),
   })
@@ -149,9 +154,8 @@ export function prepareFrameRender(
     commit,
     frame: detail.frame,
     handle,
-    lifecycle,
+    ownerIsCurrent: detail.ownerIsCurrent,
     outcome: undefined,
-    renderDispatched: false,
     revision: undefined,
     resolve,
     treeGeneration,
@@ -185,10 +189,6 @@ export function acknowledgeFrameRender(
   }
 
   pending.acknowledged = true
-  if (!pending.renderDispatched) {
-    pending.renderDispatched = true
-    pending.lifecycle[FRAME_LIFECYCLE_RENDER_DISPATCH](new FrameRenderEvent(pending.commit))
-  }
   if (
     pending.outcome !== undefined ||
     !frameIsCurrent(session, frame, frameId, pending.treeGeneration) ||
@@ -239,9 +239,37 @@ export function clearFrameRenderSuppression(
   bindings.get(session)?.suppressed.delete(frame)
 }
 
-export function dispatchFrameLoad(lifecycle: FrameLifecycle, commit: FrameRenderEventDetail): void {
+export function dispatchFrameLoad(
+  lifecycle: FrameLifecycle,
+  prepared: PreparedFrameRender,
+): boolean {
+  if (!prepared.isCurrent()) return false
+  const commit = prepared.commit
   lifecycle[FRAME_LIFECYCLE_LOAD_DISPATCH](
     new FrameLoadEvent({ frameId: commit.frameId, url: commit.url }),
+  )
+  return true
+}
+
+export function dispatchFrameRender(
+  lifecycle: FrameLifecycle,
+  prepared: PreparedFrameRender,
+): boolean {
+  if (!prepared.isCurrent()) return false
+  lifecycle[FRAME_LIFECYCLE_RENDER_DISPATCH](new FrameRenderEvent(prepared.commit))
+  return true
+}
+
+function frameRenderIsCurrent(session: DocumentSession, prepared: PreparedFrameRender): boolean {
+  const pending = preparedRenders.get(prepared)
+  const binding = bindings.get(session)
+  return Boolean(
+    pending &&
+      binding &&
+      pending.outcome === "rendered" &&
+      (binding.renderers.get(pending.frame) ?? 0) > 0 &&
+      (pending.ownerIsCurrent?.() ?? true) &&
+      frameIsCurrent(session, pending.frame, pending.commit.frameId, pending.treeGeneration),
   )
 }
 
@@ -252,6 +280,7 @@ function settledFrameRender(
   return Object.freeze({
     cancel: () => undefined,
     commit,
+    isCurrent: () => false,
     outcome,
     rendered: Promise.resolve(outcome),
     seal: () => undefined,

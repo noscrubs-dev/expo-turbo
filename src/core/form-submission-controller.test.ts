@@ -31,6 +31,7 @@ import { FormSubmissionLifecycle } from "./form-submission-lifecycle"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
 import { consumeFrameAutofocus } from "./frame-autofocus-internal"
+import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator } from "./frame-history"
 import { FrameLifecycle } from "./frame-lifecycle"
@@ -5012,6 +5013,60 @@ describe("FormSubmissionController", () => {
       unsubscribe()
       releaseRenderer()
     }
+  })
+
+  test("suppresses stale Frame-form load when its render observer starts newer Frame work", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    const frame = session.tree.getElementById("frame-a")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const lifecycle = new FrameLifecycle()
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "frame-a", session.revision)?.finish()
+    })
+    const controller = new FrameController(
+      session,
+      "frame-a",
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async (request) => response(request, "", { headers: {}, status: 204 }),
+        },
+        requestIds("newer-frame"),
+      ),
+    )
+    const events: string[] = []
+    let newer: Promise<unknown> | undefined
+    lifecycle.subscribe("frame-render", () => {
+      events.push("render")
+      newer = controller.visit("/newer-frame")
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", () => {
+      events.push("load")
+      return undefined
+    })
+
+    await expect(
+      new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(request, '<turbo-frame id="frame-a"><Result id="first" /></turbo-frame>'),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "form-a"), "stale-frame-form-load")),
+    ).resolves.toMatchObject({ application: "frame", status: "applied" })
+    if (!newer) throw new Error("Frame render observer did not start newer work")
+    await expect(newer).resolves.toMatchObject({ status: "empty" })
+    expect(events).toEqual(["render"])
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("loads a committed promoted Frame form after history finalization fails", async () => {

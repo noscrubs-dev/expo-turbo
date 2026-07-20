@@ -24,7 +24,6 @@ import {
   updateFrameHistoryResponseSource,
 } from "./frame-history"
 import { registerFrameCommitProtection } from "./frame-history-internal"
-import type { FrameRenderEventDetail } from "./frame-lifecycle"
 import {
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
@@ -37,6 +36,7 @@ import {
 } from "./frame-lifecycle"
 import {
   dispatchFrameLoad,
+  dispatchFrameRender,
   type PreparedFrameRender,
   prepareFrameRender,
 } from "./frame-render-lifecycle-internal"
@@ -106,14 +106,19 @@ export interface FrameTreeCommitCandidate {
 /** @internal Coordinates renderer acknowledgement for controller-owned Frame loads. */
 export const FRAME_RENDER_PREPARE_OPTION = Symbol("expo-turbo.frame-render.prepare")
 
-/** @internal Lets the Frame controller obtain a render ticket from this loader's lifecycle. */
+/** @internal Lets the Frame controller obtain renderer coordination for a matching response. */
 export const FRAME_REQUEST_LOADER_PREPARE_RENDER = Symbol(
   "expo-turbo.frame-request-loader.prepare-render",
 )
 
-/** @internal Dispatches load from this loader's admitted lifecycle after renderer acknowledgement. */
-export const FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD = Symbol(
-  "expo-turbo.frame-request-loader.dispatch-render-load",
+/** @internal Dispatches render from this loader's admitted lifecycle after renderer acknowledgement. */
+export const FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER = Symbol(
+  "expo-turbo.frame-request-loader.dispatch-frame-render",
+)
+
+/** @internal Dispatches load from this loader's admitted lifecycle after a current render event. */
+export const FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD = Symbol(
+  "expo-turbo.frame-request-loader.dispatch-frame-load",
 )
 
 export interface FrameLoadOptions {
@@ -330,17 +335,21 @@ export class FrameRequestLoader {
     frame: ProtocolElement,
     candidate: FrameTreeCommitCandidate,
   ): PreparedFrameRender | undefined {
-    const lifecycle = this.frameLifecycle
-    if (!lifecycle) return undefined
-    return prepareFrameRender(this.session, lifecycle, {
+    const checkpoint = this.ownership.checkpointFrame(frame)
+    return prepareFrameRender(this.session, {
       frame,
       frameId: candidate.frameId,
+      ownerIsCurrent: () => this.ownership.frameCheckpointCurrent(checkpoint),
       url: candidate.url,
     })
   }
 
-  [FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD](commit: FrameRenderEventDetail): void {
-    if (this.frameLifecycle) dispatchFrameLoad(this.frameLifecycle, commit)
+  [FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared: PreparedFrameRender): boolean {
+    return this.frameLifecycle ? dispatchFrameRender(this.frameLifecycle, prepared) : false
+  }
+
+  [FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD](prepared: PreparedFrameRender): boolean {
+    return this.frameLifecycle ? dispatchFrameLoad(this.frameLifecycle, prepared) : false
   }
 
   async load(
