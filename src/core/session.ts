@@ -4,11 +4,12 @@ import {
   stageDocumentAutofocus,
   suppressDocumentAutofocus,
 } from "./document-autofocus-internal"
+import { registerDocumentSessionMorpher } from "./document-session-morph-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
 import { markSessionCommitError } from "./session-commit-error-internal"
-import { type DocumentTree, isElement, type ProtocolNode } from "./tree"
+import { type DocumentTree, isElement, morphCurrentDocumentRoot, type ProtocolNode } from "./tree"
 import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
 export type SessionListener = () => void
@@ -68,6 +69,7 @@ export class DocumentSession {
     this.currentTree = tree
     this.guardTree(tree)
     stageDocumentAutofocus(this, autofocus)
+    registerDocumentSessionMorpher(this, (source) => this.morphCurrentDocument(source))
   }
 
   get revision(): number {
@@ -122,6 +124,24 @@ export class DocumentSession {
 
   replaceTreePreview(tree: DocumentTree): void {
     this.installTree(tree, true)
+  }
+
+  private morphCurrentDocument(tree: DocumentTree): void {
+    this.assertMutationAllowed()
+    const changed = morphCurrentDocumentRoot(this.currentTree, tree)
+    const generation = this.currentTreeGeneration + 1
+    this.currentTreeGeneration = generation
+    this.currentTreeState = Object.freeze({ generation, preview: false })
+    suppressDocumentAutofocus(this)
+    const disposalErrors = this.flushDisposals()
+    this.currentRevision += 1
+    this.snapshots.clear()
+    const keys = new Set([...changed, this.currentTree.document.key])
+    this.reportErrors(disposalErrors, [
+      ...this.notify(keys),
+      ...this.notifyListeners(this.treeStateListeners),
+      ...this.notifyListeners(this.revisionListeners),
+    ])
   }
 
   subscribeTreeState(listener: SessionListener): () => void {

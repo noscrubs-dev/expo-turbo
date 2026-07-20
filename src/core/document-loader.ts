@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import { documentLoadRenderMethod } from "./document-load-render-method-internal"
 import {
   createDocumentTransportError,
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
@@ -18,8 +19,9 @@ import {
   type PreparedDocumentRender,
   prepareDocumentRender,
 } from "./document-render-lifecycle-internal"
+import { morphCurrentDocument } from "./document-session-morph-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import type { DocumentVisitLifecycle } from "./document-visit-lifecycle"
+import type { DocumentRenderMethod, DocumentVisitLifecycle } from "./document-visit-lifecycle"
 import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import {
@@ -36,7 +38,7 @@ import {
   settleRequestOperation,
 } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
-import type { DocumentTree } from "./tree"
+import { type DocumentTree, morphCurrentDocumentRoot } from "./tree"
 import {
   classifyTopLevelLocation,
   documentRootLocation,
@@ -248,7 +250,7 @@ export class DocumentRequestLoader {
 
   [DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](
     lifecycle: DocumentVisitLifecycle,
-    detail: Readonly<{ preview: boolean; url: string }>,
+    detail: Readonly<{ preview: boolean; renderMethod?: DocumentRenderMethod; url: string }>,
   ): PreparedDocumentRender {
     return prepareDocumentRender(this.session, lifecycle, detail)
   }
@@ -427,6 +429,7 @@ export class DocumentRequestLoader {
     owner?: object,
     options: DocumentLoadOptions = {},
   ): Promise<DocumentLoadReport> {
+    const renderMethod = documentLoadRenderMethod(options)
     const treeGeneration = this.session.treeGeneration
     let requestedUrl = this.resolveSource(source)
     const requestId = this.requestIds.next()
@@ -729,6 +732,8 @@ export class DocumentRequestLoader {
         responseStatus: commit.response.status,
       })
     }
+    const effectiveRenderMethod =
+      renderMethod === "morph" && commit.classification === "success" ? "morph" : "replace"
     const beforeSnapshotCapture = (options as InternalDocumentLoadOptions)[
       DOCUMENT_BEFORE_SNAPSHOT_CAPTURE
     ]
@@ -751,6 +756,18 @@ export class DocumentRequestLoader {
         })
       }
       if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
+    }
+    if (effectiveRenderMethod === "morph") {
+      try {
+        morphCurrentDocumentRoot(this.session.tree.clone(), commit.tree)
+      } catch (error) {
+        this.release(active)
+        if (error instanceof ExpoTurboError) throw error
+        throw new RequestError("Document refresh morph preflight failed", {
+          method: "GET",
+          responseStatus: commit.response.status,
+        })
+      }
     }
     if (options.beforeTreeCommit) {
       const lease = active.lease
@@ -791,7 +808,8 @@ export class DocumentRequestLoader {
     }
     this.release(active)
     try {
-      this.session.replaceTree(commit.tree)
+      if (effectiveRenderMethod === "morph") morphCurrentDocument(this.session, commit.tree)
+      else this.session.replaceTree(commit.tree)
     } catch {
       throw new DocumentCommitError(report)
     }

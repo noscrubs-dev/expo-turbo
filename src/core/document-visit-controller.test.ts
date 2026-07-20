@@ -4663,6 +4663,193 @@ describe("Document visit controller", () => {
     expect(history.history.current).toBe(history.writes[0]?.entry)
   })
 
+  test("morphs an exact current-document refresh while retaining compatible application identity", async () => {
+    const history = historyFixture()
+    const snapshotCache = new DocumentSnapshotCache()
+    const { controller, pending, session } = harness({
+      documentXml:
+        '<Gallery id="gallery" data-turbo-root="/app" tone="before"><Panel id="retained" tone="before"/><Panel id="permanent" data-turbo-permanent="" tone="kept"><Locked id="locked" value="current"/></Panel><Removed id="removed"/></Gallery>',
+      history: history.history,
+      snapshotCache,
+    })
+    const tree = session.tree
+    const root = session.tree.getElementById("gallery")
+    const retained = session.tree.getElementById("retained")
+    const permanent = session.tree.getElementById("permanent")
+    const retainedIdentity = session.getNodeSnapshot("id:retained")?.identity
+    const disposed: string[] = []
+    session.registerDisposal("id:removed", () => disposed.push("removed"))
+
+    const refreshing = controller.refreshCurrent("https://example.test/current", "morph")
+    pending[0]?.resolve(
+      response(
+        '<Gallery id="gallery" data-turbo-root="/app" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" tone="after"/><Added id="added"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(session.tree).toBe(tree)
+    expect(session.tree.getElementById("gallery")).toBe(root)
+    expect(session.tree.getElementById("retained")).toBe(retained)
+    expect(session.tree.getElementById("permanent")).toBe(permanent)
+    expect(session.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
+    const currentGallery = session.tree.getElementById("gallery")
+    const currentRetained = session.tree.getElementById("retained")
+    const currentPermanent = session.tree.getElementById("permanent")
+    if (!currentGallery || !currentRetained || !currentPermanent) {
+      throw new Error("Expected retained document morph fixtures")
+    }
+    expect(attributeValue(currentGallery, "tone")).toBe("after")
+    expect(attributeValue(currentRetained, "tone")).toBe("after")
+    expect(attributeValue(currentPermanent, "tone")).toBe("kept")
+    expect(session.tree.getElementById("removed")).toBeUndefined()
+    expect(session.tree.getElementById("added")).toBeDefined()
+    expect(disposed).toEqual(["removed"])
+    expect(session.treeGeneration).toBe(1)
+    expect(snapshotCache.size).toBe(0)
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
+  })
+
+  test("replaces error documents after a morph refresh and reports replacement rendering", async () => {
+    for (const candidate of [
+      { classification: "client-error", status: 422 },
+      { classification: "server-error", status: 500 },
+    ] as const) {
+      const history = historyFixture()
+      const lifecycle = new DocumentVisitLifecycle()
+      const current = harness({
+        documentXml:
+          '<Gallery id="gallery" data-turbo-root="/app"><Panel id="stable" tone="before"/></Gallery>',
+        history: history.history,
+        visitLifecycle: lifecycle,
+      })
+      const releaseRenderer = retainDocumentRenderer(current.session)
+      const renderMethods: string[] = []
+      lifecycle.subscribe("render", (event) => {
+        renderMethods.push(event.detail.renderMethod)
+      })
+      const tree = current.session.tree
+      const stable = current.session.tree.getElementById("stable")
+      const stableIdentity = current.session.getNodeSnapshot("id:stable")?.identity
+      const committed = new Promise<void>((resolve) => {
+        const unsubscribe = current.session.subscribeTreeState(() => {
+          if (current.session.treeGeneration !== 1) return
+          unsubscribe()
+          resolve()
+        })
+      })
+      const refreshing = current.controller.refreshCurrent("https://example.test/current", "morph")
+      const renderRevision = documentRenderLifecycleRevision(current.session)
+      current.pending[0]?.resolve(
+        response(
+          '<Gallery id="gallery" data-turbo-root="/app"><Panel id="stable" tone="after"/></Gallery>',
+          { status: candidate.status, url: "https://example.test/current" },
+        ),
+      )
+
+      await committed
+      await waitForDocumentRenderSeal(current.session, renderRevision)
+      const acknowledgement = acknowledgeDocumentRender(
+        current.session,
+        current.session.tree.document,
+        current.session.treeGeneration,
+        current.session.revision,
+      )
+      acknowledgement?.finish()
+
+      expect(await refreshing).toMatchObject({
+        classification: candidate.classification,
+        status: "committed",
+      })
+      expect(current.session.tree).not.toBe(tree)
+      expect(current.session.tree.getElementById("stable")).not.toBe(stable)
+      expect(current.session.getNodeSnapshot("id:stable")?.identity).not.toBe(stableIdentity)
+      const currentStable = current.session.tree.getElementById("stable")
+      if (!currentStable) throw new Error("Expected replacement document fixture")
+      expect(attributeValue(currentStable, "tone")).toBe("after")
+      expect(renderMethods).toEqual(["replace"])
+      expect(current.controller.state.status).toBe("failed")
+      expect(history.writes).toHaveLength(1)
+      expect(history.writes[0]?.method).toBe("replace")
+      releaseRenderer()
+    }
+  })
+
+  test("rejects unsupported document refresh morphs before history or tree commit", async () => {
+    for (const candidate of [
+      {
+        documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
+        name: "incompatible application root",
+        responseXml: '<Other><Panel id="stable" tone="after"/></Other>',
+      },
+      {
+        documentXml: '<Gallery id="gallery"><Panel id="stable" tone="before"/></Gallery>',
+        name: "absent application root ID",
+        responseXml: '<Gallery><Panel id="stable" tone="after"/></Gallery>',
+      },
+      {
+        documentXml: '<Gallery id="gallery"><Panel id="stable" tone="before"/></Gallery>',
+        name: "changed application root ID",
+        responseXml: '<Gallery id="next"><Panel id="stable" tone="after"/></Gallery>',
+      },
+      {
+        documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
+        name: "permanent application root",
+        responseXml: '<Gallery data-turbo-permanent=""><Panel id="stable" tone="after"/></Gallery>',
+      },
+      {
+        documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
+        name: "protocol descendants",
+        responseXml:
+          '<Gallery><Panel id="stable" tone="after"/><turbo-frame id="frame"><Panel/></turbo-frame></Gallery>',
+      },
+      {
+        documentXml:
+          '<Gallery><Panel id="stable"/><Panel id="permanent" data-turbo-permanent=""><Locked id="locked"/></Panel></Gallery>',
+        name: "unmatched permanent children",
+        responseXml: '<Gallery><Panel id="stable"/></Gallery>',
+      },
+      {
+        documentXml:
+          '<Gallery><Panel id="stable"/><Group id="left"><Field id="field"/></Group><Group id="right"/></Gallery>',
+        name: "reparented stable IDs",
+        responseXml:
+          '<Gallery><Panel id="stable"/><Group id="left"/><Group id="right"><Field id="field"/></Group></Gallery>',
+      },
+    ] as const) {
+      const history = historyFixture()
+      const { controller, pending, session } = harness({
+        documentXml: candidate.documentXml,
+        history: history.history,
+      })
+      const tree = session.tree
+      const disposed: string[] = []
+      session.registerDisposal("id:stable", () => disposed.push(candidate.name))
+
+      const refreshing = controller.refreshCurrent("https://example.test/current", "morph")
+      pending[0]?.resolve(response(candidate.responseXml, { url: "https://example.test/current" }))
+
+      await expect(refreshing).rejects.toBeInstanceOf(TargetError)
+      expect(controller.state.status).toBe("failed")
+      expect(history.writes).toEqual([])
+      expect(session.tree).toBe(tree)
+      expect(session.treeGeneration).toBe(0)
+      expect(session.revision).toBe(0)
+      expect(session.tree.getElementById("stable")).toBeDefined()
+      expect(disposed).toEqual([])
+    }
+  })
+
   test("does not let refresh request-ID allocation reclaim a peer controller", async () => {
     const history = historyFixture()
     let peer: DocumentVisitController

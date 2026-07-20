@@ -4,6 +4,7 @@ import {
   DocumentLoadEvent,
   DocumentRenderEvent,
   type DocumentRenderEventDetail,
+  type DocumentRenderMethod,
   type DocumentVisitLifecycle,
 } from "./document-visit-lifecycle"
 import { StateError } from "./errors"
@@ -98,13 +99,13 @@ export function retainDocumentRenderer(session: DocumentSession): () => void {
 export function prepareDocumentRender(
   session: DocumentSession,
   lifecycle: DocumentVisitLifecycle,
-  detail: Readonly<{ preview: boolean; url: string }>,
+  detail: Readonly<{ preview: boolean; renderMethod?: DocumentRenderMethod; url: string }>,
 ): PreparedDocumentRender {
   const binding = bindingFor(session)
   const commit = Object.freeze({
     generation: session.treeGeneration + 1,
     preview: detail.preview,
-    renderMethod: "replace" as const,
+    renderMethod: detail.renderMethod ?? "replace",
     url: detail.url,
   })
   if (binding.renderers === 0) {

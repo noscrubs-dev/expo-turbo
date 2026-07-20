@@ -52,7 +52,7 @@ export class VisitEvent extends NotificationEvent<
   }
 }
 
-export type DocumentRenderMethod = "replace"
+export type DocumentRenderMethod = "morph" | "replace"
 
 export interface DocumentRenderEventDetail {
   readonly generation: number

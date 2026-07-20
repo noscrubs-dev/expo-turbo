@@ -24,8 +24,9 @@ export interface DocumentRefreshControllerOptions {
 }
 
 /**
- * Schedules plain document replacement refreshes without disturbing a newer
- * document visit. Morph and explicit scroll policies remain separate adapters.
+ * Schedules current-document refreshes without disturbing a newer document
+ * visit. Exact `method="morph"` uses the bounded document-root morph path;
+ * explicit scroll policies remain a separate adapter.
  */
 export class DocumentRefreshController implements DocumentRefreshRequester {
   private disposed = false
@@ -50,9 +51,6 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
   request(request: DocumentRefreshRequest): void {
     if (this.disposed) throw new StateError("Document refresh controller is disposed")
     const baseUrl = this.admitBaseUrl(request.baseUrl)
-    if (request.method === "morph") {
-      throw new RequestError("Native document refresh morph method requires morph support")
-    }
     if (request.scroll !== undefined) {
       throw new RequestError("Native document refresh scroll policy requires a scroll adapter")
     }
@@ -102,7 +100,10 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
 
     let refresh: Promise<unknown>
     try {
-      refresh = this.visits.refreshCurrent(request.baseUrl)
+      refresh = this.visits.refreshCurrent(
+        request.baseUrl,
+        request.method === "morph" ? "morph" : "replace",
+      )
     } catch (error) {
       this.report(error)
       return

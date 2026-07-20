@@ -1,13 +1,22 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboResponse } from "../adapters"
+import { consumeDocumentAutofocus } from "./document-autofocus-internal"
 import { DocumentRequestLoader } from "./document-loader"
+import { morphCurrentDocument } from "./document-session-morph-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { type DisposalError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 import { DocumentSession, SessionCommitError } from "./session"
 import { dispatchTurboStreamFragment } from "./streams"
+import {
+  attributeValue,
+  DocumentTree,
+  type ProtocolDocument,
+  type ProtocolElement,
+  type ProtocolNode,
+} from "./tree"
 
 function session(xml: string): DocumentSession {
   return new DocumentSession(parseExpoTurboDocument(xml))
@@ -71,6 +80,129 @@ describe("document session snapshots", () => {
     document.setAttribute("id:canonical", "data-state", "ignored")
 
     expect(revisions).toEqual([1, 2, 3, 4])
+  })
+
+  test("retains compatible document morph identity while publishing a fresh nonpreview generation", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery" tone="before"><Panel id="retained" tone="before"/><Panel id="permanent" data-turbo-permanent="" tone="kept"><Locked id="locked" value="current"/></Panel><Removed id="removed"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const tree = document.tree
+    const root = document.tree.getElementById("gallery")
+    const retained = document.tree.getElementById("retained")
+    const permanent = document.tree.getElementById("permanent")
+    const retainedIdentity = document.getNodeSnapshot("id:retained")?.identity
+    const revisions: number[] = []
+    const states: Array<Readonly<{ generation: number; preview: boolean }>> = []
+    const changed: string[] = []
+    const disposed: string[] = []
+    document.subscribeRevision(() => revisions.push(document.revision))
+    document.subscribeTreeState(() => states.push(document.treeState))
+    document.subscribe(document.tree.document.key, () => changed.push("document"))
+    document.subscribe("id:retained", () => changed.push("retained"))
+    document.registerDisposal("id:removed", () => disposed.push("removed"))
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" autofocus="" tone="after"/><Added id="added"/></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    expect(document.tree).toBe(tree)
+    expect(document.tree.getElementById("gallery")).toBe(root)
+    expect(document.tree.getElementById("retained")).toBe(retained)
+    expect(document.tree.getElementById("permanent")).toBe(permanent)
+    expect(document.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
+    const currentGallery = document.tree.getElementById("gallery")
+    const currentRetained = document.tree.getElementById("retained")
+    const currentPermanent = document.tree.getElementById("permanent")
+    if (!currentGallery || !currentRetained || !currentPermanent) {
+      throw new Error("Expected retained document morph fixtures")
+    }
+    expect(attributeValue(currentGallery, "tone")).toBe("after")
+    expect(attributeValue(currentRetained, "tone")).toBe("after")
+    expect(attributeValue(currentPermanent, "tone")).toBe("kept")
+    expect(document.tree.getElementById("removed")).toBeUndefined()
+    expect(document.tree.getElementById("added")).toBeDefined()
+    expect(document.tree.document.url).toBe("https://example.test/next")
+    expect(document.treeGeneration).toBe(1)
+    expect(document.treeState).toEqual({ generation: 1, preview: false })
+    expect(document.revision).toBe(1)
+    expect(consumeDocumentAutofocus(document, document.tree.document, 1)).toBeUndefined()
+    expect(revisions).toEqual([1])
+    expect(states).toEqual([{ generation: 1, preview: false }])
+    expect(changed).toEqual(["retained", "document"])
+    expect(disposed).toEqual(["removed"])
+  })
+
+  test("ignores document-level formatting around a compatible document morph root", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '\n<!-- current formatting -->\n<Gallery><Panel id="panel" tone="before"/></Gallery>',
+      ),
+    )
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '\n<Gallery><Panel id="panel" tone="after"/></Gallery>\n<!-- next formatting -->',
+      ),
+    )
+
+    const panel = document.tree.getElementById("panel")
+    if (!panel) throw new Error("Expected document morph panel")
+    expect(attributeValue(panel, "tone")).toBe("after")
+  })
+
+  test("rejects a blank incoming document URL before a current-document morph changes state", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument('<Gallery id="gallery"><Panel id="panel" tone="before"/></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const tree = document.tree
+    const panel = document.tree.getElementById("panel")
+    const disposed: string[] = []
+    document.registerDisposal("id:panel", () => disposed.push("panel"))
+    const sourceChildren: ProtocolNode[] = []
+    const sourceDocument: ProtocolDocument = {
+      children: sourceChildren,
+      key: "source-document",
+      kind: "document",
+      parent: null,
+      url: "",
+    }
+    const sourceRoot: ProtocolElement = {
+      attributes: [
+        { localName: "id", name: "id", namespaceUri: null, prefix: null, value: "gallery" },
+        { localName: "tone", name: "tone", namespaceUri: null, prefix: null, value: "after" },
+      ],
+      children: [],
+      key: "source-gallery",
+      kind: "element",
+      localName: "Gallery",
+      namespaceUri: null,
+      parent: sourceDocument,
+      prefix: null,
+      tagName: "Gallery",
+    }
+    sourceChildren.push(sourceRoot)
+    const source = new DocumentTree(sourceDocument)
+
+    expect(() => morphCurrentDocument(document, source)).toThrow(TargetError)
+    expect(document.tree).toBe(tree)
+    expect(document.tree.getElementById("panel")).toBe(panel)
+    const currentPanel = document.tree.getElementById("panel")
+    if (!currentPanel) throw new Error("Expected unchanged document morph panel")
+    expect(attributeValue(currentPanel, "tone")).toBe("before")
+    expect(document.tree.document.url).toBe("https://example.test/current")
+    expect(document.treeGeneration).toBe(0)
+    expect(document.revision).toBe(0)
+    expect(disposed).toEqual([])
   })
 
   test("keeps a revision committed when its session-wide listener fails", () => {
