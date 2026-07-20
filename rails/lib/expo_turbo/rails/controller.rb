@@ -2,6 +2,7 @@
 
 require "active_support/concern"
 require "active_support/core_ext/module/attr_internal"
+require "action_controller/metal/helpers"
 require "action_view/rendering"
 require "pathname"
 
@@ -9,10 +10,12 @@ module ExpoTurbo
   module Rails
     module Controller
       extend ActiveSupport::Concern
+      include ActionController::Helpers
       include ActionView::Rendering
 
       included do
         class_attribute :expo_turbo_views_path, instance_accessor: false
+        helper ExpoTurbo::Rails::Streams::Helper
       end
 
       class_methods do
@@ -33,14 +36,37 @@ module ExpoTurbo
         render plain: body, content_type: MIME_TYPE, status: status
       end
 
+      def expo_turbo_stream
+        view_context.expo_turbo_stream
+      end
+
+      def render_expo_turbo_stream(*streams, status: :ok)
+        streams << yield(expo_turbo_stream) if block_given?
+        body = streams.flatten.compact.join
+        raise TemplateError, "Expo Turbo Stream responses must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
+
+        render plain: body, content_type: TURBO_STREAM_MIME_TYPE, status: status
+      end
+
       private
 
       def expo_turbo_template_file(template)
+        expo_turbo_view_file("#{template}.xml.erb")
+      end
+
+      def expo_turbo_partial_file(partial)
+        relative_path = Pathname(partial.to_s)
+        raise TemplateError, "Expo Turbo partial must be named" if partial.blank? || relative_path.absolute? || relative_path.extname.present?
+
+        expo_turbo_view_file(relative_path.dirname.join("_#{relative_path.basename}").to_s + ".xml.erb")
+      end
+
+      def expo_turbo_view_file(relative_path)
         root = self.class.expo_turbo_views_path
         raise ConfigurationError, "configure expo_turbo_view_root before rendering" unless root
 
         root = root.realpath
-        relative_path = Pathname("#{template}.xml.erb")
+        relative_path = Pathname(relative_path)
         raise TemplateError, "Expo Turbo template is outside the configured view root" if relative_path.absolute?
 
         candidate = root.join(relative_path).cleanpath
