@@ -6,7 +6,10 @@ import type {
   DocumentHistoryTraversalDirection,
   DocumentRestorationData,
 } from "./document-history"
-import { withDocumentLoadRenderMethod } from "./document-load-render-method-internal"
+import {
+  enableDocumentLoadRefreshScroll,
+  withDocumentLoadRenderMethod,
+} from "./document-load-render-method-internal"
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
@@ -326,9 +329,13 @@ export class DocumentVisitController {
   refreshCurrent(
     baseUrl: string,
     renderMethod: DocumentRenderMethod = "replace",
+    refreshScroll?: "preserve" | "reset",
   ): Promise<DocumentVisitResult | undefined> {
     if (renderMethod !== "morph" && renderMethod !== "replace") {
       return Promise.reject(new RequestError("Document refresh render method is invalid"))
+    }
+    if (refreshScroll !== undefined && refreshScroll !== "preserve" && refreshScroll !== "reset") {
+      return Promise.reject(new RequestError("Document refresh scroll policy is invalid"))
     }
     if (this.status === "started") {
       return Promise.resolve(undefined)
@@ -370,6 +377,7 @@ export class DocumentVisitController {
       treeGeneration,
       undefined,
       renderMethod,
+      refreshScroll,
     )
   }
 
@@ -946,6 +954,7 @@ export class DocumentVisitController {
     expectedTreeGeneration?: number,
     eventAction?: VisitAction,
     renderMethod: DocumentRenderMethod = "replace",
+    refreshScroll?: "preserve" | "reset",
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
@@ -1102,6 +1111,9 @@ export class DocumentVisitController {
               }),
               epoch,
             )
+            if (refreshScroll === "reset" && render.outcome === undefined) {
+              enableDocumentLoadRefreshScroll(options)
+            }
           }
         },
       }),
@@ -1163,15 +1175,19 @@ export class DocumentVisitController {
     const loaded = this.loader.load(
       source,
       this.requestOwner,
-      withDocumentLoadRenderMethod(options, renderMethod),
+      withDocumentLoadRenderMethod(options, renderMethod, refreshScroll),
     )
     if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(
       async (report): Promise<DocumentVisitResult> => {
-        if (epoch === undefined || epoch !== this.visitEpoch) return report
+        if (epoch === undefined || epoch !== this.visitEpoch) {
+          if (render) this.loader.discardDocumentRefreshScroll(render.commit.generation)
+          return report
+        }
         const rendering = this.documentRenderResult(render, epoch)
         const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        if (!rendered && render) this.loader.discardDocumentRefreshScroll(render.commit.generation)
         if (epoch !== this.visitEpoch || this.status !== "started") return report
         if (
           redirectFollowupUrl &&
@@ -1242,6 +1258,7 @@ export class DocumentVisitController {
         const reported = error instanceof Error ? error : new RequestError("Document visit failed")
         const rendering = this.documentRenderResult(render, epoch)
         const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        if (!rendered && render) this.loader.discardDocumentRefreshScroll(render.commit.generation)
         if (
           redirectFollowupUrl &&
           epoch !== undefined &&

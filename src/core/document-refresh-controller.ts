@@ -26,7 +26,7 @@ export interface DocumentRefreshControllerOptions {
 /**
  * Schedules current-document refreshes without disturbing a newer document
  * visit. Exact `method="morph"` uses the bounded document-root morph path;
- * explicit scroll policies remain a separate adapter.
+ * exact `scroll="preserve"` is the only non-reset native scroll policy.
  */
 export class DocumentRefreshController implements DocumentRefreshRequester {
   private disposed = false
@@ -51,8 +51,8 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
   request(request: DocumentRefreshRequest): void {
     if (this.disposed) throw new StateError("Document refresh controller is disposed")
     const baseUrl = this.admitBaseUrl(request.baseUrl)
-    if (request.scroll !== undefined) {
-      throw new RequestError("Native document refresh scroll policy requires a scroll adapter")
+    if (request.scroll !== undefined && typeof request.scroll !== "string") {
+      throw new RequestError("Document refresh scroll policy must be a string")
     }
     if (request.requestId !== undefined && typeof request.requestId !== "string") {
       throw new RequestError("Document refresh request id must be a string")
@@ -62,6 +62,7 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
       baseUrl,
       ...(request.method !== undefined ? { method: request.method } : {}),
       ...(request.requestId !== undefined ? { requestId: request.requestId } : {}),
+      scroll: request.scroll === "preserve" ? "preserve" : "reset",
     })
     if (this.handle !== undefined) this.clock.clearTimeout(this.handle)
     this.handle = this.clock.setTimeout(() => this.flush(), this.debounceMs)
@@ -103,6 +104,7 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
       refresh = this.visits.refreshCurrent(
         request.baseUrl,
         request.method === "morph" ? "morph" : "replace",
+        request.scroll === "preserve" ? "preserve" : "reset",
       )
     } catch (error) {
       this.report(error)

@@ -17,6 +17,7 @@ import {
   type AutofocusAdapter,
   type CableAdapter,
   defineStyleAdapter,
+  type DocumentRefreshScrollAdapter,
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
   type FormSubmissionAnnouncementEvent,
@@ -163,6 +164,7 @@ function render(
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
+    documentRefreshScroll?: DocumentRefreshScrollAdapter
     frameAutoscroll?: FrameAutoscrollAdapter
     formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
@@ -3978,6 +3980,254 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
     expect(disposed).toEqual([1])
     expect(unmounted).toEqual([1])
+  })
+
+  test("resets only an acknowledged successful current-document refresh", async () => {
+    const currentUrl = "https://example.test/current"
+    const pending: { resolve: (response: TurboResponse) => void }[] = []
+    const order: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("render", (event) => {
+      order.push(`render:${event.detail.generation}`)
+    })
+    lifecycle.subscribe("load", (event) => {
+      order.push(`load:${event.detail.generation}`)
+    })
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", { url: currentUrl }),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              pending.push({ resolve })
+            }),
+        },
+        { next: () => "document-refresh-scroll-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { visitLifecycle: lifecycle },
+    )
+    const refreshScroll: DocumentRefreshScrollAdapter = {
+      canReset: () => {
+        order.push("can-reset")
+        return true
+      },
+      reset: () => {
+        order.push("reset")
+      },
+    }
+    const renderer = render(session, registryWithCounters(), {
+      autofocus: {
+        canFocus: () => true,
+        focus: (nodeKey) => {
+          order.push(`focus:${nodeKey}`)
+        },
+      },
+      documentController: controller,
+      documentRefreshScroll: refreshScroll,
+      strict: true,
+    })
+
+    let resetting: Promise<unknown> | undefined
+    act(() => {
+      resetting = controller.refreshCurrent(currentUrl, "replace", "reset")
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery><DemoText id="focus" autofocus="">After</DemoText></Gallery>',
+        url: currentUrl,
+      })
+      await resetting
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+    expect(order).toEqual(["render:1", "focus:id:focus", "can-reset", "reset", "load:1"])
+
+    order.length = 0
+    let preserving: Promise<unknown> | undefined
+    act(() => {
+      preserving = controller.refreshCurrent(currentUrl, "replace", "preserve")
+    })
+    await act(async () => {
+      pending[1]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => "<Gallery><DemoText>Preserved</DemoText></Gallery>",
+        url: currentUrl,
+      })
+      await preserving
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("Preserved")
+    expect(order).toEqual(["render:2", "load:2"])
+    act(() => renderer.unmount())
+  })
+
+  test("consumes unavailable document refresh reset adapters without a later replay", async () => {
+    const currentUrl = "https://example.test/current"
+    const pending: { resolve: (response: TurboResponse) => void }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", { url: currentUrl }),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              pending.push({ resolve })
+            }),
+        },
+        { next: () => "document-refresh-scroll-unavailable" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { visitLifecycle: new DocumentVisitLifecycle() },
+    )
+    const registry = registryWithCounters()
+    const calls: string[] = []
+    const renderer = render(session, registry, {
+      documentController: controller,
+      documentRefreshScroll: {
+        canReset: () => false,
+        reset: () => {
+          calls.push("unexpected")
+        },
+      },
+    })
+
+    let refreshing: Promise<unknown> | undefined
+    act(() => {
+      refreshing = controller.refreshCurrent(currentUrl, "replace", "reset")
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => "<Gallery><DemoText>After</DemoText></Gallery>",
+        url: currentUrl,
+      })
+      await refreshing
+    })
+
+    act(() => {
+      renderer.update(
+        createElement(
+          ExpoTurboProvider,
+          {
+            documentController: controller,
+            documentRefreshScroll: {
+              canReset: () => true,
+              reset: () => {
+                calls.push("late")
+              },
+            },
+            registry,
+            session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+
+    expect(calls).toEqual([])
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+    act(() => renderer.unmount())
+  })
+
+  test("redacts document refresh reset adapter failures after retaining committed children", async () => {
+    for (const documentRefreshScroll of [
+      {
+        canReset() {
+          throw new Error("secret availability failure")
+        },
+        reset: () => undefined,
+      },
+      {
+        canReset: (() => "secret nonboolean result") as unknown as () => boolean,
+        reset: () => undefined,
+      },
+      {
+        canReset: () => true,
+        reset() {
+          throw new Error("secret reset failure")
+        },
+      },
+      {
+        canReset: () => true,
+        reset: (() => Promise.reject(new Error("secret reset promise failure"))) as unknown as () => void,
+      },
+    ] satisfies DocumentRefreshScrollAdapter[]) {
+      const currentUrl = "https://example.test/current"
+      const pending: { resolve: (response: TurboResponse) => void }[] = []
+      const errors: ExpoTurboRenderError[] = []
+      const session = new DocumentSession(
+        parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+          url: currentUrl,
+        }),
+      )
+      const controller = new DocumentVisitController(
+        new DocumentRequestLoader(
+          session,
+          {
+            fetch: () =>
+              new Promise<TurboResponse>((resolve) => {
+                pending.push({ resolve })
+              }),
+          },
+          { next: () => "document-refresh-scroll-failure" },
+        ),
+        {
+          clearTimeout: () => undefined,
+          now: () => 0,
+          setTimeout: () => Object.freeze({}),
+        },
+        { visitLifecycle: new DocumentVisitLifecycle() },
+      )
+      const renderer = render(session, registryWithCounters(), {
+        documentController: controller,
+        documentRefreshScroll,
+        onError: (event) => {
+          errors.push(event)
+        },
+      })
+
+      let refreshing: Promise<unknown> | undefined
+      act(() => {
+        refreshing = controller.refreshCurrent(currentUrl, "replace", "reset")
+      })
+      await act(async () => {
+        pending[0]?.resolve({
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery><DemoText>After</DemoText></Gallery>",
+          url: currentUrl,
+        })
+        await refreshing
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(JSON.stringify(renderer.toJSON())).toContain("After")
+      act(() => renderer.unmount())
+    }
   })
 
   test("exposes document visit accessibility and progress without remounting its boundary", async () => {

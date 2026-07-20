@@ -20,6 +20,7 @@ import {
   DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
 } from "./document-loader"
+import { consumeDocumentRefreshScroll } from "./document-refresh-scroll-internal"
 import {
   acknowledgeDocumentRender,
   documentRenderLifecycleRevision,
@@ -4663,6 +4664,104 @@ describe("Document visit controller", () => {
     expect(history.history.current).toBe(history.writes[0]?.entry)
   })
 
+  test("binds a successful reset refresh to one live document-render acknowledgement", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = harness({ visitLifecycle: lifecycle })
+    const releaseRenderer = retainDocumentRenderer(current.session)
+    const refreshing = current.controller.refreshCurrent(
+      "https://example.test/current",
+      "replace",
+      "reset",
+    )
+    const renderRevision = documentRenderLifecycleRevision(current.session)
+    current.pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
+    await waitForDocumentRenderSeal(current.session, renderRevision)
+    const acknowledgement = acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )
+    expect(acknowledgement?.finish()).toBe(true)
+    expect(
+      consumeDocumentRefreshScroll(
+        current.session,
+        current.session.tree.document,
+        current.session.treeGeneration,
+      ),
+    ).toBe(true)
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    releaseRenderer()
+  })
+
+  test("does not stage a reset refresh without a mounted document renderer", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const { controller, pending, session } = harness({ visitLifecycle: lifecycle })
+    const refreshing = controller.refreshCurrent("https://example.test/current", "replace", "reset")
+    pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(
+      consumeDocumentRefreshScroll(session, session.tree.document, session.treeGeneration),
+    ).toBe(false)
+  })
+
+  test("drops a reset refresh that a tree listener supersedes before render acknowledgement", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = harness({ visitLifecycle: lifecycle })
+    const releaseRenderer = retainDocumentRenderer(current.session)
+    let successor: Promise<DocumentVisitResult> | undefined
+    const unsubscribe = current.session.subscribe("id:old", () => {
+      unsubscribe()
+      successor = current.controller.visit("/successor")
+    })
+    const refreshing = current.controller.refreshCurrent(
+      "https://example.test/current",
+      "replace",
+      "reset",
+    )
+    current.pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(current.pending[1]?.request.url).toBe("https://example.test/successor")
+    expect(
+      consumeDocumentRefreshScroll(
+        current.session,
+        current.session.tree.document,
+        current.session.treeGeneration,
+      ),
+    ).toBe(false)
+
+    const successorRevision = documentRenderLifecycleRevision(current.session)
+    current.pending[1]?.resolve(
+      response('<Gallery><Successor id="successor" /></Gallery>', {
+        url: "https://example.test/successor",
+      }),
+    )
+    await waitForDocumentRenderSeal(current.session, successorRevision)
+    acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )?.finish()
+    expect(await successor).toMatchObject({ status: "committed" })
+    releaseRenderer()
+  })
+
   test("morphs an exact current-document refresh while retaining compatible application identity", async () => {
     const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
@@ -4748,7 +4847,11 @@ describe("Document visit controller", () => {
           resolve()
         })
       })
-      const refreshing = current.controller.refreshCurrent("https://example.test/current", "morph")
+      const refreshing = current.controller.refreshCurrent(
+        "https://example.test/current",
+        "morph",
+        "reset",
+      )
       const renderRevision = documentRenderLifecycleRevision(current.session)
       current.pending[0]?.resolve(
         response(
@@ -4765,6 +4868,13 @@ describe("Document visit controller", () => {
         current.session.treeGeneration,
         current.session.revision,
       )
+      expect(
+        consumeDocumentRefreshScroll(
+          current.session,
+          current.session.tree.document,
+          current.session.treeGeneration,
+        ),
+      ).toBe(false)
       acknowledgement?.finish()
 
       expect(await refreshing).toMatchObject({
@@ -4955,7 +5065,11 @@ describe("Document visit controller", () => {
       const history = historyFixture()
       const { controller, pending, session } = harness({ history: history.history })
 
-      const refreshing = controller.refreshCurrent("https://example.test/current")
+      const refreshing = controller.refreshCurrent(
+        "https://example.test/current",
+        "replace",
+        "reset",
+      )
       pending[0]?.resolve(
         response(`<Gallery><${fixtureCase.tag} id="result" /></Gallery>`, {
           status: fixtureCase.status,
@@ -5042,6 +5156,10 @@ describe("Document visit controller", () => {
       expect(history.writes, fixtureCase.name).toEqual([])
       expect(history.history.current, fixtureCase.name).toBe(entry)
       expect(session.tree, fixtureCase.name).toBe(tree)
+      expect(
+        consumeDocumentRefreshScroll(session, session.tree.document, session.treeGeneration),
+        fixtureCase.name,
+      ).toBe(false)
       expect(reloads, fixtureCase.name).toEqual(
         fixtureCase.reloadCause
           ? [{ cause: fixtureCase.reloadCause, reason: "request-failed" }]

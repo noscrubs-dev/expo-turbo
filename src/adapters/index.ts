@@ -124,6 +124,12 @@ export interface FrameAutoscrollAdapter {
   scrollTo(request: FrameAutoscrollRequest): void
 }
 
+/** Host-owned reset for the mounted owning-document scroll container. */
+export interface DocumentRefreshScrollAdapter {
+  canReset(): boolean
+  reset(): void
+}
+
 export interface StorageAdapter {
   delete(key: string): Promise<void>
   get(key: string): Promise<string | undefined>
@@ -159,6 +165,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
   readonly confirmation?: FormConfirmationAdapter
+  readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly fetch: FetchAdapter
   readonly focus: FocusAdapter
   readonly frameAutoscroll?: FrameAutoscrollAdapter

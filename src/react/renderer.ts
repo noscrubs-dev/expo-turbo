@@ -17,6 +17,7 @@ import {
 
 import type {
   AutofocusAdapter,
+  DocumentRefreshScrollAdapter,
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
   FormSubmissionAnnouncementTerminalSnapshot,
@@ -33,6 +34,10 @@ import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-e
 import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
 import type { DocumentPreloadRequester } from "../core/document-preloader"
+import {
+  consumeDocumentRefreshScroll,
+  discardDocumentRefreshScroll,
+} from "../core/document-refresh-scroll-internal"
 import {
   acknowledgeDocumentRender,
   documentRenderLifecycleRevision,
@@ -214,6 +219,7 @@ interface RendererContextValue {
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
+  readonly documentRefreshScroll: DocumentRefreshScrollAdapter | undefined
   readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
@@ -339,6 +345,7 @@ export interface ExpoTurboProviderProps {
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
   readonly documentPreloader?: DocumentPreloadRequester
+  readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly frameAutoscroll?: FrameAutoscrollAdapter
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
@@ -383,6 +390,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentComponent: props.documentComponent,
       documentController: props.documentController,
       documentPreloader: props.documentPreloader,
+      documentRefreshScroll: props.documentRefreshScroll,
       frameAutoscroll: props.frameAutoscroll,
       frameComponent: props.frameComponent,
       formComponent: props.formComponent,
@@ -405,6 +413,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentComponent,
       props.documentController,
       props.documentPreloader,
+      props.documentRefreshScroll,
       props.frameAutoscroll,
       props.frameComponent,
       props.formComponent,
@@ -1353,6 +1362,49 @@ function applyAutofocus(
   }
 }
 
+function applyDocumentRefreshScroll(
+  adapter: DocumentRefreshScrollAdapter | undefined,
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+): void {
+  if (!adapter) return
+  try {
+    let available: unknown
+    try {
+      available = adapter.canReset()
+    } catch {
+      throw new StateError("Document refresh scroll availability check failed")
+    }
+    if (typeof available !== "boolean") {
+      consumeUnexpectedAdapterResult(available)
+      throw new StateError("Document refresh scroll availability check failed")
+    }
+    if (!available) return
+
+    let result: unknown
+    try {
+      result = adapter.reset()
+    } catch {
+      throw new StateError("Document refresh scroll reset failed")
+    }
+    if (result !== undefined) {
+      consumeUnexpectedAdapterResult(result)
+      throw new StateError("Document refresh scroll reset failed")
+    }
+  } catch (error) {
+    const reported =
+      error instanceof Error ? error : new StateError("Document refresh scroll reset failed")
+    if (!onError) throw reported
+    try {
+      onError({ error: reported, nodeKey })
+    } catch {
+      const reportingError = new StateError("Document refresh scroll error reporting failed")
+      alreadyReportedRenderErrors.add(reportingError)
+      throw reportingError
+    }
+  }
+}
+
 function applyFrameAutoscroll(
   adapter: FrameAutoscrollAdapter | undefined,
   intent: FrameAutoscrollIntent,
@@ -1527,7 +1579,7 @@ interface DocumentRenderBoundaryProps {
 }
 
 function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
-  const { autofocus, onError, session } = useRenderer()
+  const { autofocus, documentRefreshScroll, onError, session } = useRenderer()
   const subscribeRenderLifecycle = useCallback(
     (listener: () => void) => subscribeDocumentRenderLifecycle(session, listener),
     [session],
@@ -1567,10 +1619,18 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
       acknowledgement?.fail()
       throw error
     }
-    acknowledgement?.finish()
+    const rendered = acknowledgement?.finish() ?? false
+    if (!rendered) {
+      discardDocumentRefreshScroll(session, props.generation)
+      return
+    }
+    if (consumeDocumentRefreshScroll(session, props.document, props.generation)) {
+      applyDocumentRefreshScroll(documentRefreshScroll, props.document.key, onError)
+    }
   }, [
     autofocus,
     coordinationRevision,
+    documentRefreshScroll,
     onError,
     props.document,
     props.generation,

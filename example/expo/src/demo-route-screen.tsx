@@ -52,6 +52,14 @@ function CompatibilityGallery() {
       }),
     [runtime.frameAutoscroll],
   );
+  useLayoutEffect(
+    () =>
+      runtime.documentRefreshScroll.registerContainer({
+        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        scrollToTop: () => scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 }),
+      }),
+    [runtime.documentRefreshScroll],
+  );
   useEffect(() => {
     remeasure();
   }, [remeasure, window.height, window.width]);

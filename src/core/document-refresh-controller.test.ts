@@ -231,7 +231,7 @@ describe("document refresh controller", () => {
     expect(stale.session.tree.getElementById("new-owner")).toBeDefined()
   })
 
-  test("accepts bounded morph refreshes, rejects scroll policies, and continues later sibling actions", () => {
+  test("accepts bounded morph and scroll policies while continuing later sibling actions", () => {
     const { clock, refresh, session } = harness()
     const actionErrors: string[] = []
     const report = dispatchTurboStreamFragment(
@@ -242,10 +242,46 @@ describe("document refresh controller", () => {
       { onActionError: (action) => actionErrors.push(action.error?.message ?? ""), refresh },
     )
 
-    expect(report.actions.map((action) => action.status)).toEqual(["applied", "error", "applied"])
-    expect(actionErrors).toEqual([expect.stringContaining("scroll policy")])
-    expect(clock.timers).toHaveLength(1)
+    expect(report.actions.map((action) => action.status)).toEqual(["applied", "applied", "applied"])
+    expect(actionErrors).toEqual([])
+    expect(clock.timers).toHaveLength(2)
+    expect(clock.timers[0]?.cleared).toBe(true)
     expect(session.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("preserves only exact refresh scroll=preserve and otherwise requests a reset", () => {
+    for (const [attribute, expected] of [
+      ["", "reset"],
+      [' scroll="preserve"', "preserve"],
+      [' scroll="PRESERVE"', "reset"],
+      [' scroll="unknown"', "reset"],
+    ] as const) {
+      const clock = new ManualClock()
+      const session = new DocumentSession(
+        parseExpoTurboDocument("<Gallery/>", { url: "https://example.test/current" }),
+      )
+      const calls: Array<readonly [string | undefined, string | undefined, string | undefined]> = []
+      const refresh = new DocumentRefreshController(
+        session,
+        {
+          refreshCurrent: async (url, method, scroll) => {
+            calls.push([url, method, scroll])
+            return undefined
+          },
+        },
+        clock,
+      )
+
+      const report = dispatchTurboStreamFragment(
+        session,
+        `<turbo-stream action="refresh"${attribute}/>`,
+        { refresh },
+      )
+      expect(report.actions[0]?.status).toBe("applied")
+
+      clock.fire(0)
+      expect(calls).toEqual([["https://example.test/current", "replace", expected]])
+    }
   })
 
   test("runs an exact Stream morph refresh through the identity-preserving document path", async () => {
