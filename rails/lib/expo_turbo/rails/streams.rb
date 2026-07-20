@@ -14,6 +14,22 @@ module ExpoTurbo
           BroadcastJob.perform_later(stream_name_for(*streamables), content: valid_content!(content))
         end
 
+        def broadcast_refresh_to(*streamables, request_id: ::Turbo.current_request_id, **attributes)
+          broadcast_to_stream(
+            stream_name_for(*streamables),
+            content: refresh_content(request_id:, **attributes)
+          )
+        end
+
+        def broadcast_refresh_later_to(*streamables, request_id: ::Turbo.current_request_id, **attributes)
+          stream_name = stream_name_for(*streamables)
+          content = refresh_content(request_id:, **attributes)
+
+          refresh_debouncer_for(stream_name, request_id).debounce do
+            BroadcastJob.perform_later(stream_name, content: content)
+          end
+        end
+
         def broadcast_to_stream(stream_name, content:)
           ::Turbo::StreamsChannel.broadcast_stream_to(valid_stream_name!(stream_name), content: valid_content!(content))
         end
@@ -33,6 +49,23 @@ module ExpoTurbo
         end
 
         private
+
+        def refresh_content(request_id:, **attributes)
+          tag_builder = TagBuilder.new(
+            nil,
+            partial_resolver: ->(_) { raise ConfigurationError, "Expo Turbo refresh tags do not render partials" }
+          )
+          valid_content!(tag_builder.refresh(request_id:, **attributes).to_s)
+        end
+
+        def refresh_debouncer_for(stream_name, request_id)
+          request_id = request_id&.to_s
+          key = ["expo-turbo-refresh-debouncer", stream_name, request_id]
+            .map { |value| value.nil? ? "-" : "#{value.bytesize}:#{value}" }
+            .join("|")
+
+          ::Turbo::ThreadDebouncer.for(key)
+        end
 
         def valid_content!(content)
           raise ArgumentError, "content must be a nonblank String" unless content.is_a?(String)
