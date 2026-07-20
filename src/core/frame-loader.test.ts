@@ -1238,6 +1238,96 @@ describe("Frame request loader", () => {
     }
   })
 
+  test("rejects before-frame-render wrappers that do not delegate without applying Frame work", async () => {
+    const renderers: Array<(context: { renderDefault(): undefined }) => unknown> = [
+      () => undefined,
+      () => {
+        throw new Error("private before-render failure")
+      },
+      (context) => {
+        context.renderDefault()
+        return "unexpected renderer result"
+      },
+      async (context) => {
+        context.renderDefault()
+      },
+    ]
+
+    for (const renderer of renderers) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><Status id="status"><OldStatus /></Status><turbo-frame id="details" src="/old"><Old /></turbo-frame></Gallery>',
+          { url: "https://example.test/page" },
+        ),
+      )
+      const frame = session.tree.getElementById("details")
+      if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+      const children = frame.children
+      const lifecycle = new FrameLifecycle()
+      lifecycle.subscribe("before-frame-render", (event) => {
+        event.detail.render = renderer as never
+        return undefined
+      })
+      const loader = new FrameRequestLoader(
+        session,
+        {
+          fetch: async () =>
+            response(
+              '<turbo-frame id="details"><Committed id="committed" /><turbo-stream action="update" target="status"><template><UpdatedStatus id="updated-status" /></template></turbo-stream></turbo-frame>',
+            ),
+        },
+        { next: () => "request-1" },
+        { frameLifecycle: lifecycle },
+      )
+
+      await expect(loader.load("details", "/frame")).rejects.toMatchObject({
+        code: "state",
+      })
+      expect(session.revision).toBe(0)
+      expect(frame.children).toBe(children)
+      expect(attributeValue(frame, "src")).toBe("/old")
+      expect(session.tree.getElementById("committed")).toBeUndefined()
+      expect(session.tree.getElementById("updated-status")).toBeUndefined()
+    }
+  })
+
+  test("blocks same-Frame request reentrancy during before-frame-render", async () => {
+    const session = documentSession()
+    const lifecycle = new FrameLifecycle()
+    const reentrant: Promise<unknown>[] = []
+    let fetches = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          fetches += 1
+          return response('<turbo-frame id="details"><Committed /></turbo-frame>')
+        },
+      },
+      { next: () => `request-${fetches + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => {
+        reentrant.push(
+          loader.load("details", "/reentrant").then(
+            () => undefined,
+            (error) => error,
+          ),
+        )
+        return context.renderDefault()
+      }
+      return undefined
+    })
+
+    await expect(loader.load("details", "/outer")).resolves.toMatchObject({ status: "completed" })
+    expect(fetches).toBe(1)
+    expect(await Promise.all(reentrant)).toEqual([expect.any(StateError)])
+    expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
+      "Committed",
+    )
+  })
+
   test("lets finalization start newer Frame work and interrupts stale embedded Streams", async () => {
     const pending: Array<{
       request: TurboRequest
@@ -1327,7 +1417,7 @@ describe("Frame request loader", () => {
     expect(attributeValue(frame, "src")).toBe("https://example.test/final")
   })
 
-  test("never invokes the commit callback for empty or inadmissible responses", async () => {
+  test("never invokes the commit callback or before-frame-render for empty or inadmissible responses", async () => {
     const fixtures: TurboResponse[] = [
       response("", { headers: {}, status: 204 }),
       response('<turbo-frame id="other" />'),
@@ -1339,10 +1429,17 @@ describe("Frame request loader", () => {
 
     for (const fixture of fixtures) {
       let callbackCalls = 0
+      let beforeRenderCalls = 0
+      const lifecycle = new FrameLifecycle()
+      lifecycle.subscribe("before-frame-render", () => {
+        beforeRenderCalls += 1
+        return undefined
+      })
       const loader = new FrameRequestLoader(
         documentSession(),
         { fetch: async () => fixture },
         { next: () => "request-1" },
+        { frameLifecycle: lifecycle },
       )
       const loading = loader.load("details", "/frame", {
         beforeFrameCommit() {
@@ -1353,6 +1450,7 @@ describe("Frame request loader", () => {
       if (fixture.status === 204) expect(await loading).toMatchObject({ status: "empty" })
       else await expect(loading).rejects.toBeInstanceOf(Error)
       expect(callbackCalls).toBe(0)
+      expect(beforeRenderCalls).toBe(0)
     }
   })
 

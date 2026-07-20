@@ -3618,6 +3618,92 @@ describe("FormSubmissionController", () => {
     expect(cache.has("https://example.test/other")).toBe(false)
   })
 
+  test("leaves promoted Frame form history uncommitted when before-frame-render declines default", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const cache = new DocumentSnapshotCache()
+    const current = mountedFrameHistoryFixture(session, "frame-a", cache)
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = () => undefined
+      return undefined
+    })
+    const finalUrl = "https://example.test/frame-a/blocked"
+
+    await expect(
+      new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-frame id="frame-a"><BlockedFrameForm id="blocked-frame-form" /></turbo-frame>',
+              { redirected: true, url: finalUrl },
+            ),
+        },
+        {
+          frameControllers: current.frameControllers,
+          frameLifecycle: lifecycle,
+          snapshotCache: cache,
+        },
+      ).submit(proposal(registry(session, "form-a"), "blocked-promoted-frame")),
+    ).rejects.toMatchObject({ code: "state" })
+    expect(current.writes).toEqual([])
+    expect(current.history.current?.url).toBe("https://example.test/current")
+    expect(session.tree.document.url).toBe("https://example.test/current")
+    expect(cache.size).toBe(0)
+    expect(attributeValue(session.tree.getElementById("frame-a") as never, "src")).toBe(finalUrl)
+    expect(session.tree.getElementById("blocked-frame-form")).toBeUndefined()
+    expect(session.tree.getElementById("frame-a")?.children.filter(isElement)[0]?.tagName).toBe(
+      "DemoForm",
+    )
+  })
+
+  test("blocks same-Frame GET reentrancy during before-frame-render form application", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "method", "post")
+    const lifecycle = new FrameLifecycle()
+    const frameLoader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () => {
+          throw new Error("Reentrant Frame request must not reach transport")
+        },
+      },
+      requestIds("reentrant-frame"),
+    )
+    const reentrant: Promise<unknown>[] = []
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => {
+        reentrant.push(
+          frameLoader.load("frame-a", "/reentrant").then(
+            () => undefined,
+            (error) => error,
+          ),
+        )
+        return context.renderDefault()
+      }
+      return undefined
+    })
+
+    await expect(
+      new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-frame id="frame-a"><CommittedFrameForm id="committed-frame-form" /></turbo-frame>',
+            ),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "form-a"), "before-render-reentrant")),
+    ).resolves.toMatchObject({ application: "frame", status: "applied" })
+    expect(await Promise.all(reentrant)).toEqual([expect.any(StateError)])
+    expect(session.tree.getElementById("committed-frame-form")).toBeDefined()
+  })
+
   test("emits promoted Frame form visits after history, tree, and pending state commit", async () => {
     const session = fixture()
     session.setAttribute("id:form-a", "data-turbo-action", "advance")
@@ -4976,6 +5062,21 @@ describe("FormSubmissionController", () => {
       if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
       const lifecycle = new FrameLifecycle()
       const events: string[] = []
+      lifecycle.subscribe("before-frame-render", (event) => {
+        events.push("before")
+        expect(frame.children.filter(isElement)[0]?.tagName).toBe("DemoForm")
+        expect(event.detail).toMatchObject({
+          frameId: "frame-a",
+          renderMethod: "replace",
+          url: "https://example.test/submit-a",
+        })
+        expect(event.detail.newFrame.children.filter(isElement)[0]?.tagName).toBe("Result")
+        event.detail.render = (context) => {
+          events.push("default")
+          return context.renderDefault()
+        }
+        return undefined
+      })
       lifecycle.subscribe("frame-render", () => {
         events.push("render")
         return undefined
@@ -5008,7 +5109,7 @@ describe("FormSubmissionController", () => {
       ).submit(proposal(registry(session, "form-a"), `frame-render-${responseStatus}`))
 
       expect(result).toMatchObject({ application: "frame", responseStatus, status: "applied" })
-      expect(events).toEqual(["render", "load"])
+      expect(events).toEqual(["before", "default", "render", "load"])
 
       unsubscribe()
       releaseRenderer()

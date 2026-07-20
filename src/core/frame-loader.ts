@@ -42,11 +42,14 @@ import {
 } from "./frame-render-lifecycle-internal"
 import {
   activeFrameAutofocusCandidates,
+  assertPreparedFrameMutationCurrent,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
+  prepareFrameBeforeRender,
   prepareFrameMutation,
   prepareFrameResponseTree,
+  renderPreparedFrameMutation,
 } from "./frame-response-application"
 import type { FrameResponseReport } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
@@ -671,7 +674,8 @@ export class FrameRequestLoader {
           if (
             loadOptions.beforeFrameCommit ||
             historyPlan ||
-            loadOptions[FRAME_RENDER_PREPARE_OPTION]
+            loadOptions[FRAME_RENDER_PREPARE_OPTION] ||
+            this.frameLifecycle
           ) {
             const lease = active.lease
             if (!lease) {
@@ -683,25 +687,33 @@ export class FrameRequestLoader {
             }
             let callbackEntered = false
             let callbackContractError: RequestError | undefined
+            let beforeFrameRenderEntered = false
             try {
               const acquired = this.ownership.commitFrame(lease, () => {
                 callbackEntered = true
-                const result = historyPlan
-                  ? commitFrameHistoryPlan(historyPlan, this.session, frame, candidate)
-                  : loadOptions.beforeFrameCommit?.(candidate)
+                const result = loadOptions.beforeFrameCommit?.(candidate)
                 if (result !== undefined) {
-                  if (!historyPlan) {
-                    void Promise.resolve(result).catch(() => undefined)
-                    callbackContractError = new RequestError(
-                      "Frame commit callback must not return a value",
-                      {
-                        frameId,
-                        method: "GET",
-                        responseStatus: candidate.responseStatus,
-                      },
-                    )
-                    throw callbackContractError
-                  }
+                  void Promise.resolve(result).catch(() => undefined)
+                  callbackContractError = new RequestError(
+                    "Frame commit callback must not return a value",
+                    {
+                      frameId,
+                      method: "GET",
+                      responseStatus: candidate.responseStatus,
+                    },
+                  )
+                  throw callbackContractError
+                }
+                beforeFrameRenderEntered = true
+                const beforeFrameRenderer = prepareFrameBeforeRender(
+                  this.frameLifecycle,
+                  prepared,
+                  candidate.url,
+                )
+                renderPreparedFrameMutation(prepared, beforeFrameRenderer)
+                assertPreparedFrameMutationCurrent(this.session, mutation)
+                if (historyPlan) {
+                  commitFrameHistoryPlan(historyPlan, this.session, frame, candidate)
                 }
                 const renderResult = loadOptions[FRAME_RENDER_PREPARE_OPTION]?.(frame, candidate)
                 if (renderResult !== undefined) {
@@ -719,6 +731,7 @@ export class FrameRequestLoader {
               if (!acquired) return this.canceled(frameId, requestIds, responseUrl, active)
             } catch (error) {
               if (error === callbackContractError) throw error
+              if (beforeFrameRenderEntered && error instanceof ExpoTurboError) throw error
               if (historyPlan && error instanceof ExpoTurboError) throw error
               if (callbackEntered) {
                 throw new RequestError("Frame commit callback failed", {

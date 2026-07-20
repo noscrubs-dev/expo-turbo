@@ -1465,6 +1465,35 @@ describe("promoted Frame history", () => {
     )
   })
 
+  test("leaves promoted Frame history uncommitted when before-frame-render declines default", async () => {
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = () => undefined
+      return undefined
+    })
+    const current = historyHarness(
+      async ({ url }) =>
+        response('<turbo-frame id="details"><Blocked id="blocked" /></turbo-frame>', { url }),
+      undefined,
+      { frameLifecycle: lifecycle },
+    )
+
+    await expect(
+      current.registry.visit("/blocked", { action: "advance", frame: "details" }),
+    ).rejects.toMatchObject({ code: "state" })
+    expect(current.writes).toEqual([])
+    expect(current.history.current).toBe(current.initial)
+    expect(current.cache.size).toBe(0)
+    expect(current.session.tree.document.url).toBe("https://example.test/current")
+    expect(attributeValue(current.session.tree.getElementById("details") as never, "src")).toBe(
+      "https://example.test/blocked",
+    )
+    expect(
+      current.session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName,
+    ).toBe("Old")
+    expect(current.session.tree.getElementById("blocked")).toBeUndefined()
+  })
+
   test("rejects a settled opaque plan before another request starts", async () => {
     const current = historyHarness(async ({ url }) =>
       response('<turbo-frame id="details"><Loaded /></turbo-frame>', { url }),

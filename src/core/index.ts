@@ -68,6 +68,8 @@ export {
   type FrameHistoryCoordinatorOptions,
 } from "./frame-history"
 export {
+  type BeforeFrameRenderEvent,
+  type BeforeFrameRenderEventDetail,
   FrameLifecycle,
   type FrameLifecycleEvent,
   type FrameLifecycleEventMap,
@@ -80,8 +82,10 @@ export {
   type FrameMissingVisitAction,
   type FrameMissingVisitOptions,
   type FrameMissingVisitRequest,
+  type FrameRenderContext,
   FrameRenderEvent,
   type FrameRenderEventDetail,
+  type FrameRenderer,
   type FrameRenderMethod,
   type FrameResponseVisitReason,
   type FrameResponseVisitRequest,
