@@ -231,8 +231,8 @@ describe("document refresh controller", () => {
     expect(stale.session.tree.getElementById("new-owner")).toBeDefined()
   })
 
-  test("isolates unsupported refresh modes and continues later sibling actions", () => {
-    const { refresh, session } = harness()
+  test("accepts bounded morph refreshes, rejects scroll policies, and continues later sibling actions", () => {
+    const { clock, refresh, session } = harness()
     const actionErrors: string[] = []
     const report = dispatchTurboStreamFragment(
       session,
@@ -242,10 +242,40 @@ describe("document refresh controller", () => {
       { onActionError: (action) => actionErrors.push(action.error?.message ?? ""), refresh },
     )
 
-    expect(report.actions.map((action) => action.status)).toEqual(["error", "error", "applied"])
-    expect(actionErrors[0]).toContain("morph method")
-    expect(actionErrors[1]).toContain("scroll policy")
+    expect(report.actions.map((action) => action.status)).toEqual(["applied", "error", "applied"])
+    expect(actionErrors).toEqual([expect.stringContaining("scroll policy")])
+    expect(clock.timers).toHaveLength(1)
     expect(session.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("runs an exact Stream morph refresh through the identity-preserving document path", async () => {
+    const { clock, pending, refresh, session, visits } = harness()
+    const tree = session.tree
+    const old = session.tree.getElementById("old")
+    const oldIdentity = session.getNodeSnapshot("id:old")?.identity
+
+    dispatchTurboStreamFragment(session, '<turbo-stream action="refresh" method="morph"/>', {
+      refresh,
+    })
+    clock.fire(0)
+    const completed = terminalVisit(visits)
+    pending[0]?.resolve(
+      response('<Gallery><Old id="old" tone="after"/><Added id="added"/></Gallery>'),
+    )
+    await completed
+
+    expect(visits.state.status).toBe("completed")
+    expect(session.tree).toBe(tree)
+    expect(session.tree.getElementById("old")).toBe(old)
+    expect(session.getNodeSnapshot("id:old")?.identity).toBe(oldIdentity)
+    expect(session.tree.getElementById("old")?.attributes).toContainEqual({
+      localName: "tone",
+      name: "tone",
+      namespaceUri: null,
+      prefix: null,
+      value: "after",
+    })
+    expect(session.tree.getElementById("added")).toBeDefined()
   })
 
   test("fails closed without an active refresh controller and after disposal", () => {

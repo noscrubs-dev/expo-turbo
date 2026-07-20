@@ -3868,6 +3868,118 @@ describe("React protocol renderer", () => {
     expect([...unmounted].sort()).toEqual([1, 2, 3])
   })
 
+  test("keeps native component state through an exact current-document refresh morph", async () => {
+    const currentUrl = "https://example.test/current"
+    const pending: { resolve: (response: TurboResponse) => void }[] = []
+    const renderMethods: string[] = []
+    const focused: string[] = []
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    let nextInstance = 0
+    function RefreshProbe(props: Readonly<{ title: string }>): ReactNode {
+      const [instance] = useState(() => ++nextInstance)
+      const [count, setCount] = useState(0)
+      useEffect(
+        () => () => {
+          unmounted.push(instance)
+        },
+        [instance],
+      )
+      useNodeDisposal(() => disposed.push(instance))
+      return createElement("section", {
+        count,
+        increment: () => setCount((value) => value + 1),
+        instance,
+        title: props.title,
+      })
+    }
+    const refreshProbe = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "none",
+      component: RefreshProbe,
+      schema: z.object({ title: z.string() }),
+      tag: "RefreshProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [refreshProbe],
+        name: "document-refresh-morph-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-root="/app"><RefreshProbe id="probe" title="before"/></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("render", (event) => {
+      renderMethods.push(event.detail.renderMethod)
+    })
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              pending.push({ resolve })
+            }),
+        },
+        { next: () => "document-refresh-morph-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+      { visitLifecycle: lifecycle },
+    )
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: () => true,
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+      },
+      documentController: controller,
+    })
+    const renderedProbe = () => renderer.root.findByType("section").props
+
+    expect(renderedProbe()).toMatchObject({ count: 0, instance: 1, title: "before" })
+    act(() => {
+      renderedProbe().increment()
+    })
+    expect(renderedProbe()).toMatchObject({ count: 1, instance: 1, title: "before" })
+
+    let refreshing: Promise<unknown> | undefined
+    act(() => {
+      refreshing = controller.refreshCurrent(currentUrl, "morph")
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery data-turbo-root="/app"><RefreshProbe id="probe" autofocus="" title="after"/></Gallery>',
+        url: currentUrl,
+      })
+      await refreshing
+    })
+
+    expect(renderedProbe()).toMatchObject({ count: 1, instance: 1, title: "after" })
+    expect(controller.state).toMatchObject({ busy: false, status: "completed" })
+    expect(renderMethods).toEqual(["morph"])
+    expect(focused).toEqual([])
+    expect(disposed).toEqual([])
+    expect(unmounted).toEqual([])
+
+    act(() => renderer.unmount())
+    expect(disposed).toEqual([1])
+    expect(unmounted).toEqual([1])
+  })
+
   test("exposes document visit accessibility and progress without remounting its boundary", async () => {
     const pending: {
       request: TurboRequest

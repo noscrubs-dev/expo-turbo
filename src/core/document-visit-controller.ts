@@ -6,6 +6,7 @@ import type {
   DocumentHistoryTraversalDirection,
   DocumentRestorationData,
 } from "./document-history"
+import { withDocumentLoadRenderMethod } from "./document-load-render-method-internal"
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
@@ -42,6 +43,7 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   DocumentReloadEvent,
   type DocumentReloadEventDetail,
+  type DocumentRenderMethod,
   type DocumentVisitLifecycle,
   VisitEvent,
 } from "./document-visit-lifecycle"
@@ -321,7 +323,13 @@ export class DocumentVisitController {
    * Refreshes only when the captured URL still owns the idle active document.
    * This bypasses initial root visitability because Turbo refreshes current truth.
    */
-  refreshCurrent(baseUrl: string): Promise<DocumentVisitResult | undefined> {
+  refreshCurrent(
+    baseUrl: string,
+    renderMethod: DocumentRenderMethod = "replace",
+  ): Promise<DocumentVisitResult | undefined> {
+    if (renderMethod !== "morph" && renderMethod !== "replace") {
+      return Promise.reject(new RequestError("Document refresh render method is invalid"))
+    }
     if (this.status === "started") {
       return Promise.resolve(undefined)
     }
@@ -360,6 +368,8 @@ export class DocumentVisitController {
       undefined,
       documentClaimSerial,
       treeGeneration,
+      undefined,
+      renderMethod,
     )
   }
 
@@ -935,6 +945,7 @@ export class DocumentVisitController {
     expectedDocumentClaimSerial?: number,
     expectedTreeGeneration?: number,
     eventAction?: VisitAction,
+    renderMethod: DocumentRenderMethod = "replace",
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
@@ -945,7 +956,7 @@ export class DocumentVisitController {
     let render: PreparedDocumentRender | undefined
     const reloadEligible =
       action !== "restore" && eventAction !== "restore" && historyGuard?.kind !== "traversal"
-    const loaded = this.loader.load(source, this.requestOwner, {
+    const options = {
       ...(snapshotCache && this.visitLifecycle
         ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
         : {}),
@@ -1083,6 +1094,10 @@ export class DocumentVisitController {
             render = this.trackDocumentRender(
               this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
                 preview: false,
+                renderMethod:
+                  renderMethod === "morph" && candidate.classification === "success"
+                    ? "morph"
+                    : "replace",
                 url: candidate.url,
               }),
               epoch,
@@ -1144,7 +1159,12 @@ export class DocumentVisitController {
           return undefined
         },
       } satisfies DocumentVisitLoadOptions),
-    } satisfies DocumentVisitLoadOptions)
+    } satisfies DocumentVisitLoadOptions
+    const loaded = this.loader.load(
+      source,
+      this.requestOwner,
+      withDocumentLoadRenderMethod(options, renderMethod),
+    )
     if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(

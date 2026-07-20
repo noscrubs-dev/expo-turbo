@@ -26,6 +26,7 @@ describe("package status", () => {
     expect("morphStreamReplaceElement" in core).toBe(false)
     expect("morphStreamUpdateChildren" in core).toBe(false)
     expect("morphFrameRefreshChildren" in core).toBe(false)
+    expect("morphCurrentDocumentRoot" in core).toBe(false)
   })
 })
 
