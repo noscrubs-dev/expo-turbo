@@ -15,7 +15,9 @@ module ExpoTurbo
 
       included do
         class_attribute :expo_turbo_views_path, instance_accessor: false
+        helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::Streams::Helper
+        helper_method :expo_turbo_frame_request?, :expo_turbo_frame_request_id
       end
 
       class_methods do
@@ -26,7 +28,8 @@ module ExpoTurbo
 
       def render_expo_turbo(template, locals: {}, status: :ok)
         body = render_to_string(
-          file: expo_turbo_template_file(template),
+          inline: File.read(expo_turbo_template_file(template)),
+          type: :erb,
           formats: [:xml],
           layout: false,
           locals: locals
@@ -34,6 +37,15 @@ module ExpoTurbo
         raise TemplateError, "Expo Turbo templates must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
 
         render plain: body, content_type: MIME_TYPE, status: status
+      end
+
+      def expo_turbo_frame_request?
+        expo_turbo_frame_request_id.present?
+      end
+
+      def expo_turbo_frame_request_id
+        frame_id = request.headers["Turbo-Frame"]
+        Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
       def expo_turbo_stream

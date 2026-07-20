@@ -41,4 +41,34 @@ RSpec.describe "standalone demo host" do
     expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
     expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
   end
+
+  it "serves a matching XML Frame for a native Frame request" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/frame", headers: {"Turbo-Frame" => "demo-frame"}
+
+    frame = Nokogiri::XML(response.body) { |config| config.strict }.root
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(response.charset).to eq("utf-8")
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(frame.name).to eq("turbo-frame")
+    expect(frame["id"]).to eq("demo-frame")
+    expect(frame.at_xpath("./DemoText[@id='demo-frame-message']")&.text)
+      .to eq("Rendered from an XML Frame")
+  end
+
+  it "returns authoritative XML Frame validation errors" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/frame?state=invalid", headers: {"Turbo-Frame" => "demo-frame"}
+
+    frame = Nokogiri::XML(response.body) { |config| config.strict }.root
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(frame.name).to eq("turbo-frame")
+    expect(frame["id"]).to eq("demo-frame")
+    expect(frame.at_xpath("./DemoText[@id='demo-frame-message']")&.text)
+      .to eq("Frame validation failed")
+  end
 end
