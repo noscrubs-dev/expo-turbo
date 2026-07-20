@@ -119,6 +119,11 @@ export interface DocumentAnchorScrollAdapter {
   scrollTo(id: string, alignment: "start"): undefined
 }
 
+/** Host-owned synchronous admission for render-time document-link preloading. */
+export interface DocumentAutomaticPreloadPolicy {
+  canPreload(url: string): boolean
+}
+
 /** Host-owned synchronous admission for touch-native document-link prefetch. */
 export interface DocumentPrefetchPolicy {
   canPrefetch(url: string): boolean

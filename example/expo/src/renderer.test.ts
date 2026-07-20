@@ -18,6 +18,7 @@ import {
   type CableAdapter,
   defineStyleAdapter,
   type DocumentAnchorScrollAdapter,
+  type DocumentAutomaticPreloadPolicy,
   type DocumentHistoryScrollAdapter,
   type DocumentPrefetchPolicy,
   type DocumentRefreshScrollAdapter,
@@ -512,6 +513,7 @@ function renderDocumentLinks(
   createProviderOptions?: (session: DocumentSession) => Readonly<{
     autofocus?: AutofocusAdapter
     documentAnchorScroll?: DocumentAnchorScrollAdapter
+    documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
     documentPrefetchPolicy?: DocumentPrefetchPolicy
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     onError?: (event: ExpoTurboRenderError) => void
@@ -649,6 +651,7 @@ function renderPreloadingDocumentLinks(
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
   options: Readonly<{
     documentFetch?: (request: TurboRequest) => Promise<TurboResponse>
+    documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
     documentPrefetchPolicy?: DocumentPrefetchPolicy
     onError?: (event: ExpoTurboRenderError) => void
     prepareSession?: (session: DocumentSession) => void
@@ -685,6 +688,9 @@ function renderPreloadingDocumentLinks(
         options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
       )
       return {
+        ...(options.documentAutomaticPreloadPolicy === undefined
+          ? {}
+          : { documentAutomaticPreloadPolicy: options.documentAutomaticPreloadPolicy }),
         ...(options.documentPrefetchPolicy === undefined
           ? {}
           : { documentPrefetchPolicy: options.documentPrefetchPolicy }),
@@ -4769,6 +4775,7 @@ describe("React protocol renderer", () => {
   })
 
   test("automatically preloads marked rendered document links through one shared cache", async () => {
+    const policyUrls = new Set<string>()
     const requests: TurboRequest[] = []
     const harness = renderPreloadingDocumentLinks(
       `<Gallery data-turbo-root="/app">
@@ -4792,7 +4799,16 @@ describe("React protocol renderer", () => {
           url: request.url,
         }
       },
-      { strict: true, url: "https://example.test/app/current" },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload(url) {
+            policyUrls.add(url)
+            return true
+          },
+        },
+        strict: true,
+        url: "https://example.test/app/current",
+      },
     )
 
     await act(async () => {
@@ -4800,6 +4816,11 @@ describe("React protocol renderer", () => {
     })
 
     expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/app/first",
+      "https://example.test/app/self",
+      "https://example.test/app/top",
+    ])
+    expect([...policyUrls].sort()).toEqual([
       "https://example.test/app/first",
       "https://example.test/app/self",
       "https://example.test/app/top",
@@ -4819,6 +4840,297 @@ describe("React protocol renderer", () => {
     expect(harness.session.tree.document.url).toBe("https://example.test/app/current")
     await expect(harness.activation("/app/first#section")()).rejects.toBeInstanceOf(TargetError)
     expect(requests).toHaveLength(3)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("uses document automatic preload policy as a silent marker admission gate", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const policyUrls: string[] = []
+    const prefetchRequests: TurboRequest[] = []
+    const documentRequests: TurboRequest[] = []
+    const requestLifecycle = new RequestLifecycle()
+    let requestLifecycleEvents = 0
+    requestLifecycle.subscribe("before-fetch-request", () => {
+      requestLifecycleEvents += 1
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery data-turbo-root="/app"><DocumentLink id="link" href=" /app/next " data-turbo-preload="" /></Gallery>',
+      async (request) => {
+        prefetchRequests.push(request)
+        throw new Error("denied automatic preload must not fetch")
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload(url) {
+            policyUrls.push(url)
+            return false
+          },
+        },
+        documentFetch: async (request) => {
+          documentRequests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () =>
+              '<Gallery data-turbo-root="/app"><DemoText id="visited">Visited</DemoText></Gallery>',
+            url: request.url,
+          }
+        },
+        onError: (event) => errors.push(event),
+        requestLifecycle,
+        url: "https://example.test/app/current",
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(policyUrls).toEqual(["https://example.test/app/next"])
+    expect(prefetchRequests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+    expect(requestLifecycleEvents).toBe(0)
+    expect(errors).toEqual([])
+
+    await act(async () => {
+      await expect(harness.activation("/app/next")()).resolves.toMatchObject({
+        status: "committed",
+        url: "https://example.test/app/next",
+      })
+    })
+    expect(documentRequests).toHaveLength(1)
+    expect(harness.session.tree.getElementById("visited")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when automatic preload policy removes its marker", async () => {
+    const requests: TurboRequest[] = []
+    let session: DocumentSession | undefined
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" data-turbo-preload="" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("policy-mutated automatic preload must not fetch")
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload() {
+            if (!session) throw new Error("preload session was not captured")
+            session.removeAttribute("id:link", "data-turbo-preload")
+            return true
+          },
+        },
+        prepareSession: (value) => {
+          session = value
+        },
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when automatic preload policy changes its raw href", async () => {
+    const policyUrls: string[] = []
+    const requests: TurboRequest[] = []
+    let session: DocumentSession | undefined
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/before" data-turbo-preload="" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("policy-mutated automatic preload must not fetch")
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload(url) {
+            policyUrls.push(url)
+            if (url.endsWith("/before")) {
+              if (!session) throw new Error("preload session was not captured")
+              session.setAttribute("id:link", "href", "/after")
+              return true
+            }
+            return false
+          },
+        },
+        prepareSession: (value) => {
+          session = value
+        },
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(policyUrls).toEqual(["https://example.test/before", "https://example.test/after"])
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("does not preload or report after automatic preload policy unmounts its link", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const requests: TurboRequest[] = []
+    let harness: ReturnType<typeof renderPreloadingDocumentLinks> | undefined
+    harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("unmounted automatic preload must not fetch")
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload() {
+            harness?.renderer.unmount()
+            return true
+          },
+        },
+        onError: (event) => errors.push(event),
+      },
+    )
+
+    await act(async () => {
+      harness?.session.setAttribute("id:link", "data-turbo-preload", "")
+      await nextTurn()
+    })
+
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+    expect(errors).toEqual([])
+  })
+
+  test("suppresses malformed automatic preload policy errors after unmount", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    let harness: ReturnType<typeof renderPreloadingDocumentLinks> | undefined
+    harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      async () => {
+        throw new Error("malformed unmounted automatic preload must not fetch")
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload() {
+            harness?.renderer.unmount()
+            return Promise.reject(
+              new Error("private malformed automatic preload policy rejection"),
+            ) as unknown as boolean
+          },
+        },
+        onError: (event) => errors.push(event),
+      },
+    )
+
+    await act(async () => {
+      harness?.session.setAttribute("id:link", "data-turbo-preload", "")
+      await nextTurn()
+    })
+
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+    expect(errors).toEqual([])
+  })
+
+  test("redacts malformed automatic document preload policy failures", async () => {
+    for (const policy of [
+      {
+        canPreload() {
+          throw new Error("private automatic preload policy failure")
+        },
+      },
+      { canPreload: () => "yes" },
+      { canPreload: () => Promise.resolve(true) },
+      { canPreload: () => Promise.reject(new Error("private automatic async policy failure")) },
+      null,
+      false,
+    ]) {
+      const errors: ExpoTurboRenderError[] = []
+      const requests: TurboRequest[] = []
+      const harness = renderPreloadingDocumentLinks(
+        '<Gallery><DocumentLink href="/next" data-turbo-preload="" /></Gallery>',
+        async (request) => {
+          requests.push(request)
+          throw new Error("invalid automatic policy must not fetch")
+        },
+        {
+          documentAutomaticPreloadPolicy: policy as unknown as DocumentAutomaticPreloadPolicy,
+          onError: (event) => errors.push(event),
+          strict: true,
+        },
+      )
+
+      await act(async () => {
+        await nextTurn()
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(errors[0]?.error.message).toBe("Automatic document preload policy check failed")
+      expect(String(errors[0]?.error)).not.toContain("private")
+      expect(requests).toEqual([])
+      expect(harness.requestIdCount()).toBe(0)
+      expect(harness.cache.size).toBe(0)
+
+      act(() => harness.renderer.unmount())
+    }
+  })
+
+  test("leaves press-in and direct preload outside automatic preload policy", async () => {
+    const policyUrls: string[] = []
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/automatic" data-turbo-preload="" />
+        <DocumentLink href="/press" />
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery><DemoText>Cached</DemoText></Gallery>",
+          url: request.url,
+        }
+      },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload(url) {
+            policyUrls.push(url)
+            return false
+          },
+        },
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    act(() => harness.prefetch("/press"))
+    await act(async () => {
+      await nextTurn()
+      await harness.preloader.preload("/manual")
+    })
+
+    expect(policyUrls).toEqual(["https://example.test/automatic"])
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/manual",
+      "https://example.test/press",
+    ])
+    expect(harness.requestIdCount()).toBe(2)
 
     act(() => harness.renderer.unmount())
   })
@@ -5663,6 +5975,7 @@ describe("React protocol renderer", () => {
   })
 
   test("skips markers that do not represent a supported document preload", async () => {
+    const policyUrls: string[] = []
     const requests: TurboRequest[] = []
     const harness = renderPreloadingDocumentLinks(
       `<Gallery id="gallery" data-turbo-root="/app">
@@ -5702,7 +6015,15 @@ describe("React protocol renderer", () => {
           url: request.url,
         }
       },
-      { url: "https://example.test/app/current" },
+      {
+        documentAutomaticPreloadPolicy: {
+          canPreload(url) {
+            policyUrls.push(url)
+            return true
+          },
+        },
+        url: "https://example.test/app/current",
+      },
     )
 
     await act(async () => {
@@ -5710,6 +6031,7 @@ describe("React protocol renderer", () => {
     })
 
     expect(requests).toEqual([])
+    expect(policyUrls).toEqual([])
     expect(harness.requestIdCount()).toBe(0)
     expect(harness.cache.size).toBe(0)
 
@@ -5719,6 +6041,10 @@ describe("React protocol renderer", () => {
       await nextTurn()
     })
     expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/app/named",
+      "https://example.test/app/opted-out",
+    ])
+    expect(policyUrls.sort()).toEqual([
       "https://example.test/app/named",
       "https://example.test/app/opted-out",
     ])
