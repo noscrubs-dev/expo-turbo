@@ -18,6 +18,7 @@ import {
 import type {
   AutofocusAdapter,
   DocumentAnchorScrollAdapter,
+  DocumentAutomaticPreloadPolicy,
   DocumentHistoryScrollAdapter,
   DocumentPrefetchPolicy,
   DocumentRefreshScrollAdapter,
@@ -234,6 +235,7 @@ interface RendererContextValue {
   readonly autofocus: AutofocusAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentAnchorScroll: DocumentAnchorScrollAdapter | undefined
+  readonly documentAutomaticPreloadPolicy: DocumentAutomaticPreloadPolicy | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
   readonly documentPrefetchPolicy: DocumentPrefetchPolicy | undefined
@@ -513,6 +515,7 @@ export interface ExpoTurboProviderProps {
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
+  readonly documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
   readonly documentController?: DocumentVisitController
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
@@ -561,6 +564,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       autofocus: props.autofocus,
       documentComponent: props.documentComponent,
       documentAnchorScroll: props.documentAnchorScroll,
+      documentAutomaticPreloadPolicy: props.documentAutomaticPreloadPolicy,
       documentController: props.documentController,
       documentHistoryScroll: props.documentHistoryScroll,
       documentPrefetchPolicy: props.documentPrefetchPolicy,
@@ -587,6 +591,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.autofocus,
       props.documentComponent,
       props.documentAnchorScroll,
+      props.documentAutomaticPreloadPolicy,
       props.documentController,
       props.documentHistoryScroll,
       props.documentPrefetchPolicy,
@@ -1123,6 +1128,7 @@ export type ExpoTurboDocumentLinkActivation = () => Promise<ExpoTurboDocumentLin
 export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkActivation {
   const {
     documentAnchorScroll,
+    documentAutomaticPreloadPolicy,
     documentController,
     documentPreloader,
     formLinks,
@@ -1136,16 +1142,52 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   const link = node && isElement(node) ? node : undefined
   const rawHref = link ? attributeValue(link, "href") : undefined
   useAutomaticDocumentPreloadRevision(session, link, documentPreloader !== undefined)
+  const mounted = useRef(true)
   const onErrorRef = useRef(onError)
+  const automaticPreloadConfiguration = useRef({
+    documentAutomaticPreloadPolicy,
+    documentPreloader,
+    href,
+    link,
+    nodeKey,
+    rawHref,
+    session,
+  })
   useLayoutEffect(() => {
     onErrorRef.current = onError
   }, [onError])
+  useLayoutEffect(() => {
+    automaticPreloadConfiguration.current = {
+      documentAutomaticPreloadPolicy,
+      documentPreloader,
+      href,
+      link,
+      nodeKey,
+      rawHref,
+      session,
+    }
+  }, [documentAutomaticPreloadPolicy, documentPreloader, href, link, nodeKey, rawHref, session])
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const automaticPreloadUrl =
     documentPreloader && link
       ? automaticDocumentPreloadUrl(session, link, href, rawHref)
       : undefined
   useLayoutEffect(() => {
+    const configuration = automaticPreloadConfiguration.current
     if (
+      !mounted.current ||
+      configuration.documentAutomaticPreloadPolicy !== documentAutomaticPreloadPolicy ||
+      configuration.documentPreloader !== documentPreloader ||
+      configuration.href !== href ||
+      configuration.link !== link ||
+      configuration.nodeKey !== nodeKey ||
+      configuration.rawHref !== rawHref ||
+      configuration.session !== session ||
       !documentPreloader ||
       !automaticPreloadUrl ||
       !nodeKey ||
@@ -1156,46 +1198,90 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     const activeLink = link
     const linkNodeKey = nodeKey
-    if (automaticDocumentPreloadUrl(session, activeLink, href, rawHref) !== automaticPreloadUrl) {
-      return
-    }
-
+    const isCurrentAutomaticPreload = () =>
+      mounted.current &&
+      automaticPreloadConfiguration.current === configuration &&
+      session.tree.getNodeByKey(linkNodeKey) === activeLink &&
+      automaticDocumentPreloadUrl(session, activeLink, href, rawHref) === automaticPreloadUrl
     let active = true
-    let preload: Promise<unknown>
-    try {
-      preload = documentPreloader.preload(automaticPreloadUrl)
-    } catch (error) {
-      preload = Promise.reject(error)
-    }
-    void Promise.resolve(preload).catch((error) => {
-      if (
-        !active ||
-        session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
-        automaticDocumentPreloadUrl(session, activeLink, href, rawHref) !== automaticPreloadUrl
-      ) {
-        return
-      }
-      if (requestLifecycleDefaultHandlingPrevented(error)) return
-      const observer = onErrorRef.current
-      if (!observer) return
-      try {
-        observer({
-          error:
-            error instanceof ExpoTurboError
-              ? error
-              : new RequestError("Automatic document preload failed"),
-          nodeKey: linkNodeKey,
-        })
-      } catch {
-        queueMicrotask(() => {
-          throw new StateError("Automatic document preload error reporting failed")
-        })
-      }
-    })
-    return () => {
+    const deactivate = () => {
       active = false
     }
-  }, [automaticPreloadUrl, documentPreloader, href, link, nodeKey, rawHref, session])
+    const policyAllowsPreload = () => {
+      if (documentAutomaticPreloadPolicy === undefined) return true
+      let allowed: unknown
+      try {
+        allowed = documentAutomaticPreloadPolicy.canPreload(automaticPreloadUrl)
+      } catch {
+        allowed = undefined
+      }
+      if (typeof allowed === "boolean") {
+        if (!isCurrentAutomaticPreload()) return false
+        return allowed
+      }
+      consumeUnexpectedAdapterResult(allowed)
+      if (!isCurrentAutomaticPreload()) return false
+      queueMicrotask(() => {
+        if (!active || !isCurrentAutomaticPreload()) return
+        const observer = onErrorRef.current
+        if (!observer) return
+        try {
+          observer({
+            error: new StateError("Automatic document preload policy check failed"),
+            nodeKey: linkNodeKey,
+          })
+        } catch {
+          queueMicrotask(() => {
+            throw new StateError("Automatic document preload policy error reporting failed")
+          })
+        }
+      })
+      return false
+    }
+    if (!policyAllowsPreload()) return deactivate
+    if (!isCurrentAutomaticPreload()) return deactivate
+
+    const preload = () => {
+      if (!active || !isCurrentAutomaticPreload()) return
+      let request: Promise<unknown>
+      try {
+        request = documentPreloader.preload(automaticPreloadUrl)
+      } catch (error) {
+        request = Promise.reject(error)
+      }
+      void Promise.resolve(request).catch((error) => {
+        if (!active || !isCurrentAutomaticPreload()) return
+        if (requestLifecycleDefaultHandlingPrevented(error)) return
+        const observer = onErrorRef.current
+        if (!observer) return
+        try {
+          observer({
+            error:
+              error instanceof ExpoTurboError
+                ? error
+                : new RequestError("Automatic document preload failed"),
+            nodeKey: linkNodeKey,
+          })
+        } catch {
+          queueMicrotask(() => {
+            throw new StateError("Automatic document preload error reporting failed")
+          })
+        }
+      })
+    }
+    if (documentAutomaticPreloadPolicy === undefined) preload()
+    else queueMicrotask(preload)
+    return deactivate
+  }, [
+    automaticPreloadUrl,
+    documentAutomaticPreloadPolicy,
+    documentPreloader,
+    href,
+    link,
+    nodeKey,
+    rawHref,
+    session,
+  ])
   const activate = useCallback(async () => {
     if (!documentController || !nodeKey || !node || !isElement(node)) {
       throw new TargetError("Document link is outside the active document")
