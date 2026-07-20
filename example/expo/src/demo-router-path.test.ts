@@ -17,6 +17,24 @@ describe("demo Expo Router document path", () => {
     expect(Object.isFrozen(linked)).toBe(true);
   });
 
+  test("maps canonical query-bearing document URLs to their fixed Router paths", () => {
+    for (const url of [
+      "https://example.test/demo?source=deep-link",
+      "https://example.test/demo/linked?tag=a&tag=b&z=",
+      "https://example.test/demo?flag",
+      "https://example.test/demo?flag=",
+      "https://example.test/demo?space=+&encoded=%20&slash=%2f",
+      "https://example.test/demo?=value",
+      "https://example.test/demo?&&x=1",
+    ]) {
+      const segments = encodeDemoRouterDocumentPath(url);
+
+      expect(segments).toEqual(
+        url.includes("/linked?") ? ["demo", "linked"] : ["demo"],
+      );
+    }
+  });
+
   test("decodes supported catch-all segments to canonical frozen paths", () => {
     const gallery = decodeDemoRouterDocumentPath(["demo"]);
     const linked = decodeDemoRouterDocumentPath(["demo", "linked"]);
@@ -44,7 +62,6 @@ describe("demo Expo Router document path", () => {
       "https://other.test/demo",
       "https://user:secret@example.test/demo",
       "https://example.test/demo?",
-      "https://example.test/demo?source=deep-link",
       "https://example.test/demo#",
       "https://example.test/demo#linked",
       "https://EXAMPLE.test:443/demo",

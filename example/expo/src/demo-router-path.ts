@@ -8,6 +8,7 @@ interface DemoRouterDocumentPath {
 }
 
 const encodedSeparator = /%(?:2f|5c)/i;
+const demoOrigin = "https://example.test";
 
 const paths = Object.freeze({
   "/demo": Object.freeze({
@@ -28,15 +29,38 @@ function documentPath(pathname: string): DemoRouterDocumentPath {
   return path;
 }
 
-export function encodeDemoRouterDocumentPath(value: unknown): readonly string[] {
+function canonicalDocumentUrl(value: unknown): Readonly<{
+  path: DemoRouterDocumentPath;
+  url: string;
+}> {
   if (typeof value !== "string") {
     throw new StateError("The Expo Turbo demo document URL is invalid");
   }
-  if (value === "https://example.test/demo") return paths["/demo"].segments;
-  if (value === "https://example.test/demo/linked") {
-    return paths["/demo/linked"].segments;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new StateError("The Expo Turbo demo document URL is invalid");
   }
-  throw new StateError("The Expo Turbo demo document URL is invalid");
+  if (
+    url.href !== value ||
+    url.origin !== demoOrigin ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== "" ||
+    value.includes("#") ||
+    (url.search === "" && value.includes("?"))
+  ) {
+    throw new StateError("The Expo Turbo demo document URL is invalid");
+  }
+  return Object.freeze({
+    path: documentPath(url.pathname),
+    url: url.href,
+  });
+}
+
+export function encodeDemoRouterDocumentPath(value: unknown): readonly string[] {
+  return canonicalDocumentUrl(value).path.segments;
 }
 
 export function decodeDemoRouterDocumentPath(value: unknown): DemoRouterDocumentPath {

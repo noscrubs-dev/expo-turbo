@@ -26,6 +26,7 @@ export const DEMO_ROUTER_HISTORY_PARAMS = Object.freeze({
 const DEMO_ROUTER_HISTORY_PARAM_NAMES = new Set<string>(
   [DEMO_ROUTER_PATH_PARAM, ...Object.values(DEMO_ROUTER_HISTORY_PARAMS)],
 );
+const documentUrlEncodingPrefix = "v1~";
 
 export interface DemoRouterRoute {
   readonly key: string;
@@ -94,6 +95,47 @@ function normalizedUrl(value: unknown): string | undefined {
   return url.toString();
 }
 
+function canonicalDocumentUrl(value: unknown): string | undefined {
+  const url = normalizedUrl(value);
+  return url === value ? url : undefined;
+}
+
+function encodeDocumentUrl(value: string): string {
+  const percentEncoded = encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${documentUrlEncodingPrefix}${percentEncoded.replaceAll("~", "~~").replaceAll("%", "~")}`;
+}
+
+function decodeDocumentUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.startsWith(documentUrlEncodingPrefix)) {
+    return undefined;
+  }
+  let percentEncoded = "";
+  for (let index = documentUrlEncodingPrefix.length; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== "~") {
+      percentEncoded += character;
+      continue;
+    }
+    const next = value[index + 1];
+    if (next === "~") {
+      percentEncoded += "~";
+      index += 1;
+      continue;
+    }
+    const encodedByte = value.slice(index + 1, index + 3);
+    if (!/^[\dA-F]{2}$/i.test(encodedByte)) return undefined;
+    percentEncoded += `%${encodedByte}`;
+    index += 2;
+  }
+  try {
+    return decodeURIComponent(percentEncoded);
+  } catch {
+    return undefined;
+  }
+}
+
 export function decodeDemoRouterHistoryEntry(
   value: unknown,
 ): DocumentHistoryEntry | undefined {
@@ -105,7 +147,9 @@ export function decodeDemoRouterHistoryEntry(
   }
   const restorationIdentifier = params[DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier];
   const restorationIndex = params[DEMO_ROUTER_HISTORY_PARAMS.restorationIndex];
-  const url = normalizedUrl(params[DEMO_ROUTER_HISTORY_PARAMS.url]);
+  const url = canonicalDocumentUrl(
+    decodeDocumentUrl(params[DEMO_ROUTER_HISTORY_PARAMS.url]),
+  );
   if (
     typeof restorationIdentifier !== "string" ||
     restorationIdentifier.trim() === "" ||
@@ -127,10 +171,12 @@ export function decodeDemoRouterHistoryEntry(
 export function encodeDemoRouterHistoryEntry(
   entry: DocumentHistoryEntry,
 ): Readonly<Record<string, string>> {
+  const url = canonicalDocumentUrl(entry.url);
+  if (!url) throw new StateError("Demo Router history entry URL is invalid");
   return Object.freeze({
     [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: entry.restorationIdentifier,
     [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: String(entry.restorationIndex),
-    [DEMO_ROUTER_HISTORY_PARAMS.url]: entry.url,
+    [DEMO_ROUTER_HISTORY_PARAMS.url]: encodeDocumentUrl(url),
   });
 }
 
@@ -212,19 +258,32 @@ function unmanagedParams(route: DemoRouterRoute): Readonly<Record<string, unknow
   );
 }
 
-function routeDocumentUrl(route: DemoRouterRoute): string {
+function routeDocumentPath(route: DemoRouterRoute) {
   const params = paramsRecord(route.params);
-  return decodeDemoRouterDocumentPath(params[DEMO_ROUTER_PATH_PARAM]).url;
+  return decodeDemoRouterDocumentPath(params[DEMO_ROUTER_PATH_PARAM]);
 }
 
 function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined {
-  const documentUrl = routeDocumentUrl(route);
   const entry = decodeDemoRouterHistoryEntry(route.params);
   if (!entry) return undefined;
-  if (entry.url !== documentUrl) {
+  const path = routeDocumentPath(route);
+  let entrySegments: readonly string[];
+  try {
+    entrySegments = encodeDemoRouterDocumentPath(entry.url);
+  } catch {
+    throw new StateError("Demo Router history metadata does not match its canonical path");
+  }
+  if (
+    entrySegments.length !== path.segments.length ||
+    entrySegments.some((segment, index) => segment !== path.segments[index])
+  ) {
     throw new StateError("Demo Router history metadata does not match its canonical path");
   }
   return entry;
+}
+
+function routeDocumentUrl(route: DemoRouterRoute): string {
+  return managedEntry(route)?.url ?? routeDocumentPath(route).url;
 }
 
 function sameStackState(left: DemoRouterState, right: DemoRouterState): boolean {

@@ -95,6 +95,8 @@ const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const INITIAL_ROUTE_KEY = "demo-route-1";
 const GALLERY_URL = "https://example.test/demo";
 const LINKED_URL = "https://example.test/demo/linked";
+const LINKED_QUERY_URL = "https://example.test/demo/linked?source=deep-link&tag=a&tag=b";
+const LINKED_REPLACEMENT_QUERY_URL = "https://example.test/demo/linked?source=changed";
 
 function routeParams(
   url: string,
@@ -657,6 +659,46 @@ describe("demo app runtime ownership", () => {
     });
   });
 
+  test("bootstraps a managed query-bearing route from its exact Router payload", async () => {
+    const fetch = new ControlledFetch();
+    const runtime = createDemoRuntime({ documentFetch: fetch });
+    const entry = {
+      restorationIdentifier: "persisted-linked-query",
+      restorationIndex: 5,
+      url: LINKED_QUERY_URL,
+    } as const;
+    const navigation = new TestNavigation(
+      routeParams(entry.url, encodeDemoRouterHistoryEntry(entry)),
+    );
+    const initialState = navigation.state;
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(routeTree(runtime, navigation));
+      await Promise.resolve();
+    });
+
+    expect(fetch.pending[0]?.request.url).toBe(entry.url);
+    expect(navigation.state).toBe(initialState);
+
+    await act(async () => {
+      const pending = fetch.pending[0];
+      if (!pending) throw new Error("missing query cold-start request");
+      pending.resolve(response(pending.request));
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(entry.url);
+    expect(runtime.documentRuntime.history.current).toEqual(entry);
+    expect(navigation.state).toBe(initialState);
+    expect(navigation.setParamsCalls).toBe(0);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("bootstraps an unmanaged canonical deep link and repairs it in the tree commit", async () => {
     const fetch = new ControlledFetch();
     const runtime = createDemoRuntime({ documentFetch: fetch });
@@ -859,12 +901,12 @@ describe("demo app runtime ownership", () => {
     const initialEntry = {
       restorationIdentifier: "first-entry",
       restorationIndex: 1,
-      url: LINKED_URL,
+      url: LINKED_QUERY_URL,
     } as const;
     const replacementEntry = {
       restorationIdentifier: "second-entry",
       restorationIndex: 2,
-      url: LINKED_URL,
+      url: LINKED_REPLACEMENT_QUERY_URL,
     } as const;
     const navigation = new TestNavigation(
       routeParams(initialEntry.url, encodeDemoRouterHistoryEntry(initialEntry)),
