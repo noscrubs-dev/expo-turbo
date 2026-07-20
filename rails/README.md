@@ -28,7 +28,7 @@ end
 
 The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content.
 
-For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts only a nonblank UTF-8 literal ID without control characters, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or ETags.
+For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts only a nonblank UTF-8 literal ID without control characters, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior.
 
 ```ruby
 def show
@@ -44,7 +44,21 @@ end
 <% end %>
 ```
 
-`expo_turbo_frame_request?` and `expo_turbo_frame_request_id` are also available in the XML view. A host that varies a response by this header must set the appropriate cache variation itself; complete XML/template and duplicate-ID validation remain later work.
+`expo_turbo_frame_request?` and `expo_turbo_frame_request_id` are also available in the XML view. For an endpoint that can emit a full document or a Frame, pass `expo_turbo_cache_key` to the host's existing conditional-GET API:
+
+```ruby
+def show
+  representation = expo_turbo_frame_request? ? "accounts/details-frame-v1" : "accounts/details-document-v1"
+  fresh_when etag: expo_turbo_cache_key(@account, representation)
+  return if performed?
+
+  return render_expo_turbo("accounts/details") unless expo_turbo_frame_request?
+
+  render_expo_turbo "accounts/details_frame"
+end
+```
+
+The helper preserves existing `Vary` dimensions and adds `Turbo-Frame`. Its returned key distinguishes a document from each valid Frame ID, so Rails generates separate validators for representations whose bodies differ. Because Expo Turbo renders its configured XML source as inline ERB, the host-supplied key must also include a representation version or digest that changes with every template, partial, layout, or other rendered-byte change. `expo_turbo_vary_by_frame!` and `expo_turbo_cache_variant` are available when a host needs to compose another cache API directly. The gem does not make a response public, set a TTL, or infer tenant/user variation; the host must add every other representation input. Complete XML/template and duplicate-ID validation remain later work.
 
 Use the same opt-in concern to emit one or more standard Stream siblings. The builder supports `append`, `prepend`, `before`, `after`, `replace`, `update`, `remove`, `refresh`, and their `*_all` selector variants:
 

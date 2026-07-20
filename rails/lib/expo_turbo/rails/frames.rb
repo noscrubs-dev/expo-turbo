@@ -3,6 +3,8 @@
 module ExpoTurbo
   module Rails
     module Frames
+      CACHE_VARIANT_NAMESPACE = :expo_turbo
+
       module_function
 
       def valid_id?(value)
@@ -17,6 +19,12 @@ module ExpoTurbo
         return value if valid_id?(value)
 
         raise TemplateError, "Expo Turbo Frame id must be a nonblank UTF-8 string without control characters"
+      end
+
+      def cache_variant(frame_id)
+        return [CACHE_VARIANT_NAMESPACE, :document].freeze if frame_id.nil?
+
+        [CACHE_VARIANT_NAMESPACE, :frame, frame_id.dup.freeze].freeze
       end
     end
   end
