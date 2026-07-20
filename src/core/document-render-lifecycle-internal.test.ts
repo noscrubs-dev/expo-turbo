@@ -81,6 +81,33 @@ describe("document render lifecycle coordination", () => {
     release()
   })
 
+  test("releases history scroll once only after the exact rendered acknowledgement", async () => {
+    const session = new DocumentSession(tree("initial"))
+    const lifecycle = new DocumentVisitLifecycle()
+    const release = retainDocumentRenderer(session)
+    const position = Object.freeze({ x: 12, y: 34 })
+    const prepared = prepareDocumentRender(session, lifecycle, {
+      historyScroll: position,
+      preview: false,
+      url: "https://example.test/next",
+    })
+
+    session.replaceTree(tree("next"))
+    prepared.seal()
+    const acknowledgement = acknowledgeDocumentRender(
+      session,
+      session.tree.document,
+      prepared.commit.generation,
+      session.revision,
+    )
+    expect(acknowledgement?.consumeHistoryScroll()).toBeUndefined()
+    expect(acknowledgement?.finish()).toBe(true)
+    expect(acknowledgement?.consumeHistoryScroll()).toBe(position)
+    expect(acknowledgement?.consumeHistoryScroll()).toBeUndefined()
+    expect(await prepared.rendered).toBe("rendered")
+    release()
+  })
+
   test("supersedes an unseen generation and releases pending work on final renderer disposal", async () => {
     const session = new DocumentSession(tree("initial"))
     const lifecycle = new DocumentVisitLifecycle()
@@ -90,6 +117,7 @@ describe("document render lifecycle coordination", () => {
     })
     const release = retainDocumentRenderer(session)
     const first = prepareDocumentRender(session, lifecycle, {
+      historyScroll: Object.freeze({ x: 1, y: 2 }),
       preview: false,
       url: "https://example.test/first",
     })

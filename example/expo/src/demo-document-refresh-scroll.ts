@@ -1,12 +1,18 @@
-import type { DocumentRefreshScrollAdapter } from "expo-turbo/adapters";
+import type {
+  DocumentHistoryScrollAdapter,
+  DocumentRefreshScrollAdapter,
+} from "expo-turbo/adapters";
 
 export interface DemoDocumentRefreshScrollContainer {
   readonly isAvailable: () => boolean;
+  readonly scrollTo: (position: Readonly<{ x: number; y: number }>) => void;
   readonly scrollToTop: () => void;
 }
 
 /** Example-owned reset for the gallery's one owning-document ScrollView. */
-export class DemoDocumentRefreshScrollRegistry implements DocumentRefreshScrollAdapter {
+export class DemoDocumentRefreshScrollRegistry
+  implements DocumentHistoryScrollAdapter, DocumentRefreshScrollAdapter
+{
   private container: DemoDocumentRefreshScrollContainer | undefined;
   private disposed = false;
 
@@ -19,7 +25,11 @@ export class DemoDocumentRefreshScrollRegistry implements DocumentRefreshScrollA
     if (!container || typeof container !== "object" || Array.isArray(container)) {
       throw new TypeError("Demo document refresh scroll requires a root ScrollView container");
     }
-    if (typeof container.isAvailable !== "function" || typeof container.scrollToTop !== "function") {
+    if (
+      typeof container.isAvailable !== "function" ||
+      typeof container.scrollTo !== "function" ||
+      typeof container.scrollToTop !== "function"
+    ) {
       throw new TypeError("Demo document refresh scroll container is incomplete");
     }
     this.container = container;
@@ -31,6 +41,15 @@ export class DemoDocumentRefreshScrollRegistry implements DocumentRefreshScrollA
   reset(): void {
     if (!this.canReset()) return;
     this.container?.scrollToTop();
+  }
+
+  canRestore(): boolean {
+    return !this.disposed && Boolean(this.container?.isAvailable());
+  }
+
+  restore(position: Readonly<{ x: number; y: number }>): void {
+    if (!this.canRestore()) return;
+    this.container?.scrollTo(position);
   }
 
   dispose(): void {

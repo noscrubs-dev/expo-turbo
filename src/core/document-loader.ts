@@ -3,6 +3,7 @@ import {
   type DestinationRequestLease,
   destinationRequestOwnership,
 } from "./destination-request-ownership"
+import type { DocumentScrollPosition } from "./document-history"
 import {
   documentLoadRefreshScroll,
   documentLoadRenderMethod,
@@ -262,7 +263,12 @@ export class DocumentRequestLoader {
 
   [DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](
     lifecycle: DocumentVisitLifecycle,
-    detail: Readonly<{ preview: boolean; renderMethod?: DocumentRenderMethod; url: string }>,
+    detail: Readonly<{
+      historyScroll?: DocumentScrollPosition
+      preview: boolean
+      renderMethod?: DocumentRenderMethod
+      url: string
+    }>,
   ): PreparedDocumentRender {
     return prepareDocumentRender(this.session, lifecycle, detail)
   }

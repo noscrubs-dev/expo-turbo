@@ -5,6 +5,7 @@ import type {
   DocumentHistoryProposal,
   DocumentHistoryTraversalDirection,
   DocumentRestorationData,
+  DocumentScrollPosition,
 } from "./document-history"
 import {
   enableDocumentLoadRefreshScroll,
@@ -173,6 +174,7 @@ interface DocumentVisitHistoryGuard {
   readonly entry: DocumentHistoryEntry
   readonly history: DocumentHistory
   readonly kind: "refresh" | "traversal"
+  readonly restorationScroll?: DocumentScrollPosition
   readonly traversalEpoch?: number
 }
 
@@ -478,6 +480,9 @@ export class DocumentVisitController {
             if (this.visitLifecycle) {
               render = this.trackDocumentRender(
                 this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                  ...(restorationData.scrollPosition
+                    ? { historyScroll: restorationData.scrollPosition }
+                    : {}),
                   preview: false,
                   url: restoredEntry.url,
                 }),
@@ -541,6 +546,9 @@ export class DocumentVisitController {
       entry: restoredEntry,
       history,
       kind: "traversal",
+      ...(restorationData.scrollPosition
+        ? { restorationScroll: restorationData.scrollPosition }
+        : {}),
       traversalEpoch,
     }
     return this.startVisit(
@@ -1102,6 +1110,11 @@ export class DocumentVisitController {
           if (this.visitLifecycle) {
             render = this.trackDocumentRender(
               this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                ...(historyGuard?.kind === "traversal" &&
+                historyGuard.restorationScroll &&
+                candidate.classification === "success"
+                  ? { historyScroll: historyGuard.restorationScroll }
+                  : {}),
                 preview: false,
                 renderMethod:
                   renderMethod === "morph" && candidate.classification === "success"

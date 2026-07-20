@@ -1,3 +1,4 @@
+import type { DocumentScrollPosition } from "./document-history"
 import {
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
@@ -25,6 +26,7 @@ interface PendingDocumentRender {
   acknowledged: boolean
   readonly commit: DocumentRenderEventDetail
   readonly handle: PreparedDocumentRender
+  historyScroll: DocumentScrollPosition | undefined
   readonly lifecycle: DocumentVisitLifecycle
   outcome: DocumentRenderOutcome | undefined
   renderDispatched: boolean
@@ -41,6 +43,7 @@ interface DocumentRenderBinding {
 }
 
 export interface DocumentRenderAcknowledgement {
+  consumeHistoryScroll(): DocumentScrollPosition | undefined
   readonly fail: () => void
   readonly finish: () => boolean
   readonly status: "render"
@@ -99,7 +102,12 @@ export function retainDocumentRenderer(session: DocumentSession): () => void {
 export function prepareDocumentRender(
   session: DocumentSession,
   lifecycle: DocumentVisitLifecycle,
-  detail: Readonly<{ preview: boolean; renderMethod?: DocumentRenderMethod; url: string }>,
+  detail: Readonly<{
+    historyScroll?: DocumentScrollPosition
+    preview: boolean
+    renderMethod?: DocumentRenderMethod
+    url: string
+  }>,
 ): PreparedDocumentRender {
   const binding = bindingFor(session)
   const commit = Object.freeze({
@@ -138,6 +146,7 @@ export function prepareDocumentRender(
     acknowledged: false,
     commit,
     handle,
+    historyScroll: detail.historyScroll,
     lifecycle,
     outcome: undefined,
     renderDispatched: false,
@@ -199,10 +208,28 @@ export function acknowledgeDocumentRender(
   }
 
   return Object.freeze({
+    consumeHistoryScroll: () => consumeHistoryScroll(session, binding, pending),
     fail: () => finishAcknowledgement(session, document, revision, binding, pending, "failed"),
     finish: () => finishAcknowledgement(session, document, revision, binding, pending, "rendered"),
     status: "render" as const,
   })
+}
+
+function consumeHistoryScroll(
+  session: DocumentSession,
+  binding: DocumentRenderBinding,
+  pending: PendingDocumentRender,
+): DocumentScrollPosition | undefined {
+  if (
+    pending.outcome !== "rendered" ||
+    session.treeGeneration !== pending.commit.generation ||
+    binding.pending.get(pending.commit.generation) === pending
+  ) {
+    return undefined
+  }
+  const position = pending.historyScroll
+  pending.historyScroll = undefined
+  return position
 }
 
 export function hasDocumentRenderTicket(

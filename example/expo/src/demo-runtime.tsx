@@ -211,6 +211,7 @@ export function DemoRuntimeProvider({
               autofocus={runtime.focus}
               documentComponent={DemoDocumentBoundary}
               documentController={runtime.documentRuntime.controller}
+              documentHistoryScroll={runtime.documentRefreshScroll}
               documentPreloader={runtime.documentRuntime.preloader}
               documentRefreshScroll={runtime.documentRefreshScroll}
               frameAutoscroll={runtime.frameAutoscroll}

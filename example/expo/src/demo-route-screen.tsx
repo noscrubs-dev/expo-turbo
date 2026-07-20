@@ -28,6 +28,7 @@ function CompatibilityGallery() {
   const runtime = useDemoRuntime();
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
+  const scrollX = useRef(0);
   const scrollY = useRef(0);
   const remeasure = useCallback(() => {
     runtime.visibility.remeasureAll();
@@ -56,6 +57,7 @@ function CompatibilityGallery() {
     () =>
       runtime.documentRefreshScroll.registerContainer({
         isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: false, x, y }),
         scrollToTop: () => scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 }),
       }),
     [runtime.documentRefreshScroll],
@@ -74,7 +76,15 @@ function CompatibilityGallery() {
       }}
       onLayout={remeasure}
       onScroll={(event) => {
+        scrollX.current = event.nativeEvent.contentOffset.x;
         scrollY.current = event.nativeEvent.contentOffset.y;
+        const history = runtime.documentRuntime.history;
+        const entry = history.current;
+        if (!runtime.documentRuntime.controller.state.busy && entry) {
+          history.updateRestorationData(entry.restorationIdentifier, {
+            scrollPosition: { x: scrollX.current, y: scrollY.current },
+          });
+        }
         runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();
       }}
