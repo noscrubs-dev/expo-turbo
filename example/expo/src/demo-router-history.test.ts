@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   DocumentHistory,
   type DocumentHistoryEntry,
@@ -17,9 +17,18 @@ import {
 } from "./demo-router-history";
 import { DEMO_ROUTER_PATH_PARAM } from "./demo-router-path";
 
+mock.module("expo-router/build/react-navigation/native", () => ({
+  validatePathConfig: () => undefined,
+}));
+
+const { getStateFromPath } = await import("expo-router/build/fork/getStateFromPath");
+const { extractExpoPathFromURL } = await import("expo-router/build/fork/extractPathFromURL");
+
 const INITIAL_ROUTE_KEY = "demo-route-1";
 const GALLERY_URL = "https://example.test/demo";
 const LINKED_URL = "https://example.test/demo/linked";
+const GALLERY_QUERY_URL = "https://example.test/demo?source=deep-link&tag=a&tag=b";
+const LINKED_QUERY_URL = "https://example.test/demo/linked?flag=&space=+&encoded=%20";
 
 type WriteBehavior =
   | "collateral"
@@ -248,19 +257,30 @@ function initialize(fixture: ReturnType<typeof harness>, url = GALLERY_URL) {
 
 describe("demo Expo Router history bridge", () => {
   test("encodes string params and classifies malformed metadata as unmanaged", () => {
-    const entry = managedEntry("restoration-1", 7, "https://example.test:443/demo?x=1");
+    const entry = managedEntry("restoration-1", 7, "https://example.test/demo?x=1");
     const encoded = encodeDemoRouterHistoryEntry(entry);
 
-    expect(encoded).toEqual({
+    expect(encoded).toMatchObject({
       [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "restoration-1",
       [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: "7",
-      [DEMO_ROUTER_HISTORY_PARAMS.url]: "https://example.test:443/demo?x=1",
     });
-    expect(decodeDemoRouterHistoryEntry(encoded)).toEqual({
-      restorationIdentifier: "restoration-1",
-      restorationIndex: 7,
-      url: "https://example.test/demo?x=1",
-    });
+    expect(encoded[DEMO_ROUTER_HISTORY_PARAMS.url]).toMatch(/^v1~/);
+    expect(encoded[DEMO_ROUTER_HISTORY_PARAMS.url]).not.toMatch(/[&%+?=()/]/);
+    expect(decodeDemoRouterHistoryEntry(encoded)).toEqual(entry);
+
+    for (const url of [
+      "https://example.test/demo?flag",
+      "https://example.test/demo?flag=",
+      "https://example.test/demo?tag=a&tag=b&&space=+&encoded=%20&slash=%2f",
+      "https://example.test/demo?raw=/foo/(group)/bar",
+    ]) {
+      const queryEntry = managedEntry("query-round-trip", 8, url);
+      const outerParams = Object.fromEntries(
+        new URLSearchParams(encodeDemoRouterHistoryEntry(queryEntry)),
+      );
+
+      expect(decodeDemoRouterHistoryEntry(outerParams)).toEqual(queryEntry);
+    }
 
     for (const params of [
       undefined,
@@ -269,11 +289,46 @@ describe("demo Expo Router history bridge", () => {
       { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: ["7"] },
       { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: "07" },
       { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: "9007199254740992" },
+      {
+        [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "raw-external",
+        [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: "7",
+        [DEMO_ROUTER_HISTORY_PARAMS.url]: "https://example.test/demo?x=1",
+      },
+      { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.url]: "v1~not-a-byte" },
       { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.url]: "https://user:secret@example.test/demo" },
       { ...encoded, [DEMO_ROUTER_HISTORY_PARAMS.url]: "file:///tmp/demo" },
     ]) {
       expect(decodeDemoRouterHistoryEntry(params)).toBeUndefined();
     }
+
+    expect(() =>
+      encodeDemoRouterHistoryEntry(
+        managedEntry("alias", 8, "https://example.test:443/demo?x=1"),
+      ),
+    ).toThrow(StateError);
+  });
+
+  test("survives Expo Router native deep-link parsing with opaque URL metadata", () => {
+    const entry = managedEntry(
+      "native-query",
+      9,
+      "https://example.test/demo?tag=a&tag=b&&space=a+b&encoded=%20&flag&raw=/foo/(group)/bar&tilde=~",
+    );
+    const encoded = encodeDemoRouterHistoryEntry(entry);
+    const path = extractExpoPathFromURL(
+      [],
+      `expoturboexample://demo?${new URLSearchParams(encoded).toString()}`,
+    );
+    const state = getStateFromPath(`/${path}`, {
+      screens: { [DEMO_ROUTER_ROUTE_NAME]: { path: "*expoTurboPath" } },
+    });
+    const route = state?.routes[0];
+
+    expect(route?.params).toEqual({
+      [DEMO_ROUTER_PATH_PARAM]: ["demo"],
+      ...encoded,
+    });
+    expect(decodeDemoRouterHistoryEntry(route?.params)).toEqual(entry);
   });
 
   test("adopts managed initial state without writing the route", () => {
@@ -290,14 +345,8 @@ describe("demo Expo Router history bridge", () => {
 
   test("gates managed metadata that does not describe the active document", () => {
     const entry = managedEntry("stale-document", 3, LINKED_URL);
-    const fixture = harness(encodeDemoRouterHistoryEntry(entry));
 
-    expect(() => fixture.bridge.readRouteState()).toThrow(StateError);
-    expect(() => initialize(fixture)).toThrow(StateError);
-    expect(fixture.history.current).toBeUndefined();
-    expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)?.url).toBe(
-      LINKED_URL,
-    );
+    expect(() => harness(encodeDemoRouterHistoryEntry(entry))).toThrow(StateError);
   });
 
   test("decodes unmanaged canonical paths and adopts matching managed paths", () => {
@@ -311,6 +360,37 @@ describe("demo Expo Router history bridge", () => {
     const entry = managedEntry("linked-entry", 2, LINKED_URL);
     const managed = harness({
       [DEMO_ROUTER_PATH_PARAM]: ["demo", "linked"],
+      ...encodeDemoRouterHistoryEntry(entry),
+    });
+    expect(managed.bridge.readRouteState()).toEqual({ entry, kind: "managed" });
+  });
+
+  test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {
+    const unmanaged = harness({
+      source: "gallery",
+      tag: ["a", "b"],
+    });
+    expect(unmanaged.bridge.readRouteState()).toEqual({
+      kind: "unmanaged",
+      url: GALLERY_URL,
+    });
+    unmanaged.detach();
+
+    const rawReserved = harness({
+      [DEMO_ROUTER_HISTORY_PARAMS.restorationIdentifier]: "raw-external",
+      [DEMO_ROUTER_HISTORY_PARAMS.restorationIndex]: "2",
+      [DEMO_ROUTER_HISTORY_PARAMS.url]: GALLERY_QUERY_URL,
+    });
+    expect(rawReserved.bridge.readRouteState()).toEqual({
+      kind: "unmanaged",
+      url: GALLERY_URL,
+    });
+    rawReserved.detach();
+
+    const entry = managedEntry("query-entry", 2, GALLERY_QUERY_URL);
+    const managed = harness({
+      source: "gallery",
+      tag: ["a", "b"],
       ...encodeDemoRouterHistoryEntry(entry),
     });
     expect(managed.bridge.readRouteState()).toEqual({ entry, kind: "managed" });
@@ -365,6 +445,22 @@ describe("demo Expo Router history bridge", () => {
     expect(traversals).toEqual([]);
   });
 
+  test("pushes an ordered query-bearing URL through authoritative history metadata", () => {
+    const fixture = harness({ source: "gallery" });
+    initialize(fixture);
+    const proposal = fixture.history.proposeAdvance(LINKED_QUERY_URL);
+
+    expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
+
+    const pushed = fixture.navigation.state.routes[1] as DemoRouterRoute;
+    expect(pushed.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual(["demo", "linked"]);
+    expect(pushed.params?.source).toBe("gallery");
+    expect(decodeDemoRouterHistoryEntry(pushed.params)).toEqual(proposal.entry);
+    const detach = fixture.bridge.attach(fixture.navigation, pushed.key);
+    expect(fixture.bridge.readRouteState()).toEqual({ entry: proposal.entry, kind: "managed" });
+    detach();
+  });
+
   test("reuses the first matching Expo Router preload without changing its native state", () => {
     const fixture = harness({ source: "gallery" });
     initialize(fixture);
@@ -378,7 +474,7 @@ describe("demo Expo Router history bridge", () => {
         state: nestedState,
       }),
     );
-    const proposal = fixture.history.proposeAdvance(LINKED_URL);
+    const proposal = fixture.history.proposeAdvance(LINKED_QUERY_URL);
 
     fixture.history.commitProposal(proposal);
 
@@ -416,6 +512,25 @@ describe("demo Expo Router history bridge", () => {
     expect(traversals).toEqual([]);
   });
 
+  test("replaces a query-bearing route by overwriting its authoritative document URL", () => {
+    const initial = managedEntry("query-initial", 0, GALLERY_QUERY_URL);
+    const fixture = harness({
+      source: "gallery",
+      ...encodeDemoRouterHistoryEntry(initial),
+    });
+    const initialized = initialize(fixture, GALLERY_QUERY_URL).entry;
+    const route = fixture.navigation.state.routes[0] as DemoRouterRoute;
+    const proposal = fixture.history.proposeReplace(GALLERY_URL);
+
+    expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
+
+    const replaced = fixture.navigation.state.routes[0] as DemoRouterRoute;
+    expect(replaced.key).toBe(route.key);
+    expect(replaced.params?.source).toBe("gallery");
+    expect(decodeDemoRouterHistoryEntry(replaced.params)).toEqual(proposal.entry);
+    expect(initialized).toEqual(initial);
+  });
+
   test("emits popped back and restored-state forward traversal exactly once", () => {
     const fixture = harness();
     const initial = initialize(fixture).entry;
@@ -436,6 +551,26 @@ describe("demo Expo Router history bridge", () => {
     expect(traversals).toEqual([initial, proposal.entry]);
     expect(fixture.history.current).toEqual(proposal.entry);
     expect(fixture.navigation.state.routes[1]?.key).toBe(`${DEMO_ROUTER_ROUTE_NAME}-2`);
+  });
+
+  test("restores query-bearing entries after Router back and forward traversal", () => {
+    const initialEntry = managedEntry("query-initial", 0, GALLERY_QUERY_URL);
+    const fixture = harness(encodeDemoRouterHistoryEntry(initialEntry));
+    const initial = initialize(fixture, GALLERY_QUERY_URL).entry;
+    const proposal = fixture.history.proposeAdvance(LINKED_QUERY_URL);
+    fixture.history.commitProposal(proposal);
+    const forwardState = fixture.navigation.state;
+    const traversals: DocumentHistoryEntry[] = [];
+    fixture.bridge.subscribe((entry) => {
+      traversals.push(entry);
+      fixture.history.adoptTraversal(entry);
+    });
+
+    fixture.navigation.goBack();
+    fixture.navigation.reset(forwardState);
+
+    expect(traversals).toEqual([initial, proposal.entry]);
+    expect(fixture.history.current).toEqual(proposal.entry);
   });
 
   test("reconciles a focus change that happened before a replacement attachment", () => {
@@ -521,6 +656,23 @@ describe("demo Expo Router history bridge", () => {
       fixture.navigation.setParamsBehavior = "commit";
       expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
     }
+  });
+
+  test("rolls back a failed query-to-no-query replacement without leaving stale route state", () => {
+    const initialEntry = managedEntry("query-initial", 0, GALLERY_QUERY_URL);
+    const fixture = harness(encodeDemoRouterHistoryEntry(initialEntry));
+    const initial = initialize(fixture, GALLERY_QUERY_URL).entry;
+    const before = fixture.navigation.state;
+    const proposal = fixture.history.proposeReplace(GALLERY_URL);
+    fixture.navigation.setParamsBehavior = "partial";
+
+    expect(() => fixture.history.commitProposal(proposal)).toThrow(StateError);
+
+    expect(fixture.navigation.state).toBe(before);
+    expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)).toEqual(
+      initial,
+    );
+    expect(fixture.history.current).toEqual(initial);
   });
 
   test("rolls back collateral Stack state changes before committing history", () => {
