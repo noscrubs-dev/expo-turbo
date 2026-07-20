@@ -99,6 +99,12 @@ export interface FocusAdapter {
 export interface AutofocusAdapter {
   canFocus(id: string): boolean
   focus(id: string): void
+  /**
+   * Optional logical-focus snapshot used by standalone Stream messages. A
+   * returned id preserves existing host focus; `undefined` allows one stream
+   * autofocus attempt after the exact React commit.
+   */
+  getFocusedId?(): string | undefined
 }
 
 export type ScrollAlignment = "start" | "center" | "end" | "nearest"

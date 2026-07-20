@@ -1,3 +1,4 @@
+import { applicationAutofocusCandidatesFromNodes } from "./autofocus-candidates-internal"
 import type {
   CustomStreamActionRegistry,
   CustomStreamActionResult,
@@ -10,6 +11,7 @@ import { type ParseOptions, parseTurboStreamFragment } from "./parser"
 import { querySelectorAll } from "./selectors"
 import { type DocumentSession, SessionCommitError } from "./session"
 import { isSessionCommitError, markSessionCommitError } from "./session-commit-error-internal"
+import { stageStandaloneStreamAutofocus } from "./stream-autofocus-internal"
 import {
   createBeforeStreamRenderEvent,
   createStreamActionEvent,
@@ -40,6 +42,15 @@ const BUILT_IN_ACTIONS = new Set([
   "prepend",
   "refresh",
   "remove",
+  "replace",
+  "update",
+])
+
+const STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS = new Set([
+  "after",
+  "append",
+  "before",
+  "prepend",
   "replace",
   "update",
 ])
@@ -93,6 +104,24 @@ function templatePayload(stream: ProtocolElement, action: string): readonly Prot
     throw actionError("The first Turbo Stream child element must be template", action)
   }
   return firstElement.children
+}
+
+function standaloneStreamAutofocusCandidate(
+  stream: ProtocolElement,
+  action: string,
+): string | undefined {
+  if (
+    !STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action) ||
+    attributeValue(stream, "method") === "morph" ||
+    attributeValue(stream, "targets") !== undefined
+  ) {
+    return undefined
+  }
+  try {
+    return applicationAutofocusCandidatesFromNodes(templatePayload(stream, action))[0]
+  } catch {
+    return undefined
+  }
 }
 
 function assertNoPermanentMorphEnvelope(stream: ProtocolElement, action: string): void {
@@ -341,14 +370,18 @@ function applyToTarget(
 
 interface StreamActionProgress {
   appliedTargets: number
+  autofocusCandidates: ProtocolNode[]
   matchedTargets: number
   ownershipInterrupted: boolean
 }
 
 interface StreamActionDispatchResult {
+  readonly autofocusCandidates: readonly ProtocolNode[]
   readonly ownershipInterrupted: boolean
   readonly report: StreamActionReport
 }
+
+type StreamAutofocusMode = "embedded" | "standalone"
 
 const STREAM_RENDER_INTERRUPTED = Symbol("expo-turbo.stream-render-interrupted")
 
@@ -403,6 +436,10 @@ function renderAction(
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)
+  const autofocusCandidates =
+    !morph && STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action)
+      ? applicationAutofocusCandidatesFromNodes(payload).slice(0, 1)
+      : []
   progress.matchedTargets = targets.length
   if (targets.length > 1 && allIds(payload).length > 0) {
     throw actionError("Multi-target Turbo Stream payloads must not declare ids", action)
@@ -414,7 +451,13 @@ function renderAction(
       break
     }
     if (!session.tree.contains(target)) continue
-    if (applyToTarget(session, action, target, payload, morph)) progress.appliedTargets += 1
+    if (applyToTarget(session, action, target, payload, morph)) {
+      progress.appliedTargets += 1
+      for (const candidate of autofocusCandidates) {
+        const active = session.tree.getNodeByKey(candidate)
+        if (active) progress.autofocusCandidates.push(active)
+      }
+    }
   }
 
   return Object.freeze({
@@ -435,6 +478,7 @@ function dispatchAction(
   const action = attributeValue(stream, "action") ?? ""
   const progress: StreamActionProgress = {
     appliedTargets: 0,
+    autofocusCandidates: [],
     matchedTargets: 0,
     ownershipInterrupted: false,
   }
@@ -562,6 +606,7 @@ function dispatchAction(
   }
   lifecycle?.[STREAM_LIFECYCLE_ACTION_DISPATCH](createStreamActionEvent(stream, report))
   return Object.freeze({
+    autofocusCandidates: Object.freeze([...progress.autofocusCandidates]),
     ownershipInterrupted: ownershipInterrupted || progress.ownershipInterrupted,
     report,
   })
@@ -628,24 +673,55 @@ export function dispatchTurboStreamElements(
   return dispatchGuardedTurboStreamElements(session, streams, options)
 }
 
+/** Internal response path for Streams embedded in a document or Frame payload. */
+export function dispatchEmbeddedTurboStreamElements(
+  session: DocumentSession,
+  streams: readonly ProtocolElement[],
+  options: StreamActionDispatchOptions = {},
+  control?: StreamDispatchControl,
+): StreamDispatchReport {
+  return dispatchGuardedTurboStreamElements(session, streams, options, control, "embedded")
+}
+
 /** Internal staged-response entry point; intentionally omitted from the public core barrel. */
 export function dispatchGuardedTurboStreamElements(
   session: DocumentSession,
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
+  autofocusMode: StreamAutofocusMode = "standalone",
 ): StreamDispatchReport {
+  const revision = session.revision
   const lifecycle = streamLifecycleOption(options, "Turbo Stream dispatcher")
   const actions: StreamActionReport[] = []
+  let autofocusCandidate: ProtocolNode | undefined
+  let autofocusCandidateClaimed = false
   let interrupted = false
   for (const [index, stream] of streams.entries()) {
     if (control && !control.shouldContinue()) {
       interrupted = true
       break
     }
+    const action = attributeValue(stream, "action") ?? ""
+    const candidateKey =
+      !autofocusCandidateClaimed && autofocusMode === "standalone"
+        ? standaloneStreamAutofocusCandidate(stream, action)
+        : undefined
+    const candidateBefore = candidateKey ? session.tree.getNodeByKey(candidateKey) : undefined
+    if (candidateKey) autofocusCandidateClaimed = true
     const dispatched = dispatchAction(session, stream, index, options, lifecycle, control)
     const report = dispatched.report
     actions.push(report)
+    if (candidateKey && report.status === "applied") {
+      const candidate = session.tree.getNodeByKey(candidateKey)
+      if (
+        candidate &&
+        candidate !== candidateBefore &&
+        dispatched.autofocusCandidates.includes(candidate)
+      ) {
+        autofocusCandidate = candidate
+      }
+    }
     if (report.status === "error") options.onActionError?.(report)
     if (
       control &&
@@ -654,6 +730,14 @@ export function dispatchGuardedTurboStreamElements(
     ) {
       interrupted = true
     }
+  }
+  if (
+    autofocusMode === "standalone" &&
+    session.revision !== revision &&
+    !interrupted &&
+    (!control || control.shouldContinue())
+  ) {
+    stageStandaloneStreamAutofocus(session, autofocusCandidate ? [autofocusCandidate] : [])
   }
   return Object.freeze({ actions: Object.freeze(actions), interrupted })
 }

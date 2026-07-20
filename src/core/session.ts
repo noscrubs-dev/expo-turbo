@@ -10,6 +10,7 @@ import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
 import { RecentRequestIds } from "./recent-request-ids"
 import { markSessionCommitError } from "./session-commit-error-internal"
+import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal"
 import { type DocumentTree, isElement, morphCurrentDocumentRoot, type ProtocolNode } from "./tree"
 import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
@@ -137,6 +138,7 @@ export class DocumentSession {
     stageDocumentRefreshScroll(this, this.currentTree, generation)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
+    pruneStandaloneStreamAutofocus(this)
     this.snapshots.clear()
     const keys = new Set([...changed, this.currentTree.document.key])
     this.reportErrors(disposalErrors, [
@@ -169,6 +171,7 @@ export class DocumentSession {
     stageDocumentRefreshScroll(this, tree, generation)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
+    pruneStandaloneStreamAutofocus(this)
     this.snapshots.clear()
     this.reportErrors(disposalErrors, [
       ...this.notify([...this.listeners.keys()]),
@@ -235,6 +238,7 @@ export class DocumentSession {
   private commit(keys: readonly string[]): void {
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
+    pruneStandaloneStreamAutofocus(this)
     const uniqueKeys = new Set(keys)
     for (const key of uniqueKeys) this.snapshots.delete(key)
     this.reportErrors(disposalErrors, [

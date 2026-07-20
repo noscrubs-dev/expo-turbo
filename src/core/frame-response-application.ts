@@ -11,7 +11,7 @@ import {
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import type { DocumentSession } from "./session"
 import {
-  dispatchGuardedTurboStreamElements,
+  dispatchEmbeddedTurboStreamElements,
   type StreamActionDispatchOptions,
   type StreamDispatchControl,
   type StreamDispatchReport,
@@ -351,7 +351,7 @@ export function dispatchPreparedFrameResponseStreams(
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
 ): StreamDispatchReport {
-  return dispatchGuardedTurboStreamElements(session, prepared.streams, options, control)
+  return dispatchEmbeddedTurboStreamElements(session, prepared.streams, options, control)
 }
 
 export function commitPreparedFrameResponse(

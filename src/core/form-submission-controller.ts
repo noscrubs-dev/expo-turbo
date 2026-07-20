@@ -136,6 +136,7 @@ import {
 import type { DocumentSession } from "./session"
 import { streamLifecycleOption } from "./stream-lifecycle"
 import {
+  dispatchEmbeddedTurboStreamElements,
   dispatchGuardedTurboStreamElements,
   type StreamActionDispatchOptions,
   type StreamDispatchReport,
@@ -1464,9 +1465,14 @@ export class FormSubmissionController {
           this.options.snapshotCache?.clear()
         }
       }
-      const streamReport = dispatchGuardedTurboStreamElements(this.session, streams, this.options, {
-        shouldContinue: () => this.ownership.retains(lease),
-      })
+      const streamReport = dispatchEmbeddedTurboStreamElements(
+        this.session,
+        streams,
+        this.options,
+        {
+          shouldContinue: () => this.ownership.retains(lease),
+        },
+      )
       return Object.freeze({
         ...metadata,
         application: "document",

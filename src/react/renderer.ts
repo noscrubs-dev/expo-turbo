@@ -112,6 +112,11 @@ import type {
   StateSnapshot,
 } from "../core/state"
 import {
+  consumeStandaloneStreamAutofocus,
+  streamAutofocusLifecycleRevision,
+  subscribeStreamAutofocusLifecycle,
+} from "../core/stream-autofocus-internal"
+import {
   attributeValue,
   isElement,
   type ProtocolDocument,
@@ -1332,7 +1337,7 @@ function consumeUnexpectedAdapterResult(result: unknown): void {
 function focusFirstAvailableCandidate(
   adapter: AutofocusAdapter,
   candidates: readonly string[],
-  scope: "Document" | "Frame",
+  scope: "Document" | "Frame" | "Stream",
   frameId?: string,
 ): void {
   const context = frameId ? { frameId } : {}
@@ -1368,7 +1373,7 @@ function applyAutofocus(
   candidates: readonly string[],
   nodeKey: string,
   onError: ((event: ExpoTurboRenderError) => void) | undefined,
-  scope: "Document" | "Frame",
+  scope: "Document" | "Frame" | "Stream",
   frameId?: string,
 ): void {
   try {
@@ -1383,6 +1388,39 @@ function applyAutofocus(
         `${scope} autofocus error reporting failed`,
         frameId ? { frameId } : {},
       )
+      alreadyReportedRenderErrors.add(reportingError)
+      throw reportingError
+    }
+  }
+}
+
+function applyStandaloneStreamAutofocus(
+  adapter: AutofocusAdapter | undefined,
+  candidates: readonly string[] | undefined,
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+): void {
+  if (!adapter || !candidates || !adapter.getFocusedId) return
+  try {
+    let focusedId: unknown
+    try {
+      focusedId = adapter.getFocusedId()
+    } catch {
+      throw new StateError("Stream autofocus active-focus check failed")
+    }
+    if (focusedId !== undefined && typeof focusedId !== "string") {
+      consumeUnexpectedAdapterResult(focusedId)
+      throw new StateError("Stream autofocus active-focus check failed")
+    }
+    if (focusedId !== undefined) return
+    applyAutofocus(adapter, candidates, nodeKey, undefined, "Stream")
+  } catch (error) {
+    const reported = error instanceof Error ? error : new StateError("Stream autofocus failed")
+    if (!onError) throw reported
+    try {
+      onError({ error: reported, nodeKey })
+    } catch {
+      const reportingError = new StateError("Stream autofocus error reporting failed")
       alreadyReportedRenderErrors.add(reportingError)
       throw reportingError
     }
@@ -1615,6 +1653,14 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     () => documentRenderLifecycleRevision(session),
     [session],
   )
+  const subscribeStreamAutofocus = useCallback(
+    (listener: () => void) => subscribeStreamAutofocusLifecycle(session, listener),
+    [session],
+  )
+  const streamAutofocusSnapshot = useCallback(
+    () => streamAutofocusLifecycleRevision(session),
+    [session],
+  )
   const subscribeRevision = useCallback(
     (listener: () => void) => session.subscribeRevision(listener),
     [session],
@@ -1624,6 +1670,11 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     subscribeRenderLifecycle,
     renderLifecycleSnapshot,
     renderLifecycleSnapshot,
+  )
+  const streamAutofocusRevision = useSyncExternalStore(
+    subscribeStreamAutofocus,
+    streamAutofocusSnapshot,
+    streamAutofocusSnapshot,
   )
   const revision = useSyncExternalStore(subscribeRevision, revisionSnapshot, revisionSnapshot)
   useInsertionEffect(() => retainDocumentRenderer(session), [session])
@@ -1664,6 +1715,15 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     revision,
     session,
   ])
+  useLayoutEffect(() => {
+    if (streamAutofocusRevision !== streamAutofocusLifecycleRevision(session)) return
+    applyStandaloneStreamAutofocus(
+      autofocus,
+      consumeStandaloneStreamAutofocus(session, revision),
+      props.document.key,
+      onError,
+    )
+  }, [autofocus, onError, props.document.key, revision, session, streamAutofocusRevision])
   return props.children
 }
 
