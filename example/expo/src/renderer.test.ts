@@ -6601,7 +6601,67 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("fails closed when generated form-link interception is disabled", async () => {
+  test("falls back through host navigation when generated form-link interception is disabled", async () => {
+    const documentRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    const navigation: Array<Readonly<{ action: string; url: string }>> = []
+    const clicks: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", () => {
+      clicks.push("click")
+    })
+    let requestIds = 0
+    const harness = renderDocumentLinks(
+      '<Gallery><turbo-frame id="frame"><DocumentLink href="/generated-disabled?item=one" data-turbo-action="replace" data-turbo-confirm="Continue?" data-turbo-frame="frame" data-turbo-method="post" data-turbo-stream="" /></turbo-frame></Gallery>',
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("disabled generated form links must not become document GETs")
+      },
+      "https://example.test/gallery",
+      {
+        back() {},
+        openExternal() {
+          throw new Error("same-origin disabled generated form links must not open externally")
+        },
+        visit(url, action) {
+          navigation.push({ action, url })
+        },
+      },
+      undefined,
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request) {
+              generatedRequests.push(request)
+              throw new Error("disabled generated form links must not fetch")
+            },
+          }),
+          { next: () => `disabled-generated-link-${++requestIds}` },
+          { formMode: "off" },
+        ),
+      { visitLifecycle: lifecycle },
+    )
+
+    await expect(harness.activation("/generated-disabled?item=one")()).resolves.toEqual({
+      action: "advance",
+      kind: "navigation",
+      reason: "form-mode-off",
+      status: "delegated",
+      url: "https://example.test/generated-disabled?item=one",
+    })
+    expect(requestIds).toBe(0)
+    expect(documentRequests).toHaveLength(0)
+    expect(generatedRequests).toHaveLength(0)
+    expect(clicks).toEqual([])
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/generated-disabled?item=one" },
+    ])
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("requires host navigation when generated form-link interception is disabled", async () => {
     const documentRequests: TurboRequest[] = []
     const generatedRequests: TurboRequest[] = []
     let requestIds = 0
