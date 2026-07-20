@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test"
 import {
   admitDocumentVisitLifecycle,
   BeforeCacheEvent,
+  BeforePrefetchEvent,
   BeforeVisitEvent,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
@@ -92,6 +94,25 @@ describe("document visit lifecycle", () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  test("freezes native before-prefetch detail and makes cancellation irreversible", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const event = new BeforePrefetchEvent("link-key", "https://example.test/next")
+    lifecycle.subscribe("before-prefetch", (received) => {
+      expect(received).toBe(event)
+      expect(received.detail).toEqual({
+        nodeKey: "link-key",
+        url: "https://example.test/next",
+      })
+      expect(Object.isFrozen(received)).toBe(true)
+      expect(Object.isFrozen(received.detail)).toBe(true)
+      received.preventDefault()
+      expect(() => Object.defineProperty(received, "defaultPrevented", { value: false })).toThrow()
+    })
+
+    expect(lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](event)).toBe(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   test("uses stable click listener snapshots and rejects asynchronous or failing listeners", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const calls: string[] = []
@@ -175,6 +196,61 @@ describe("document visit lifecycle", () => {
       expect(String(error)).not.toContain("secret")
     } finally {
       Object.defineProperty(WeakSet.prototype, "has", has)
+    }
+  })
+
+  test("uses stable before-prefetch listener snapshots and redacts invalid listeners", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const calls: string[] = []
+    const late = () => {
+      calls.push("late")
+      return undefined
+    }
+    let removeSecond: () => void = () => undefined
+    lifecycle.subscribe("before-prefetch", () => {
+      calls.push("first")
+      removeSecond()
+      lifecycle.subscribe("before-prefetch", late)
+    })
+    removeSecond = lifecycle.subscribe("before-prefetch", () => {
+      calls.push("second")
+    })
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+      new BeforePrefetchEvent("one", "https://example.test/one"),
+    )
+    expect(calls).toEqual(["first", "second"])
+
+    calls.length = 0
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+      new BeforePrefetchEvent("two", "https://example.test/two"),
+    )
+    expect(calls).toEqual(["first", "late"])
+
+    const url = "https://example.test/private?token=secret"
+    const thrown = new DocumentVisitLifecycle()
+    thrown.subscribe("before-prefetch", () => {
+      throw new Error(url)
+    })
+    const listenerError = capturedError(() =>
+      thrown[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+        new BeforePrefetchEvent("private-link", url),
+      ),
+    )
+    expect(listenerError).toBeInstanceOf(StateError)
+    expect(listenerError.message).toBe("Before-prefetch listener failed")
+    expect(String(listenerError)).not.toContain("secret")
+
+    for (const value of [false, null, 0, "", Promise.resolve(undefined)]) {
+      const invalid = new DocumentVisitLifecycle()
+      invalid.subscribe("before-prefetch", (() => value) as never)
+      const invalidError = capturedError(() =>
+        invalid[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+          new BeforePrefetchEvent("private-link", url),
+        ),
+      )
+      expect(invalidError).toBeInstanceOf(StateError)
+      expect(invalidError.message).toBe("Before-prefetch listener must return undefined")
+      expect(String(invalidError)).not.toContain("secret")
     }
   })
 

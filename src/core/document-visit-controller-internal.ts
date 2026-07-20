@@ -1,4 +1,6 @@
 import {
+  BeforePrefetchEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   type DocumentVisitLifecycle,
   LinkClickEvent,
@@ -21,5 +23,17 @@ export function dispatchDocumentVisitLinkClick(
   const event = controllerLifecycles
     .get(controller)
     ?.[DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH](new LinkClickEvent(nodeKey, url))
+  return event?.defaultPrevented !== true
+}
+
+export function dispatchDocumentVisitBeforePrefetch(
+  controller: object | undefined,
+  nodeKey: string,
+  url: string,
+): boolean {
+  const lifecycle = controller ? controllerLifecycles.get(controller) : undefined
+  const event = lifecycle?.[DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+    new BeforePrefetchEvent(nodeKey, url),
+  )
   return event?.defaultPrevented !== true
 }
