@@ -7,6 +7,7 @@ require "action_cable/subscription_adapter/subscriber_map"
 require "action_cable/subscription_adapter/inline"
 require "action_cable/subscription_adapter/async"
 require "action_cable/subscription_adapter/test"
+require "active_job/queue_adapters/test_adapter"
 require "logger"
 
 RSpec.describe ExpoTurbo::Rails::Streams do
@@ -20,13 +21,17 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     server = ActionCable.server
     previous_adapter = server.instance_variable_get(:@pubsub)
     previous_logger = server.config.logger
+    previous_queue_adapter = ExpoTurbo::Rails::Streams::BroadcastJob.queue_adapter
     @test_adapter = ActionCable::SubscriptionAdapter::Test.new(server)
+    @job_adapter = ActiveJob::QueueAdapters::TestAdapter.new
     server.config.logger = Logger.new(IO::NULL)
     server.instance_variable_set(:@pubsub, @test_adapter)
+    ExpoTurbo::Rails::Streams::BroadcastJob.queue_adapter = @job_adapter
     example.run
   ensure
     server.instance_variable_set(:@pubsub, previous_adapter)
     server.config.logger = previous_logger
+    ExpoTurbo::Rails::Streams::BroadcastJob.queue_adapter = previous_queue_adapter
   end
 
   it "normalizes streamables before signing or broadcasting" do
@@ -60,10 +65,62 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     ])
   end
 
+  it "enqueues an exact Expo-only stream without broadcasting immediately" do
+    streamable = Class.new do
+      def to_gid_param
+        "rooms/1"
+      end
+    end.new
+    content = '<turbo-stream xmlns:Demo="urn:expo-demo" action="append" target="messages"><template><Demo:Item id="message-1"/></template></turbo-stream>'
+
+    described_class.broadcast_later_to(streamable, :updates, content: content)
+
+    job = @job_adapter.enqueued_jobs.fetch(0)
+    arguments = ActiveJob::Arguments.deserialize(job[:args])
+    source = controller_class.new.view_context.expo_turbo_stream_from(streamable, :updates).to_s
+    signed_name = source[/signed-stream-name="([^"]+)"/, 1]
+    expect(job[:job]).to eq(ExpoTurbo::Rails::Streams::BroadcastJob)
+    expect(arguments).to eq(["rooms/1:updates:expo", {content: content}])
+    expect(arguments.first).to be_a(String)
+    expect(arguments.last.fetch(:content)).to be_a(String)
+    expect(::Turbo::StreamsChannel.verified_stream_name(signed_name)).to eq(arguments.first)
+    expect(broadcast_payloads("rooms/1:updates:expo")).to be_empty
+
+    ActiveJob::Base.execute(job)
+
+    expect(broadcast_payloads("rooms/1:updates:expo")).to eq([content])
+    expect(broadcast_payloads("rooms/1:updates")).to be_empty
+  end
+
+  it "renders controller-owned XML before enqueueing it" do
+    controller = controller_class.new
+
+    controller.broadcast_expo_turbo_stream_later_to("room") do |stream|
+      stream.refresh(request_id: "request-1", method: "morph", scroll: "preserve")
+    end
+
+    arguments = ActiveJob::Arguments.deserialize(@job_adapter.enqueued_jobs.fetch(0)[:args])
+    expect(arguments).to eq([
+      "room:expo",
+      {content: '<turbo-stream request-id="request-1" method="morph" scroll="preserve" action="refresh"></turbo-stream>'}
+    ])
+    expect(broadcast_payloads("room:expo")).to be_empty
+  end
+
+  it "does not log raw queued broadcast arguments" do
+    expect(ExpoTurbo::Rails::Streams::BroadcastJob.log_arguments?).to be(false)
+  end
+
   it "rejects blank or invalid-UTF-8 broadcast content before it reaches Action Cable" do
     expect { described_class.broadcast_to("room", content: "") }.to raise_error(ArgumentError, /nonblank String/)
+    expect { described_class.broadcast_later_to("room", content: "") }.to raise_error(ArgumentError, /nonblank String/)
     expect { described_class.broadcast_to("room", content: "\xFF".dup.force_encoding(Encoding::UTF_8)) }
       .to raise_error(ExpoTurbo::Rails::TemplateError, /valid UTF-8/)
+    expect { described_class.broadcast_later_to("room", content: "\xFF".dup.force_encoding(Encoding::UTF_8)) }
+      .to raise_error(ExpoTurbo::Rails::TemplateError, /valid UTF-8/)
+    expect { described_class.broadcast_to_stream("room", content: "ok") }
+      .to raise_error(ArgumentError, /stream name must be a nonblank UTF-8 String ending in :expo/)
+    expect(@job_adapter.enqueued_jobs).to be_empty
     expect(broadcast_payloads("room:expo")).to be_empty
   end
 
@@ -81,6 +138,15 @@ RSpec.describe ExpoTurbo::Rails::Streams do
       expect { context.expo_turbo_stream_from("room", **attributes) }
         .to raise_error(ArgumentError, /reserve channel and signed stream name/)
     end
+  end
+
+  it "does not accept content and a block for a queued controller broadcast" do
+    controller = controller_class.new
+
+    expect {
+      controller.broadcast_expo_turbo_stream_later_to("room", content: "<turbo-stream/>") { |stream| stream.remove("room") }
+    }.to raise_error(ArgumentError, /content or a block/)
+    expect(@job_adapter.enqueued_jobs).to be_empty
   end
 
   def broadcast_payloads(stream)

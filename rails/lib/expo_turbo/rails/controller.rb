@@ -67,6 +67,13 @@ module ExpoTurbo
         ExpoTurbo::Rails::Streams.broadcast_to(*streamables, content: content)
       end
 
+      def broadcast_expo_turbo_stream_later_to(*streamables, content: nil)
+        raise ArgumentError, "provide content or a block, not both" if block_given? && !content.nil?
+
+        content = yield(expo_turbo_stream) if block_given?
+        ExpoTurbo::Rails::Streams.broadcast_later_to(*streamables, content: content)
+      end
+
       private
 
       def expo_turbo_template_file(template)

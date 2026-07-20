@@ -22,10 +22,11 @@ RSpec.describe ExpoTurbo::Rails do
     expect(described_class::Engine.routes.routes).to be_empty
   end
 
-  it "loads Action Cable broadcasting without mounting a Cable route" do
+  it "loads Action Cable and Active Job without mounting a Cable route" do
     route_paths = ExpoTurboRailsSpecApp.routes.routes.map { |route| route.path.spec.to_s }
 
     expect(defined?(ActionCable::Channel::Base)).to eq("constant")
+    expect(defined?(ActiveJob::Base)).to eq("constant")
     expect(route_paths).not_to include(a_string_starting_with("/cable"))
   end
 end
