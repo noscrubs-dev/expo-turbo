@@ -30,7 +30,7 @@ import { FormSubmissionCommitError, FormSubmissionController } from "./form-subm
 import { FormSubmissionLifecycle } from "./form-submission-lifecycle"
 import type { FormSubmissionProposal } from "./form-submission-proposal"
 import { DocumentFormControls, FormControlRegistry } from "./forms"
-import { consumeFrameAutofocus } from "./frame-autofocus-internal"
+import { consumeFrameRenderEffects } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator } from "./frame-history"
@@ -5126,10 +5126,12 @@ describe("FormSubmissionController", () => {
     releaseRenderer()
   })
 
-  test("publishes final-tree autofocus intent to an exact mounted Frame after form replacement", async () => {
+  test("publishes final-tree Frame render effects to an exact mounted Frame after form replacement", async () => {
     const session = fixture()
     session.setAttribute("id:form-a", "method", "post")
     session.removeAttribute("id:frame-a", "src")
+    session.setAttribute("id:frame-a", "data-autoscroll-block", "center")
+    session.setAttribute("id:frame-a", "data-autoscroll-behavior", "smooth")
     const frameControllers = new FrameControllerRegistry(
       session,
       new FrameRequestLoader(
@@ -5148,7 +5150,7 @@ describe("FormSubmissionController", () => {
         fetch: async (request) =>
           response(
             request,
-            `<turbo-frame id="frame-a">
+            `<turbo-frame id="frame-a" autoscroll="">
                <Field id="removed" autofocus="" />
                <Field id="first" autofocus="" />
                <Field id="second" autofocus="false" />
@@ -5168,10 +5170,10 @@ describe("FormSubmissionController", () => {
       frame: { frameId: "frame-a" },
       status: "applied",
     })
-    expect(consumeFrameAutofocus(mounted, mounted.state.revision)).toEqual([
-      "id:first",
-      "id:second",
-    ])
+    expect(consumeFrameRenderEffects(mounted, mounted.state.revision)).toEqual({
+      autofocus: ["id:first", "id:second"],
+      autoscroll: { alignment: "center", behavior: "smooth", frameId: "frame-a" },
+    })
     expect(session.tree.getElementById("removed")).toBeUndefined()
   })
 
@@ -6303,7 +6305,7 @@ describe("FormSubmissionController", () => {
       formRequest.response.resolve(
         response(
           formRequest.request,
-          `<turbo-frame id="frame-a">
+          `<turbo-frame id="frame-a" autoscroll="">
             <FrameResult id="staged-frame-result" autofocus="" />
             <turbo-stream action="update" target="frame-b"><template><Stale id="stale-frame-stream" /></template></turbo-stream>
           </turbo-frame>`,
@@ -6316,7 +6318,7 @@ describe("FormSubmissionController", () => {
         },
         status: "applied",
       })
-      expect(consumeFrameAutofocus(mounted, mounted.state.revision)).toBeUndefined()
+      expect(consumeFrameRenderEffects(mounted, mounted.state.revision)).toBeUndefined()
       expect(session.tree.getElementById("staged-frame-result")).toBeDefined()
       expect(session.tree.getElementById("stale-frame-stream")).toBeUndefined()
 

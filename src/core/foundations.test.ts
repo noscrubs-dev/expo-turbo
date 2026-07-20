@@ -92,6 +92,10 @@ describe("adapter boundary", () => {
         focus() {},
         getFocusedId: () => undefined,
       },
+      frameAutoscroll: {
+        canScroll: () => true,
+        scrollTo() {},
+      },
       lifecycle: {
         getState: () => "active",
         subscribe: () => () => {},

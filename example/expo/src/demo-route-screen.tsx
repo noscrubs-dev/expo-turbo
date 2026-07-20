@@ -8,7 +8,7 @@ import {
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import { dispatchTurboStreamFragment } from "expo-turbo/core";
 import { ExpoTurboRoot } from "expo-turbo/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Pressable,
   ScrollView,
@@ -27,11 +27,25 @@ function CompatibilityGallery() {
   const runtime = useDemoRuntime();
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
   const measureViewport = useCallback(() => {
     runtime.visibility.measureViewport((listener) => {
       scrollView.current?.getNativeScrollRef()?.measureInWindow(listener);
     });
-  }, [runtime.visibility]);
+    runtime.frameAutoscroll.remeasure();
+  }, [runtime.frameAutoscroll, runtime.visibility]);
+  useLayoutEffect(
+    () =>
+      runtime.frameAutoscroll.registerContainer({
+        getScrollY: () => scrollY.current,
+        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef()),
+        measure: (listener) => {
+          scrollView.current?.getNativeScrollRef()?.measureInWindow(listener);
+        },
+        scrollTo: (options) => scrollView.current?.scrollTo(options),
+      }),
+    [runtime.frameAutoscroll],
+  );
   useEffect(() => {
     measureViewport();
   }, [measureViewport, window.height, window.width]);
@@ -40,9 +54,16 @@ function CompatibilityGallery() {
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
-      onContentSizeChange={() => runtime.visibility.remeasure()}
+      onContentSizeChange={() => {
+        runtime.visibility.remeasure();
+        runtime.frameAutoscroll.remeasure();
+      }}
       onLayout={measureViewport}
-      onScroll={() => runtime.visibility.remeasure()}
+      onScroll={(event) => {
+        scrollY.current = event.nativeEvent.contentOffset.y;
+        runtime.visibility.remeasure();
+        runtime.frameAutoscroll.remeasure();
+      }}
       ref={scrollView}
       scrollEventThrottle={32}
     >

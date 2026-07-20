@@ -20,6 +20,7 @@ import type {
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
   FormSubmissionAnnouncementTerminalSnapshot,
+  FrameAutoscrollAdapter,
   NavigationAdapter,
   VisitAction,
 } from "../adapters"
@@ -80,7 +81,7 @@ import type {
   SuccessfulFormEntriesOptions,
   SuccessfulFormEntry,
 } from "../core/forms"
-import { consumeFrameAutofocus } from "../core/frame-autofocus-internal"
+import { consumeFrameRenderEffects } from "../core/frame-autofocus-internal"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
 import {
@@ -90,6 +91,7 @@ import {
   retainFrameRenderer,
   subscribeFrameRenderLifecycle,
 } from "../core/frame-render-lifecycle-internal"
+import type { FrameAutoscrollIntent } from "../core/frame-response-application"
 import { resolveFormSubmissionDestination } from "../core/frames"
 import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
 import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
@@ -212,6 +214,7 @@ interface RendererContextValue {
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
+  readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
   readonly formAnnouncements: FormSubmissionAnnouncementAdapter | undefined
@@ -336,6 +339,7 @@ export interface ExpoTurboProviderProps {
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
   readonly documentPreloader?: DocumentPreloadRequester
+  readonly frameAutoscroll?: FrameAutoscrollAdapter
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
@@ -379,6 +383,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentComponent: props.documentComponent,
       documentController: props.documentController,
       documentPreloader: props.documentPreloader,
+      frameAutoscroll: props.frameAutoscroll,
       frameComponent: props.frameComponent,
       formComponent: props.formComponent,
       formAnnouncements: props.formAnnouncements,
@@ -400,6 +405,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentComponent,
       props.documentController,
       props.documentPreloader,
+      props.frameAutoscroll,
       props.frameComponent,
       props.formComponent,
       props.formAnnouncements,
@@ -1269,6 +1275,7 @@ function AssociatedRegisteredElementBoundary(
 
 interface ConnectedFrameProps {
   readonly autofocus: AutofocusAdapter | undefined
+  readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frameId: string
   readonly frames: FrameControllerCollection
@@ -1346,6 +1353,59 @@ function applyAutofocus(
   }
 }
 
+function applyFrameAutoscroll(
+  adapter: FrameAutoscrollAdapter | undefined,
+  intent: FrameAutoscrollIntent,
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+): void {
+  if (!adapter) return
+  try {
+    let available: unknown
+    try {
+      available = adapter.canScroll(intent.frameId)
+    } catch {
+      throw new StateError("Frame autoscroll availability check failed", {
+        frameId: intent.frameId,
+      })
+    }
+    if (typeof available !== "boolean") {
+      consumeUnexpectedAdapterResult(available)
+      throw new StateError("Frame autoscroll availability check failed", {
+        frameId: intent.frameId,
+      })
+    }
+    if (!available) return
+
+    let result: unknown
+    try {
+      result = adapter.scrollTo({
+        behavior: intent.behavior,
+        block: intent.alignment,
+        frameId: intent.frameId,
+      })
+    } catch {
+      throw new StateError("Frame autoscroll failed", { frameId: intent.frameId })
+    }
+    if (result !== undefined) {
+      consumeUnexpectedAdapterResult(result)
+      throw new StateError("Frame autoscroll failed", { frameId: intent.frameId })
+    }
+  } catch (error) {
+    const reported = error instanceof Error ? error : new StateError("Frame autoscroll failed")
+    if (!onError) throw reported
+    try {
+      onError({ error: reported, nodeKey })
+    } catch {
+      const reportingError = new StateError("Frame autoscroll error reporting failed", {
+        frameId: intent.frameId,
+      })
+      alreadyReportedRenderErrors.add(reportingError)
+      throw reportingError
+    }
+  }
+}
+
 function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   const { session } = useRenderer()
   const controller = props.frames.get(props.frameId)
@@ -1395,11 +1455,19 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
     const acknowledgement = acknowledgeFrameRender(session, props.node, props.frameId, revision)
     if (pending && !acknowledgement) return
     try {
-      const candidates = consumeFrameAutofocus(controller, state.revision)
-      if (candidates && props.autofocus) {
+      const effects = consumeFrameRenderEffects(controller, state.revision)
+      if (effects?.autoscroll) {
+        applyFrameAutoscroll(
+          props.frameAutoscroll,
+          effects.autoscroll,
+          props.node.key,
+          props.onError,
+        )
+      }
+      if (effects?.autofocus && props.autofocus) {
         applyAutofocus(
           props.autofocus,
-          candidates,
+          effects.autofocus,
           props.node.key,
           props.onError,
           "Frame",
@@ -1415,6 +1483,7 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
     controller,
     coordinationRevision,
     props.autofocus,
+    props.frameAutoscroll,
     props.frameId,
     props.node,
     props.node.key,
@@ -1591,6 +1660,7 @@ function ProtocolElementView(
       context.frames && frameId
         ? createElement(ConnectedFrame, {
             autofocus: context.autofocus,
+            frameAutoscroll: context.frameAutoscroll,
             frameComponent: context.frameComponent,
             frameId,
             frames: context.frames,

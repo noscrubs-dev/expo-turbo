@@ -1,6 +1,7 @@
 import type { Unsubscribe, VisibilityAdapter } from "../adapters"
 import { FrameMissingError, StateError, TargetError } from "./errors"
 import {
+  type FrameRenderEffects,
   registerFrameAutofocusController,
   stageFrameAutofocusReport,
 } from "./frame-autofocus-internal"
@@ -49,6 +50,11 @@ interface PendingFrameAutofocus {
   stateRevision: number
 }
 
+interface PendingFrameAutoscroll {
+  readonly report: FrameResponseReport
+  stateRevision: number
+}
+
 export interface FrameControllerSnapshot {
   readonly busy: boolean
   readonly complete: boolean
@@ -88,6 +94,7 @@ export class FrameController {
   private snapshot!: FrameControllerSnapshot
   private status: FrameControllerStatus = "idle"
   private pendingAutofocus: PendingFrameAutofocus | undefined
+  private pendingAutoscroll: PendingFrameAutoscroll | undefined
   private pendingFrameRender: Readonly<{ epoch: number; prepared: PreparedFrameRender }> | undefined
   private visitFinalization: AbortController | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
@@ -124,9 +131,11 @@ export class FrameController {
       return this.startLoad(source, historyPlan)
     })
     registerFrameAutofocusController(this, {
-      consume: (revision) => this.consumeAutofocus(revision),
-      stage: (report, candidates, publish) => {
-        if (this.stageAutofocus(report, candidates) && publish) this.publish()
+      consume: (revision) => this.consumeFrameRenderEffects(revision),
+      stage: (report, effects, publish) => {
+        const changed = this.stageFrameRenderEffects(report, effects)
+        if (changed && publish) this.publish()
+        return changed
       },
     })
   }
@@ -163,6 +172,7 @@ export class FrameController {
     const revision = this.revision
     this.connected = false
     this.pendingAutofocus = undefined
+    this.pendingAutoscroll = undefined
     this.stopVisibilityObserver()
     this.cancel()
     if (this.revision === revision) this.publish()
@@ -174,15 +184,24 @@ export class FrameController {
     const pendingFrameRender =
       this.pendingFrameRender?.epoch === epoch ? this.pendingFrameRender : undefined
     const requestCanceled = this.loader.cancel(this.frameId, this.requestOwner)
-    if (!requestCanceled && !pendingFrameRender) return
     if (epoch !== this.loadEpoch) return
+    const clearedEffects =
+      this.pendingAutofocus !== undefined || this.pendingAutoscroll !== undefined
+    if (!requestCanceled && !pendingFrameRender && !clearedEffects) return
+    this.pendingAutofocus = undefined
+    this.pendingAutoscroll = undefined
     pendingFrameRender?.prepared.cancel()
     if (this.pendingFrameRender === pendingFrameRender) this.pendingFrameRender = undefined
-    if (!requestCanceled) return
+    if (!requestCanceled) {
+      if (clearedEffects) this.publish()
+      return
+    }
     this.loadEpoch += 1
     if (this.status === "loading") {
       this.needsLoad = true
       this.status = "canceled"
+      this.publish()
+    } else if (clearedEffects) {
       this.publish()
     }
   }
@@ -266,12 +285,24 @@ export class FrameController {
     return () => this.errorListeners.delete(listener)
   }
 
-  private consumeAutofocus(revision: number): FrameResponseReport | undefined {
-    const pending = this.pendingAutofocus
-    if (!this.connected || !pending || pending.stateRevision !== revision) return undefined
-    this.pendingAutofocus = undefined
-    this.publish()
-    return pending.report
+  private consumeFrameRenderEffects(
+    revision: number,
+  ): Readonly<{ autofocus?: FrameResponseReport; autoscroll?: FrameResponseReport }> {
+    const autofocus =
+      this.connected && this.pendingAutofocus?.stateRevision === revision
+        ? this.pendingAutofocus
+        : undefined
+    const autoscroll =
+      this.connected && this.pendingAutoscroll?.stateRevision === revision
+        ? this.pendingAutoscroll
+        : undefined
+    if (autofocus) this.pendingAutofocus = undefined
+    if (autoscroll) this.pendingAutoscroll = undefined
+    if (autofocus || autoscroll) this.publish()
+    return Object.freeze({
+      ...(autofocus ? { autofocus: autofocus.report } : {}),
+      ...(autoscroll ? { autoscroll: autoscroll.report } : {}),
+    })
   }
 
   private get frame(): ProtocolElement {
@@ -312,6 +343,7 @@ export class FrameController {
     const epoch = ++this.loadEpoch
     this.stopVisibilityObserver()
     this.pendingAutofocus = undefined
+    this.pendingAutoscroll = undefined
     this.needsLoad = false
     this.status = "loading"
     this.publish()
@@ -616,17 +648,23 @@ export class FrameController {
     this.visibilityUnsubscribe = undefined
   }
 
-  private stageAutofocus(report: FrameResponseReport, candidates: readonly string[]): boolean {
-    if (candidates.length === 0) {
-      const changed = this.pendingAutofocus !== undefined
-      this.pendingAutofocus = undefined
-      return changed
-    }
-    this.pendingAutofocus = {
-      report,
-      stateRevision: this.revision,
-    }
-    return true
+  private stageFrameRenderEffects(
+    report: FrameResponseReport,
+    effects: FrameRenderEffects,
+  ): boolean {
+    const autofocusChanged =
+      effects.autofocus !== undefined
+        ? this.pendingAutofocus?.report !== report
+        : this.pendingAutofocus !== undefined
+    const autoscrollChanged =
+      effects.autoscroll !== undefined
+        ? this.pendingAutoscroll?.report !== report
+        : this.pendingAutoscroll !== undefined
+    this.pendingAutofocus = effects.autofocus ? { report, stateRevision: this.revision } : undefined
+    this.pendingAutoscroll = effects.autoscroll
+      ? { report, stateRevision: this.revision }
+      : undefined
+    return autofocusChanged || autoscrollChanged
   }
 
   private createSnapshot(): FrameControllerSnapshot {
@@ -667,6 +705,7 @@ export class FrameController {
   private publish(): void {
     this.revision += 1
     if (this.pendingAutofocus) this.pendingAutofocus.stateRevision = this.revision
+    if (this.pendingAutoscroll) this.pendingAutoscroll.stateRevision = this.revision
     this.snapshot = this.createSnapshot()
     for (const listener of this.listeners) listener()
   }

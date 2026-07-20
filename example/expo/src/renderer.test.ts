@@ -20,6 +20,7 @@ import {
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
   type FormSubmissionAnnouncementEvent,
+  type FrameAutoscrollAdapter,
   type NavigationAdapter,
   type TurboRequest,
   type TurboResponse,
@@ -162,6 +163,7 @@ function render(
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
+    frameAutoscroll?: FrameAutoscrollAdapter
     formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     frames?: FrameControllerCollection
@@ -7100,10 +7102,10 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  function loadedAutofocusFrame(xml: string) {
+  function loadedAutofocusFrame(xml: string, attributes = "") {
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="frame" src="/replacement"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        `<Gallery><turbo-frame id="frame" src="/replacement" ${attributes}><DemoText>Before</DemoText></turbo-frame></Gallery>`,
         { url: "https://example.test/document" },
       ),
     )
@@ -7502,6 +7504,115 @@ describe("React protocol renderer", () => {
     }
   })
 
+  test("uses response autoscroll presence with the mounted Frame settings exactly once", async () => {
+    const { frames, loaded, session } = loadedAutofocusFrame(
+      '<turbo-frame id="frame" autoscroll="" data-autoscroll-block="start" data-autoscroll-behavior="auto"><DemoText>After</DemoText></turbo-frame>',
+      'data-autoscroll-block="center" data-autoscroll-behavior="smooth"',
+    )
+    await loaded
+    const requests: string[] = []
+    const renderer = render(session, registryWithCounters(), {
+      frameAutoscroll: {
+        canScroll: (frameId) => frameId === "frame",
+        scrollTo: ({ behavior, block, frameId }) => {
+          requests.push(`${frameId}:${block}:${behavior}`)
+        },
+      },
+      frames,
+    })
+
+    expect(requests).toEqual(["frame:center:smooth"])
+
+    act(() => renderer.unmount())
+  })
+
+  test("consumes unavailable Frame autoscroll as a no-op at the committed render boundary", async () => {
+    const { frames, loaded, session } = loadedAutofocusFrame(
+      '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
+      'autoscroll=""',
+    )
+    await loaded
+    const requests: string[] = []
+    const registry = registryWithCounters()
+    const renderer = render(session, registry, {
+      frameAutoscroll: {
+        canScroll: () => false,
+        scrollTo: ({ frameId }) => {
+          requests.push(frameId)
+        },
+      },
+      frames,
+    })
+
+    act(() => {
+      renderer.update(
+        createElement(
+          ExpoTurboProvider,
+          {
+            frameAutoscroll: {
+              canScroll: () => true,
+              scrollTo: ({ frameId }) => {
+                requests.push(frameId)
+              },
+            },
+            frames,
+            registry,
+            session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      )
+    })
+
+    expect(requests).toEqual([])
+    act(() => renderer.unmount())
+  })
+
+  test("redacts Frame autoscroll adapter failures without rolling back committed children", async () => {
+    const rejectedPromise = Promise.reject(new Error("secret promise failure"))
+    for (const frameAutoscroll of [
+      {
+        canScroll() {
+          throw new Error("secret availability failure")
+        },
+        scrollTo: () => undefined,
+      },
+      {
+        canScroll: (() => "secret nonboolean result") as unknown as () => boolean,
+        scrollTo: () => undefined,
+      },
+      {
+        canScroll: () => true,
+        scrollTo() {
+          throw new Error("secret scroll failure")
+        },
+      },
+      {
+        canScroll: () => true,
+        scrollTo: (() => rejectedPromise) as unknown as () => void,
+      },
+    ] satisfies FrameAutoscrollAdapter[]) {
+      const { frames, loaded, session } = loadedAutofocusFrame(
+        '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
+        'autoscroll=""',
+      )
+      await loaded
+      const errors: ExpoTurboRenderError[] = []
+      const renderer = render(session, registryWithCounters(), {
+        frameAutoscroll,
+        frames,
+        onError: (event) => errors.push(event),
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+      act(() => renderer.unmount())
+    }
+  })
+
   test("reports redacted autofocus adapter contract failures after retaining committed children", async () => {
     const rejectedThenable = {
       then(_resolve: (value: unknown) => void, reject: (error: Error) => void) {
@@ -7626,7 +7737,7 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="frame" src="/frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        '<Gallery><turbo-frame id="frame" src="/frame" autoscroll="" data-autoscroll-block="center" data-autoscroll-behavior="smooth"><DemoText>Before</DemoText></turbo-frame></Gallery>',
         { url: "https://example.test/gallery" },
       ),
     )
@@ -7656,6 +7767,12 @@ describe("React protocol renderer", () => {
           events.push(`focus:${nodeKey}`)
         },
       },
+      frameAutoscroll: {
+        canScroll: (frameId) => frameId === "frame",
+        scrollTo: ({ behavior, block, frameId }) => {
+          events.push(`scroll:${frameId}:${block}:${behavior}`)
+        },
+      },
       frames,
     })
     const controller = frames.get("frame")
@@ -7674,7 +7791,13 @@ describe("React protocol renderer", () => {
     })
     await controller.loaded
 
-    expect(events).toEqual(["child-layout", "focus:id:focus", "render", "load"])
+    expect(events).toEqual([
+      "child-layout",
+      "scroll:frame:center:smooth",
+      "focus:id:focus",
+      "render",
+      "load",
+    ])
     expect(controller.state.status).toBe("completed")
     act(() => renderer.unmount())
   })

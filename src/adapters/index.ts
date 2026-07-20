@@ -107,6 +107,23 @@ export interface ScrollAdapter {
   scrollTo(id: string, alignment: ScrollAlignment): Promise<void> | void
 }
 
+export type FrameAutoscrollBehavior = "auto" | "smooth"
+
+export interface FrameAutoscrollRequest {
+  readonly behavior: FrameAutoscrollBehavior
+  readonly block: ScrollAlignment
+  readonly frameId: string
+}
+
+/**
+ * Host-owned scrolling for a mounted Frame boundary. A smooth request starts
+ * here but does not delay subsequent autofocus or Frame lifecycle work.
+ */
+export interface FrameAutoscrollAdapter {
+  canScroll(frameId: string): boolean
+  scrollTo(request: FrameAutoscrollRequest): void
+}
+
 export interface StorageAdapter {
   delete(key: string): Promise<void>
   get(key: string): Promise<string | undefined>
@@ -144,6 +161,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly confirmation?: FormConfirmationAdapter
   readonly fetch: FetchAdapter
   readonly focus: FocusAdapter
+  readonly frameAutoscroll?: FrameAutoscrollAdapter
   readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
   readonly inspector?: ProtocolInspectorAdapter
   readonly lifecycle: LifecycleAdapter

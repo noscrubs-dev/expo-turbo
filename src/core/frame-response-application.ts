@@ -1,3 +1,4 @@
+import type { FrameAutoscrollBehavior, ScrollAlignment } from "../adapters"
 import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
 import { FrameMissingError, StateError, TargetError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
@@ -53,7 +54,29 @@ export interface CommittedFrameResponse {
   readonly streams: StreamDispatchReport
 }
 
+/** A one-shot native equivalent of Turbo Frame's post-render autoscroll request. */
+export interface FrameAutoscrollIntent {
+  readonly alignment: ScrollAlignment
+  readonly behavior: FrameAutoscrollBehavior
+  readonly frameId: string
+}
+
 const preparedFrameMutations = new WeakMap<PreparedFrameMutation, PreparedFrameMutationState>()
+
+function hasAttribute(element: ProtocolElement, name: string): boolean {
+  return element.attributes.some((attribute) => attribute.name === name)
+}
+
+function autoscrollAlignment(frame: ProtocolElement): ScrollAlignment {
+  const value = attributeValue(frame, "data-autoscroll-block")
+  return value === "start" || value === "center" || value === "nearest" || value === "end"
+    ? value
+    : "end"
+}
+
+function autoscrollBehavior(frame: ProtocolElement): FrameAutoscrollBehavior {
+  return attributeValue(frame, "data-autoscroll-behavior") === "smooth" ? "smooth" : "auto"
+}
 
 function embeddedStreams(frame: ProtocolElement): ProtocolElement[] {
   const streams: ProtocolElement[] = []
@@ -77,6 +100,32 @@ export function activeFrameAutofocusCandidates(
   const frameId = attributeValue(frame, "id")
   if (!frameId || session.tree.getElementById(frameId) !== frame) return Object.freeze([])
   return applicationAutofocusCandidates(frame)
+}
+
+/**
+ * Captures the native target after matching Frame children and embedded Streams
+ * have committed. Turbo uses the mounted Frame's block/behavior settings while
+ * either the mounted or incoming Frame can request the one-shot scroll.
+ */
+export function frameAutoscrollIntent(
+  session: DocumentSession,
+  frame: ProtocolElement,
+  prepared: PreparedFrameResponse,
+): FrameAutoscrollIntent | undefined {
+  const frameId = attributeValue(frame, "id")
+  if (
+    !frameId ||
+    prepared.frameId !== frameId ||
+    session.tree.getElementById(frameId) !== frame ||
+    (!hasAttribute(frame, "autoscroll") && !hasAttribute(prepared.responseFrame, "autoscroll"))
+  ) {
+    return undefined
+  }
+  return Object.freeze({
+    alignment: autoscrollAlignment(frame),
+    behavior: autoscrollBehavior(frame),
+    frameId,
+  })
 }
 
 export function prepareFrameResponse(

@@ -112,6 +112,7 @@ import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
+  frameAutoscrollIntent,
   type PreparedFrameResponse,
   prepareFrameMutation,
   prepareFrameResponseTree,
@@ -1282,6 +1283,7 @@ export class FormSubmissionController {
           this.session,
           activeFrame,
           activeFrameAutofocusCandidates(this.session, activeFrame),
+          frameAutoscrollIntent(this.session, activeFrame, preparedFrame),
         )
         if (this.ownership.retains(lease) && this.options.frameControllers) {
           notifyMountedFrameAutofocus(this.options.frameControllers, frame)
