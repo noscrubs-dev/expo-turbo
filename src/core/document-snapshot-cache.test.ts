@@ -13,13 +13,19 @@ function snapshot(label: string, url: string = `https://example.test/${label}`) 
       <DemoCard id="temporary" data-turbo-temporary="false">
         <DemoText id="temporary-child">Discarded</DemoText>
       </DemoCard>
+      <DemoCard id="deprecated-temporary" data-turbo-cache="false">
+        <DemoText id="deprecated-temporary-child">Discarded deprecated</DemoText>
+      </DemoCard>
+      <DemoText id="deprecated-case" data-turbo-cache="False">Kept case</DemoText>
+      <DemoText id="deprecated-whitespace" data-turbo-cache=" false ">Kept whitespace</DemoText>
+      <DemoText id="deprecated-empty" data-turbo-cache="">Kept empty</DemoText>
     </Gallery>`,
     { url },
   )
 }
 
 describe("document snapshot cache", () => {
-  test("stores and restores independent trees while pruning temporary subtrees", () => {
+  test("stores and restores independent trees while pruning cache-only temporary subtrees", () => {
     const cache = new DocumentSnapshotCache()
     const source = snapshot("first", "https://example.test/gallery?filter=active#source")
     const sourceKept = source.getElementById("kept")
@@ -34,7 +40,15 @@ describe("document snapshot cache", () => {
     expect(first.document).not.toBe(source.document)
     expect(first.getElementById("temporary")).toBeUndefined()
     expect(first.getElementById("temporary-child")).toBeUndefined()
+    expect(first.getElementById("deprecated-temporary")).toBeUndefined()
+    expect(first.getElementById("deprecated-temporary-child")).toBeUndefined()
+    expect(first.getElementById("deprecated-case")).toBeDefined()
+    expect(first.getElementById("deprecated-whitespace")).toBeDefined()
+    expect(first.getElementById("deprecated-empty")).toBeDefined()
     expect(source.getElementById("temporary")).toBeDefined()
+    expect(source.getElementById("deprecated-temporary")).toBeDefined()
+    expect(source.getElementById("deprecated-temporary-child")).toBeDefined()
+    expect(source.clone().getElementById("deprecated-temporary")).toBeDefined()
     expect(attributeValue(firstKept, "data-label")).toBe("first")
 
     first.setAttribute(firstKept, "data-label", "restored-mutated")
