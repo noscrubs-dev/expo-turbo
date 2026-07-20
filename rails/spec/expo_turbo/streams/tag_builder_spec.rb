@@ -4,6 +4,7 @@ require "action_controller/api"
 require "fileutils"
 require "tmpdir"
 require "spec_helper"
+require "expo_turbo/rails/testing"
 
 RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
   let(:controller_class) do
@@ -52,6 +53,17 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
 
     expect(rendered.to_s)
       .to eq('<turbo-stream action="update" target="message"><template><DemoText id="captured">Captured</DemoText></template></turbo-stream>')
+  end
+
+  it "emits structurally parseable XML Stream template payloads" do
+    document = ExpoTurbo::Rails::Testing.parse_stream_fragment(
+      stream.append("items", '<Demo:Item xmlns:Demo="urn:expo-demo" id="item-1">Saved</Demo:Item>').to_s
+    )
+    element = document.at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(element["action"]).to eq("append")
+    expect(element["target"]).to eq("items")
+    expect(element.at_xpath("./template/Demo:Item", "Demo" => "urn:expo-demo")&.text).to eq("Saved")
   end
 
   it "uses keyword content as template markup for every template-bearing action" do

@@ -107,6 +107,22 @@ All three operations use the same normalized streamables and append the fixed `:
 
 `broadcast_expo_turbo_stream_to` sends immediately to the host's Action Cable pubsub. `broadcast_expo_turbo_stream_later_to` uses the host-configured Active Job adapter and enqueues `ExpoTurbo::Rails::Streams::BroadcastJob` with only the resolved stream-name string and already-rendered payload; it does not serialize a host model or render a template when the job runs. The job disables Active Job argument logging. The host owns Action Cable configuration (including its logger, adapter, and any mounted client endpoint) plus its Active Job adapter. This API does not establish a client connection, prove receipt, provide replay, issue credentials, or authorize protected resources. Do not use this public-stream API for sensitive XML; protected Channels and grants remain later work.
 
+## Structural XML test helpers
+
+Host tests can opt into strict structural XML assertions without relying on raw-string matching:
+
+```ruby
+require "expo_turbo/rails/testing"
+
+document = ExpoTurbo::Rails::Testing.parse_document(response.body)
+streams = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+  .xpath("/expo-turbo-test-root/turbo-stream")
+```
+
+`parse_document` returns a strict `Nokogiri::XML::Document` for one XML document. `parse_stream_fragment` returns a document with a private synthetic root so one or more sibling `<turbo-stream>` elements retain their authored order. Both accept only nonblank UTF-8 input (including binary HTTP bytes that validate as UTF-8), reject recovery parsing, DTDs, entity declarations, processing instructions, malformed namespaces, and non-Stream top-level fragment content, and never make network requests.
+
+This entrypoint is deliberately opt-in: `require "expo_turbo/rails"` does not load Nokogiri. It is a test-support parser, not production template admission or whole-response protocol validation; hosts still own their XML view validation and semantic assertions.
+
 Run the gem against both supported server pins with:
 
 ```sh

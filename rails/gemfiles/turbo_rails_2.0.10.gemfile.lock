@@ -4,6 +4,7 @@ PATH
     expo_turbo-rails (0.1.0)
       actioncable (>= 7.2, < 8.2)
       activejob (>= 7.2, < 8.2)
+      nokogiri (>= 1.15.7, < 2)
       railties (>= 7.2, < 8.2)
       turbo-rails (>= 2.0.10, < 3)
 
