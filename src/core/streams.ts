@@ -111,11 +111,11 @@ interface StandaloneStreamAutofocusCandidate {
   readonly key: string
 }
 
-function hasPermanentMorphPayload(nodes: readonly ProtocolNode[]): boolean {
+function hasPermanentStreamPayload(nodes: readonly ProtocolNode[]): boolean {
   for (const node of nodes) {
     if (!isElement(node)) continue
     if (attributeValue(node, "data-turbo-permanent") !== undefined) return true
-    if (hasPermanentMorphPayload(node.children)) return true
+    if (hasPermanentStreamPayload(node.children)) return true
   }
   return false
 }
@@ -124,19 +124,19 @@ function standaloneStreamAutofocusCandidate(
   stream: ProtocolElement,
   action: string,
 ): StandaloneStreamAutofocusCandidate | undefined {
-  const morph = attributeValue(stream, "method") === "morph"
+  const morph =
+    (action === "replace" || action === "update") && attributeValue(stream, "method") === "morph"
   if (
     !STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action) ||
-    attributeValue(stream, "targets") !== undefined ||
-    (morph && action !== "replace" && action !== "update")
+    attributeValue(stream, "targets") !== undefined
   ) {
     return undefined
   }
   try {
     const payload = templatePayload(stream, action)
-    // Native morph does not reproduce Turbo's permanent-node preprocessing, so
-    // incoming permanent attributes cannot safely establish a focus intent.
-    if (morph && hasPermanentMorphPayload(payload)) return undefined
+    // Native standalone autofocus does not reproduce Turbo's permanent-node
+    // preprocessing, so incoming permanent attributes cannot establish focus.
+    if (hasPermanentStreamPayload(payload)) return undefined
     const key = applicationAutofocusCandidatesFromNodes(payload)[0]
     return key ? Object.freeze({ allowRetainedIdentity: morph, key }) : undefined
   } catch {

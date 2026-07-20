@@ -7718,7 +7718,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("focuses the first mounted candidate once after a standalone Stream message", () => {
+  test("focuses the first mounted candidate once after an inert insertion morph Stream message", () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     let focusedId: string | undefined
     let activeFocusChecks = 0
@@ -7738,7 +7738,7 @@ describe("React protocol renderer", () => {
     act(() => {
       dispatchTurboStreamFragment(
         fixture.session,
-        `<turbo-stream action="append" target="gallery"><template>
+        `<turbo-stream action="append" target="gallery" method="morph"><template>
           <DocumentFocusTarget id="first" focus-key="first" focusable="" autofocus="" />
         </template></turbo-stream>
         <turbo-stream action="append" target="gallery"><template>
