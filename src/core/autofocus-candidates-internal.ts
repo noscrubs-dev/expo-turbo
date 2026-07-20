@@ -1,6 +1,8 @@
 import { attributeValue, isElement, type ProtocolNode, type ProtocolParentNode } from "./tree"
 
-export function applicationAutofocusCandidates(root: ProtocolParentNode): readonly string[] {
+export function applicationAutofocusCandidatesFromNodes(
+  nodes: readonly ProtocolNode[],
+): readonly string[] {
   const candidates: string[] = []
   const visit = (node: ProtocolNode) => {
     if (
@@ -15,6 +17,10 @@ export function applicationAutofocusCandidates(root: ProtocolParentNode): readon
     if (id && attributeValue(node, "autofocus") !== undefined) candidates.push(node.key)
     for (const child of node.children) visit(child)
   }
-  for (const child of root.children) visit(child)
+  for (const node of nodes) visit(node)
   return Object.freeze(candidates)
+}
+
+export function applicationAutofocusCandidates(root: ProtocolParentNode): readonly string[] {
+  return applicationAutofocusCandidatesFromNodes(root.children)
 }

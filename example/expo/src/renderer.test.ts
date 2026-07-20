@@ -7671,7 +7671,7 @@ describe("React protocol renderer", () => {
     act(() => first?.unmount())
   })
 
-  test("consumes missing document adapters and focuses each whole-tree generation, not Streams", () => {
+  test("consumes missing document adapters and focuses each whole-tree generation, not standalone Streams", () => {
     const fixture = documentAutofocusFixture(
       '<Gallery id="gallery"><DocumentFocusTarget id="initial" focus-key="initial" focusable="" autofocus="" /></Gallery>',
     )
@@ -7714,6 +7714,188 @@ describe("React protocol renderer", () => {
       fixture.session.replaceTree(fixture.session.tree)
     })
     expect(fixture.focused).toEqual(["id:replacement", "id:replacement"])
+
+    act(() => renderer.unmount())
+  })
+
+  test("focuses the first mounted candidate once after a standalone Stream message", () => {
+    const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
+    let focusedId: string | undefined
+    let activeFocusChecks = 0
+    const autofocus: AutofocusAdapter = {
+      ...fixture.autofocus,
+      focus: (nodeKey) => {
+        focusedId = nodeKey
+        fixture.focused.push(nodeKey)
+      },
+      getFocusedId: () => {
+        activeFocusChecks += 1
+        return focusedId
+      },
+    }
+    const renderer = render(fixture.session, fixture.registry, { autofocus, strict: true })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        `<turbo-stream action="append" target="gallery"><template>
+          <DocumentFocusTarget id="first" focus-key="first" focusable="" autofocus="" />
+        </template></turbo-stream>
+        <turbo-stream action="append" target="gallery"><template>
+          <DocumentFocusTarget id="later" focus-key="later" focusable="" autofocus="" />
+        </template></turbo-stream>`,
+      )
+    })
+
+    expect(fixture.mounted).toEqual(new Set(["id:first", "id:later"]))
+    expect(activeFocusChecks).toBe(1)
+    expect(fixture.focused).toEqual(["id:first"])
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="preserved" focus-key="preserved" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+    })
+    expect(activeFocusChecks).toBe(2)
+    expect(fixture.focused).toEqual(["id:first"])
+
+    act(() => renderer.unmount())
+  })
+
+  test("preserves the first standalone Stream autofocus intent across a batched later message", () => {
+    const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
+    let focusedId: string | undefined
+    const autofocus: AutofocusAdapter = {
+      ...fixture.autofocus,
+      focus: (nodeKey) => {
+        focusedId = nodeKey
+        fixture.focused.push(nodeKey)
+      },
+      getFocusedId: () => focusedId,
+    }
+    const renderer = render(fixture.session, fixture.registry, { autofocus })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="first" focus-key="first" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="unrelated" focus-key="unrelated" focusable="" /></template></turbo-stream>',
+      )
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="later" focus-key="later" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+    })
+
+    expect(fixture.mounted).toEqual(new Set(["id:first", "id:later", "id:unrelated"]))
+    expect(fixture.focused).toEqual(["id:first"])
+
+    act(() => renderer.unmount())
+  })
+
+  test("consumes stale standalone Stream autofocus before a later same-id replacement", () => {
+    const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
+    const autofocus: AutofocusAdapter = {
+      ...fixture.autofocus,
+      getFocusedId: () => undefined,
+    }
+    const renderer = render(fixture.session, fixture.registry, { autofocus })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="replace" target="candidate"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" /></template></turbo-stream>',
+      )
+    })
+
+    expect(fixture.mounted).toEqual(new Set(["id:candidate"]))
+    expect(fixture.focused).toEqual([])
+
+    act(() => renderer.unmount())
+  })
+
+  test("reports redacted standalone Stream autofocus snapshot failures without rolling back", async () => {
+    for (const autofocus of [
+      {
+        canFocus: () => true,
+        focus: () => undefined,
+        getFocusedId() {
+          throw new Error("secret stream active-focus failure")
+        },
+      },
+      {
+        canFocus: () => true,
+        focus: () => undefined,
+        getFocusedId: (() =>
+          Promise.reject(new Error("secret stream active-focus thenable"))) as unknown as () =>
+          | string
+          | undefined,
+      },
+    ] satisfies AutofocusAdapter[]) {
+      const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
+      const errors: ExpoTurboRenderError[] = []
+      const renderer = render(fixture.session, fixture.registry, { autofocus, onError: (event) => errors.push(event) })
+
+      await act(async () => {
+        dispatchTurboStreamFragment(
+          fixture.session,
+          '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
+        )
+        await Promise.resolve()
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(fixture.session.tree.getElementById("candidate")).toBeDefined()
+
+      act(() => renderer.unmount())
+    }
+  })
+
+  test("reports a throwing standalone Stream autofocus observer once", () => {
+    const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
+    const fallbacks: ExpoTurboRenderError[] = []
+    let reports = 0
+    const renderer = render(fixture.session, fixture.registry, {
+      autofocus: {
+        canFocus() {
+          throw new Error("secret stream adapter failure")
+        },
+        focus: () => undefined,
+        getFocusedId: () => undefined,
+      },
+      onError() {
+        reports += 1
+        throw new Error("secret stream observer failure")
+      },
+      renderError: (event) => {
+        fallbacks.push(event)
+        return createElement("render-error", { message: event.error.message })
+      },
+    })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+    })
+
+    expect(reports).toBe(1)
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]?.error).toBeInstanceOf(StateError)
+    expect(String(fallbacks[0]?.error)).toContain("Stream autofocus error reporting failed")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("secret")
+    expect(fixture.session.tree.getElementById("candidate")).toBeDefined()
 
     act(() => renderer.unmount())
   })
