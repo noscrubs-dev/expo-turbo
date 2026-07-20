@@ -21,6 +21,7 @@ Gem::Specification.new do |spec|
   spec.files = Dir.chdir(__dir__) { Dir["lib/**/*", "LICENSE.txt", "README.md"] }
   spec.require_paths = ["lib"]
 
+  spec.add_dependency "actioncable", ">= 7.2", "< 8.2"
   spec.add_dependency "railties", ">= 7.2", "< 8.2"
   spec.add_dependency "turbo-rails", ">= 2.0.10", "< 3"
 end

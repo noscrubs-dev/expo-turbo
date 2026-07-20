@@ -1,8 +1,8 @@
 # expo_turbo-rails
 
-The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents, matching native Frame responses, and standard Turbo Stream response fragments. The Engine remains route-free.
+The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents, matching native Frame responses, standard Turbo Stream response fragments, and synchronous public Stream broadcasts. The Engine remains route-free.
 
-The package does not yet validate a whole XML document's Frame IDs, provide broadcasts/jobs/channels, or make a compatibility claim.
+The package does not yet validate a whole XML document's Frame IDs, provide async jobs or protected Channels, or make a compatibility claim.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -61,7 +61,23 @@ def update
 end
 ```
 
-`partial: "notices/notice"` resolves only `app/views/expo_turbo/notices/_notice.xml.erb`; it never searches normal host view paths or falls back to `.html.erb`. Raw content and captured blocks are inserted as XML template payloads, so hosts must provide valid XML. The response uses `text/vnd.turbo-stream.html` and keeps multiple Stream actions as normal siblings without a custom wrapper. Record inference, layouts, broadcasts, jobs, and channels remain outside this API.
+`partial: "notices/notice"` resolves only `app/views/expo_turbo/notices/_notice.xml.erb`; it never searches normal host view paths or falls back to `.html.erb`. Raw content and captured blocks are inserted as XML template payloads, so hosts must provide valid XML. The response uses `text/vnd.turbo-stream.html` and keeps multiple Stream actions as normal siblings without a custom wrapper. Record inference and layouts remain outside this API.
+
+For a public Action Cable stream, render the source inside an Expo Turbo XML document and broadcast pre-rendered Stream markup from an explicit controller/view context:
+
+```erb
+<%= expo_turbo_stream_from @room, id: "room-stream" %>
+```
+
+```ruby
+broadcast_expo_turbo_stream_to @room do |stream|
+  stream.append("messages", partial: "messages/message", locals: {message: @message})
+end
+```
+
+Both operations use the same normalized streamables and append the fixed `:expo` suffix. For example, the literal streamables `:room, "42"` map to `room:42:expo`, keeping Expo XML distinct from the browser HTML stream `room:42`. `expo_turbo_stream_from` emits the standard `Turbo::StreamsChannel` descriptor with a matching signed stream name and reserves its channel/signature attributes. `ExpoTurbo::Rails::Streams.broadcast_to(*streamables, content:)` is available when the host already owns a rendered nonblank UTF-8 Stream payload; whole-payload XML validation remains separate work.
+
+Broadcasting is synchronous server/pubsub enqueue only. The host owns Action Cable configuration (including its logger, adapter, and any mounted client endpoint). This API does not establish a client connection, prove receipt, provide replay, issue credentials, authorize protected resources, or enqueue a job. Do not use this public-stream API for sensitive XML; protected Channels and grants remain later work.
 
 Run the gem against both supported server pins with:
 
