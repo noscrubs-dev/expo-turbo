@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "expo_turbo/rails/testing"
 
 RSpec.describe "standalone demo host" do
   it "boots the sibling gem without adding routes" do
@@ -17,7 +18,7 @@ RSpec.describe "standalone demo host" do
     host! "localhost"
     get "/api/expo_turbo/demo/document"
 
-    document = Nokogiri::XML(response.body) { |config| config.strict }
+    document = ExpoTurbo::Rails::Testing.parse_document(response.body)
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
@@ -34,8 +35,8 @@ RSpec.describe "standalone demo host" do
     host! "localhost"
     get "/api/expo_turbo/demo/stream"
 
-    fragment = Nokogiri::XML("<root>#{response.body}</root>") { |config| config.strict }
-    streams = fragment.xpath("/root/turbo-stream")
+    fragment = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+    streams = fragment.xpath("/expo-turbo-test-root/turbo-stream")
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
@@ -53,7 +54,12 @@ RSpec.describe "standalone demo host" do
     ExpoTurbo::Rails::Streams.broadcast_to("demo-stream", content: payload)
 
     messages = adapter.broadcasts("demo-stream:expo").map { |message| ActiveSupport::JSON.decode(message) }
-    expect(messages).to eq([payload])
+    stream = ExpoTurbo::Rails::Testing.parse_stream_fragment(messages.fetch(0)).at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(messages).to have_attributes(size: 1)
+    expect(stream["action"]).to eq("update")
+    expect(stream["target"]).to eq("demo-stream-message")
+    expect(stream.at_xpath("./template/Demo:Text", "Demo" => "urn:expo-demo")&.text).to eq("Broadcast")
     expect(adapter.broadcasts("demo-stream")).to be_empty
   ensure
     adapter&.clear
@@ -63,7 +69,7 @@ RSpec.describe "standalone demo host" do
     host! "localhost"
     get "/api/expo_turbo/demo/frame", headers: {"Turbo-Frame" => "demo-frame"}
 
-    frame = Nokogiri::XML(response.body) { |config| config.strict }.root
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
@@ -79,7 +85,7 @@ RSpec.describe "standalone demo host" do
     host! "localhost"
     get "/api/expo_turbo/demo/frame?state=invalid", headers: {"Turbo-Frame" => "demo-frame"}
 
-    frame = Nokogiri::XML(response.body) { |config| config.strict }.root
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
