@@ -9,7 +9,11 @@ import {
   type StreamRenderContext,
   streamLifecycleOption,
 } from "./stream-lifecycle"
-import { dispatchGuardedTurboStreamElements, dispatchTurboStreamFragment } from "./streams"
+import {
+  dispatchEmbeddedTurboStreamElements,
+  dispatchGuardedTurboStreamElements,
+  dispatchTurboStreamFragment,
+} from "./streams"
 import { attributeValue, isElement, type ProtocolElement } from "./tree"
 
 function session(xml: string): DocumentSession {
@@ -40,6 +44,14 @@ describe("Stream lifecycle", () => {
       if (event.detail.index === 1) event.preventDefault()
       return undefined
     })
+    lifecycle.subscribe("stream-morph", (event) => {
+      order.push(`morph:${event.detail.index}:${event.detail.action}:${event.detail.targetId}`)
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      expect(event.detail).toEqual({ action: "update", index: 0, targetId: "panel" })
+      expect(document.tree.getElementById("new")).toBeDefined()
+      return undefined
+    })
     lifecycle.subscribe("stream-action", (event) => {
       order.push(`action:${event.detail.report.index}:${event.detail.report.status}`)
       expect(Object.isFrozen(event)).toBe(true)
@@ -54,7 +66,7 @@ describe("Stream lifecycle", () => {
 
     const report = dispatchTurboStreamFragment(
       document,
-      `<turbo-stream action="update" target="panel"><template><New id="new"/></template></turbo-stream>
+      `<turbo-stream action="update" target="panel" method="morph"><template><New id="new"/></template></turbo-stream>
        <turbo-stream action="append" targets="["><template><Never /></template></turbo-stream>
        <turbo-stream action="remove" target="missing" />
        <turbo-stream action="unknown" target="keep" />
@@ -73,6 +85,7 @@ describe("Stream lifecycle", () => {
       "before:0:update",
       "render:before",
       "render:after",
+      "morph:0:update:panel",
       "action:0:applied",
       "before:1:append",
       "action:1:canceled",
@@ -86,6 +99,115 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("new")).toBeDefined()
     expect(document.tree.getElementById("keep")).toBeDefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("notifies only successful default standalone Stream morphs", () => {
+    const document = session(
+      `<Gallery>
+        <Replace id="replace"><Old id="replace-old"/></Replace>
+        <Update id="update"><Old id="update-old"/></Update>
+        <Plain id="plain"><Old id="plain-old"/></Plain>
+        <Canceled id="canceled"><Old id="canceled-old"/></Canceled>
+        <Custom id="custom"/>
+      </Gallery>`,
+    )
+    const lifecycle = new StreamLifecycle()
+    const order: string[] = []
+    lifecycle.subscribe("before-stream-render", (event) => {
+      if (event.detail.index === 3) event.preventDefault()
+      if (event.detail.index === 4) {
+        event.detail.render = (context) => {
+          const custom = context.session.tree.getElementById("custom")
+          if (!custom) throw new Error("custom target is missing")
+          context.session.setAttribute(custom.key, "data-renderer", "replacement")
+          return Object.freeze({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+        }
+      }
+      return undefined
+    })
+    lifecycle.subscribe("stream-morph", (event) => {
+      order.push(`morph:${event.detail.index}:${event.detail.action}:${event.detail.targetId}`)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      if (event.detail.targetId === "replace") {
+        expect(document.tree.getElementById("replace-fresh")).toBeDefined()
+      }
+      if (event.detail.targetId === "update") {
+        expect(document.tree.getElementById("update-fresh")).toBeDefined()
+      }
+      return undefined
+    })
+    lifecycle.subscribe("stream-action", (event) => {
+      order.push(`action:${event.detail.report.index}:${event.detail.report.status}`)
+      return undefined
+    })
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="replace" target="replace" method="morph"><template><Replace id="replace"><Fresh id="replace-fresh"/></Replace></template></turbo-stream>
+       <turbo-stream action="update" target="update" method="morph"><template><Fresh id="update-fresh"/></template></turbo-stream>
+       <turbo-stream action="update" target="plain" method="replace"><template><Fresh id="plain-fresh"/></template></turbo-stream>
+       <turbo-stream action="update" target="canceled" method="morph"><template><Fresh id="canceled-fresh"/></template></turbo-stream>
+       <turbo-stream action="update" target="custom" method="morph"><template><Fresh id="custom-fresh"/></template></turbo-stream>
+       <turbo-stream action="update" targets="[id]" method="morph"><template><Fresh id="selector-fresh"/></template></turbo-stream>
+       <turbo-stream action="update" target="missing" method="morph"><template><Fresh id="missing-fresh"/></template></turbo-stream>`,
+      { streamLifecycle: lifecycle },
+    )
+
+    expect(report.actions.map((action) => action.status)).toEqual([
+      "applied",
+      "applied",
+      "applied",
+      "canceled",
+      "applied",
+      "error",
+      "noop",
+    ])
+    expect(order).toEqual([
+      "morph:0:replace:replace",
+      "action:0:applied",
+      "morph:1:update:update",
+      "action:1:applied",
+      "action:2:applied",
+      "action:3:canceled",
+      "action:4:applied",
+      "action:5:error",
+      "action:6:noop",
+    ])
+    expect(document.tree.getElementById("plain-fresh")).toBeDefined()
+    expect(document.tree.getElementById("canceled-fresh")).toBeUndefined()
+    expect(document.tree.getElementById("custom-fresh")).toBeUndefined()
+    expect(
+      attributeValue(document.tree.getElementById("custom") as ProtocolElement, "data-renderer"),
+    ).toBe("replacement")
+  })
+
+  test("keeps Stream morph notifications out of embedded Stream rendering", () => {
+    const document = session('<Gallery><Panel id="panel"><Old/></Panel></Gallery>')
+    const lifecycle = new StreamLifecycle()
+    const morphs: string[] = []
+    const actions: string[] = []
+    lifecycle.subscribe("stream-morph", (event) => {
+      morphs.push(event.detail.targetId)
+      return undefined
+    })
+    lifecycle.subscribe("stream-action", (event) => {
+      actions.push(event.detail.report.status)
+      return undefined
+    })
+    const streams = parseTurboStreamFragment(
+      '<turbo-stream action="update" target="panel" method="morph"><template><Fresh id="fresh"/></template></turbo-stream>',
+    ).document.children.filter(
+      (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
+    )
+
+    const report = dispatchEmbeddedTurboStreamElements(document, streams, {
+      streamLifecycle: lifecycle,
+    })
+
+    expect(report.actions.map((action) => action.status)).toEqual(["applied"])
+    expect(document.tree.getElementById("fresh")).toBeDefined()
+    expect(morphs).toEqual([])
+    expect(actions).toEqual(["applied"])
   })
 
   test("keeps cancellation irreversible across later listeners", () => {
@@ -373,6 +495,42 @@ describe("Stream lifecycle", () => {
     expect(observerErrors).toHaveLength(2)
     expect(observerErrors[0]?.message).toBe("Stream action notification observers failed")
     expect(observerErrors[0]?.errors[0]?.message).toBe("Stream-action listener failed")
+  })
+
+  test("isolates Stream morph observer faults before Stream action notification", () => {
+    const document = session('<Gallery><Panel id="panel"><Old/></Panel></Gallery>')
+    const observerErrors: AggregateError[] = []
+    const lifecycle = new StreamLifecycle({
+      onObserverError(error) {
+        observerErrors.push(error)
+        return undefined
+      },
+    })
+    const calls: string[] = []
+    lifecycle.subscribe("stream-morph", () => {
+      calls.push("first")
+      throw new Error("secret observer failure")
+    })
+    lifecycle.subscribe("stream-morph", () => {
+      calls.push("second")
+      return undefined
+    })
+    lifecycle.subscribe("stream-action", () => {
+      calls.push("action")
+      return undefined
+    })
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Fresh id="fresh"/></template></turbo-stream>',
+      { streamLifecycle: lifecycle },
+    )
+
+    expect(report.actions.map((action) => action.status)).toEqual(["applied"])
+    expect(calls).toEqual(["first", "second", "action"])
+    expect(observerErrors).toHaveLength(1)
+    expect(observerErrors[0]?.message).toBe("Stream morph notification observers failed")
+    expect(observerErrors[0]?.errors[0]?.message).toBe("Stream-morph listener failed")
   })
 
   test("turns a failing before-render listener into one isolated action error", () => {
