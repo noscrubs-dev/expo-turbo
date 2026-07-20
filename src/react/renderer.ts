@@ -312,8 +312,10 @@ function automaticDocumentPreloadUrl(
   session: DocumentSession,
   node: ProtocolElement,
   href: string,
+  rawHref: string | undefined,
 ): string | undefined {
   if (
+    attributeValue(node, "href") !== rawHref ||
     !hasProtocolAttribute(node, "data-turbo-preload") ||
     hasProtocolAttribute(node, "disabled") ||
     hasProtocolAttribute(node, "data-turbo-method") ||
@@ -1042,13 +1044,16 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
   const link = node && isElement(node) ? node : undefined
+  const rawHref = link ? attributeValue(link, "href") : undefined
   useAutomaticDocumentPreloadRevision(session, link, documentPreloader !== undefined)
   const onErrorRef = useRef(onError)
   useLayoutEffect(() => {
     onErrorRef.current = onError
   }, [onError])
   const automaticPreloadUrl =
-    documentPreloader && link ? automaticDocumentPreloadUrl(session, link, href) : undefined
+    documentPreloader && link
+      ? automaticDocumentPreloadUrl(session, link, href, rawHref)
+      : undefined
   useLayoutEffect(() => {
     if (
       !documentPreloader ||
@@ -1061,7 +1066,9 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     const activeLink = link
     const linkNodeKey = nodeKey
-    if (automaticDocumentPreloadUrl(session, activeLink, href) !== automaticPreloadUrl) return
+    if (automaticDocumentPreloadUrl(session, activeLink, href, rawHref) !== automaticPreloadUrl) {
+      return
+    }
 
     let active = true
     let preload: Promise<unknown>
@@ -1074,7 +1081,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       if (
         !active ||
         session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
-        automaticDocumentPreloadUrl(session, activeLink, href) !== automaticPreloadUrl
+        automaticDocumentPreloadUrl(session, activeLink, href, rawHref) !== automaticPreloadUrl
       ) {
         return
       }
@@ -1098,13 +1105,16 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     return () => {
       active = false
     }
-  }, [automaticPreloadUrl, documentPreloader, href, link, nodeKey, session])
+  }, [automaticPreloadUrl, documentPreloader, href, link, nodeKey, rawHref, session])
   const activate = useCallback(async () => {
     if (!documentController || !nodeKey || !node || !isElement(node)) {
       throw new TargetError("Document link is outside the active document")
     }
     if (session.tree.getNodeByKey(nodeKey) !== node) {
       throw new TargetError("Document link is outside the active document")
+    }
+    if (attributeValue(node, "href") !== rawHref) {
+      throw new TargetError("Document link href changed before activation")
     }
     if (attributeValue(node, "disabled") !== undefined) {
       return Object.freeze({ kind: "disabled", status: "ignored" })
@@ -1254,7 +1264,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       ...(action !== undefined ? { action } : {}),
       ...documentVisitOptions,
     })
-  }, [documentController, formLinks, frames, href, navigation, node, nodeKey, session])
+  }, [documentController, formLinks, frames, href, navigation, node, nodeKey, rawHref, session])
   if (!documentController) {
     throw new RegistryError("Expo Turbo document links require a provider visit controller")
   }
@@ -1272,15 +1282,16 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
   const link = node && isElement(node) ? node : undefined
+  const rawHref = link ? attributeValue(link, "href") : undefined
   const mounted = useRef(true)
   const onErrorRef = useRef(onError)
-  const prefetchConfiguration = useRef({ documentPreloader, href, link, nodeKey, session })
+  const prefetchConfiguration = useRef({ documentPreloader, href, link, nodeKey, rawHref, session })
   useLayoutEffect(() => {
     onErrorRef.current = onError
   }, [onError])
   useLayoutEffect(() => {
-    prefetchConfiguration.current = { documentPreloader, href, link, nodeKey, session }
-  }, [documentPreloader, href, link, nodeKey, session])
+    prefetchConfiguration.current = { documentPreloader, href, link, nodeKey, rawHref, session }
+  }, [documentPreloader, href, link, nodeKey, rawHref, session])
   useLayoutEffect(() => {
     mounted.current = true
     return () => {
@@ -1295,11 +1306,12 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       configuration.href !== href ||
       configuration.link !== link ||
       configuration.nodeKey !== nodeKey ||
+      configuration.rawHref !== rawHref ||
       configuration.session !== session ||
       !documentPreloader ||
       !nodeKey ||
       !link ||
-      attributeValue(link, "href") !== href ||
+      attributeValue(link, "href") !== rawHref ||
       session.tree.getNodeByKey(nodeKey) !== link
     ) {
       return
@@ -1320,7 +1332,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         !mounted.current ||
         prefetchConfiguration.current !== configuration ||
         session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
-        attributeValue(activeLink, "href") !== href ||
+        attributeValue(activeLink, "href") !== rawHref ||
         pressInDocumentPrefetchUrl(session, activeLink, href) !== prefetchUrl
       ) {
         return
@@ -1342,7 +1354,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         })
       }
     })
-  }, [documentPreloader, href, link, nodeKey, session])
+  }, [documentPreloader, href, link, nodeKey, rawHref, session])
 }
 
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {

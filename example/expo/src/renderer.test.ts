@@ -4492,7 +4492,7 @@ describe("React protocol renderer", () => {
     const documentRequests: TurboRequest[] = []
     let resolveDocument: ((response: TurboResponse) => void) | undefined
     const harness = renderPreloadingDocumentLinks(
-      '<Gallery data-turbo-root="/app"><DocumentLink href="/app/next" /></Gallery>',
+      '<Gallery data-turbo-root="/app"><DocumentLink href=" /app/next " /></Gallery>',
       async (request) => {
         prefetchRequests.push(request)
         return {
@@ -5216,24 +5216,27 @@ describe("React protocol renderer", () => {
     })
     expect(lateErrors).toEqual([])
 
-    let changedReject: ((error: unknown) => void) | undefined
+    const changedRejects: ((error: unknown) => void)[] = []
     const changedErrors: ExpoTurboRenderError[] = []
     const changed = renderPreloadingDocumentLinks(
-      '<Gallery><DocumentLink id="changed" href="/before-change" data-turbo-preload="" /></Gallery>',
+      '<Gallery><DocumentLink id="changed" href=" /before-change " data-turbo-preload="" /></Gallery>',
       () =>
         new Promise<TurboResponse>((_resolve, fail) => {
-          changedReject = fail
+          changedRejects.push(fail)
         }),
       { onError: (event) => changedErrors.push(event) },
     )
     await act(async () => {
       await Promise.resolve()
     })
-    if (!changedReject) throw new Error("changed automatic preload request did not start")
+    expect(changedRejects).toHaveLength(1)
     await act(async () => {
-      changed.session.removeAttribute("id:changed", "data-turbo-preload")
-      changed.session.setAttribute("id:changed", "href", "/after-change")
-      changedReject?.(new Error("private changed preload secret"))
+      changed.session.setAttribute("id:changed", "href", " /after-change ")
+      await nextTurn()
+    })
+    expect(changedRejects).toHaveLength(2)
+    await act(async () => {
+      changedRejects[0]?.(new Error("private changed preload secret"))
       await nextTurn()
     })
     expect(changedErrors).toEqual([])
@@ -5294,6 +5297,89 @@ describe("React protocol renderer", () => {
     })
 
     expect(errors).toEqual([])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when a held document-link activation has a stale href", async () => {
+    const clicks: string[] = []
+    const requests: TurboRequest[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink id="link" href=" /before " /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+    const staleActivation = harness.activation("/before")
+
+    await act(async () => {
+      harness.session.setAttribute("id:link", "href", " /after ")
+      await Promise.resolve()
+    })
+
+    await expect(staleActivation()).rejects.toEqual(
+      new TargetError("Document link href changed before activation"),
+    )
+    expect(clicks).toEqual([])
+    expect(requests).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state).toMatchObject({ busy: false, status: "initialized" })
+
+    let freshResult: unknown
+    await act(async () => {
+      freshResult = await harness.activation("/after")()
+    })
+    expect(freshResult).toMatchObject({ status: "empty" })
+    expect(clicks).toEqual(["https://example.test/after"])
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.url).toBe("https://example.test/after")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("automatically preloads normalized semantic-link hrefs after URL changes", async () => {
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery data-turbo-root="/app"><DocumentLink id="link" href=" /app/before " data-turbo-preload="" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual(["https://example.test/app/before"])
+
+    await act(async () => {
+      harness.session.setAttribute("id:link", "href", " /app/after ")
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/app/before",
+      "https://example.test/app/after",
+    ])
     act(() => harness.renderer.unmount())
   })
 
