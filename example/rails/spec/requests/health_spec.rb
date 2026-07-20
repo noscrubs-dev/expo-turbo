@@ -25,6 +25,9 @@ RSpec.describe "standalone demo host" do
     expect(response.body.dup.force_encoding(Encoding::UTF_8)).to be_valid_encoding
     expect(document.root.name).to eq("DemoScreen")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
+    source = document.at_xpath("//turbo-cable-stream-source[@id='demo-stream-source']")
+    expect(source&.[]("channel")).to eq("Turbo::StreamsChannel")
+    expect(::Turbo::StreamsChannel.verified_stream_name(source["signed-stream-name"])).to eq("demo-stream:expo")
   end
 
   it "serves standard sibling Stream fragments from confined XML partials" do
@@ -40,6 +43,20 @@ RSpec.describe "standalone demo host" do
     expect(streams.first.at_xpath("./template/DemoText")&.text).to eq("Rendered from XML partial")
     expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
     expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
+  end
+
+  it "broadcasts public XML only to the Expo stream namespace" do
+    adapter = ActionCable.server.pubsub
+    payload = '<turbo-stream xmlns:Demo="urn:expo-demo" action="update" target="demo-stream-message"><template><Demo:Text>Broadcast</Demo:Text></template></turbo-stream>'
+
+    adapter.clear
+    ExpoTurbo::Rails::Streams.broadcast_to("demo-stream", content: payload)
+
+    messages = adapter.broadcasts("demo-stream:expo").map { |message| ActiveSupport::JSON.decode(message) }
+    expect(messages).to eq([payload])
+    expect(adapter.broadcasts("demo-stream")).to be_empty
+  ensure
+    adapter&.clear
   end
 
   it "serves a matching XML Frame for a native Frame request" do
