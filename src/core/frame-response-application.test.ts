@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test"
 
 import { ParseError, StateError } from "./errors"
+import { FrameLifecycle } from "./frame-lifecycle"
 import {
   commitPreparedFrameMutation,
   frameAutoscrollIntent,
+  prepareFrameBeforeRender,
   prepareFrameMutation,
   prepareFrameResponse,
+  renderPreparedFrameMutation,
 } from "./frame-response-application"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -163,5 +166,53 @@ describe("prepared Frame mutations", () => {
     expect(() => commitPreparedFrameMutation(session, mutation)).toThrow(StateError)
     expect(frame.children).toBe(children)
     expect(session.tree.getElementById("loaded")).toBeUndefined()
+  })
+
+  test("requires a before-frame-render wrapper to delegate exactly once", () => {
+    const session = sessionFixture()
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>',
+    )
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => context.renderDefault()
+      return undefined
+    })
+
+    const renderer = prepareFrameBeforeRender(lifecycle, prepared, "https://example.test/details")
+    const mutation = prepareFrameMutation(session, frame, prepared)
+    renderPreparedFrameMutation(prepared, renderer)
+    commitPreparedFrameMutation(session, mutation)
+    expect(session.tree.getElementById("loaded")).toBeDefined()
+
+    const secondSession = sessionFixture()
+    const secondFrame = secondSession.tree.getElementById("details")
+    if (secondFrame?.kind !== "frame") throw new Error("invalid fixture")
+    const secondPrepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>',
+    )
+    const doubleLifecycle = new FrameLifecycle()
+    doubleLifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => {
+        context.renderDefault()
+        return context.renderDefault()
+      }
+      return undefined
+    })
+
+    const secondMutation = prepareFrameMutation(secondSession, secondFrame, secondPrepared)
+    expect(() =>
+      renderPreparedFrameMutation(
+        secondPrepared,
+        prepareFrameBeforeRender(doubleLifecycle, secondPrepared, "https://example.test/details"),
+      ),
+    ).toThrow("Before-frame-render renderer failed")
+    expect(secondSession.tree.getElementById("loaded")).toBeUndefined()
+    expect(secondFrame.children.filter(isElement)[0]?.tagName).toBe("Old")
+    expect(() => commitPreparedFrameMutation(secondSession, secondMutation)).not.toThrow()
   })
 })

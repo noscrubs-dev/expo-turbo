@@ -1,20 +1,24 @@
 import { describe, expect, test } from "bun:test"
 import { FrameMissingError, PropsError, RequestError, StateError } from "./errors"
 import {
+  createBeforeFrameRenderEvent,
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
   executeFrameVisitControlReload,
+  FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH,
   FRAME_LIFECYCLE_LOAD_DISPATCH,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   FRAME_LIFECYCLE_RENDER_DISPATCH,
   FrameLifecycle,
   FrameLoadEvent,
   FrameMissingEvent,
+  type FrameRenderContext,
   FrameRenderEvent,
   frameLifecycleOption,
   hasFrameMissingVisitIntent,
 } from "./frame-lifecycle"
+import { parseExpoTurboDocument } from "./parser"
 
 function capturedError(operation: () => unknown): Error {
   try {
@@ -152,6 +156,106 @@ describe("Frame lifecycle", () => {
     ).toBeUndefined()
 
     expect(events).toEqual(["frame-render", "frame-load"])
+  })
+
+  test("selects a synchronous before-frame-render wrapper over frozen response metadata", () => {
+    const response = parseExpoTurboDocument(
+      '<Gallery><turbo-frame id="details"><Incoming /></turbo-frame></Gallery>',
+    )
+    const newFrame = response.getElementById("details")
+    if (newFrame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const lifecycle = new FrameLifecycle()
+    const calls: string[] = []
+    const first = (context: FrameRenderContext) => {
+      calls.push("first")
+      return context.renderDefault()
+    }
+    const second = (context: FrameRenderContext) => {
+      calls.push("second")
+      return context.renderDefault()
+    }
+    const event = createBeforeFrameRenderEvent(
+      "details",
+      newFrame,
+      "https://example.test/details",
+      (context) => context.renderDefault(),
+    )
+
+    lifecycle.subscribe("before-frame-render", (received) => {
+      expect(received).toBe(event)
+      expect(received.type).toBe("before-frame-render")
+      expect(received.detail).toMatchObject({
+        frameId: "details",
+        newFrame,
+        renderMethod: "replace",
+        url: "https://example.test/details",
+      })
+      expect(Object.keys(received.detail).sort()).toEqual([
+        "frameId",
+        "newFrame",
+        "renderMethod",
+        "url",
+      ])
+      expect(Object.isFrozen(received)).toBe(true)
+      expect(Object.isFrozen(received.detail)).toBe(true)
+      expect(Object.isFrozen(received.detail.newFrame)).toBe(true)
+      expect(typeof received.detail.render).toBe("function")
+      received.detail.render = first
+      received.detail.render = second
+      return undefined
+    })
+
+    const renderer = lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](event)
+    expect(renderer).toBe(second)
+    expect(
+      renderer(
+        Object.freeze({
+          frameId: "details",
+          newFrame,
+          renderDefault() {
+            calls.push("default")
+            return undefined
+          },
+        }),
+      ),
+    ).toBeUndefined()
+    expect(calls).toEqual(["second", "default"])
+  })
+
+  test("requires synchronous undefined before-frame-render listeners and a function renderer", async () => {
+    const response = parseExpoTurboDocument(
+      '<Gallery><turbo-frame id="details"><Incoming /></turbo-frame></Gallery>',
+    )
+    const newFrame = response.getElementById("details")
+    if (newFrame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const create = () =>
+      createBeforeFrameRenderEvent("details", newFrame, "https://example.test/details", (context) =>
+        context.renderDefault(),
+      )
+
+    const invalidRenderer = new FrameLifecycle()
+    invalidRenderer.subscribe("before-frame-render", (event) => {
+      event.detail.render = null as never
+      return undefined
+    })
+    expect(
+      capturedError(() => invalidRenderer[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](create())),
+    ).toMatchObject({
+      code: "state",
+      message: "Before-frame-render listener failed",
+    })
+
+    for (const result of [false, Promise.reject(new Error("private before-render result"))]) {
+      const lifecycle = new FrameLifecycle()
+      lifecycle.subscribe("before-frame-render", (() => result) as never)
+      const error = capturedError(() => lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](create()))
+      expect(error).toMatchObject({
+        code: "state",
+        message: "Before-frame-render listener must return undefined",
+      })
+      expect(String(error)).not.toContain("private")
+    }
+    await Promise.resolve()
   })
 
   test("reports redacted render observer faults without interrupting notifications", async () => {

@@ -1,6 +1,12 @@
 import type { FrameAutoscrollBehavior, ScrollAlignment } from "../adapters"
 import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
 import { FrameMissingError, StateError, TargetError } from "./errors"
+import {
+  createBeforeFrameRenderEvent,
+  FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH,
+  type FrameLifecycle,
+  type FrameRenderer,
+} from "./frame-lifecycle"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import type { DocumentSession } from "./session"
 import {
@@ -9,6 +15,7 @@ import {
   type StreamDispatchControl,
   type StreamDispatchReport,
 } from "./streams"
+import { consumeThenableResult } from "./thenable-result"
 import {
   attributeValue,
   type DocumentTree,
@@ -62,6 +69,8 @@ export interface FrameAutoscrollIntent {
 }
 
 const preparedFrameMutations = new WeakMap<PreparedFrameMutation, PreparedFrameMutationState>()
+
+const defaultFrameRenderer: FrameRenderer = (context) => context.renderDefault()
 
 function hasAttribute(element: ProtocolElement, name: string): boolean {
   return element.attributes.some((attribute) => attribute.name === name)
@@ -207,15 +216,8 @@ export function commitPreparedFrameMutation(
 ): void {
   const state = preparedFrameMutations.get(mutation)
   if (!state) throw new StateError("Prepared Frame mutation is invalid")
+  assertPreparedFrameMutationCurrent(session, mutation)
   preparedFrameMutations.delete(mutation)
-  if (
-    session.tree !== state.tree ||
-    session.treeGeneration !== state.treeGeneration ||
-    session.revision !== state.revision ||
-    session.tree.getElementById(mutation.frameId) !== state.activeFrame
-  ) {
-    throw new StateError("Prepared Frame mutation is stale", { frameId: mutation.frameId })
-  }
 
   session.mutate((tree) => {
     const changed = [
@@ -228,6 +230,96 @@ export function commitPreparedFrameMutation(
     }
     return changed
   })
+}
+
+export function assertPreparedFrameMutationCurrent(
+  session: DocumentSession,
+  mutation: PreparedFrameMutation,
+): void {
+  const state = preparedFrameMutations.get(mutation)
+  if (!state) throw new StateError("Prepared Frame mutation is invalid")
+  if (
+    session.tree !== state.tree ||
+    session.treeGeneration !== state.treeGeneration ||
+    session.revision !== state.revision ||
+    session.tree.getElementById(mutation.frameId) !== state.activeFrame
+  ) {
+    throw new StateError("Prepared Frame mutation is stale", { frameId: mutation.frameId })
+  }
+}
+
+/**
+ * Dispatches the synchronous native before-render hook while the caller holds
+ * exact Frame request ownership. The selected renderer must complete before
+ * history and the package-owned Frame mutation may proceed.
+ */
+export function prepareFrameBeforeRender(
+  lifecycle: FrameLifecycle | undefined,
+  prepared: PreparedFrameResponse,
+  url: string,
+): FrameRenderer | undefined {
+  if (!lifecycle) return undefined
+  return lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](
+    createBeforeFrameRenderEvent(
+      prepared.frameId,
+      prepared.responseFrame,
+      url,
+      defaultFrameRenderer,
+    ),
+  )
+}
+
+/**
+ * Runs the renderer selected by `prepareFrameBeforeRender` while the caller
+ * holds exact Frame ownership. A custom renderer may only synchronously admit
+ * the package-owned replacement by calling `renderDefault()` exactly once.
+ */
+export function renderPreparedFrameMutation(
+  prepared: PreparedFrameResponse,
+  renderer: FrameRenderer | undefined,
+): void {
+  if (!renderer) return
+
+  const frameId = prepared.frameId
+  let defaultRendered = false
+  let rendering = true
+  const context = Object.freeze({
+    frameId,
+    newFrame: prepared.responseFrame,
+    renderDefault(): undefined {
+      if (!rendering) {
+        throw new StateError("Frame render context is no longer active", { frameId })
+      }
+      if (defaultRendered) {
+        throw new StateError("Default Frame renderer may run only once", { frameId })
+      }
+      defaultRendered = true
+      return undefined
+    },
+  })
+
+  let result: unknown
+  try {
+    try {
+      result = renderer(context)
+    } finally {
+      rendering = false
+    }
+  } catch {
+    throw new StateError("Before-frame-render renderer failed", { frameId })
+  }
+
+  if (consumeThenableResult(result)) {
+    throw new StateError("Before-frame-render renderers must be synchronous", { frameId })
+  }
+  if (result !== undefined) {
+    throw new StateError("Before-frame-render renderer must return undefined", { frameId })
+  }
+  if (!defaultRendered) {
+    throw new StateError("Before-frame-render renderer must call renderDefault exactly once", {
+      frameId,
+    })
+  }
 }
 
 export function dispatchPreparedFrameResponseStreams(

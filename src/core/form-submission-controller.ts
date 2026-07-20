@@ -110,12 +110,15 @@ import {
 } from "./frame-render-lifecycle-internal"
 import {
   activeFrameAutofocusCandidates,
+  assertPreparedFrameMutationCurrent,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
   type PreparedFrameResponse,
+  prepareFrameBeforeRender,
   prepareFrameMutation,
   prepareFrameResponseTree,
+  renderPreparedFrameMutation,
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
@@ -1238,18 +1241,27 @@ export class FormSubmissionController {
           ...(promotedHistory ? { documentUrl: candidate.url } : {}),
           ...(finalUrl ? { finalUrl } : {}),
         })
-        if (promotedHistory) {
+        if (promotedHistory || this.options.frameLifecycle) {
           const acquired = this.ownership.commitFrame(lease, () => {
-            this.assertFrameHistory(promotedHistory, identity, candidate.requestedUrl)
-            commitFrameFormHistoryPlan(
-              promotedHistory,
-              this.session,
-              activeFrame,
-              candidate.requestedUrl,
+            const beforeFrameRenderer = prepareFrameBeforeRender(
+              this.options.frameLifecycle,
+              preparedFrame,
               candidate.url,
-              revision,
             )
-            historyCommitted = true
+            renderPreparedFrameMutation(preparedFrame, beforeFrameRenderer)
+            assertPreparedFrameMutationCurrent(this.session, mutation)
+            if (promotedHistory) {
+              this.assertFrameHistory(promotedHistory, identity, candidate.requestedUrl)
+              commitFrameFormHistoryPlan(
+                promotedHistory,
+                this.session,
+                activeFrame,
+                candidate.requestedUrl,
+                candidate.url,
+                revision,
+              )
+              historyCommitted = true
+            }
           })
           if (!acquired) return this.canceled(candidate, destination)
           if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)

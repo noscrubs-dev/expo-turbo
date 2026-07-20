@@ -138,6 +138,23 @@ describe("Frame controller", () => {
       const lifecycle = new FrameLifecycle()
       const events: string[] = []
       let frameController: FrameController | undefined
+      lifecycle.subscribe("before-frame-render", (event) => {
+        if (!frameController) throw new Error("Frame controller was not configured")
+        events.push("before")
+        expect(frame.children.filter(isElement)[0]?.tagName).toBe("Loading")
+        expect(event.detail).toMatchObject({
+          frameId: "details",
+          renderMethod: "replace",
+          url: "https://example.test/frame",
+        })
+        expect(event.detail.newFrame.children.filter(isElement)[0]?.tagName).toBe("Committed")
+        expect(frameController.state).toMatchObject({ busy: true, status: "loading" })
+        event.detail.render = (context) => {
+          events.push("default")
+          return context.renderDefault()
+        }
+        return undefined
+      })
       lifecycle.subscribe("frame-render", () => {
         if (!frameController) throw new Error("Frame controller was not configured")
         events.push("render")
@@ -182,7 +199,7 @@ describe("Frame controller", () => {
         responseStatus,
         status: "completed",
       })
-      expect(events).toEqual(["render", "load"])
+      expect(events).toEqual(["before", "default", "render", "load"])
       expect(controller.state).toMatchObject({ busy: false, status: "completed" })
 
       unsubscribe()

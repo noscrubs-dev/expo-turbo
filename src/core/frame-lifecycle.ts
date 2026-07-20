@@ -1,6 +1,7 @@
 import { FrameMissingError, PropsError, RequestError, StateError } from "./errors"
 import { CancellableEvent, NotificationEvent } from "./events"
 import { consumeThenableResult } from "./thenable-result"
+import type { ProtocolElement } from "./tree"
 
 export type FrameMissingVisitAction = "advance" | "replace"
 
@@ -132,6 +133,78 @@ export class FrameMissingEvent extends CancellableEvent<"frame-missing", FrameMi
 
 export type FrameRenderMethod = "replace"
 
+export interface FrameRenderContext {
+  readonly frameId: string
+  readonly newFrame: ProtocolElement
+  renderDefault(): undefined
+}
+
+export type FrameRenderer = (context: FrameRenderContext) => undefined
+
+export interface BeforeFrameRenderEventDetail {
+  readonly frameId: string
+  readonly newFrame: ProtocolElement
+  readonly renderMethod: FrameRenderMethod
+  readonly url: string
+  render: FrameRenderer
+}
+
+export type BeforeFrameRenderEvent = NotificationEvent<
+  "before-frame-render",
+  BeforeFrameRenderEventDetail
+>
+
+interface BeforeFrameRenderDetailState {
+  renderer: FrameRenderer
+}
+
+const beforeFrameRenderDetailStates = new WeakMap<
+  ExactBeforeFrameRenderEventDetail,
+  BeforeFrameRenderDetailState
+>()
+
+class ExactBeforeFrameRenderEventDetail implements BeforeFrameRenderEventDetail {
+  readonly frameId: string
+  readonly newFrame: ProtocolElement
+  readonly renderMethod: FrameRenderMethod
+  readonly url: string
+
+  constructor(frameId: string, newFrame: ProtocolElement, url: string, renderer: FrameRenderer) {
+    this.frameId = frameId
+    this.newFrame = newFrame
+    this.renderMethod = "replace"
+    this.url = url
+    beforeFrameRenderDetailStates.set(this, { renderer })
+    Object.freeze(this)
+  }
+
+  get render(): FrameRenderer {
+    return beforeFrameRenderDetailState(this).renderer
+  }
+
+  set render(renderer: FrameRenderer) {
+    if (typeof renderer !== "function") {
+      throw new StateError("Before-frame-render renderer must be a function", {
+        frameId: this.frameId,
+      })
+    }
+    beforeFrameRenderDetailState(this).renderer = renderer
+  }
+}
+
+class ExactBeforeFrameRenderEvent extends NotificationEvent<
+  "before-frame-render",
+  BeforeFrameRenderEventDetail
+> {
+  constructor(frameId: string, newFrame: ProtocolElement, url: string, renderer: FrameRenderer) {
+    super(
+      "before-frame-render",
+      new ExactBeforeFrameRenderEventDetail(frameId, newFrame, url, renderer),
+    )
+    Object.freeze(this)
+  }
+}
+
 export interface FrameRenderEventDetail {
   readonly frameId: string
   readonly renderMethod: FrameRenderMethod
@@ -157,9 +230,14 @@ export class FrameLoadEvent extends NotificationEvent<"frame-load", FrameLoadEve
   }
 }
 
-export type FrameLifecycleEvent = FrameLoadEvent | FrameMissingEvent | FrameRenderEvent
+export type FrameLifecycleEvent =
+  | BeforeFrameRenderEvent
+  | FrameLoadEvent
+  | FrameMissingEvent
+  | FrameRenderEvent
 
 export interface FrameLifecycleEventMap {
+  readonly "before-frame-render": BeforeFrameRenderEvent
   readonly "frame-load": FrameLoadEvent
   readonly "frame-missing": FrameMissingEvent
   readonly "frame-render": FrameRenderEvent
@@ -173,12 +251,16 @@ type FrameLifecycleListener<Type extends FrameLifecycleEventType> = (
 export const FRAME_LIFECYCLE_MISSING_DISPATCH = Symbol(
   "expo-turbo.frame-lifecycle.missing-dispatch",
 )
+export const FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH = Symbol(
+  "expo-turbo.frame-lifecycle.before-render-dispatch",
+)
 export const FRAME_LIFECYCLE_RENDER_DISPATCH = Symbol("expo-turbo.frame-lifecycle.render-dispatch")
 export const FRAME_LIFECYCLE_LOAD_DISPATCH = Symbol("expo-turbo.frame-lifecycle.load-dispatch")
 
 /**
  * Synchronous lifecycle for Frame response handling. Frame-missing listeners
- * may cancel an admission; render and load listeners are notification-only
+ * may cancel an admission; before-render listeners may synchronously wrap the
+ * package-owned replacement; render and load listeners are notification-only
  * observers.
  */
 export class FrameLifecycle {
@@ -196,7 +278,12 @@ export class FrameLifecycle {
     type: Type,
     listener: FrameLifecycleListener<Type>,
   ): () => void {
-    if (type !== "frame-load" && type !== "frame-missing" && type !== "frame-render") {
+    if (
+      type !== "before-frame-render" &&
+      type !== "frame-load" &&
+      type !== "frame-missing" &&
+      type !== "frame-render"
+    ) {
       throw new StateError("Frame lifecycle event type is invalid")
     }
     if (typeof listener !== "function") {
@@ -233,6 +320,25 @@ export class FrameLifecycle {
       throw listenerError(event, "Frame-missing listener must return undefined")
     }
     return event
+  }
+
+  [FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](event: BeforeFrameRenderEvent): FrameRenderer {
+    for (const listener of [...(this.listeners.get("before-frame-render") ?? [])]) {
+      let result: unknown
+      try {
+        result = listener(event)
+      } catch {
+        throw beforeRenderListenerError(event, "Before-frame-render listener failed")
+      }
+      if (result === undefined) continue
+      try {
+        consumeUnexpectedResult(result)
+      } catch {
+        throw beforeRenderListenerError(event, "Before-frame-render listener failed")
+      }
+      throw beforeRenderListenerError(event, "Before-frame-render listener must return undefined")
+    }
+    return event.detail.render
   }
 
   [FRAME_LIFECYCLE_RENDER_DISPATCH](event: FrameRenderEvent): void {
@@ -298,6 +404,15 @@ export function createFrameMissingEvent(
   const event = new FrameMissingEvent(options.frameId, options.response)
   frameMissingEventState(event).body = options.body
   return event
+}
+
+export function createBeforeFrameRenderEvent(
+  frameId: string,
+  newFrame: ProtocolElement,
+  url: string,
+  renderer: FrameRenderer,
+): BeforeFrameRenderEvent {
+  return new ExactBeforeFrameRenderEvent(frameId, newFrame, url, renderer)
 }
 
 export function hasFrameMissingVisitIntent(event: FrameMissingEvent): boolean {
@@ -442,11 +557,23 @@ function frameMissingEventState(event: FrameMissingEvent): FrameMissingEventStat
   return state
 }
 
+function beforeFrameRenderDetailState(
+  detail: ExactBeforeFrameRenderEventDetail,
+): BeforeFrameRenderDetailState {
+  const state = beforeFrameRenderDetailStates.get(detail)
+  if (!state) throw new StateError("Before-frame-render event detail is invalid")
+  return state
+}
+
 function listenerError(event: FrameMissingEvent, message: string): FrameMissingError {
   return new FrameMissingError(message, {
     frameId: event.detail.frameId,
     responseStatus: event.detail.response.status,
   })
+}
+
+function beforeRenderListenerError(event: BeforeFrameRenderEvent, message: string): StateError {
+  return new StateError(message, { frameId: event.detail.frameId })
 }
 
 function cloneResponse(response: FrameMissingResponse): FrameMissingResponse {
