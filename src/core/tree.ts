@@ -138,7 +138,7 @@ export interface DocumentTreeOptions {
 export interface DocumentTreeCloneOptions {
   /** Retarget the cloned document location without mutating the source tree. */
   readonly documentUrl?: string
-  /** Omit each element subtree marked by `data-turbo-temporary` presence. */
+  /** Omit `data-turbo-temporary` or exact legacy `data-turbo-cache="false"` subtrees. */
   readonly omitTemporaryElements?: boolean
 }
 
@@ -1025,7 +1025,8 @@ export class DocumentTree {
     if (
       options.omitTemporaryElements &&
       isElement(source) &&
-      attributeValue(source, "data-turbo-temporary") !== undefined
+      (attributeValue(source, "data-turbo-temporary") !== undefined ||
+        attributeValue(source, "data-turbo-cache") === "false")
     ) {
       return undefined
     }
