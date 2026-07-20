@@ -10,6 +10,8 @@ module ExpoTurbo
       class TagBuilder
         include ::Turbo::Streams::ActionHelper
 
+        CONTENT_ATTRIBUTE_KEYS = [:content, "content"].freeze
+
         def initialize(view_context, partial_resolver:)
           @view_context = view_context
           @partial_resolver = partial_resolver
@@ -64,14 +66,18 @@ module ExpoTurbo
         end
 
         def remove(target, **attributes)
+          reject_content!(attributes)
           target_action(:remove, target, nil, partial: nil, locals: {}, attributes:)
         end
 
         def remove_all(targets, **attributes)
+          reject_content!(attributes)
           targets_action(:remove, targets, nil, partial: nil, locals: {}, attributes:)
         end
 
         def refresh(request_id: nil, **attributes)
+          reject_content!(attributes)
+
           if request_id.nil?
             turbo_stream_refresh_tag(**attributes)
           else
@@ -86,7 +92,7 @@ module ExpoTurbo
           turbo_stream_action_tag(
             action,
             target: target,
-            template: template_for(action, content, partial:, locals:, &block),
+            template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
             method: method,
             **attributes
           )
@@ -97,7 +103,7 @@ module ExpoTurbo
           turbo_stream_action_tag(
             action,
             targets: targets,
-            template: template_for(action, content, partial:, locals:, &block),
+            template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
             method: method,
             **attributes
           )
@@ -106,7 +112,7 @@ module ExpoTurbo
         def template_for(action, content, partial:, locals:, &block)
           return if action == :remove
 
-          if partial && (!content.nil? || block)
+          if (!content.nil? && (partial || block)) || (partial && block)
             raise ArgumentError, "provide content, a block, or a partial, not more than one"
           end
 
@@ -123,6 +129,30 @@ module ExpoTurbo
           else
             content.to_s
           end
+        end
+
+        def content_from_attributes(content, attributes)
+          content_key = content_attribute_key(attributes)
+          return content unless content_key
+
+          raise ArgumentError, "provide positional content or keyword content, not both" unless content.nil?
+
+          attributes.delete(content_key)
+        end
+
+        def reject_content!(attributes)
+          return unless content_attribute_key(attributes)
+
+          raise ArgumentError, "content is only supported by template-bearing Stream actions"
+        end
+
+        def content_attribute_key(attributes)
+          keys = CONTENT_ATTRIBUTE_KEYS.select { |key| attributes.key?(key) }
+          return if keys.empty?
+
+          raise ArgumentError, "provide keyword content once" if keys.length > 1
+
+          keys.first
         end
 
         def ensure_present!(value, name)
