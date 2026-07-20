@@ -5498,18 +5498,29 @@ describe("FormSubmissionController", () => {
             <turbo-stream action="update" target="frame-b">
               <template><StreamResult id="stream-result" /></template>
             </turbo-stream>
+            <turbo-stream action="update" target="status" method="morph">
+              <template><MorphResult id="morph-result" /></template>
+            </turbo-stream>
           </turbo-frame>`,
         ),
     })
     const result = await controller.submit(proposal(registry(session, "form-a"), "embedded-stream"))
     expect(result).toMatchObject({
       application: "frame",
-      frame: { streams: { actions: [{ action: "update", status: "applied" }] } },
+      frame: {
+        streams: {
+          actions: [
+            { action: "update", status: "applied" },
+            { action: "update", status: "applied" },
+          ],
+        },
+      },
       status: "applied",
     })
     expect(session.tree.getElementById("frame-a")).toBe(frame)
     expect(session.tree.getElementById("frame-result")).toBeDefined()
     expect(session.tree.getElementById("stream-result")).toBeDefined()
+    expect(session.tree.getElementById("morph-result")).toBeDefined()
 
     const missing = fixture()
     const missingFrame = missing.tree.getElementById("frame-a")

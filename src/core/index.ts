@@ -133,6 +133,24 @@ export {
   type StreamDispatchOptions,
   type StreamDispatchReport,
 } from "./streams"
-export * from "./tree"
+export {
+  attributeValue,
+  DocumentTree,
+  type DocumentTreeCloneOptions,
+  type DocumentTreeOptions,
+  isElement,
+  nodeTextContent,
+  type ProtocolAttribute,
+  type ProtocolComment,
+  type ProtocolDocument,
+  type ProtocolElement,
+  type ProtocolElementKind,
+  type ProtocolNode,
+  type ProtocolParentNode,
+  type ProtocolText,
+  renderedNodeTextContent,
+  renderedTextValue,
+  type SourceLocation,
+} from "./tree"
 export * from "./versions"
 export * from "./visitability"

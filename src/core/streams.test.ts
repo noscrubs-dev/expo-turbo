@@ -3,8 +3,10 @@ import { z } from "zod"
 
 import { createStreamActionRegistry, defineStreamAction } from "./custom-stream-actions"
 import { RegistryError, TargetError } from "./errors"
+import { FormControlRegistry } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession, SessionCommitError } from "./session"
+import { DocumentStateScopes } from "./state"
 import { dispatchTurboStreamFragment, type StreamActionReport } from "./streams"
 import { attributeValue, isElement } from "./tree"
 
@@ -105,7 +107,7 @@ describe("Turbo Stream dispatcher", () => {
     expect(notifications).toBe(2)
   })
 
-  test("isolates exact structural morph methods until native morph support exists", () => {
+  test("supports identity-safe child morph only for exact update targets", () => {
     const document = session(
       '<Gallery><Panel id="replace"><Old id="old-replace"/></Panel><Panel id="update"><Old id="old-update"/></Panel><Later id="later"/></Gallery>',
     )
@@ -118,16 +120,196 @@ describe("Turbo Stream dispatcher", () => {
        <turbo-stream action="remove" target="later"/>`,
     ).actions
 
-    expect(reports.map((report) => report.status)).toEqual(["error", "error", "applied"])
-    expect(reports[0]?.error?.message).toContain("morph method")
-    expect(reports[1]?.error?.message).toContain("morph method")
+    expect(reports.map((report) => report.status)).toEqual(["error", "applied", "applied"])
+    expect(reports[0]?.error?.message).toContain("replace morph")
     expect(document.tree.getElementById("replace")).toBe(originalReplace)
     expect(document.tree.getElementById("update")).toBe(originalUpdate)
     expect(document.tree.getElementById("old-replace")).toBeDefined()
-    expect(document.tree.getElementById("old-update")).toBeDefined()
+    expect(document.tree.getElementById("old-update")).toBeUndefined()
     expect(document.tree.getElementById("new-replace")).toBeUndefined()
-    expect(document.tree.getElementById("new-update")).toBeUndefined()
+    expect(document.tree.getElementById("new-update")).toBeDefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("retains compatible nested IDs and host form/state ownership during child morph", () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoInput id="email" tone="muted"/><DemoText id="copy">Before</DemoText></DemoForm></Gallery>',
+    )
+    const form = document.tree.getElementById("form")
+    const email = document.tree.getElementById("email")
+    if (!form || !email) throw new Error("morph fixture is missing")
+    const emailSnapshot = document.getNodeSnapshot(email.key)
+    const scopes = new DocumentStateScopes(document)
+    const scope = scopes.scopeFor(email.key, "form", { draft: "kept" })
+    const controls = new FormControlRegistry(document, form.key)
+    controls.register(email.key, { kind: "value", name: "email", value: "ada@example.test" })
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><DemoInput id="email" tone="accent"/><DemoText id="copy">After</DemoText><DemoError id="email-error">Required</DemoError></template></turbo-stream>',
+    ).actions[0]
+    const currentEmail = document.tree.getElementById("email")
+    if (!currentEmail) throw new Error("morphed email is missing")
+
+    expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+    expect(currentEmail).toBe(email)
+    expect(document.getNodeSnapshot(email.key)?.identity).toBe(emailSnapshot?.identity)
+    expect(attributeValue(currentEmail, "tone")).toBe("accent")
+    expect(scopes.scopeFor(email.key, "form")).toBe(scope)
+    expect(scope.state.get("draft")).toBe("kept")
+    expect(scope.state.isDisposed).toBe(false)
+    expect(controls.successfulEntries()).toEqual([{ name: "email", value: "ada@example.test" }])
+    expect(document.tree.getElementById("email-error")).toBeDefined()
+  })
+
+  test("reorders compatible IDs while remounting unkeyed and incompatible children", () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoInput id="first"/><DemoText>Unkeyed</DemoText><DemoInput id="second"/></DemoForm></Gallery>',
+    )
+    const first = document.tree.getElementById("first")
+    const second = document.tree.getElementById("second")
+    const unkeyed = document.tree.getElementById("form")?.children[1]
+    if (!first || !second || !unkeyed) throw new Error("morph fixture is missing")
+    const scope = new DocumentStateScopes(document).scopeFor(first.key, "form", { draft: "first" })
+
+    dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><DemoInput id="second"/><DemoText>Replacement</DemoText><DemoText id="first"/></template></turbo-stream>',
+    )
+    const form = document.tree.getElementById("form")
+    const currentFirst = document.tree.getElementById("first")
+    const currentSecond = document.tree.getElementById("second")
+
+    expect(currentSecond).toBe(second)
+    expect(currentFirst).not.toBe(first)
+    expect(scope.state.isDisposed).toBe(true)
+    expect(form?.children[1]).not.toBe(unkeyed)
+    expect(form?.children.map((child) => child.key)).toEqual([
+      second.key,
+      expect.any(String),
+      first.key,
+    ])
+  })
+
+  test("structurally replaces protocol-wrapper descendants during child morph", () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><turbo-frame id="frame"><DemoInput id="field"/></turbo-frame><turbo-cable-stream-source id="source" channel="DemoChannel"/></DemoPanel></Gallery>',
+    )
+    const frame = document.tree.getElementById("frame")
+    const field = document.tree.getElementById("field")
+    const source = document.tree.getElementById("source")
+    if (!frame || !field || !source) throw new Error("morph fixture is missing")
+    const disposed: string[] = []
+    document.registerDisposal(frame.key, () => disposed.push("frame"))
+    document.registerDisposal(source.key, () => disposed.push("source"))
+
+    dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><turbo-frame id="frame"><DemoInput id="field" tone="accent"/></turbo-frame><turbo-cable-stream-source id="source" channel="UpdatedChannel"/></template></turbo-stream>',
+    )
+    const currentFrame = document.tree.getElementById("frame")
+    const currentField = document.tree.getElementById("field")
+    const currentSource = document.tree.getElementById("source")
+    if (!currentFrame || !currentField || !currentSource) {
+      throw new Error("morphed protocol wrapper is missing")
+    }
+
+    expect(currentFrame).not.toBe(frame)
+    expect(currentField).not.toBe(field)
+    expect(currentSource).not.toBe(source)
+    expect(attributeValue(currentField, "tone")).toBe("accent")
+    expect(attributeValue(currentSource, "channel")).toBe("UpdatedChannel")
+    expect(disposed).toEqual(["frame", "source"])
+  })
+
+  test("remounts an incompatible replacement subtree without retaining its descendant IDs", () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><Old id="root"><DemoGroup id="before"><DemoInput id="field"/></DemoGroup></Old></DemoPanel></Gallery>',
+    )
+    const root = document.tree.getElementById("root")
+    const field = document.tree.getElementById("field")
+    if (!root || !field) throw new Error("morph fixture is missing")
+    const scope = new DocumentStateScopes(document).scopeFor(field.key, "form", { draft: "old" })
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><New id="root"><DemoGroup id="after"><DemoInput id="field"/></DemoGroup></New></template></turbo-stream>',
+    ).actions[0]
+    const currentRoot = document.tree.getElementById("root")
+    const currentField = document.tree.getElementById("field")
+    if (!currentRoot || !currentField) throw new Error("morphed replacement subtree is missing")
+
+    expect(report).toMatchObject({ appliedTargets: 1, status: "applied" })
+    expect(currentRoot).not.toBe(root)
+    expect(currentField).not.toBe(field)
+    expect(document.tree.getElementById("before")).toBeUndefined()
+    expect(document.tree.getElementById("after")).toBeDefined()
+    expect(scope.state.isDisposed).toBe(true)
+  })
+
+  test("rejects unsupported child morph boundaries atomically and continues later Streams", () => {
+    const fixture = (permanent = false) =>
+      session(
+        `<Gallery><Outside id="outside"/><DemoForm id="form"><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/>${permanent ? '<DemoText id="permanent" data-turbo-permanent=""/>' : ""}</DemoForm><turbo-frame id="frame"><DemoText id="frame-child"/></turbo-frame><Later id="later"/></Gallery>`,
+      )
+    const cases: readonly {
+      readonly name: string
+      readonly permanent?: boolean
+      readonly stream: string
+    }[] = [
+      {
+        name: "selector",
+        stream:
+          '<turbo-stream action="update" targets="DemoForm" method="morph"><template><DemoText/></template></turbo-stream>',
+      },
+      {
+        name: "Frame target",
+        stream:
+          '<turbo-stream action="update" target="frame" method="morph"><template><DemoText/></template></turbo-stream>',
+      },
+      {
+        name: "permanent active node",
+        stream:
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText id="permanent" data-turbo-permanent=""/></template></turbo-stream>',
+        permanent: true,
+      },
+      {
+        name: "permanent payload node",
+        stream:
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText data-turbo-permanent=""/></template></turbo-stream>',
+      },
+      {
+        name: "external id",
+        stream:
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoInput id="outside"/></template></turbo-stream>',
+      },
+      {
+        name: "reparented id",
+        stream:
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><DemoInput id="field"/></DemoGroup></template></turbo-stream>',
+      },
+      {
+        name: "reparented id through an unkeyed wrapper",
+        stream:
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoGroup><DemoInput id="field"/></DemoGroup></DemoGroup><DemoGroup id="right"/></template></turbo-stream>',
+      },
+    ]
+
+    for (const fixtureCase of cases) {
+      const document = fixture(fixtureCase.permanent)
+      const form = document.tree.getElementById("form")
+      const before = document.getNodeSnapshot("id:form")
+      const reports = dispatchTurboStreamFragment(
+        document,
+        `${fixtureCase.stream}<turbo-stream action="remove" target="later"/>`,
+      ).actions
+
+      expect(reports[0]?.status, fixtureCase.name).toBe("error")
+      expect(document.tree.getElementById("form")).toBe(form)
+      expect(document.getNodeSnapshot("id:form"), fixtureCase.name).toBe(before)
+      expect(document.revision, fixtureCase.name).toBe(1)
+      expect(document.tree.getElementById("later"), fixtureCase.name).toBeUndefined()
+    }
   })
 
   test("uses plain structural semantics for every non-morph method value", () => {
