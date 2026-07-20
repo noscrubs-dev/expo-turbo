@@ -260,22 +260,37 @@ describe("Frame controller", () => {
 
     const initial = controller.connect()
     pending[0]?.resolve(
-      response('<turbo-frame id="details"><Stable id="stable" tone="initial" /></turbo-frame>'),
+      response(
+        '<turbo-frame id="details"><Stable id="stable" tone="initial" /><Permanent id="permanent" data-turbo-permanent="" tone="connected"><Locked id="locked" value="current" /></Permanent></turbo-frame>',
+      ),
     )
     await initial
     const afterConnect = session.tree.getElementById("stable")
-    if (!afterConnect) throw new Error("initial Frame response did not commit")
+    const permanent = session.tree.getElementById("permanent")
+    const locked = session.tree.getElementById("locked")
+    if (!afterConnect || !permanent || !locked)
+      throw new Error("initial Frame response did not commit")
     expect(afterConnect).not.toBe(initialStable)
 
     const reloaded = controller.reload()
     pending[1]?.resolve(
-      response('<turbo-frame id="details"><Stable id="stable" tone="morphed" /></turbo-frame>'),
+      response(
+        '<turbo-frame id="details"><Stable id="stable" tone="morphed" /><Permanent id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming" /></Permanent></turbo-frame>',
+      ),
     )
     await reloaded
     const afterReload = session.tree.getElementById("stable")
-    if (!afterReload) throw new Error("morph Frame response did not commit")
+    const afterReloadPermanent = session.tree.getElementById("permanent")
+    const afterReloadLocked = session.tree.getElementById("locked")
+    if (!afterReload || !afterReloadPermanent || !afterReloadLocked) {
+      throw new Error("morph Frame response did not commit")
+    }
     expect(afterReload).toBe(afterConnect)
+    expect(afterReloadPermanent).toBe(permanent)
+    expect(afterReloadLocked).toBe(locked)
     expect(attributeValue(afterReload, "tone")).toBe("morphed")
+    expect(attributeValue(afterReloadPermanent, "tone")).toBe("connected")
+    expect(attributeValue(afterReloadLocked, "value")).toBe("current")
 
     const loaded = controller.load()
     pending[2]?.resolve(
@@ -407,7 +422,7 @@ describe("Frame controller", () => {
     expect(renderMethods).toEqual(["replace"])
   })
 
-  test("fails a rejected Frame morph before lifecycle render or structural replacement", async () => {
+  test("fails an unmatched permanent Frame morph before lifecycle render or structural replacement", async () => {
     const lifecycle = new FrameLifecycle()
     const { controller, pending, session } = harness('src="/frame" refresh="morph"', undefined, {
       frameLifecycle: lifecycle,
