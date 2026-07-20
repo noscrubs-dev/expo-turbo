@@ -17,6 +17,7 @@ import {
   useComponentAction,
   useDocumentState,
   useExpoTurboDocumentLink,
+  useExpoTurboDocumentLinkPrefetch,
   ExpoTurboFormScope,
   useExpoTurboForm,
   useExpoTurboFormControl,
@@ -140,6 +141,7 @@ function DemoDocumentLinkComponent({
   href: string;
 }) {
   const activate = useExpoTurboDocumentLink(href);
+  const prefetch = useExpoTurboDocumentLinkPrefetch(href);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
   const unavailable = disabled || pending;
@@ -149,6 +151,7 @@ function DemoDocumentLinkComponent({
         accessibilityRole="link"
         accessibilityState={{ busy: pending, disabled: unavailable }}
         disabled={unavailable}
+        onPressIn={prefetch}
         onPress={() => {
           setError(undefined);
           setPending(true);

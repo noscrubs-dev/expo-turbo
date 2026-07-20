@@ -266,6 +266,17 @@ const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "method",
   "stream",
 ] as const
+const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
+  ...UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES,
+  "data-behavior",
+  "data-confirm",
+  "data-method",
+  "data-remote",
+  "data-turbo-confirm",
+  "data-turbo-frame",
+  "data-turbo-method",
+  "data-turbo-stream",
+] as const
 const MISSING_FORM_OWNER_KEY = "__expo-turbo-missing-form-owner__"
 
 function exactVisitAction(value: string | undefined): VisitAction | undefined {
@@ -349,6 +360,61 @@ function automaticDocumentPreloadUrl(
     if (destination.kind !== "document") return undefined
     const disposition = classifyTopLevelLocation(session.tree, preloadUrl)
     if (disposition.classification !== "visitable") return undefined
+    return disposition.url
+  } catch {
+    return undefined
+  }
+}
+
+function pressInDocumentPrefetchUrl(
+  session: DocumentSession,
+  node: ProtocolElement,
+  href: string,
+): string | undefined {
+  if (
+    hasProtocolAttribute(node, "disabled") ||
+    hasProtocolAttribute(node, "target") ||
+    UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))
+  ) {
+    return undefined
+  }
+
+  let current: ProtocolNode | null = node
+  let foundPrefetchSetting = false
+  let foundTurboSetting = false
+  while (current && current.kind !== "document") {
+    if (current.kind === "frame") return undefined
+    if (isElement(current)) {
+      if (!foundPrefetchSetting) {
+        const setting = attributeValue(current, "data-turbo-prefetch")
+        if (setting !== undefined) {
+          foundPrefetchSetting = true
+          if (setting === "false") return undefined
+        }
+      }
+      if (!foundTurboSetting) {
+        const setting = attributeValue(current, "data-turbo")
+        if (setting !== undefined) {
+          foundTurboSetting = true
+          if (setting === "false") return undefined
+        }
+      }
+    }
+    current = current.parent
+  }
+
+  try {
+    const documentUrl = session.tree.document.url
+    if (!documentUrl) return undefined
+    const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
+    if (linkUrl.kind !== "protocol") return undefined
+    const disposition = classifyTopLevelLocation(session.tree, linkUrl.resolution.url)
+    if (disposition.classification !== "visitable") return undefined
+    const destinationUrl = new URL(disposition.url)
+    const activeUrl = new URL(documentUrl)
+    if (destinationUrl.pathname + destinationUrl.search === activeUrl.pathname + activeUrl.search) {
+      return undefined
+    }
     return disposition.url
   } catch {
     return undefined
@@ -1194,6 +1260,86 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     throw new RegistryError("Expo Turbo document links require an active component element")
   }
   return activate
+}
+
+export type ExpoTurboDocumentLinkPrefetch = () => void
+
+export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumentLinkPrefetch {
+  const { documentPreloader, onError, session } = useRenderer()
+  const nodeKey = useContext(ProtocolNodeContext)
+  const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
+  const link = node && isElement(node) ? node : undefined
+  const mounted = useRef(true)
+  const onErrorRef = useRef(onError)
+  const prefetchConfiguration = useRef({ documentPreloader, href, link, nodeKey, session })
+  useLayoutEffect(() => {
+    onErrorRef.current = onError
+  }, [onError])
+  useLayoutEffect(() => {
+    prefetchConfiguration.current = { documentPreloader, href, link, nodeKey, session }
+  }, [documentPreloader, href, link, nodeKey, session])
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  return useCallback(() => {
+    const configuration = prefetchConfiguration.current
+    if (
+      configuration.documentPreloader !== documentPreloader ||
+      configuration.href !== href ||
+      configuration.link !== link ||
+      configuration.nodeKey !== nodeKey ||
+      configuration.session !== session ||
+      !documentPreloader ||
+      !nodeKey ||
+      !link ||
+      attributeValue(link, "href") !== href ||
+      session.tree.getNodeByKey(nodeKey) !== link
+    ) {
+      return
+    }
+    const prefetchUrl = pressInDocumentPrefetchUrl(session, link, href)
+    if (!prefetchUrl) return
+
+    let preload: Promise<unknown>
+    try {
+      preload = documentPreloader.preload(prefetchUrl)
+    } catch (error) {
+      preload = Promise.reject(error)
+    }
+    const activeLink = link
+    const linkNodeKey = nodeKey
+    void Promise.resolve(preload).catch((error) => {
+      if (
+        !mounted.current ||
+        prefetchConfiguration.current !== configuration ||
+        session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
+        attributeValue(activeLink, "href") !== href ||
+        pressInDocumentPrefetchUrl(session, activeLink, href) !== prefetchUrl
+      ) {
+        return
+      }
+      if (requestLifecycleDefaultHandlingPrevented(error)) return
+      const observer = onErrorRef.current
+      if (!observer) return
+      try {
+        observer({
+          error:
+            error instanceof ExpoTurboError
+              ? error
+              : new RequestError("Document link press-in prefetch failed"),
+          nodeKey: linkNodeKey,
+        })
+      } catch {
+        queueMicrotask(() => {
+          throw new StateError("Document link press-in prefetch error reporting failed")
+        })
+      }
+    })
+  }, [documentPreloader, href, link, nodeKey, session])
 }
 
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
