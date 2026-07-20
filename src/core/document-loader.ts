@@ -4,9 +4,12 @@ import {
   destinationRequestOwnership,
 } from "./destination-request-ownership"
 import {
+  createDocumentTransportError,
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
+  markDocumentContentTypeError,
+  markDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
 import { documentCachePolicy } from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
@@ -549,7 +552,12 @@ export class DocumentRequestLoader {
           this.fetchAdapter.fetch(request),
         )
         if (fetched.status === "canceled") return this.canceled(active)
-        if (fetched.status === "rejected") throw fetched.error
+        if (fetched.status === "rejected") {
+          if (fetched.error instanceof ExpoTurboError) {
+            throw markDocumentTransportError(fetched.error)
+          }
+          throw createDocumentTransportError()
+        }
         response = fetched.value
       }
       if (!this.owns(active)) return this.canceled(active)
@@ -566,7 +574,12 @@ export class DocumentRequestLoader {
         if (response.status === 201) {
           const body = await settleRequestOperation(active.controller.signal, () => response.text())
           if (body.status === "canceled") return this.canceled(active, finalUrl)
-          if (body.status === "rejected") throw body.error
+          if (body.status === "rejected") {
+            if (body.error instanceof ExpoTurboError) {
+              throw markDocumentTransportError(body.error)
+            }
+            throw createDocumentTransportError(responseStatus)
+          }
           xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
           if (xml.trim() === "") {
@@ -576,7 +589,12 @@ export class DocumentRequestLoader {
           this.assertContentType(response)
           const body = await settleRequestOperation(active.controller.signal, () => response.text())
           if (body.status === "canceled") return this.canceled(active, finalUrl)
-          if (body.status === "rejected") throw body.error
+          if (body.status === "rejected") {
+            if (body.error instanceof ExpoTurboError) {
+              throw markDocumentTransportError(body.error)
+            }
+            throw createDocumentTransportError(responseStatus)
+          }
           xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
         }
@@ -783,9 +801,11 @@ export class DocumentRequestLoader {
   private assertContentType(response: TurboResponse): void {
     const contentType = responseContentType(response)
     if (contentType !== EXPO_TURBO_MIME_TYPE) {
-      throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
-        contentType: contentType ?? "missing",
-      })
+      throw markDocumentContentTypeError(
+        new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
+          contentType: contentType ?? "missing",
+        }),
+      )
     }
   }
 

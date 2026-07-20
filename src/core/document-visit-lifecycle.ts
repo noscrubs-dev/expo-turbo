@@ -80,10 +80,26 @@ export class DocumentLoadEvent extends NotificationEvent<"load", DocumentLoadEve
   }
 }
 
+export type DocumentReloadCause = "content-type" | "transport"
+export type DocumentReloadReason = "request-failed"
+
+export interface DocumentReloadEventDetail {
+  readonly cause: DocumentReloadCause
+  readonly reason: DocumentReloadReason
+}
+
+export class DocumentReloadEvent extends NotificationEvent<"reload", DocumentReloadEventDetail> {
+  constructor(detail: DocumentReloadEventDetail) {
+    super("reload", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
 export type DocumentVisitLifecycleEvent =
   | BeforeCacheEvent
   | BeforeVisitEvent
   | DocumentLoadEvent
+  | DocumentReloadEvent
   | DocumentRenderEvent
   | LinkClickEvent
   | VisitEvent
@@ -93,6 +109,7 @@ export interface DocumentVisitLifecycleEventMap {
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
   readonly load: DocumentLoadEvent
+  readonly reload: DocumentReloadEvent
   readonly render: DocumentRenderEvent
   readonly visit: VisitEvent
 }
@@ -125,11 +142,14 @@ export const DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.load-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.reload-dispatch",
+)
 
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
  * Click and before-visit listeners may cancel admission; visit, before-cache,
- * render, and load listeners are notification observers.
+ * render, load, and reload listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -151,6 +171,7 @@ export class DocumentVisitLifecycle {
       type !== "before-visit" &&
       type !== "click" &&
       type !== "load" &&
+      type !== "reload" &&
       type !== "render" &&
       type !== "visit"
     ) {
@@ -221,9 +242,18 @@ export class DocumentVisitLifecycle {
     this.dispatchNotification("load", event, "Load listener failed")
   }
 
+  [DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH](event: DocumentReloadEvent): void {
+    this.dispatchNotification("reload", event, "Reload listener failed")
+  }
+
   private dispatchNotification(
-    type: "before-cache" | "load" | "render" | "visit",
-    event: BeforeCacheEvent | DocumentLoadEvent | DocumentRenderEvent | VisitEvent,
+    type: "before-cache" | "load" | "reload" | "render" | "visit",
+    event:
+      | BeforeCacheEvent
+      | DocumentLoadEvent
+      | DocumentReloadEvent
+      | DocumentRenderEvent
+      | VisitEvent,
     listenerFailure: string,
   ): void {
     const errors: StateError[] = []
@@ -265,7 +295,7 @@ export class DocumentVisitLifecycle {
   }
 }
 
-function notificationName(type: "before-cache" | "load" | "render" | "visit"): string {
+function notificationName(type: "before-cache" | "load" | "reload" | "render" | "visit"): string {
   if (type === "before-cache") return "Before-cache"
   return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
 }

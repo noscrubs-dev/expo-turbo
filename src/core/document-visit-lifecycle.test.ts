@@ -7,9 +7,11 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   DocumentLoadEvent,
+  DocumentReloadEvent,
   DocumentRenderEvent,
   DocumentVisitLifecycle,
   documentVisitLifecycleOption,
@@ -195,7 +197,7 @@ describe("document visit lifecycle", () => {
     expect(Object.isFrozen(visit.detail)).toBe(true)
   })
 
-  test("exposes frozen native document render and load notifications", () => {
+  test("exposes frozen native document render, load, and reload notifications", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const events: string[] = []
     lifecycle.subscribe("render", (event) => {
@@ -217,6 +219,13 @@ describe("document visit lifecycle", () => {
       expect(Object.isFrozen(event.detail)).toBe(true)
       return undefined
     })
+    lifecycle.subscribe("reload", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({ cause: "transport", reason: "request-failed" })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
 
     lifecycle[DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH](
       new DocumentRenderEvent({
@@ -229,8 +238,11 @@ describe("document visit lifecycle", () => {
     lifecycle[DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH](
       new DocumentLoadEvent({ generation: 4, url: "https://example.test/next" }),
     )
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH](
+      new DocumentReloadEvent({ cause: "transport", reason: "request-failed" }),
+    )
 
-    expect(events).toEqual(["render", "load"])
+    expect(events).toEqual(["render", "load", "reload"])
   })
 
   test("emits frozen before-cache notifications through stable listener snapshots", async () => {
