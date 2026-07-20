@@ -85,6 +85,7 @@ import {
 import {
   createComponentStyleHook,
   type ExpoTurboDocumentBoundaryProps,
+  type ExpoTurboDocumentLinkPrefetch,
   type ExpoTurboFormBinding,
   type ExpoTurboFormBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
@@ -112,6 +113,26 @@ const globalWithAct = globalThis as typeof globalThis & {
 globalWithAct.IS_REACT_ACT_ENVIRONMENT = true
 const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html"
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+function deferred<T>() {
+  let reject: ((error: unknown) => void) | undefined
+  let resolve: ((value: T) => void) | undefined
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle
+    reject = fail
+  })
+  return {
+    promise,
+    reject(error: unknown) {
+      if (!reject) throw new Error("deferred fixture was not initialized")
+      reject(error)
+    },
+    resolve(value: T) {
+      if (!resolve) throw new Error("deferred fixture was not initialized")
+      resolve(value)
+    },
+  }
+}
 
 function host(type: string, props: Readonly<{ children?: ReactNode }>): ReactNode {
   return createElement(type, null, props.children)
@@ -522,7 +543,7 @@ function renderDocumentLinks(
   }>,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
-  const prefetches = new Map<string, () => void>()
+  const prefetches = new Map<string, ExpoTurboDocumentLinkPrefetch>()
   let documentRequestIds = 0
   let renders = 0
   function DocumentLink({
@@ -610,6 +631,16 @@ function renderDocumentLinks(
       return activation
     },
     controller,
+    cancelPrefetch(href: string) {
+      const prefetch = prefetches.get(href)
+      if (!prefetch) throw new Error(`Document link ${href} did not render`)
+      prefetch.cancel()
+    },
+    commitPrefetch(href: string) {
+      const prefetch = prefetches.get(href)
+      if (!prefetch) throw new Error(`Document link ${href} did not render`)
+      prefetch.commit()
+    },
     documentRequestIdCount: () => documentRequestIds,
     formLinks,
     frames,
@@ -5211,6 +5242,234 @@ describe("React protocol renderer", () => {
     expect(harness.session.treeState.preview).toBe(false)
     expect(harness.session.tree.getElementById("canonical")).toBeDefined()
 
+    act(() => harness.renderer.unmount())
+  })
+
+  test("releases an abandoned press-in prefetch without caching or reporting a late failure", async () => {
+    const pending = deferred<TurboResponse>()
+    const errors: ExpoTurboRenderError[] = []
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      (request) => {
+        requests.push(request)
+        return pending.promise
+      },
+      { onError: (event) => errors.push(event) },
+    )
+
+    act(() => {
+      harness.prefetch("/next")
+      harness.cancelPrefetch("/next")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(true)
+    pending.reject(new Error("private abandoned press-in failure"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(errors).toEqual([])
+    expect(harness.cache.has("https://example.test/next")).toBe(false)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps a normal press-in prefetch through press-out before activation", async () => {
+    const pending = deferred<TurboResponse>()
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      (request) => {
+        requests.push(request)
+        return pending.promise
+      },
+    )
+
+    act(() => {
+      harness.prefetch("/next")
+      harness.cancelPrefetch("/next")
+      harness.commitPrefetch("/next")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    pending.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><DemoText id="preloaded">Preloaded</DemoText></Gallery>',
+      url: "https://example.test/next",
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(harness.cache.get("https://example.test/next")?.getElementById("preloaded")).toBeDefined()
+    act(() => harness.renderer.unmount())
+  })
+
+  test("does not let a press-out cancel automatic or direct shared preloads", async () => {
+    const pending: Array<ReturnType<typeof deferred<TurboResponse>>> = []
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/automatic" data-turbo-preload="" />
+        <DocumentLink href="/direct" />
+      </Gallery>`,
+      (request) => {
+        requests.push(request)
+        const next = deferred<TurboResponse>()
+        pending.push(next)
+        return next.promise
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(requests).toHaveLength(1)
+
+    act(() => {
+      harness.prefetch("/automatic")
+      harness.cancelPrefetch("/automatic")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(requests[0]?.signal?.aborted).toBe(false)
+
+    act(() => harness.prefetch("/direct"))
+    await act(async () => {
+      await nextTurn()
+    })
+    const direct = harness.preloader.preload("/direct")
+    act(() => harness.cancelPrefetch("/direct"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.signal?.aborted).toBe(false)
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => "<Gallery><DemoText>Automatic</DemoText></Gallery>",
+      url: "https://example.test/automatic",
+    })
+    pending[1]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => "<Gallery><DemoText>Direct</DemoText></Gallery>",
+      url: "https://example.test/direct",
+    })
+    await act(async () => {
+      await direct
+    })
+
+    expect(harness.cache.has("https://example.test/automatic")).toBe(true)
+    expect(harness.cache.has("https://example.test/direct")).toBe(true)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps preload-only requester injection compatible with press lifecycle callbacks", async () => {
+    const preloaded: string[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async () => {
+        throw new Error("preload-only requester must not visit")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentPreloader: {
+          preload(source) {
+            preloaded.push(source)
+            return Promise.resolve({ status: "hit" as const, url: "https://example.test/next" })
+          },
+        },
+      }),
+    )
+
+    act(() => {
+      harness.prefetch("/next")
+      harness.cancelPrefetch("/next")
+      harness.commitPrefetch("/next")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(preloaded).toEqual(["https://example.test/next"])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("redacts hostile press-prefetch lease callbacks without throwing from touch handlers", async () => {
+    const callbacks: string[] = []
+    const errors: ExpoTurboRenderError[] = []
+    const preloader = {
+      preload: () =>
+        Promise.resolve({ status: "hit" as const, url: "https://example.test/unreachable" }),
+      retain(source: string) {
+        return {
+          commit() {
+            callbacks.push(`commit:${source}`)
+            throw new Error("private hostile commit failure")
+          },
+          promise: new Promise<never>(() => undefined),
+          release() {
+            callbacks.push(`release:${source}`)
+            throw new Error("private hostile release failure")
+          },
+        }
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/release" />
+        <DocumentLink href="/commit" />
+      </Gallery>`,
+      async () => {
+        throw new Error("document activation must not run")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({ documentPreloader: preloader, onError: (event) => errors.push(event) }),
+    )
+
+    act(() => {
+      harness.prefetch("/release")
+      harness.cancelPrefetch("/release")
+      harness.prefetch("/commit")
+      harness.commitPrefetch("/commit")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(callbacks).toEqual([
+      "commit:https://example.test/commit",
+      "release:https://example.test/release",
+    ])
+    expect(errors).toHaveLength(2)
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Document link press-in prefetch failed",
+      "Document link press-in prefetch failed",
+    ])
     act(() => harness.renderer.unmount())
   })
 

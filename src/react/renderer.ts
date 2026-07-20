@@ -37,7 +37,10 @@ import {
 import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal"
 import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
-import type { DocumentPreloadRequester } from "../core/document-preloader"
+import type {
+  DocumentPreloadLeaseRequester,
+  DocumentPreloadRequester,
+} from "../core/document-preloader"
 import {
   consumeDocumentRefreshScroll,
   discardDocumentRefreshScroll,
@@ -1517,7 +1520,51 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   return activate
 }
 
-export type ExpoTurboDocumentLinkPrefetch = () => void
+export interface ExpoTurboDocumentLinkPrefetch {
+  (): void
+  cancel(): void
+  commit(): void
+}
+
+interface DocumentLinkPrefetchConfiguration {
+  readonly documentController: DocumentVisitController | undefined
+  readonly documentPrefetchPolicy: DocumentPrefetchPolicy | undefined
+  readonly documentPreloader: DocumentPreloadRequester | undefined
+  readonly href: string
+  readonly link: ProtocolElement | undefined
+  readonly nodeKey: string | undefined
+  readonly rawHref: string | undefined
+  readonly session: DocumentSession
+}
+
+interface ActiveDocumentLinkPrefetch {
+  readonly commit: () => void
+  readonly configuration: DocumentLinkPrefetchConfiguration
+  readonly prefetchUrl: string
+  readonly release: () => void
+  committed: boolean
+}
+
+function reportDocumentLinkPrefetchError(
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+  nodeKey: string,
+  error: unknown,
+): void {
+  if (requestLifecycleDefaultHandlingPrevented(error) || !onError) return
+  try {
+    onError({
+      error:
+        error instanceof ExpoTurboError
+          ? error
+          : new RequestError("Document link press-in prefetch failed"),
+      nodeKey,
+    })
+  } catch {
+    queueMicrotask(() => {
+      throw new StateError("Document link press-in prefetch error reporting failed")
+    })
+  }
+}
 
 export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumentLinkPrefetch {
   const { documentController, documentPrefetchPolicy, documentPreloader, onError, session } =
@@ -1528,7 +1575,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
   const rawHref = link ? attributeValue(link, "href") : undefined
   const mounted = useRef(true)
   const onErrorRef = useRef(onError)
-  const prefetchConfiguration = useRef({
+  const prefetchConfiguration = useRef<DocumentLinkPrefetchConfiguration>({
     documentController,
     documentPrefetchPolicy,
     documentPreloader,
@@ -1538,11 +1585,39 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
     rawHref,
     session,
   })
+  const activePrefetch = useRef<ActiveDocumentLinkPrefetch | undefined>(undefined)
+  const reportLeaseFailure = useCallback((active: ActiveDocumentLinkPrefetch, error: unknown) => {
+    const { configuration, prefetchUrl } = active
+    const { link: activeLink, nodeKey: activeNodeKey, rawHref: activeRawHref } = configuration
+    if (
+      !mounted.current ||
+      prefetchConfiguration.current !== configuration ||
+      !activeLink ||
+      !activeNodeKey ||
+      configuration.session.tree.getNodeByKey(activeNodeKey) !== activeLink ||
+      attributeValue(activeLink, "href") !== activeRawHref ||
+      pressInDocumentPrefetchUrl(configuration.session, activeLink, configuration.href) !==
+        prefetchUrl
+    ) {
+      return
+    }
+    reportDocumentLinkPrefetchError(onErrorRef.current, activeNodeKey, error)
+  }, [])
+  const releaseActivePrefetch = useCallback(
+    (active: ActiveDocumentLinkPrefetch) => {
+      try {
+        active.release()
+      } catch (error) {
+        reportLeaseFailure(active, error)
+      }
+    },
+    [reportLeaseFailure],
+  )
   useLayoutEffect(() => {
     onErrorRef.current = onError
   }, [onError])
   useLayoutEffect(() => {
-    prefetchConfiguration.current = {
+    const configuration: DocumentLinkPrefetchConfiguration = {
       documentController,
       documentPrefetchPolicy,
       documentPreloader,
@@ -1552,6 +1627,12 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       rawHref,
       session,
     }
+    prefetchConfiguration.current = configuration
+    const active = activePrefetch.current
+    if (active && active.configuration !== configuration && !active.committed) {
+      activePrefetch.current = undefined
+      releaseActivePrefetch(active)
+    }
   }, [
     documentController,
     documentPrefetchPolicy,
@@ -1560,16 +1641,25 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
     link,
     nodeKey,
     rawHref,
+    releaseActivePrefetch,
     session,
   ])
   useLayoutEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
+      const active = activePrefetch.current
+      activePrefetch.current = undefined
+      if (active && !active.committed) releaseActivePrefetch(active)
     }
-  }, [])
+  }, [releaseActivePrefetch])
 
-  return useCallback(() => {
+  const prefetch = useCallback(() => {
+    const prior = activePrefetch.current
+    if (prior && !prior.committed) {
+      activePrefetch.current = undefined
+      releaseActivePrefetch(prior)
+    }
     const configuration = prefetchConfiguration.current
     if (
       configuration.documentPreloader !== documentPreloader ||
@@ -1646,16 +1736,43 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       return
     }
 
+    let commit: () => void = () => undefined
     let preload: Promise<unknown>
+    let release: () => void = () => undefined
     try {
-      preload = documentPreloader.preload(prefetchUrl)
+      const leaseRequester = documentPreloader as Partial<DocumentPreloadLeaseRequester>
+      if (typeof leaseRequester.retain === "function") {
+        const lease = leaseRequester.retain(prefetchUrl)
+        if (
+          !lease ||
+          typeof lease !== "object" ||
+          typeof lease.commit !== "function" ||
+          typeof lease.release !== "function"
+        ) {
+          throw new StateError("Document link prefetch lease is invalid")
+        }
+        commit = () => lease.commit()
+        preload = lease.promise
+        release = () => lease.release()
+      } else {
+        preload = documentPreloader.preload(prefetchUrl)
+      }
     } catch (error) {
       preload = Promise.reject(error)
     }
+    const active: ActiveDocumentLinkPrefetch = {
+      commit,
+      committed: false,
+      configuration,
+      prefetchUrl,
+      release,
+    }
+    activePrefetch.current = active
     const activeLink = link
     const linkNodeKey = nodeKey
     void Promise.resolve(preload).catch((error) => {
       if (
+        activePrefetch.current !== active ||
         !mounted.current ||
         prefetchConfiguration.current !== configuration ||
         session.tree.getNodeByKey(linkNodeKey) !== activeLink ||
@@ -1664,22 +1781,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       ) {
         return
       }
-      if (requestLifecycleDefaultHandlingPrevented(error)) return
-      const observer = onErrorRef.current
-      if (!observer) return
-      try {
-        observer({
-          error:
-            error instanceof ExpoTurboError
-              ? error
-              : new RequestError("Document link press-in prefetch failed"),
-          nodeKey: linkNodeKey,
-        })
-      } catch {
-        queueMicrotask(() => {
-          throw new StateError("Document link press-in prefetch error reporting failed")
-        })
-      }
+      reportDocumentLinkPrefetchError(onErrorRef.current, linkNodeKey, error)
     })
   }, [
     documentController,
@@ -1689,8 +1791,39 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
     link,
     nodeKey,
     rawHref,
+    releaseActivePrefetch,
     session,
   ])
+
+  const cancel = useCallback(() => {
+    const active = activePrefetch.current
+    if (!active || active.committed) return
+    queueMicrotask(() => {
+      if (activePrefetch.current !== active || active.committed) return
+      activePrefetch.current = undefined
+      releaseActivePrefetch(active)
+    })
+  }, [releaseActivePrefetch])
+
+  const commit = useCallback(() => {
+    const active = activePrefetch.current
+    if (!active || active.committed) return
+    active.committed = true
+    try {
+      active.commit()
+    } catch (error) {
+      if (activePrefetch.current === active) activePrefetch.current = undefined
+      reportLeaseFailure(active, error)
+    }
+  }, [reportLeaseFailure])
+
+  return useMemo(
+    () =>
+      Object.freeze(
+        Object.assign(() => prefetch(), { cancel, commit }),
+      ) as ExpoTurboDocumentLinkPrefetch,
+    [cancel, commit, prefetch],
+  )
 }
 
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
