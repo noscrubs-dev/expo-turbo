@@ -19,8 +19,32 @@ const RESERVED_PARAMETERS = new Set(["channel", "signed_stream_name"])
 
 export type CableStreamSourceRelease = () => void
 
+export type CableSubscriptionState =
+  | "connected"
+  | "connecting"
+  | "disconnected"
+  | "reconnecting"
+  | "rejected"
+
+export interface CableStreamSourceConnection {
+  readonly nodeKey: string
+  readonly state: CableSubscriptionState
+}
+
+export interface CableStreamSourceConnectionSnapshot {
+  readonly revision: number
+  readonly sources: readonly CableStreamSourceConnection[]
+}
+
+export type CableStreamSourceConnectionListener = () => void
+
 export interface CableStreamSourceCollection {
   retain(source: ProtocolElement): CableStreamSourceRelease
+}
+
+export interface ObservableCableStreamSourceCollection extends CableStreamSourceCollection {
+  readonly connectionSnapshot: CableStreamSourceConnectionSnapshot
+  subscribeConnection(listener: CableStreamSourceConnectionListener): () => void
 }
 
 export interface CableStreamSourceRegistryOptions {
@@ -31,6 +55,7 @@ export interface CableStreamSourceRegistryOptions {
 
 interface SourceRecord {
   active: boolean
+  connectionState: CableSubscriptionState
   descriptorError: SubscriptionError | undefined
   descriptorRevision: number
   identifier: string
@@ -45,6 +70,7 @@ interface SourceRecord {
 interface TransportRecord {
   active: boolean
   readonly identifier: string
+  state: CableSubscriptionState
   readonly sources: Set<SourceRecord>
   subscription: CableSubscription | undefined
 }
@@ -121,8 +147,13 @@ function redactedSubscriptionError(message: string, target?: string): Subscripti
   return new SubscriptionError(message, target ? { target } : {})
 }
 
-export class CableStreamSourceRegistry implements CableStreamSourceCollection {
+export class CableStreamSourceRegistry implements ObservableCableStreamSourceCollection {
   private active = true
+  private connectionStateSnapshot: CableStreamSourceConnectionSnapshot = Object.freeze({
+    revision: 0,
+    sources: Object.freeze([]),
+  })
+  private readonly connectionListeners = new Set<CableStreamSourceConnectionListener>()
   private dispatching = false
   private readonly messages: QueuedMessage[] = []
   private readonly onError: (error: ExpoTurboError) => void
@@ -148,6 +179,24 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     this.onError = options.onError
     this.onMessage = options.onMessage
     this.streamOptions = Object.freeze({ ...(options.streamOptions ?? {}) })
+  }
+
+  get connectionSnapshot(): CableStreamSourceConnectionSnapshot {
+    return this.connectionStateSnapshot
+  }
+
+  subscribeConnection(listener: CableStreamSourceConnectionListener): () => void {
+    this.assertActive()
+    if (typeof listener !== "function") {
+      throw new StateError("Cable stream source connection listener must be a function")
+    }
+    this.connectionListeners.add(listener)
+    let subscribed = true
+    return () => {
+      if (!subscribed) return
+      subscribed = false
+      this.connectionListeners.delete(listener)
+    }
   }
 
   retain(node: ProtocolElement): CableStreamSourceRelease {
@@ -203,6 +252,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     }
     const record: SourceRecord = {
       active: true,
+      connectionState: "connecting",
       descriptorError: undefined,
       descriptorRevision: 0,
       identifier,
@@ -233,6 +283,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
       this.report(reported)
       throw reported
     }
+    this.publishConnectionSnapshot()
     return this.releaseToken(record)
   }
 
@@ -241,6 +292,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     this.active = false
     this.messages.length = 0
     for (const record of [...this.sources.values()]) this.releaseSource(record, true)
+    this.connectionListeners.clear()
   }
 
   private acquireTransport(source: SourceRecord): void {
@@ -248,6 +300,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     if (current?.active) {
       current.sources.add(source)
       source.transport = current
+      this.setSourceConnectionState(source, current.state)
       return
     }
 
@@ -255,16 +308,22 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     const transport: TransportRecord = {
       active: true,
       identifier: source.identifier,
+      state: "connecting",
       sources: new Set([source]),
       subscription: undefined,
     }
     source.transport = transport
     this.transports.set(transport.identifier, transport)
+    this.setTransportConnectionState(transport, "connecting")
     const callbacks: CableCallbacks = {
-      connected: () => undefined,
-      disconnected: () => undefined,
+      connected: () => this.setTransportConnectionState(transport, "connected"),
+      disconnected: (willAttemptReconnect) =>
+        this.setTransportConnectionState(
+          transport,
+          willAttemptReconnect === true ? "reconnecting" : "disconnected",
+        ),
       received: (message) => this.receive(transport, message),
-      rejected: () => undefined,
+      rejected: () => this.setTransportConnectionState(transport, "rejected"),
     }
 
     let subscription: unknown
@@ -323,6 +382,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
           : redactedSubscriptionError("Cable stream source descriptor changed", source.node.key)
       source.descriptorError = reported
       this.detachTransport(source)
+      this.setSourceConnectionState(source, "disconnected")
       if (
         !source.active ||
         source.descriptorRevision !== descriptorRevision ||
@@ -446,6 +506,7 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
     if (unregisterDisposal) record.unregisterDisposal()
 
     this.detachTransport(record)
+    this.publishConnectionSnapshot()
   }
 
   private detachTransport(source: SourceRecord): void {
@@ -468,6 +529,66 @@ export class CableStreamSourceRegistry implements CableStreamSourceCollection {
       if (source.transport === transport) source.transport = undefined
     }
     transport.sources.clear()
+  }
+
+  private setSourceConnectionState(source: SourceRecord, state: CableSubscriptionState): void {
+    if (!source.active || source.connectionState === state) return
+    source.connectionState = state
+    this.publishConnectionSnapshot()
+  }
+
+  private setTransportConnectionState(
+    transport: TransportRecord,
+    state: CableSubscriptionState,
+  ): void {
+    if (!this.active || !transport.active || !this.hasOwners(transport)) return
+    transport.state = state
+    let changed = false
+    for (const source of transport.sources) {
+      if (!source.active || source.transport !== transport || source.connectionState === state) {
+        continue
+      }
+      source.connectionState = state
+      changed = true
+    }
+    if (changed) this.publishConnectionSnapshot()
+  }
+
+  private publishConnectionSnapshot(): void {
+    const sources = [...this.sources.values()]
+      .filter((source) => source.active)
+      .map((source) => Object.freeze({ nodeKey: source.node.key, state: source.connectionState }))
+      .sort((left, right) =>
+        left.nodeKey < right.nodeKey ? -1 : left.nodeKey > right.nodeKey ? 1 : 0,
+      )
+    const current = this.connectionStateSnapshot.sources
+    if (
+      current.length === sources.length &&
+      current.every(
+        (source, index) =>
+          source.nodeKey === sources[index]?.nodeKey && source.state === sources[index]?.state,
+      )
+    ) {
+      return
+    }
+    this.connectionStateSnapshot = Object.freeze({
+      revision: this.connectionStateSnapshot.revision + 1,
+      sources: Object.freeze(sources),
+    })
+    const published = this.connectionStateSnapshot
+    const observerFailures: unknown[] = []
+    for (const listener of [...this.connectionListeners]) {
+      try {
+        const result: unknown = listener()
+        if (result !== undefined) consumeUnexpectedResult(result)
+      } catch (error) {
+        observerFailures.push(error)
+      }
+      if (this.connectionStateSnapshot !== published) break
+    }
+    if (observerFailures.length > 0) {
+      this.report(redactedSubscriptionError("Cable stream source connection observer failed"))
+    }
   }
 
   private unsubscribe(transport: TransportRecord, target: string): void {

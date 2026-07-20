@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test"
 
 import type { CableAdapter, CableCallbacks, CableSubscription } from "../adapters"
-import { CableStreamSourceRegistry } from "./cable-stream-sources"
+import {
+  type CableStreamSourceConnectionSnapshot,
+  CableStreamSourceRegistry,
+} from "./cable-stream-sources"
 import { StateError, SubscriptionError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
@@ -61,6 +64,272 @@ async function flushRelease(): Promise<void> {
 }
 
 describe("Cable stream source registry", () => {
+  test("publishes redacted per-source connection state for shared subscriptions", async () => {
+    const document = session(`<Gallery>
+      <turbo-cable-stream-source
+        id="first"
+        channel="Turbo::StreamsChannel"
+        signed-stream-name="signed-secret"
+      />
+      <turbo-cable-stream-source
+        id="second"
+        channel="Turbo::StreamsChannel"
+        signed-stream-name="signed-secret"
+      />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+    })
+    const snapshots: CableStreamSourceConnectionSnapshot[] = []
+    const unsubscribe = registry.subscribeConnection(() => {
+      snapshots.push(registry.connectionSnapshot)
+    })
+
+    const initial = registry.connectionSnapshot
+    expect(initial).toEqual({ revision: 0, sources: [] })
+    expect(Object.isFrozen(initial)).toBe(true)
+    expect(Object.isFrozen(initial.sources)).toBe(true)
+
+    const releaseFirst = registry.retain(source(document, "first"))
+    const connectingFirst = registry.connectionSnapshot
+    expect(connectingFirst).toEqual({
+      revision: 1,
+      sources: [{ nodeKey: "id:first", state: "connecting" }],
+    })
+    expect(JSON.stringify(connectingFirst)).not.toContain("signed-secret")
+
+    const releaseSecond = registry.retain(source(document, "second"))
+    const connectingShared = registry.connectionSnapshot
+    expect(connectingShared).toEqual({
+      revision: 2,
+      sources: [
+        { nodeKey: "id:first", state: "connecting" },
+        { nodeKey: "id:second", state: "connecting" },
+      ],
+    })
+    expect(cable.records).toHaveLength(1)
+
+    cable.records[0]?.callbacks.connected(false)
+    const connected = registry.connectionSnapshot
+    expect(connected).toEqual({
+      revision: 3,
+      sources: [
+        { nodeKey: "id:first", state: "connected" },
+        { nodeKey: "id:second", state: "connected" },
+      ],
+    })
+    cable.records[0]?.callbacks.connected(true)
+    expect(registry.connectionSnapshot).toBe(connected)
+
+    cable.records[0]?.callbacks.disconnected(true)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:first", state: "reconnecting" },
+      { nodeKey: "id:second", state: "reconnecting" },
+    ])
+    cable.records[0]?.callbacks.disconnected()
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:first", state: "disconnected" },
+      { nodeKey: "id:second", state: "disconnected" },
+    ])
+    cable.records[0]?.callbacks.rejected()
+    const rejected = registry.connectionSnapshot
+    expect(rejected.sources).toEqual([
+      { nodeKey: "id:first", state: "rejected" },
+      { nodeKey: "id:second", state: "rejected" },
+    ])
+    expect(Object.isFrozen(rejected.sources[0])).toBe(true)
+
+    releaseFirst()
+    await flushRelease()
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:second", state: "rejected" },
+    ])
+    releaseSecond()
+    await flushRelease()
+    const released = registry.connectionSnapshot
+    expect(released.sources).toEqual([])
+    cable.records[0]?.callbacks.connected(false)
+    expect(registry.connectionSnapshot).toBe(released)
+    expect(snapshots).toHaveLength(8)
+    expect(snapshots[0]).toBe(connectingFirst)
+    expect(snapshots[1]).toBe(connectingShared)
+    expect(snapshots[2]).toBe(connected)
+    expect(snapshots[5]).toBe(rejected)
+    expect(snapshots[7]).toBe(released)
+    unsubscribe()
+    expect(errors).toEqual([])
+  })
+
+  test("rebinds connection state and ignores stale transport callbacks", async () => {
+    const document = session(`<Gallery>
+      <turbo-cable-stream-source id="source" channel="FirstChannel" />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+    })
+
+    const release = registry.retain(source(document, "source"))
+    const first = cable.records[0]
+    if (!first) throw new Error("Missing first subscription")
+    first.callbacks.connected(false)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connected" },
+    ])
+
+    document.setAttribute("id:source", "channel", "SecondChannel")
+    const second = cable.records[1]
+    if (!second) throw new Error("Missing second subscription")
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connecting" },
+    ])
+    first.callbacks.rejected()
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connecting" },
+    ])
+
+    second.callbacks.rejected()
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "rejected" },
+    ])
+    document.removeAttribute("id:source", "channel")
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "disconnected" },
+    ])
+    second.callbacks.connected(false)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "disconnected" },
+    ])
+
+    release()
+    await flushRelease()
+    expect(registry.connectionSnapshot.sources).toEqual([])
+    expect(errors).toEqual([
+      new SubscriptionError("Cable stream source channel must be a nonblank token", {
+        target: "id:source",
+      }),
+    ])
+  })
+
+  test("isolates connection observers without exposing their failures", async () => {
+    const document = session(`<Gallery>
+      <turbo-cable-stream-source id="source" channel="DemoChannel" />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+    })
+    let selfCalls = 0
+    let otherCalls = 0
+    let unsubscribeSelf: () => void = () => undefined
+    unsubscribeSelf = registry.subscribeConnection(() => {
+      selfCalls += 1
+      unsubscribeSelf()
+      throw new Error("private connection observer failure")
+    })
+    registry.subscribeConnection(() => {
+      otherCalls += 1
+    })
+
+    const release = registry.retain(source(document, "source"))
+    cable.records[0]?.callbacks.connected(false)
+    expect(selfCalls).toBe(1)
+    expect(otherCalls).toBe(2)
+    expect(errors).toEqual([
+      new SubscriptionError("Cable stream source connection observer failed"),
+    ])
+    expect(errors[0]?.message).not.toContain("private")
+
+    release()
+    await flushRelease()
+    expect(otherCalls).toBe(3)
+  })
+
+  test("keeps only the current transport after connection-observer rebind reentrancy", async () => {
+    const document = session(`<Gallery>
+      <turbo-cable-stream-source id="source" channel="FirstChannel" />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+    })
+    let rebound = false
+    registry.subscribeConnection(() => {
+      if (rebound || registry.connectionSnapshot.sources[0]?.state !== "connecting") return
+      rebound = true
+      document.setAttribute("id:source", "channel", "FinalChannel")
+    })
+
+    const release = registry.retain(source(document, "source"))
+
+    expect(cable.records.map((record) => record.identifier)).toEqual([
+      JSON.stringify({ channel: "FirstChannel", signed_stream_name: null }),
+      JSON.stringify({ channel: "FinalChannel", signed_stream_name: null }),
+    ])
+    expect(cable.records[0]?.unsubscribeCalls).toBe(1)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connecting" },
+    ])
+    cable.records[0]?.callbacks.connected(false)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connecting" },
+    ])
+    cable.records[1]?.callbacks.connected(false)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connected" },
+    ])
+
+    release()
+    await flushRelease()
+    expect(cable.records[1]?.unsubscribeCalls).toBe(1)
+    expect(errors).toEqual([])
+  })
+
+  test("does not duplicate a later observer after a reentrant connection-state rebind", async () => {
+    const document = session(`<Gallery>
+      <turbo-cable-stream-source id="source" channel="FirstChannel" />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+    })
+    const firstRevisions: number[] = []
+    const secondRevisions: number[] = []
+    let rebound = false
+    registry.subscribeConnection(() => {
+      const snapshot = registry.connectionSnapshot
+      firstRevisions.push(snapshot.revision)
+      if (rebound || snapshot.sources[0]?.state !== "connected") return
+      rebound = true
+      document.setAttribute("id:source", "channel", "FinalChannel")
+    })
+    registry.subscribeConnection(() => {
+      secondRevisions.push(registry.connectionSnapshot.revision)
+    })
+
+    const release = registry.retain(source(document, "source"))
+    cable.records[0]?.callbacks.connected(false)
+
+    expect(firstRevisions).toEqual([1, 2, 3])
+    expect(secondRevisions).toEqual([1, 3])
+    expect(cable.records[0]?.unsubscribeCalls).toBe(1)
+    expect(cable.records).toHaveLength(2)
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "connecting" },
+    ])
+
+    release()
+    await flushRelease()
+    expect(cable.records[1]?.unsubscribeCalls).toBe(1)
+    expect(errors).toEqual([])
+  })
+
   test("canonicalizes the full identifier and refcounts duplicate active sources", async () => {
     const document = session(`<Gallery>
       <turbo-cable-stream-source
