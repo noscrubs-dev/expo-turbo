@@ -66,7 +66,7 @@ export interface NavigationAdapter {
 
 export interface CableCallbacks {
   connected(reconnected: boolean): void
-  disconnected(): void
+  disconnected(willAttemptReconnect?: boolean): void
   received(message: string): void
   rejected(): void
 }
