@@ -16,6 +16,8 @@ import {
   prepareFrameHistoryCommit,
 } from "./frame-history"
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
+import type { FrameRenderMethod } from "./frame-lifecycle"
+import { withFrameLoadRenderMethod } from "./frame-load-render-method-internal"
 import {
   FRAME_RENDER_PREPARE_OPTION,
   FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD,
@@ -79,6 +81,13 @@ function loadingStyle(frame: ProtocolElement): FrameLoadingStyle {
 function appearanceVisitAction(frame: ProtocolElement): FrameHistoryAction | "restore" | undefined {
   const value = attributeValue(frame, "data-turbo-action")
   return value === "advance" || value === "replace" || value === "restore" ? value : undefined
+}
+
+function reloadRenderMethod(frame: ProtocolElement): FrameRenderMethod {
+  const source = attributeValue(frame, "src")
+  return source && source.trim() !== "" && attributeValue(frame, "refresh") === "morph"
+    ? "morph"
+    : "replace"
 }
 
 export class FrameController {
@@ -217,13 +226,19 @@ export class FrameController {
       this.connected = true
       this.publish()
     }
-    return source === this.source ? this.reload() : this.setSource(source)
+    return source === this.source ? this.reloadWithRenderMethod("replace") : this.setSource(source)
   }
 
   reload(): Promise<FrameLoadReport | undefined> {
     this.assertLoadAdmission()
+    return this.reloadWithRenderMethod(reloadRenderMethod(this.frame))
+  }
+
+  private reloadWithRenderMethod(
+    renderMethod: FrameRenderMethod,
+  ): Promise<FrameLoadReport | undefined> {
     this.needsLoad = this.source !== undefined
-    return this.loadSourceIfNeeded(true)
+    return this.loadSourceIfNeeded(true, renderMethod)
   }
 
   setDisabled(disabled: boolean): Promise<FrameLoadReport | undefined> {
@@ -317,7 +332,10 @@ export class FrameController {
     return this.frameNode
   }
 
-  private loadSourceIfNeeded(force: boolean): Promise<FrameLoadReport | undefined> {
+  private loadSourceIfNeeded(
+    force: boolean,
+    renderMethod: FrameRenderMethod = "replace",
+  ): Promise<FrameLoadReport | undefined> {
     const frame = this.frame
     const source = attributeValue(frame, "src")
     const disabled = attributeValue(frame, "disabled") !== undefined
@@ -325,12 +343,13 @@ export class FrameController {
       return Promise.resolve(undefined)
     }
 
-    return this.startLoad(source)
+    return this.startLoad(source, undefined, renderMethod)
   }
 
   private startLoad(
     source: string,
     historyPlan?: FrameHistoryCommitPlan,
+    renderMethod: FrameRenderMethod = "replace",
   ): Promise<FrameLoadReport | undefined> {
     this.assertLoadAdmission()
     this.cancelVisitFinalization()
@@ -347,17 +366,24 @@ export class FrameController {
     this.needsLoad = false
     this.status = "loading"
     this.publish()
-    const request = this.loader.load(this.frameId, source, {
-      ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
-      owner: this.requestOwner,
-      [FRAME_RENDER_PREPARE_OPTION]: (frame, candidate) => {
-        this.trackFrameRender(
-          this.loader[FRAME_REQUEST_LOADER_PREPARE_RENDER](frame, candidate),
-          epoch,
-        )
-        return undefined
-      },
-    })
+    const request = this.loader.load(
+      this.frameId,
+      source,
+      withFrameLoadRenderMethod(
+        {
+          ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
+          owner: this.requestOwner,
+          [FRAME_RENDER_PREPARE_OPTION]: (frame, candidate, method) => {
+            this.trackFrameRender(
+              this.loader[FRAME_REQUEST_LOADER_PREPARE_RENDER](frame, candidate, method),
+              epoch,
+            )
+            return undefined
+          },
+        },
+        renderMethod,
+      ),
+    )
     if (historyPlan && epoch === this.loadEpoch) this.publish()
     const loaded = request.then(
       async (report) => {

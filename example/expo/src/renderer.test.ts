@@ -7875,7 +7875,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("exposes Frame GET busy accessibility without remounting stable native boundaries", async () => {
+  test("preserves a stable Frame child through direct refresh morph while publishing busy accessibility", async () => {
     const pending: {
       request: TurboRequest
       resolve: (response: TurboResponse) => void
@@ -7947,10 +7947,15 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="frame" src="/frame"><FrameProbe /><StableProbe /></turbo-frame></Gallery>',
+        '<Gallery><turbo-frame id="frame" src="/frame" refresh="morph"><FrameProbe id="probe" /><StableProbe /></turbo-frame></Gallery>',
         { url: "https://example.test/gallery" },
       ),
     )
+    const lifecycle = new FrameLifecycle()
+    const renderMethods: string[] = []
+    lifecycle.subscribe("frame-render", (event) => {
+      renderMethods.push(event.detail.renderMethod)
+    })
     const frames = new FrameControllerRegistry(
       session,
       new FrameRequestLoader(
@@ -7960,6 +7965,7 @@ describe("React protocol renderer", () => {
             new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
         },
         { next: () => `request-${pending.length + 1}` },
+        { frameLifecycle: lifecycle },
       ),
     )
     const errors: ExpoTurboRenderError[] = []
@@ -8037,20 +8043,21 @@ describe("React protocol renderer", () => {
       completed = controller.reload()
     })
     pending[3]?.resolve(
-      response(200, '<turbo-frame id="frame"><FrameProbe /><StableProbe /></turbo-frame>'),
+      response(200, '<turbo-frame id="frame"><FrameProbe id="probe" /><StableProbe /></turbo-frame>'),
     )
     await act(async () => {
       await completed
     })
     expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "completed" })
-    expect(renderedProbe()).toMatchObject({ busy: false, instance: 2, status: "completed" })
+    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "completed" })
     expect(stableRenders).toBe(2)
     expect(boundaryUnmounts).toEqual([])
-    expect(probeUnmounts).toEqual([1])
+    expect(probeUnmounts).toEqual([])
+    expect(renderMethods).toEqual(["morph"])
 
     act(() => renderer.unmount())
     expect(boundaryUnmounts).toEqual([1])
-    expect(probeUnmounts).toEqual([1, 2])
+    expect(probeUnmounts).toEqual([1])
   })
 
   test("keeps one Frame controller owner through StrictMode effect replay", () => {

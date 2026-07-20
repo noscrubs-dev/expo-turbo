@@ -6,6 +6,7 @@ import {
   FrameLoadEvent,
   FrameRenderEvent,
   type FrameRenderEventDetail,
+  type FrameRenderMethod,
 } from "./frame-lifecycle"
 import type { DocumentSession } from "./session"
 import type { ProtocolElement } from "./tree"
@@ -112,6 +113,7 @@ export function prepareFrameRender(
     frame: ProtocolElement
     frameId: string
     ownerIsCurrent?: () => boolean
+    renderMethod?: FrameRenderMethod
     url: string
   }>,
 ): PreparedFrameRender {
@@ -119,7 +121,7 @@ export function prepareFrameRender(
   settleStaleFrameRenders(session, binding)
   const commit: FrameRenderEventDetail = Object.freeze({
     frameId: detail.frameId,
-    renderMethod: "replace",
+    renderMethod: detail.renderMethod ?? "replace",
     url: detail.url,
   })
   const treeGeneration = session.treeGeneration

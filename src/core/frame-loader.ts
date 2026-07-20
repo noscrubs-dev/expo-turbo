@@ -32,8 +32,10 @@ import {
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   type FrameLifecycle,
   type FrameMissingEvent,
+  type FrameRenderMethod,
   frameLifecycleOption,
 } from "./frame-lifecycle"
+import { frameLoadRenderMethod } from "./frame-load-render-method-internal"
 import {
   dispatchFrameLoad,
   dispatchFrameRender,
@@ -138,6 +140,7 @@ export interface FrameLoadOptions {
   readonly [FRAME_RENDER_PREPARE_OPTION]?: (
     frame: ProtocolElement,
     candidate: FrameTreeCommitCandidate,
+    renderMethod: FrameRenderMethod,
   ) => undefined
 }
 
@@ -338,12 +341,14 @@ export class FrameRequestLoader {
   [FRAME_REQUEST_LOADER_PREPARE_RENDER](
     frame: ProtocolElement,
     candidate: FrameTreeCommitCandidate,
+    renderMethod: FrameRenderMethod = "replace",
   ): PreparedFrameRender | undefined {
     const checkpoint = this.ownership.checkpointFrame(frame)
     return prepareFrameRender(this.session, {
       frame,
       frameId: candidate.frameId,
       ownerIsCurrent: () => this.ownership.frameCheckpointCurrent(checkpoint),
+      renderMethod,
       url: candidate.url,
     })
   }
@@ -361,6 +366,7 @@ export class FrameRequestLoader {
     source: string,
     options: FrameLoadOptions = {},
   ): Promise<FrameLoadReport> {
+    const renderMethod = frameLoadRenderMethod(options)
     const loadOptions = frameLoadOptions(options)
     const owner = loadOptions.owner
     const url = this.resolveSameOrigin(source, undefined, frameId)
@@ -654,6 +660,7 @@ export class FrameRequestLoader {
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
+          const responseRenderMethod = recurseDepth === 0 ? renderMethod : "replace"
           const prepared = prepareFrameResponseTree(frameId, document)
           const candidate: FrameTreeCommitCandidate = Object.freeze({
             frameId,
@@ -670,6 +677,7 @@ export class FrameRequestLoader {
           const mutation = prepareFrameMutation(this.session, frame, prepared, {
             ...(documentUrl ? { documentUrl } : {}),
             finalUrl: responseUrl,
+            renderMethod: responseRenderMethod,
           })
           if (
             loadOptions.beforeFrameCommit ||
@@ -709,13 +717,18 @@ export class FrameRequestLoader {
                   this.frameLifecycle,
                   prepared,
                   candidate.url,
+                  responseRenderMethod,
                 )
                 renderPreparedFrameMutation(prepared, beforeFrameRenderer)
                 assertPreparedFrameMutationCurrent(this.session, mutation)
                 if (historyPlan) {
                   commitFrameHistoryPlan(historyPlan, this.session, frame, candidate)
                 }
-                const renderResult = loadOptions[FRAME_RENDER_PREPARE_OPTION]?.(frame, candidate)
+                const renderResult = loadOptions[FRAME_RENDER_PREPARE_OPTION]?.(
+                  frame,
+                  candidate,
+                  responseRenderMethod,
+                )
                 if (renderResult !== undefined) {
                   callbackContractError = new RequestError(
                     "Frame render preparation callback must not return a value",

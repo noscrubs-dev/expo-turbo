@@ -57,7 +57,9 @@ describe("Frame render lifecycle coordination", () => {
     const lifecycle = new FrameLifecycle()
     const events: string[] = []
     lifecycle.subscribe("frame-render", (event) => {
-      events.push(`${event.type}:${event.detail.frameId}:${event.detail.url}`)
+      events.push(
+        `${event.type}:${event.detail.frameId}:${event.detail.renderMethod}:${event.detail.url}`,
+      )
     })
     lifecycle.subscribe("frame-load", (event) => {
       events.push(`${event.type}:${event.detail.frameId}:${event.detail.url}`)
@@ -67,6 +69,7 @@ describe("Frame render lifecycle coordination", () => {
     const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
+      renderMethod: "morph",
       url: "https://example.test/frame",
     })
 
@@ -85,7 +88,7 @@ describe("Frame render lifecycle coordination", () => {
     expect(dispatchFrameRender(lifecycle, prepared)).toBe(true)
     expect(dispatchFrameLoad(lifecycle, prepared)).toBe(true)
     expect(events).toEqual([
-      "frame-render:details:https://example.test/frame",
+      "frame-render:details:morph:https://example.test/frame",
       "frame-load:details:https://example.test/frame",
     ])
     release()
