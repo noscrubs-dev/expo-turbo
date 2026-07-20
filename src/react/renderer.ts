@@ -19,6 +19,7 @@ import type {
   AutofocusAdapter,
   DocumentAnchorScrollAdapter,
   DocumentHistoryScrollAdapter,
+  DocumentPrefetchPolicy,
   DocumentRefreshScrollAdapter,
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
@@ -235,6 +236,7 @@ interface RendererContextValue {
   readonly documentAnchorScroll: DocumentAnchorScrollAdapter | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
+  readonly documentPrefetchPolicy: DocumentPrefetchPolicy | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
   readonly documentRefreshScroll: DocumentRefreshScrollAdapter | undefined
   readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
@@ -513,6 +515,7 @@ export interface ExpoTurboProviderProps {
   readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
   readonly documentController?: DocumentVisitController
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
+  readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
   readonly documentPreloader?: DocumentPreloadRequester
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly frameAutoscroll?: FrameAutoscrollAdapter
@@ -560,6 +563,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentAnchorScroll: props.documentAnchorScroll,
       documentController: props.documentController,
       documentHistoryScroll: props.documentHistoryScroll,
+      documentPrefetchPolicy: props.documentPrefetchPolicy,
       documentPreloader: props.documentPreloader,
       documentRefreshScroll: props.documentRefreshScroll,
       frameAutoscroll: props.frameAutoscroll,
@@ -585,6 +589,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentAnchorScroll,
       props.documentController,
       props.documentHistoryScroll,
+      props.documentPrefetchPolicy,
       props.documentPreloader,
       props.documentRefreshScroll,
       props.frameAutoscroll,
@@ -1429,7 +1434,8 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
 export type ExpoTurboDocumentLinkPrefetch = () => void
 
 export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumentLinkPrefetch {
-  const { documentController, documentPreloader, onError, session } = useRenderer()
+  const { documentController, documentPrefetchPolicy, documentPreloader, onError, session } =
+    useRenderer()
   const nodeKey = useContext(ProtocolNodeContext)
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
   const link = node && isElement(node) ? node : undefined
@@ -1438,6 +1444,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
   const onErrorRef = useRef(onError)
   const prefetchConfiguration = useRef({
     documentController,
+    documentPrefetchPolicy,
     documentPreloader,
     href,
     link,
@@ -1451,6 +1458,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
   useLayoutEffect(() => {
     prefetchConfiguration.current = {
       documentController,
+      documentPrefetchPolicy,
       documentPreloader,
       href,
       link,
@@ -1458,7 +1466,16 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       rawHref,
       session,
     }
-  }, [documentController, documentPreloader, href, link, nodeKey, rawHref, session])
+  }, [
+    documentController,
+    documentPrefetchPolicy,
+    documentPreloader,
+    href,
+    link,
+    nodeKey,
+    rawHref,
+    session,
+  ])
   useLayoutEffect(() => {
     mounted.current = true
     return () => {
@@ -1471,6 +1488,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
     if (
       configuration.documentPreloader !== documentPreloader ||
       configuration.documentController !== documentController ||
+      configuration.documentPrefetchPolicy !== documentPrefetchPolicy ||
       configuration.href !== href ||
       configuration.link !== link ||
       configuration.nodeKey !== nodeKey ||
@@ -1487,7 +1505,51 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
     }
     const prefetchUrl = pressInDocumentPrefetchUrl(session, link, href)
     if (!prefetchUrl) return
+    const policyAllowsPrefetch = () => {
+      if (documentPrefetchPolicy === undefined) return true
+      let allowed: unknown
+      try {
+        allowed = documentPrefetchPolicy.canPrefetch(prefetchUrl)
+      } catch {
+        allowed = undefined
+      }
+      if (typeof allowed === "boolean") return allowed
+      consumeUnexpectedAdapterResult(allowed)
+      const observer = onErrorRef.current
+      if (!observer) return false
+      try {
+        observer({
+          error: new StateError("Document link prefetch policy check failed"),
+          nodeKey,
+        })
+      } catch {
+        queueMicrotask(() => {
+          throw new StateError("Document link prefetch policy error reporting failed")
+        })
+      }
+      return false
+    }
+    if (!policyAllowsPrefetch()) return
+    if (
+      !mounted.current ||
+      prefetchConfiguration.current !== configuration ||
+      session.tree.getNodeByKey(nodeKey) !== link ||
+      attributeValue(link, "href") !== rawHref ||
+      pressInDocumentPrefetchUrl(session, link, href) !== prefetchUrl
+    ) {
+      return
+    }
     if (!dispatchDocumentVisitBeforePrefetch(documentController, nodeKey, prefetchUrl)) return
+    if (
+      !mounted.current ||
+      prefetchConfiguration.current !== configuration ||
+      session.tree.getNodeByKey(nodeKey) !== link ||
+      attributeValue(link, "href") !== rawHref ||
+      pressInDocumentPrefetchUrl(session, link, href) !== prefetchUrl
+    ) {
+      return
+    }
+    if (!policyAllowsPrefetch()) return
     if (
       !mounted.current ||
       prefetchConfiguration.current !== configuration ||
@@ -1533,7 +1595,16 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         })
       }
     })
-  }, [documentController, documentPreloader, href, link, nodeKey, rawHref, session])
+  }, [
+    documentController,
+    documentPrefetchPolicy,
+    documentPreloader,
+    href,
+    link,
+    nodeKey,
+    rawHref,
+    session,
+  ])
 }
 
 export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {

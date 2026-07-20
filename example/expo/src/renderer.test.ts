@@ -19,6 +19,7 @@ import {
   defineStyleAdapter,
   type DocumentAnchorScrollAdapter,
   type DocumentHistoryScrollAdapter,
+  type DocumentPrefetchPolicy,
   type DocumentRefreshScrollAdapter,
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
@@ -511,6 +512,7 @@ function renderDocumentLinks(
   createProviderOptions?: (session: DocumentSession) => Readonly<{
     autofocus?: AutofocusAdapter
     documentAnchorScroll?: DocumentAnchorScrollAdapter
+    documentPrefetchPolicy?: DocumentPrefetchPolicy
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -647,6 +649,7 @@ function renderPreloadingDocumentLinks(
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
   options: Readonly<{
     documentFetch?: (request: TurboRequest) => Promise<TurboResponse>
+    documentPrefetchPolicy?: DocumentPrefetchPolicy
     onError?: (event: ExpoTurboRenderError) => void
     prepareSession?: (session: DocumentSession) => void
     requestLifecycle?: RequestLifecycle
@@ -682,6 +685,9 @@ function renderPreloadingDocumentLinks(
         options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
       )
       return {
+        ...(options.documentPrefetchPolicy === undefined
+          ? {}
+          : { documentPrefetchPolicy: options.documentPrefetchPolicy }),
         documentPreloader: preloader,
         ...(options.onError ? { onError: options.onError } : {}),
         ...(options.strict ? { strict: true } : {}),
@@ -4901,6 +4907,12 @@ describe("React protocol renderer", () => {
     const requests: TurboRequest[] = []
     const lifecycle = new DocumentVisitLifecycle()
     const requestLifecycle = new RequestLifecycle()
+    const policy: DocumentPrefetchPolicy = {
+      canPrefetch(url) {
+        events.push(`policy:${url}`)
+        return true
+      },
+    }
     lifecycle.subscribe("before-prefetch", (event) => {
       events.push(`before-prefetch:${event.detail.nodeKey}:${event.detail.url}`)
       expect(Object.isFrozen(event)).toBe(true)
@@ -4931,12 +4943,16 @@ describe("React protocol renderer", () => {
           url: request.url,
         }
       },
-      { requestLifecycle, visitLifecycle: lifecycle },
+      { documentPrefetchPolicy: policy, requestLifecycle, visitLifecycle: lifecycle },
     )
 
     act(() => harness.prefetch("/next"))
 
-    expect(events).toEqual(["before-prefetch:id:link:https://example.test/next"])
+    expect(events).toEqual([
+      "policy:https://example.test/next",
+      "before-prefetch:id:link:https://example.test/next",
+      "policy:https://example.test/next",
+    ])
     expect(harness.requestIdCount()).toBe(0)
     expect(harness.cache.size).toBe(0)
     expect(requests).toEqual([])
@@ -4947,7 +4963,9 @@ describe("React protocol renderer", () => {
     })
 
     expect(events).toEqual([
+      "policy:https://example.test/next",
       "before-prefetch:id:link:https://example.test/next",
+      "policy:https://example.test/next",
       "before-fetch-request",
     ])
     expect(requests).toHaveLength(1)
@@ -4959,6 +4977,63 @@ describe("React protocol renderer", () => {
     expect(harness.requestIdCount()).toBe(1)
     expect(harness.cache.has("https://example.test/next")).toBe(true)
     expect(harness.session.revision).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("uses document prefetch policy as a silent press-in admission gate", async () => {
+    const policyUrls: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const prefetchRequests: TurboRequest[] = []
+    const documentRequests: TurboRequest[] = []
+    lifecycle.subscribe("before-prefetch", () => {
+      throw new Error("denied prefetch must not dispatch lifecycle")
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      async (request) => {
+        prefetchRequests.push(request)
+        throw new Error("denied prefetch must not fetch")
+      },
+      {
+        documentFetch: async (request) => {
+          documentRequests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => '<Gallery><DemoText id="visited">Visited</DemoText></Gallery>',
+            url: request.url,
+          }
+        },
+        documentPrefetchPolicy: {
+          canPrefetch(url) {
+            policyUrls.push(url)
+            return false
+          },
+        },
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(policyUrls).toEqual(["https://example.test/next"])
+    expect(prefetchRequests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    await act(async () => {
+      await expect(harness.activation("/next")()).resolves.toMatchObject({
+        status: "committed",
+        url: "https://example.test/next",
+      })
+    })
+    expect(documentRequests).toHaveLength(1)
+    expect(harness.session.tree.getElementById("visited")).toBeDefined()
 
     act(() => harness.renderer.unmount())
   })
@@ -5050,6 +5125,182 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("fails closed when document prefetch policy changes the live link", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    let session: DocumentSession | undefined
+    let lifecycleEvents = 0
+    lifecycle.subscribe("before-prefetch", () => {
+      lifecycleEvents += 1
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/before" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("policy-mutated prefetch must not fetch")
+      },
+      {
+        documentPrefetchPolicy: {
+          canPrefetch() {
+            if (!session) throw new Error("preload session was not captured")
+            session.setAttribute("id:link", "href", "/after")
+            return true
+          },
+        },
+        prepareSession: (value) => {
+          session = value
+        },
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    act(() => harness.prefetch("/before"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(lifecycleEvents).toBe(0)
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rechecks document prefetch policy after before-prefetch", async () => {
+    const calls: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    let allowed = true
+    lifecycle.subscribe("before-prefetch", () => {
+      calls.push("before-prefetch")
+      allowed = false
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("policy-rejected prefetch must not fetch")
+      },
+      {
+        documentPrefetchPolicy: {
+          canPrefetch(url) {
+            calls.push(`policy:${url}`)
+            return allowed
+          },
+        },
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(calls).toEqual([
+      "policy:https://example.test/next",
+      "before-prefetch",
+      "policy:https://example.test/next",
+    ])
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when the post-lifecycle policy check changes the live link", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    let calls = 0
+    let lifecycleEvents = 0
+    let session: DocumentSession | undefined
+    lifecycle.subscribe("before-prefetch", () => {
+      lifecycleEvents += 1
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/before" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("post-policy-mutated prefetch must not fetch")
+      },
+      {
+        documentPrefetchPolicy: {
+          canPrefetch() {
+            calls += 1
+            if (calls === 2) {
+              if (!session) throw new Error("preload session was not captured")
+              session.setAttribute("id:link", "href", "/after")
+            }
+            return true
+          },
+        },
+        prepareSession: (value) => {
+          session = value
+        },
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    act(() => harness.prefetch("/before"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(calls).toBe(2)
+    expect(lifecycleEvents).toBe(1)
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("redacts malformed document prefetch policy failures", async () => {
+    for (const policy of [
+      {
+        canPrefetch() {
+          throw new Error("private document prefetch policy failure")
+        },
+      },
+      { canPrefetch: () => "yes" },
+      { canPrefetch: () => Promise.resolve(true) },
+      { canPrefetch: () => Promise.reject(new Error("private async policy failure")) },
+      null,
+      false,
+    ]) {
+      const errors: ExpoTurboRenderError[] = []
+      const requests: TurboRequest[] = []
+      const harness = renderPreloadingDocumentLinks(
+        '<Gallery><DocumentLink href="/next" /></Gallery>',
+        async (request) => {
+          requests.push(request)
+          throw new Error("invalid policy must not fetch")
+        },
+        {
+          documentPrefetchPolicy: policy as unknown as DocumentPrefetchPolicy,
+          onError: (event) => errors.push(event),
+        },
+      )
+
+      act(() => harness.prefetch("/next"))
+      await act(async () => {
+        await nextTurn()
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(errors[0]?.error.message).toBe("Document link prefetch policy check failed")
+      expect(String(errors[0]?.error)).not.toContain("private")
+      expect(requests).toEqual([])
+      expect(harness.requestIdCount()).toBe(0)
+      expect(harness.cache.size).toBe(0)
+
+      act(() => harness.renderer.unmount())
+    }
+  })
+
   test("fails closed when a before-prefetch listener fails", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const requests: TurboRequest[] = []
@@ -5076,6 +5327,7 @@ describe("React protocol renderer", () => {
   test("keeps automatic and direct preload work out of before-prefetch", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     const requests: TurboRequest[] = []
+    const policyUrls: string[] = []
     let events = 0
     lifecycle.subscribe("before-prefetch", () => {
       events += 1
@@ -5092,7 +5344,15 @@ describe("React protocol renderer", () => {
           url: request.url,
         }
       },
-      { visitLifecycle: lifecycle },
+      {
+        documentPrefetchPolicy: {
+          canPrefetch(url) {
+            policyUrls.push(url)
+            return false
+          },
+        },
+        visitLifecycle: lifecycle,
+      },
     )
 
     await act(async () => {
@@ -5103,6 +5363,7 @@ describe("React protocol renderer", () => {
     })
 
     expect(events).toBe(0)
+    expect(policyUrls).toEqual([])
     expect(requests.map((request) => request.url).sort()).toEqual([
       "https://example.test/automatic",
       "https://example.test/manual",
