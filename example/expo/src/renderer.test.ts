@@ -7905,9 +7905,10 @@ describe("React protocol renderer", () => {
         props.children,
       )
     }
-    function FrameProbe(): ReactNode {
+    function FrameProbe(props: Readonly<{ title: string }>): ReactNode {
       const frame = useExpoTurboFrame()
       const [instance] = useState(() => ++nextProbe)
+      const [count, setCount] = useState(0)
       useEffect(
         () => () => {
           probeUnmounts.push(instance)
@@ -7916,8 +7917,11 @@ describe("React protocol renderer", () => {
       )
       return createElement("section", {
         busy: frame?.state.busy,
+        count,
+        increment: () => setCount((value) => value + 1),
         instance,
         status: frame?.state.status,
+        title: props.title,
       })
     }
     function StableProbe(): ReactNode {
@@ -7925,10 +7929,10 @@ describe("React protocol renderer", () => {
       return createElement("article")
     }
     const probe = defineComponent({
-      attributes: {},
+      attributes: { title: { codec: stringCodec, prop: "title" } },
       children: "none",
       component: FrameProbe,
-      schema: z.object({}),
+      schema: z.object({ title: z.string() }),
       tag: "FrameProbe",
     })
     const stable = defineComponent({
@@ -7947,7 +7951,7 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="frame" src="/frame" refresh="morph"><FrameProbe id="probe" /><StableProbe /></turbo-frame></Gallery>',
+        '<Gallery><turbo-frame id="frame" src="/frame" refresh="morph"><FrameProbe id="probe" data-turbo-permanent="" title="kept" /><StableProbe /></turbo-frame></Gallery>',
         { url: "https://example.test/gallery" },
       ),
     )
@@ -7993,7 +7997,13 @@ describe("React protocol renderer", () => {
     expect(boundary()).toMatchObject({ busy: true, complete: false, instance: 1, status: "loading" })
     expect(boundary().accessibilityState).toEqual({ busy: true })
     expect(Object.isFrozen(boundary().accessibilityState)).toBe(true)
-    expect(renderedProbe()).toMatchObject({ busy: true, instance: 1, status: "loading" })
+    expect(renderedProbe()).toMatchObject({
+      busy: true,
+      count: 0,
+      instance: 1,
+      status: "loading",
+      title: "kept",
+    })
     expect(stableRenders).toBe(1)
     const frame = session.tree.getElementById("frame")
     if (!frame) throw new Error("fixture Frame is missing")
@@ -8007,7 +8017,13 @@ describe("React protocol renderer", () => {
     })
     expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "empty" })
     expect(boundary().accessibilityState).toEqual({ busy: false })
-    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "empty" })
+    expect(renderedProbe()).toMatchObject({
+      busy: false,
+      count: 0,
+      instance: 1,
+      status: "empty",
+      title: "kept",
+    })
     expect(stableRenders).toBe(1)
 
     let failed: Promise<unknown> | undefined
@@ -8021,7 +8037,13 @@ describe("React protocol renderer", () => {
     })
     expect(errors).toHaveLength(1)
     expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "error" })
-    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "error" })
+    expect(renderedProbe()).toMatchObject({
+      busy: false,
+      count: 0,
+      instance: 1,
+      status: "error",
+      title: "kept",
+    })
     expect(stableRenders).toBe(1)
 
     let canceled: Promise<unknown> | undefined
@@ -8035,21 +8057,35 @@ describe("React protocol renderer", () => {
       await canceled
     })
     expect(boundary()).toMatchObject({ busy: false, instance: 1, status: "canceled" })
-    expect(renderedProbe()).toMatchObject({ instance: 1, status: "canceled" })
+    expect(renderedProbe()).toMatchObject({ count: 0, instance: 1, status: "canceled", title: "kept" })
     expect(stableRenders).toBe(1)
+
+    act(() => {
+      renderedProbe().increment()
+    })
+    expect(renderedProbe()).toMatchObject({ count: 1, instance: 1, title: "kept" })
 
     let completed: Promise<unknown> | undefined
     act(() => {
       completed = controller.reload()
     })
     pending[3]?.resolve(
-      response(200, '<turbo-frame id="frame"><FrameProbe id="probe" /><StableProbe /></turbo-frame>'),
+      response(
+        200,
+        '<turbo-frame id="frame"><FrameProbe id="probe" data-turbo-permanent="" title="incoming" /><StableProbe /></turbo-frame>',
+      ),
     )
     await act(async () => {
       await completed
     })
     expect(boundary()).toMatchObject({ busy: false, complete: true, instance: 1, status: "completed" })
-    expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "completed" })
+    expect(renderedProbe()).toMatchObject({
+      busy: false,
+      count: 1,
+      instance: 1,
+      status: "completed",
+      title: "kept",
+    })
     expect(stableRenders).toBe(2)
     expect(boundaryUnmounts).toEqual([])
     expect(probeUnmounts).toEqual([])

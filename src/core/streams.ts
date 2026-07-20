@@ -95,6 +95,20 @@ function templatePayload(stream: ProtocolElement, action: string): readonly Prot
   return firstElement.children
 }
 
+function assertNoPermanentMorphEnvelope(stream: ProtocolElement, action: string): void {
+  const template = stream.children.find(isElement)
+  if (
+    attributeValue(stream, "data-turbo-permanent") !== undefined ||
+    (template?.kind === "template" &&
+      attributeValue(template, "data-turbo-permanent") !== undefined)
+  ) {
+    throw actionError(
+      "Native Stream morph does not allow data-turbo-permanent on protocol envelopes",
+      action,
+    )
+  }
+}
+
 function customParams(stream: ProtocolElement): Readonly<Record<string, string>> {
   return Object.freeze(
     Object.fromEntries(
@@ -383,6 +397,9 @@ function renderAction(
     attributeValue(stream, "target") === undefined
   ) {
     throw actionError("Native Turbo Stream morph requires an exact target", action)
+  }
+  if ((action === "replace" || action === "update") && morph) {
+    assertNoPermanentMorphEnvelope(stream, action)
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)

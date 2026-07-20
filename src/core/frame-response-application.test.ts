@@ -134,21 +134,33 @@ describe("prepared Frame mutations", () => {
   test("morphs Frame reload children without replacing the mounted wrapper or eligible app identity", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="details" src="/old" refresh="morph" target="mounted"><DemoForm id="form" legacy="remove" tone="old"><DemoInput id="email" value="before" /><DemoText id="removed">Before</DemoText></DemoForm><Old id="changed" /></turbo-frame></Gallery>',
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph" target="mounted"><DemoForm id="form" legacy="remove" tone="old"><DemoInput id="email" value="before" /><DemoPanel id="permanent" data-turbo-permanent="" tone="kept"><DemoInput id="locked" value="current" /></DemoPanel><DemoText id="removed">Before</DemoText></DemoForm><Old id="changed" /></turbo-frame></Gallery>',
         { url: "https://example.test/current" },
       ),
     )
     const frame = session.tree.getElementById("details")
     const form = session.tree.getElementById("form")
     const email = session.tree.getElementById("email")
+    const permanent = session.tree.getElementById("permanent")
+    const locked = session.tree.getElementById("locked")
     const changed = session.tree.getElementById("changed")
-    if (frame?.kind !== "frame" || !form || !email || !changed) throw new Error("invalid fixture")
+    if (frame?.kind !== "frame" || !form || !email || !permanent || !locked || !changed) {
+      throw new Error("invalid fixture")
+    }
     const formSnapshot = session.getNodeSnapshot(form.key)
     const emailSnapshot = session.getNodeSnapshot(email.key)
+    const permanentSnapshot = session.getNodeSnapshot(permanent.key)
     let retainedDisposals = 0
+    let permanentDisposals = 0
     let replacedDisposals = 0
     session.registerDisposal(form.key, () => {
       retainedDisposals += 1
+    })
+    session.registerDisposal(permanent.key, () => {
+      permanentDisposals += 1
+    })
+    session.registerDisposal(locked.key, () => {
+      permanentDisposals += 1
     })
     session.registerDisposal(changed.key, () => {
       replacedDisposals += 1
@@ -156,7 +168,7 @@ describe("prepared Frame mutations", () => {
 
     const prepared = prepareFrameResponse(
       "details",
-      '<turbo-frame id="details" src="/incoming" refresh="replace" target="incoming"><DemoForm id="form" tone="new"><DemoInput id="email" value="after" /><DemoText id="added">After</DemoText></DemoForm><Changed id="changed" /></turbo-frame>',
+      '<turbo-frame id="details" src="/incoming" refresh="replace" target="incoming"><DemoForm id="form" tone="new"><DemoInput id="email" value="after" /><DemoPanel id="permanent" data-turbo-permanent="" tone="incoming"><DemoInput id="locked" value="incoming" /></DemoPanel><DemoText id="added">After</DemoText></DemoForm><Changed id="changed" /></turbo-frame>',
     )
     const mutation = prepareFrameMutation(session, frame, prepared, {
       finalUrl: "https://example.test/final",
@@ -167,23 +179,33 @@ describe("prepared Frame mutations", () => {
 
     const nextForm = session.tree.getElementById("form")
     const nextEmail = session.tree.getElementById("email")
+    const nextPermanent = session.tree.getElementById("permanent")
+    const nextLocked = session.tree.getElementById("locked")
     const nextChanged = session.tree.getElementById("changed")
-    if (!nextForm || !nextEmail || !nextChanged) throw new Error("missing morph result")
+    if (!nextForm || !nextEmail || !nextPermanent || !nextLocked || !nextChanged) {
+      throw new Error("missing morph result")
+    }
     expect(session.tree.getElementById("details")).toBe(frame)
     expect(nextForm).toBe(form)
     expect(nextEmail).toBe(email)
+    expect(nextPermanent).toBe(permanent)
+    expect(nextLocked).toBe(locked)
     expect(nextChanged).not.toBe(changed)
     expect(session.getNodeSnapshot(form.key)?.identity).toBe(formSnapshot?.identity)
     expect(session.getNodeSnapshot(email.key)?.identity).toBe(emailSnapshot?.identity)
+    expect(session.getNodeSnapshot(permanent.key)?.identity).toBe(permanentSnapshot?.identity)
     expect(attributeValue(frame, "src")).toBe("https://example.test/final")
     expect(attributeValue(frame, "refresh")).toBe("morph")
     expect(attributeValue(frame, "target")).toBe("mounted")
     expect(attributeValue(nextForm, "legacy")).toBeUndefined()
     expect(attributeValue(nextForm, "tone")).toBe("new")
     expect(attributeValue(nextEmail, "value")).toBe("after")
+    expect(attributeValue(nextPermanent, "tone")).toBe("kept")
+    expect(attributeValue(nextLocked, "value")).toBe("current")
     expect(session.tree.getElementById("removed")).toBeUndefined()
     expect(session.tree.getElementById("added")).toBeDefined()
     expect(retainedDisposals).toBe(0)
+    expect(permanentDisposals).toBe(0)
     expect(replacedDisposals).toBe(1)
   })
 
@@ -219,6 +241,30 @@ describe("prepared Frame mutations", () => {
     expect(session.getNodeSnapshot(form.key)).toBe(formSnapshot)
     expect(attributeValue(frame, "src")).toBe("/old")
     expect(disposals).toBe(0)
+  })
+
+  test("rejects a Frame morph below an active permanent ancestor without structural replacement", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoPanel id="boundary" data-turbo-permanent=""><turbo-frame id="details" src="/old" refresh="morph"><DemoForm id="form"><DemoInput id="email" /></DemoForm></turbo-frame></DemoPanel></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const form = session.tree.getElementById("form")
+    if (frame?.kind !== "frame" || !form) throw new Error("invalid fixture")
+    const revision = session.revision
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><DemoForm id="form"><DemoInput id="email" /></DemoForm></turbo-frame>',
+    )
+
+    expect(() => prepareFrameMutation(session, frame, prepared, { renderMethod: "morph" })).toThrow(
+      TargetError,
+    )
+    expect(session.revision).toBe(revision)
+    expect(session.tree.getElementById("details")).toBe(frame)
+    expect(session.tree.getElementById("form")).toBe(form)
   })
 
   test("rejects active-document ID collisions during preflight without mutating the session", () => {
