@@ -78,6 +78,7 @@ RSpec.describe ExpoTurbo::Rails::Testing do
       "plain text<turbo-stream action=\"remove\" target=\"notice\"/>",
       "<DemoText/>",
       "<x:turbo-stream xmlns:x=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>",
+      "<turbo-stream xmlns=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>",
       "<turbo-stream action=\"remove\" target=\"notice\">"
     ]
 

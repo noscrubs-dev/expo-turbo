@@ -124,6 +124,29 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     expect(broadcast_payloads("room:expo")).to be_empty
   end
 
+  it "rejects malformed Stream fragments before sending or enqueueing them" do
+    invalid_fragments = [
+      '<turbo-stream action="append" target="messages"><template><Demo:Item/></template></turbo-stream>',
+      '<?xml version="1.0"?><turbo-stream action="remove" target="notice"></turbo-stream>',
+      '<!DOCTYPE Demo [<!ENTITY secret "not-for-errors">]><turbo-stream action="remove" target="notice"></turbo-stream>',
+      '<?build data?><turbo-stream action="remove" target="notice"></turbo-stream>',
+      '<turbo-stream xmlns="urn:expo-test" action="remove" target="notice"></turbo-stream>'
+    ]
+
+    invalid_fragments.each do |invalid|
+      expect { described_class.broadcast_to("room", content: invalid) }
+        .to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Item", "not-for-errors") }
+      expect { described_class.broadcast_later_to("room", content: invalid) }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed XML Stream fragments/)
+    end
+
+    expect { ExpoTurbo::Rails::Streams::BroadcastJob.new.perform("room:expo", content: invalid_fragments.first) }
+      .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed XML Stream fragments/)
+
+    expect(@job_adapter.enqueued_jobs).to be_empty
+    expect(broadcast_payloads("room:expo")).to be_empty
+  end
+
   it "does not allow a source to override its signed standard-channel descriptor" do
     context = controller_class.new.view_context
 

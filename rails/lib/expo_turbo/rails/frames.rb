@@ -12,7 +12,7 @@ module ExpoTurbo
           value.encoding == Encoding::UTF_8 &&
           value.valid_encoding? &&
           !value.blank? &&
-          value.each_codepoint.none? { |codepoint| codepoint <= 31 || codepoint == 127 }
+          value.each_codepoint.none? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
       end
 
       def validate_id!(value, label: "Frame")
