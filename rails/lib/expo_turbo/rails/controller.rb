@@ -48,6 +48,24 @@ module ExpoTurbo
         Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
+      def expo_turbo_cache_variant
+        Frames.cache_variant(expo_turbo_frame_request_id)
+      end
+
+      def expo_turbo_vary_by_frame!
+        values = response.headers["Vary"].to_s.split(",").map(&:strip).reject(&:blank?)
+        return response.headers["Vary"] if values.include?("*")
+
+        values << "Accept" if request.should_apply_vary_header? && values.none? { |value| value.casecmp?("Accept") }
+        values << "Turbo-Frame" if values.none? { |value| value.casecmp?("Turbo-Frame") }
+        response.set_header "Vary", values.join(", ")
+      end
+
+      def expo_turbo_cache_key(*keys)
+        expo_turbo_vary_by_frame!
+        [*keys, *expo_turbo_cache_variant]
+      end
+
       def expo_turbo_stream
         view_context.expo_turbo_stream
       end
