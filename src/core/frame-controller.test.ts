@@ -6,6 +6,13 @@ import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
+import {
+  acknowledgeFrameRender,
+  frameRenderLifecycleRevision,
+  hasFrameRenderTicket,
+  retainFrameRenderer,
+  subscribeFrameRenderLifecycle,
+} from "./frame-render-lifecycle-internal"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
@@ -116,6 +123,124 @@ describe("Frame controller", () => {
     expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
       "Loaded",
     )
+  })
+
+  test("acknowledges matching Frame responses before render/load across success and errors", async () => {
+    for (const responseStatus of [200, 422, 500]) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+          { url: "https://example.test/page" },
+        ),
+      )
+      const frame = session.tree.getElementById("details")
+      if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+      const lifecycle = new FrameLifecycle()
+      const events: string[] = []
+      lifecycle.subscribe("frame-render", () => {
+        events.push("render")
+        return undefined
+      })
+      lifecycle.subscribe("frame-load", () => {
+        events.push("load")
+        return undefined
+      })
+      const releaseRenderer = retainFrameRenderer(session, frame)
+      let lifecycleRevision = frameRenderLifecycleRevision(session)
+      const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+        if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+        lifecycleRevision = frameRenderLifecycleRevision(session)
+        const acknowledgement = acknowledgeFrameRender(session, frame, "details", session.revision)
+        expect(acknowledgement).toBeDefined()
+        acknowledgement?.finish()
+      })
+      const controller = new FrameController(
+        session,
+        "details",
+        new FrameRequestLoader(
+          session,
+          {
+            fetch: async () =>
+              response('<turbo-frame id="details"><Committed /></turbo-frame>', {
+                status: responseStatus,
+              }),
+          },
+          { next: () => `request-${responseStatus}` },
+          { frameLifecycle: lifecycle },
+        ),
+      )
+
+      expect(await controller.connect()).toMatchObject({
+        responseStatus,
+        status: "completed",
+      })
+      expect(events).toEqual(["render", "load"])
+      expect(controller.state).toMatchObject({ busy: false, status: "completed" })
+
+      unsubscribe()
+      releaseRenderer()
+    }
+  })
+
+  test("supersedes an unacknowledged Frame render before a newer load", async () => {
+    const pending: PendingRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("frame-render", () => {
+      events.push("render")
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", () => {
+      events.push("load")
+      return undefined
+    })
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `request-${pending.length + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+    const controller = new FrameController(session, "details", loader)
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    const initialRevision = frameRenderLifecycleRevision(session)
+    let resolveSealed!: () => void
+    const sealed = new Promise<void>((resolve) => {
+      resolveSealed = resolve
+    })
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) > initialRevision) resolveSealed()
+    })
+
+    const first = controller.connect()
+    pending[0]?.resolve(response('<turbo-frame id="details"><First /></turbo-frame>'))
+    await sealed
+    expect(hasFrameRenderTicket(session, frame, "details")).toBe(true)
+
+    const second = controller.reload()
+    expect(pending).toHaveLength(2)
+    expect(hasFrameRenderTicket(session, frame, "details")).toBe(false)
+    pending[1]?.resolve(response("", { status: 204 }))
+
+    await expect(first).resolves.toMatchObject({ status: "completed" })
+    await expect(second).resolves.toMatchObject({ status: "empty" })
+    expect(events).toEqual([])
+    expect(controller.state).toMatchObject({ busy: false, status: "empty" })
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("publishes automatic response promotion as loaded without mutating Frame children", async () => {

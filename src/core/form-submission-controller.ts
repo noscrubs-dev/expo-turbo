@@ -103,6 +103,11 @@ import {
   frameLifecycleOption,
 } from "./frame-lifecycle"
 import {
+  dispatchFrameLoad,
+  type PreparedFrameRender,
+  prepareFrameRender,
+} from "./frame-render-lifecycle-internal"
+import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
@@ -506,6 +511,8 @@ export class FormSubmissionController {
       submissionActivity.settleReport(activityLease, this.terminalReport(report))
       return report
     }
+    let frameRender: PreparedFrameRender | undefined
+    let frameRendered = false
 
     try {
       if (confirmation && confirmationMessage !== undefined) {
@@ -940,6 +947,9 @@ export class FormSubmissionController {
                 (prepared) => {
                   documentRender = prepared
                 },
+                (prepared) => {
+                  frameRender = prepared
+                },
               )
       } finally {
         // Exact release cannot detach newer reentrant work that superseded this lease.
@@ -950,6 +960,10 @@ export class FormSubmissionController {
             documentRender.cancel()
           }
           documentRendered = (await documentRender.rendered) === "rendered"
+        }
+        if (frameRender) {
+          frameRender.seal()
+          frameRendered = (await frameRender.rendered) === "rendered"
         }
       }
       if (missingEvent && this.options.frameLifecycle) {
@@ -969,6 +983,15 @@ export class FormSubmissionController {
       ) {
         dispatchDocumentLoad(this.options.visitLifecycle, documentRender.commit)
       }
+      if (
+        frameRendered &&
+        frameRender &&
+        application.status === "applied" &&
+        application.application === "frame" &&
+        this.options.frameLifecycle
+      ) {
+        dispatchFrameLoad(this.options.frameLifecycle, frameRender.commit)
+      }
       return settled
     } catch (error) {
       controller.abort()
@@ -984,6 +1007,15 @@ export class FormSubmissionController {
           this.terminalFailure(reported, plan, fetchInvoked),
           identity.requiresSafeTransport || (fetchInvoked && plan.request.method === "GET"),
         )
+        if (
+          error instanceof FormSubmissionCommitError &&
+          error.outcome.application === "frame" &&
+          frameRendered &&
+          frameRender &&
+          this.options.frameLifecycle
+        ) {
+          dispatchFrameLoad(this.options.frameLifecycle, frameRender.commit)
+        }
       }
       throw reported
     }
@@ -1108,6 +1140,7 @@ export class FormSubmissionController {
     historyPlan?: DocumentFormHistoryPlan,
     frameHistoryPlan?: FrameFormHistoryPlan,
     onDocumentRender?: (prepared: PreparedDocumentRender) => void,
+    onFrameRender?: (prepared: PreparedFrameRender) => void,
   ): Promise<FormSubmissionReport> {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
@@ -1214,6 +1247,16 @@ export class FormSubmissionController {
           })
           if (!acquired) return this.canceled(candidate, destination)
           if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+        }
+        const lifecycle = this.options.frameLifecycle
+        if (lifecycle && onFrameRender) {
+          onFrameRender?.(
+            prepareFrameRender(this.session, lifecycle, {
+              frame: activeFrame,
+              frameId,
+              url: candidate.url,
+            }),
+          )
         }
         commitPreparedFrameMutation(this.session, mutation)
         const streams = dispatchPreparedFrameResponseStreams(

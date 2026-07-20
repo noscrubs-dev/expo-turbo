@@ -35,6 +35,12 @@ import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameHistoryCoordinator } from "./frame-history"
 import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameRequestLoader } from "./frame-loader"
+import {
+  acknowledgeFrameRender,
+  frameRenderLifecycleRevision,
+  retainFrameRenderer,
+  subscribeFrameRenderLifecycle,
+} from "./frame-render-lifecycle-internal"
 import { parseExpoTurboDocument } from "./parser"
 import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -4959,6 +4965,110 @@ describe("FormSubmissionController", () => {
       expect(attributeValue(frame, "src")).toBe(src)
       expect(session.revision).toBe(revision)
     }
+  })
+
+  test("waits for renderer acknowledgement before loading matching Frame form responses", async () => {
+    for (const responseStatus of [200, 422, 500]) {
+      const session = fixture()
+      session.setAttribute("id:form-a", "method", "post")
+      const frame = session.tree.getElementById("frame-a")
+      if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+      const lifecycle = new FrameLifecycle()
+      const events: string[] = []
+      lifecycle.subscribe("frame-render", () => {
+        events.push("render")
+        return undefined
+      })
+      lifecycle.subscribe("frame-load", () => {
+        events.push("load")
+        return undefined
+      })
+      const releaseRenderer = retainFrameRenderer(session, frame)
+      let lifecycleRevision = frameRenderLifecycleRevision(session)
+      const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+        if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+        lifecycleRevision = frameRenderLifecycleRevision(session)
+        const acknowledgement = acknowledgeFrameRender(session, frame, "frame-a", session.revision)
+        expect(acknowledgement).toBeDefined()
+        acknowledgement?.finish()
+      })
+
+      const result = await new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              `<turbo-frame id="frame-a"><Result id="response-${responseStatus}" /></turbo-frame>`,
+              { status: responseStatus },
+            ),
+        },
+        { frameLifecycle: lifecycle },
+      ).submit(proposal(registry(session, "form-a"), `frame-render-${responseStatus}`))
+
+      expect(result).toMatchObject({ application: "frame", responseStatus, status: "applied" })
+      expect(events).toEqual(["render", "load"])
+
+      unsubscribe()
+      releaseRenderer()
+    }
+  })
+
+  test("loads a committed promoted Frame form after history finalization fails", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "post")
+    const visitLifecycle = new DocumentVisitLifecycle()
+    visitLifecycle.subscribe("before-visit", () => {
+      throw new Error("sensitive promoted Frame form listener failure")
+    })
+    const frameLifecycle = new FrameLifecycle()
+    const events: string[] = []
+    frameLifecycle.subscribe("frame-render", () => {
+      events.push("render")
+    })
+    frameLifecycle.subscribe("frame-load", () => {
+      events.push("load")
+    })
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      new DocumentSnapshotCache(),
+      undefined,
+      true,
+      { visitLifecycle },
+    )
+    const frame = session.tree.getElementById("frame-a")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "frame-a", session.revision)?.finish()
+    })
+
+    await expect(
+      new FormSubmissionController(
+        session,
+        {
+          fetch: async (request) =>
+            response(
+              request,
+              '<turbo-frame id="frame-a"><CommittedFrameForm id="listener-failed" /></turbo-frame>',
+              { redirected: true, url: "https://example.test/frame-a/listener-failed" },
+            ),
+        },
+        { frameControllers: current.frameControllers, frameLifecycle },
+      ).submit(proposal(registry(session, "form-a"), "promoted-frame-render-failure")),
+    ).rejects.toBeInstanceOf(FormSubmissionCommitError)
+
+    expect(events).toEqual(["render", "load"])
+    expect(current.history.current?.url).toBe("https://example.test/frame-a/listener-failed")
+    expect(session.tree.getElementById("listener-failed")).toBeDefined()
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("publishes final-tree autofocus intent to an exact mounted Frame after form replacement", async () => {

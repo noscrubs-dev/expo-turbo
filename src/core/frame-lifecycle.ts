@@ -1,5 +1,5 @@
 import { FrameMissingError, PropsError, RequestError, StateError } from "./errors"
-import { CancellableEvent } from "./events"
+import { CancellableEvent, NotificationEvent } from "./events"
 import { consumeThenableResult } from "./thenable-result"
 
 export type FrameMissingVisitAction = "advance" | "replace"
@@ -42,6 +42,7 @@ export type FrameVisitControlReloadRequest = FrameResponseVisitRequest & {
 }
 
 export interface FrameLifecycleOptions {
+  readonly onObserverError?: (error: AggregateError) => undefined
   readonly visitResponse?: (request: FrameResponseVisitRequest) => Promise<void> | void
 }
 
@@ -61,8 +62,11 @@ interface FrameMissingEventState {
 }
 
 interface FrameLifecycleState {
+  readonly onObserverError: FrameLifecycleObserver | undefined
   readonly visitResponse: FrameLifecycleOptions["visitResponse"]
 }
+
+type FrameLifecycleObserver = (error: AggregateError) => undefined
 
 export interface CreateFrameMissingEventOptions {
   readonly body: string
@@ -126,10 +130,39 @@ export class FrameMissingEvent extends CancellableEvent<"frame-missing", FrameMi
   }
 }
 
-export type FrameLifecycleEvent = FrameMissingEvent
+export type FrameRenderMethod = "replace"
+
+export interface FrameRenderEventDetail {
+  readonly frameId: string
+  readonly renderMethod: FrameRenderMethod
+  readonly url: string
+}
+
+export class FrameRenderEvent extends NotificationEvent<"frame-render", FrameRenderEventDetail> {
+  constructor(detail: FrameRenderEventDetail) {
+    super("frame-render", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
+export interface FrameLoadEventDetail {
+  readonly frameId: string
+  readonly url: string
+}
+
+export class FrameLoadEvent extends NotificationEvent<"frame-load", FrameLoadEventDetail> {
+  constructor(detail: FrameLoadEventDetail) {
+    super("frame-load", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
+export type FrameLifecycleEvent = FrameLoadEvent | FrameMissingEvent | FrameRenderEvent
 
 export interface FrameLifecycleEventMap {
+  readonly "frame-load": FrameLoadEvent
   readonly "frame-missing": FrameMissingEvent
+  readonly "frame-render": FrameRenderEvent
 }
 
 type FrameLifecycleEventType = keyof FrameLifecycleEventMap
@@ -140,8 +173,14 @@ type FrameLifecycleListener<Type extends FrameLifecycleEventType> = (
 export const FRAME_LIFECYCLE_MISSING_DISPATCH = Symbol(
   "expo-turbo.frame-lifecycle.missing-dispatch",
 )
+export const FRAME_LIFECYCLE_RENDER_DISPATCH = Symbol("expo-turbo.frame-lifecycle.render-dispatch")
+export const FRAME_LIFECYCLE_LOAD_DISPATCH = Symbol("expo-turbo.frame-lifecycle.load-dispatch")
 
-/** Synchronous lifecycle for a response that omits its requested Frame. */
+/**
+ * Synchronous lifecycle for Frame response handling. Frame-missing listeners
+ * may cancel an admission; render and load listeners are notification-only
+ * observers.
+ */
 export class FrameLifecycle {
   private readonly listeners = new Map<
     FrameLifecycleEventType,
@@ -149,7 +188,7 @@ export class FrameLifecycle {
   >()
 
   constructor(options: FrameLifecycleOptions = {}) {
-    lifecycleStates.set(this, { visitResponse: visitResponseOption(options) })
+    lifecycleStates.set(this, lifecycleOptions(options))
     frameLifecycles.add(this)
   }
 
@@ -157,7 +196,7 @@ export class FrameLifecycle {
     type: Type,
     listener: FrameLifecycleListener<Type>,
   ): () => void {
-    if (type !== "frame-missing") {
+    if (type !== "frame-load" && type !== "frame-missing" && type !== "frame-render") {
       throw new StateError("Frame lifecycle event type is invalid")
     }
     if (typeof listener !== "function") {
@@ -194,6 +233,62 @@ export class FrameLifecycle {
       throw listenerError(event, "Frame-missing listener must return undefined")
     }
     return event
+  }
+
+  [FRAME_LIFECYCLE_RENDER_DISPATCH](event: FrameRenderEvent): void {
+    this.dispatchNotification("frame-render", event, "Frame-render listener failed")
+  }
+
+  [FRAME_LIFECYCLE_LOAD_DISPATCH](event: FrameLoadEvent): void {
+    this.dispatchNotification("frame-load", event, "Frame-load listener failed")
+  }
+
+  private dispatchNotification(
+    type: "frame-load" | "frame-render",
+    event: FrameLoadEvent | FrameRenderEvent,
+    listenerFailure: string,
+  ): void {
+    const observer = admittedLifecycleState(this).onObserverError
+    const errors: StateError[] = []
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
+      let result: unknown
+      try {
+        result = listener(event)
+      } catch {
+        errors.push(new StateError(listenerFailure))
+        continue
+      }
+      try {
+        rejectNotificationListenerResult(
+          result,
+          `${notificationName(type)} listener must return undefined`,
+        )
+      } catch {
+        errors.push(new StateError(listenerFailure))
+      }
+    }
+    if (errors.length === 0) return
+
+    const observerError = new AggregateError(
+      errors,
+      "Frame lifecycle notification observers failed",
+    )
+    if (!observer) {
+      surfaceObserverError(observerError)
+      return
+    }
+
+    let result: unknown
+    try {
+      result = observer(observerError)
+    } catch {
+      surfaceObserverError(observerReporterError(errors))
+      return
+    }
+    if (result !== undefined) {
+      consumeNotificationResult(result)
+      surfaceObserverError(observerReporterError(errors))
+    }
   }
 }
 
@@ -383,22 +478,58 @@ function visitActionOption(
   return action
 }
 
-function visitResponseOption(options: unknown): FrameLifecycleOptions["visitResponse"] {
+function lifecycleOptions(options: unknown): FrameLifecycleState {
+  let observer: unknown
   let visitor: unknown
   try {
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw new TypeError("invalid options")
     }
+    observer = (options as { readonly onObserverError?: unknown }).onObserverError
     visitor = (options as { readonly visitResponse?: unknown }).visitResponse
   } catch {
     throw new PropsError("Frame lifecycle options could not be read")
   }
+  if (observer !== undefined && typeof observer !== "function") {
+    throw new PropsError("Frame lifecycle error observer must be a function")
+  }
   if (visitor !== undefined && typeof visitor !== "function") {
     throw new PropsError("Frame lifecycle response visitor must be a function")
   }
-  return visitor as FrameLifecycleOptions["visitResponse"]
+  return {
+    onObserverError: observer as FrameLifecycleObserver | undefined,
+    visitResponse: visitor as FrameLifecycleOptions["visitResponse"],
+  }
 }
 
 function consumeUnexpectedResult(result: unknown): void {
   consumeThenableResult(result)
+}
+
+function notificationName(type: "frame-load" | "frame-render"): string {
+  return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
+}
+
+function rejectNotificationListenerResult(result: unknown, message: string): void {
+  if (result === undefined) return
+  consumeNotificationResult(result)
+  throw new StateError(message)
+}
+
+function consumeNotificationResult(result: unknown): void {
+  if ((typeof result !== "object" || result === null) && typeof result !== "function") return
+  void Promise.resolve(result).catch(() => undefined)
+}
+
+function observerReporterError(errors: readonly StateError[]): AggregateError {
+  return new AggregateError(
+    [...errors, new StateError("Frame lifecycle notification observer reporter failed")],
+    "Frame lifecycle notification observer reporting failed",
+  )
+}
+
+function surfaceObserverError(error: AggregateError): void {
+  queueMicrotask(() => {
+    throw error
+  })
 }
