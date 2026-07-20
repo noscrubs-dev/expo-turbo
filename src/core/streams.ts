@@ -106,19 +106,39 @@ function templatePayload(stream: ProtocolElement, action: string): readonly Prot
   return firstElement.children
 }
 
+interface StandaloneStreamAutofocusCandidate {
+  readonly allowRetainedIdentity: boolean
+  readonly key: string
+}
+
+function hasPermanentMorphPayload(nodes: readonly ProtocolNode[]): boolean {
+  for (const node of nodes) {
+    if (!isElement(node)) continue
+    if (attributeValue(node, "data-turbo-permanent") !== undefined) return true
+    if (hasPermanentMorphPayload(node.children)) return true
+  }
+  return false
+}
+
 function standaloneStreamAutofocusCandidate(
   stream: ProtocolElement,
   action: string,
-): string | undefined {
+): StandaloneStreamAutofocusCandidate | undefined {
+  const morph = attributeValue(stream, "method") === "morph"
   if (
     !STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action) ||
-    attributeValue(stream, "method") === "morph" ||
-    attributeValue(stream, "targets") !== undefined
+    attributeValue(stream, "targets") !== undefined ||
+    (morph && action !== "replace" && action !== "update")
   ) {
     return undefined
   }
   try {
-    return applicationAutofocusCandidatesFromNodes(templatePayload(stream, action))[0]
+    const payload = templatePayload(stream, action)
+    // Native morph does not reproduce Turbo's permanent-node preprocessing, so
+    // incoming permanent attributes cannot safely establish a focus intent.
+    if (morph && hasPermanentMorphPayload(payload)) return undefined
+    const key = applicationAutofocusCandidatesFromNodes(payload)[0]
+    return key ? Object.freeze({ allowRetainedIdentity: morph, key }) : undefined
   } catch {
     return undefined
   }
@@ -436,10 +456,8 @@ function renderAction(
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)
-  const autofocusCandidates =
-    !morph && STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action)
-      ? applicationAutofocusCandidatesFromNodes(payload).slice(0, 1)
-      : []
+  const autofocusCandidate = standaloneStreamAutofocusCandidate(stream, action)
+  const autofocusCandidates = autofocusCandidate ? [autofocusCandidate.key] : []
   progress.matchedTargets = targets.length
   if (targets.length > 1 && allIds(payload).length > 0) {
     throw actionError("Multi-target Turbo Stream payloads must not declare ids", action)
@@ -703,23 +721,23 @@ export function dispatchGuardedTurboStreamElements(
       break
     }
     const action = attributeValue(stream, "action") ?? ""
-    const candidateKey =
+    const candidate =
       !autofocusCandidateClaimed && autofocusMode === "standalone"
         ? standaloneStreamAutofocusCandidate(stream, action)
         : undefined
-    const candidateBefore = candidateKey ? session.tree.getNodeByKey(candidateKey) : undefined
-    if (candidateKey) autofocusCandidateClaimed = true
+    const candidateBefore = candidate ? session.tree.getNodeByKey(candidate.key) : undefined
+    if (candidate) autofocusCandidateClaimed = true
     const dispatched = dispatchAction(session, stream, index, options, lifecycle, control)
     const report = dispatched.report
     actions.push(report)
-    if (candidateKey && report.status === "applied") {
-      const candidate = session.tree.getNodeByKey(candidateKey)
+    if (candidate && report.status === "applied") {
+      const activeCandidate = session.tree.getNodeByKey(candidate.key)
       if (
-        candidate &&
-        candidate !== candidateBefore &&
-        dispatched.autofocusCandidates.includes(candidate)
+        activeCandidate &&
+        (candidate.allowRetainedIdentity || activeCandidate !== candidateBefore) &&
+        dispatched.autofocusCandidates.includes(activeCandidate)
       ) {
-        autofocusCandidate = candidate
+        autofocusCandidate = activeCandidate
       }
     }
     if (report.status === "error") options.onActionError?.(report)
