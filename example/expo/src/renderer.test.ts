@@ -5801,6 +5801,8 @@ describe("React protocol renderer", () => {
       Linking: { openURL: async () => undefined },
       Platform: { OS: "web" },
       Pressable: (props: Readonly<Record<string, unknown>>) => createElement("pressable", props),
+      ScrollView: (props: Readonly<Record<string, unknown>>) =>
+        createElement("scroll-view", props),
       Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
       TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
       View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),

@@ -161,6 +161,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       forms.dispose();
       focus.dispose();
       frameAutoscroll.dispose();
+      visibility.dispose();
       frames.dispose();
       refresh.dispose();
       documentRuntime.dispose();

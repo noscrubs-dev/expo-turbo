@@ -6,18 +6,25 @@ import {
 import {
   createContext,
   type ReactNode,
+  useCallback,
   useContext,
-  useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
 } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
-import { DemoVisibilityRegistry } from "./demo-visibility";
+import {
+  DEMO_ROOT_VISIBILITY_CONTAINER_ID,
+  DemoVisibilityRegistry,
+} from "./demo-visibility";
 
 const DemoVisibilityContext = createContext<DemoVisibilityRegistry | undefined>(undefined);
+const DemoVisibilityClipContext = createContext<readonly string[]>([
+  DEMO_ROOT_VISIBILITY_CONTAINER_ID,
+]);
 const DemoFrameAutoscrollContext = createContext<DemoFrameAutoscrollRegistry | undefined>(
   undefined,
 );
@@ -39,6 +46,10 @@ function useDemoVisibility(): DemoVisibilityRegistry {
   return visibility;
 }
 
+function useDemoVisibilityClips(): readonly string[] {
+  return useContext(DemoVisibilityClipContext);
+}
+
 export function DemoFrameAutoscrollProvider({
   children,
   frameAutoscroll,
@@ -56,20 +67,57 @@ function useDemoFrameAutoscroll(): DemoFrameAutoscrollRegistry {
   return frameAutoscroll;
 }
 
+export function DemoNestedScrollRegion({
+  children,
+  id,
+}: Readonly<{ children?: ReactNode; id: string }>) {
+  const visibility = useDemoVisibility();
+  const parentClips = useDemoVisibilityClips();
+  const scrollView = useRef<ScrollView>(null);
+  const clips = useMemo(() => Object.freeze([...parentClips, id]), [id, parentClips]);
+  const remeasure = useCallback(() => visibility.remeasureAll(), [visibility]);
+
+  useLayoutEffect(
+    () =>
+      visibility.registerContainer(id, (listener) => {
+        scrollView.current?.getNativeScrollRef?.()?.measureInWindow(listener);
+      }),
+    [id, visibility],
+  );
+
+  return (
+    <ScrollView
+      contentContainerStyle={{ gap: 10, padding: 10 }}
+      nestedScrollEnabled
+      onContentSizeChange={remeasure}
+      onLayout={remeasure}
+      onScroll={remeasure}
+      ref={scrollView}
+      scrollEventThrottle={32}
+      style={{ borderColor: "#9eb0c3", borderRadius: 10, borderWidth: 1, height: 160 }}
+    >
+      <DemoVisibilityClipContext.Provider value={clips}>
+        {children}
+      </DemoVisibilityClipContext.Provider>
+    </ScrollView>
+  );
+}
+
 export function DemoFrameBoundary({
   accessibilityState,
   children,
   state,
 }: ExpoTurboFrameBoundaryProps) {
   const visibility = useDemoVisibility();
+  const clips = useDemoVisibilityClips();
   const frameAutoscroll = useDemoFrameAutoscroll();
   const boundary = useRef<View>(null);
-  useEffect(
+  useLayoutEffect(
     () =>
       visibility.register(state.frameId, (listener) => {
         boundary.current?.measureInWindow(listener);
-      }),
-    [state.frameId, visibility],
+      }, clips),
+    [clips, state.frameId, visibility],
   );
   useLayoutEffect(
     () =>

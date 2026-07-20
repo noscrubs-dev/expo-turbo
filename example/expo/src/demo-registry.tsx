@@ -21,6 +21,7 @@ import {
   useExpoTurboFormControl,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
+import { DemoNestedScrollRegion } from "./demo-boundaries";
 import { useDemoFocusHandle } from "./demo-focus";
 import { useDemoComponentStyle } from "./demo-style-runtime";
 import {
@@ -102,6 +103,14 @@ const text = defineComponent({
   ),
   schema: z.object({}),
   tag: "DemoText",
+});
+
+const scrollRegion = defineComponent({
+  attributes: { id: { codec: stringCodec, prop: "id" } },
+  children: "nodes",
+  component: DemoNestedScrollRegion,
+  schema: z.object({ id: z.string().trim().min(1) }),
+  tag: "DemoScrollRegion",
 });
 
 function DemoDocumentLinkComponent({
@@ -442,6 +451,7 @@ export const DEMO_REGISTRY = createRegistry(
       gallery,
       card,
       text,
+      scrollRegion,
       action,
       documentLink,
       form,
@@ -500,6 +510,22 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       </DemoDocumentLink>
     </DemoCard>
   </turbo-frame>
+  <DemoCard id="nested-visibility-card" title="Nested lazy Frame visibility" style-tokens="tone:info space:compact">
+    <DemoText>The nested region below owns a second clipping viewport. Its Frame remains idle until it is visible inside both this region and the gallery scroll view.</DemoText>
+    <DemoScrollRegion id="nested-scroll-region">
+      <DemoCard title="Nested offscreen content" style-tokens="space:comfortable">
+        <DemoText>Scroll this inner region to reach its lazy Frame. The outer gallery and nested ScrollView both measure in window coordinates.</DemoText>
+      </DemoCard>
+      <DemoCard title="Nested spacer" style-tokens="space:comfortable">
+        <DemoText>This intentionally keeps the Frame outside the nested viewport on initial render.</DemoText>
+      </DemoCard>
+      <turbo-frame id="nested-lazy-frame" loading="lazy" src="/demo/nested-frame">
+        <DemoCard title="Nested Frame placeholder" style-tokens="tone:warning space:compact">
+          <DemoText>The Frame loads only after it appears through every registered clipping region.</DemoText>
+        </DemoCard>
+      </turbo-frame>
+    </DemoScrollRegion>
+  </DemoCard>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy" autoscroll="" data-autoscroll-block="start" data-autoscroll-behavior="smooth">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>

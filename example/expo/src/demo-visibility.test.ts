@@ -44,6 +44,20 @@ describe("demo Frame visibility", () => {
     expect(visibility.isVisible("lazy-frame")).toBe(true);
   });
 
+  test("keeps Frames hidden behind zero-size root and nested clips", () => {
+    const root = new DemoVisibilityRegistry();
+    root.setViewport({ height: 100, width: 0, x: 0, y: 0 });
+    root.register("root-frame", (listener) => listener(-1, 0, 2, 10));
+
+    expect(root.isVisible("root-frame")).toBe(false);
+
+    const nested = new DemoVisibilityRegistry();
+    nested.registerContainer("nested-scroll", (listener) => listener(0, 0, 0, 100));
+    nested.register("nested-frame", (listener) => listener(-1, 0, 2, 10), ["nested-scroll"]);
+
+    expect(nested.isVisible("nested-frame")).toBe(false);
+  });
+
   test("publishes only boolean transitions across scroll remeasurement", () => {
     const visibility = new DemoVisibilityRegistry();
     const transitions: boolean[] = [];
@@ -86,6 +100,80 @@ describe("demo Frame visibility", () => {
     measurements[0]?.(0, 0, 50, 50);
 
     expect(visibility.isVisible("lazy-frame")).toBe(true);
+  });
+
+  test("requires a lazy Frame to intersect every registered nested ScrollView clip", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const transitions: boolean[] = [];
+    let nestedHeight = 40;
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.subscribe("lazy-frame", (visible) => transitions.push(visible));
+    visibility.registerContainer("nested-scroll", (listener) => listener(0, 0, 100, nestedHeight));
+    visibility.register("lazy-frame", (listener) => listener(0, 60, 50, 20), [
+      "demo-root-scroll",
+      "nested-scroll",
+    ]);
+
+    expect(visibility.isVisible("lazy-frame")).toBe(false);
+
+    nestedHeight = 100;
+    visibility.remeasureAll();
+    visibility.remeasureAll();
+
+    expect(visibility.isVisible("lazy-frame")).toBe(true);
+    expect(transitions).toEqual([true]);
+  });
+
+  test("loads a nested lazy Frame once after it enters both clipping regions", async () => {
+    const visibility = new DemoVisibilityRegistry();
+    const requests: TurboRequest[] = [];
+    let nestedHeight = 40;
+    let settle: ((response: TurboResponse) => void) | undefined;
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.registerContainer("nested-scroll", (listener) => listener(0, 0, 100, nestedHeight));
+    visibility.register("lazy-frame", (listener) => listener(0, 60, 50, 20), [
+      "demo-root-scroll",
+      "nested-scroll",
+    ]);
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="lazy-frame" loading="lazy" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/demo" },
+      ),
+    );
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) => {
+          requests.push(request);
+          return new Promise<TurboResponse>((resolve) => {
+            settle = resolve;
+          });
+        },
+      },
+      { next: () => "nested-lazy-request" },
+    );
+    const controller = new FrameController(session, "lazy-frame", loader, visibility);
+
+    expect(await controller.connect()).toBeUndefined();
+    expect(requests).toHaveLength(0);
+
+    nestedHeight = 100;
+    visibility.remeasureAll();
+    visibility.remeasureAll();
+    const loaded = controller.loaded;
+    expect(requests).toHaveLength(1);
+    settle?.({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<Gallery><turbo-frame id="lazy-frame"><Loaded /></turbo-frame></Gallery>',
+      url: "https://example.test/frame",
+    });
+    expect(await loaded).toMatchObject({ status: "completed" });
+
+    visibility.remeasureAll();
+    expect(requests).toHaveLength(1);
   });
 
   test("keeps a lazy Frame idle offscreen and loads it once after appearance", async () => {
@@ -159,12 +247,73 @@ describe("demo Frame visibility", () => {
     expect(transitions).toEqual([true, false, true, false]);
   });
 
+  test("ignores stale nested-container measurements and releases all geometry on disposal", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const containerMeasurements: ((
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+    ) => void)[] = [];
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.register("lazy-frame", (listener) => listener(0, 60, 50, 20), [
+      "demo-root-scroll",
+      "nested-scroll",
+    ]);
+    visibility.registerContainer("nested-scroll", (listener) => containerMeasurements.push(listener));
+    visibility.registerContainer("nested-scroll", (listener) => containerMeasurements.push(listener));
+
+    containerMeasurements[1]?.(0, 0, 100, 100);
+    containerMeasurements[0]?.(0, 0, 100, 100);
+    expect(visibility.isVisible("lazy-frame")).toBe(true);
+
+    visibility.dispose();
+    containerMeasurements[1]?.(0, 0, 100, 100);
+
+    expect(visibility.isVisible("lazy-frame")).toBe(false);
+    expect(() => visibility.register("late", () => {})).toThrow(/disposed/);
+  });
+
+  test("hides Frames before a required clip replacement or removal can remeasure", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const measurements: ((x: number, y: number, width: number, height: number) => void)[] = [];
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    const unregisterFirst = visibility.registerContainer("nested-scroll", (listener) =>
+      measurements.push(listener),
+    );
+    visibility.register("lazy-frame", (listener) => listener(0, 60, 50, 20), [
+      "demo-root-scroll",
+      "nested-scroll",
+    ]);
+    measurements[0]?.(0, 0, 100, 100);
+
+    expect(visibility.isVisible("lazy-frame")).toBe(true);
+
+    const unregisterCurrent = visibility.registerContainer("nested-scroll", (listener) =>
+      measurements.push(listener),
+    );
+    expect(visibility.isVisible("lazy-frame")).toBe(false);
+
+    measurements[0]?.(0, 0, 100, 100);
+    expect(visibility.isVisible("lazy-frame")).toBe(false);
+
+    measurements[1]?.(0, 0, 100, 100);
+    expect(visibility.isVisible("lazy-frame")).toBe(true);
+
+    unregisterCurrent();
+    expect(visibility.isVisible("lazy-frame")).toBe(false);
+    unregisterFirst();
+  });
+
   test("rejects malformed registrations and viewports", () => {
     const visibility = new DemoVisibilityRegistry();
 
     expect(() => visibility.register("", () => {})).toThrow(TypeError);
     expect(() => visibility.subscribe("", () => {})).toThrow(TypeError);
     expect(() => visibility.measureViewport(undefined as never)).toThrow(TypeError);
+    expect(() => visibility.registerContainer("", () => {})).toThrow(TypeError);
+    expect(() => visibility.register("frame", () => {}, [])).toThrow(TypeError);
+    expect(() => visibility.register("frame", () => {}, ["clip", "clip"])).toThrow(TypeError);
     expect(() =>
       visibility.setViewport({ height: Number.NaN, width: 1, x: 0, y: 0 }),
     ).toThrow(TypeError);
