@@ -9,6 +9,7 @@ Rails.application.routes.draw do
     namespace :expo_turbo do
       namespace :demo do
         resource :document, only: :show, defaults: {format: :expo_turbo}
+        resource :stream, only: :show, defaults: {format: :turbo_stream}
       end
     end
   end

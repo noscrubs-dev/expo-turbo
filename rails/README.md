@@ -1,8 +1,8 @@
 # expo_turbo-rails
 
-The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned `.xml.erb` views. The Engine remains route-free.
+The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents and standard Turbo Stream response fragments. The Engine remains route-free.
 
-The package does not yet provide Frames, Stream helpers, broadcasts, jobs, channels, or a compatibility claim.
+The package does not yet provide Frames, broadcasts, jobs, channels, or a compatibility claim.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -27,6 +27,23 @@ end
 ```
 
 The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected.
+
+Use the same opt-in concern to emit one or more standard Stream siblings. The builder supports `append`, `prepend`, `before`, `after`, `replace`, `update`, `remove`, `refresh`, and their `*_all` selector variants:
+
+```ruby
+def update
+  render_expo_turbo_stream(
+    expo_turbo_stream.update(
+      "notice",
+      partial: "notices/notice",
+      locals: {message: "Saved"}
+    ),
+    expo_turbo_stream.remove("new_notice")
+  )
+end
+```
+
+`partial: "notices/notice"` resolves only `app/views/expo_turbo/notices/_notice.xml.erb`; it never searches normal host view paths or falls back to `.html.erb`. Raw content and captured blocks are inserted as XML template payloads, so hosts must provide valid XML. The response uses `text/vnd.turbo-stream.html` and keeps multiple Stream actions as normal siblings without a custom wrapper. Record inference, layouts, broadcasts, jobs, and channels remain outside this API.
 
 Run the gem against both supported server pins with:
 

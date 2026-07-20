@@ -26,4 +26,19 @@ RSpec.describe "standalone demo host" do
     expect(document.root.name).to eq("DemoScreen")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
   end
+
+  it "serves standard sibling Stream fragments from confined XML partials" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/stream"
+
+    fragment = Nokogiri::XML("<root>#{response.body}</root>") { |config| config.strict }
+    streams = fragment.xpath("/root/turbo-stream")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
+    expect(streams.map { |stream| stream["action"] }).to eq(%w[update append])
+    expect(streams.first.at_xpath("./template/DemoText")&.text).to eq("Rendered from XML partial")
+    expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
+    expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
+  end
 end
