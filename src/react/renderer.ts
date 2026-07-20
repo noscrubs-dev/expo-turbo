@@ -1372,7 +1372,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         })
       }
       const frameAction = linkFrameVisitAction(actionValue)
-      return frames.visit(href, {
+      return frames.visit(disposition.url, {
         ...(frameAction !== undefined ? { action: frameAction } : {}),
         ...(elementTarget !== undefined ? { elementTarget } : {}),
         frame: nearestFrameId,
@@ -1387,7 +1387,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           })
         }
         const frameAction = linkFrameVisitAction(actionValue)
-        return frames.visit(href, {
+        return frames.visit(disposition.url, {
           ...(frameAction !== undefined ? { action: frameAction } : {}),
           elementTarget,
           frame: elementTarget,
@@ -1397,7 +1397,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     if (optedOut) {
       return delegateNativeNavigation("opt-out")
     }
-    return documentController.visit(href, {
+    return documentController.visit(disposition.url, {
       ...(action !== undefined ? { action } : {}),
       ...documentVisitOptions,
     })

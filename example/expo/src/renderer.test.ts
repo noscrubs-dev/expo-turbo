@@ -6539,6 +6539,87 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("retains the pre-click canonical URL for document and Frame links", async () => {
+    const documentRequests: TurboRequest[] = []
+    const documentLifecycle = new DocumentVisitLifecycle()
+    let documentSession: DocumentSession | undefined
+    documentLifecycle.subscribe("click", () => {
+      documentSession?.mutate((tree) => {
+        tree.retargetDocumentUrl("https://example.test/changed/base")
+        return [tree.document.key]
+      })
+    })
+    const document = renderDocumentLinks(
+      '<Gallery><DocumentLink href="next" /></Gallery>',
+      async (request) => {
+        documentRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: documentLifecycle },
+    )
+    documentSession = document.session
+
+    await act(async () => {
+      await document.activation("next")()
+    })
+
+    expect(documentRequests).toHaveLength(1)
+    expect(documentRequests[0]?.url).toBe("https://example.test/next")
+    act(() => document.renderer.unmount())
+
+    const frameRequests: TurboRequest[] = []
+    const frameLifecycle = new DocumentVisitLifecycle()
+    let frameSession: DocumentSession | undefined
+    frameLifecycle.subscribe("click", () => {
+      frameSession?.mutate((tree) => {
+        tree.retargetDocumentUrl("https://example.test/changed/base")
+        return [tree.document.key]
+      })
+    })
+    const frame = renderDocumentLinks(
+      '<Gallery><turbo-frame id="frame"><DocumentLink href="next" /></turbo-frame></Gallery>',
+      async () => {
+        throw new Error("Frame link must not fetch through the document controller")
+      },
+      "https://example.test/current",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<turbo-frame id="frame" />',
+          url: request.url,
+        }
+      },
+      undefined,
+      { visitLifecycle: frameLifecycle },
+    )
+    frameSession = frame.session
+
+    await act(async () => {
+      await frame.activation("next")()
+    })
+
+    expect(frameRequests).toHaveLength(1)
+    expect(frameRequests[0]).toMatchObject({
+      headers: { "Turbo-Frame": "frame" },
+      url: "https://example.test/next",
+    })
+    act(() => frame.renderer.unmount())
+  })
+
   test("rejects a failing click listener before request, Frame, or navigation ownership", async () => {
     const documentRequests: TurboRequest[] = []
     const frameRequests: TurboRequest[] = []
