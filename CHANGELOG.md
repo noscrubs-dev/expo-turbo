@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Validate each `render_expo_turbo` response as one strict UTF-8 XML document before rendering it. The shared lazy parser rejects malformed XML, multiple roots, invalid namespaces or duplicate attributes, DTDs, processing instructions, and non-UTF-8 declarations without rewriting the rendered bytes. Frame-ID uniqueness and component/style semantic validation remain separate work.
+
 - Validate generated Expo Turbo Frame/Stream fragments plus final Stream responses and public broadcast payloads before output or enqueue. The new lazy internal parser preserves original bytes, rejects malformed UTF-8 XML, declarations in fragments, DTD/entity declarations, processing instructions, unbound prefixes, and invalid Stream envelopes, and lets host inline `xml:space="preserve"` partial text reach the native parser unchanged. It does not admit complete XML document templates or add component, style, or duplicate-ID validation.
 - Add opt-in `expo_turbo/rails/testing` structural XML assertions. `parse_document` and `parse_stream_fragment` return strict non-networked Nokogiri documents for host tests, reject invalid UTF-8, recovery parsing, DTD/entity declarations, processing instructions, malformed namespaces, and invalid Stream-fragment envelopes, and leave Nokogiri unloaded from the main gem entrypoint.
 - Fix Rails Stream builder keyword content handling. Template-bearing target and selector actions now consume `content:` as XML `<template>` payload rather than emitting an escaped `content` action attribute; positional-plus-keyword content and all content/block/partial combinations reject deterministically.

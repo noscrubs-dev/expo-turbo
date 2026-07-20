@@ -10,6 +10,10 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
+
+      def show
+        render_expo_turbo "show"
+      end
     end
   end
 
@@ -25,6 +29,58 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
       expect { controller.send(:expo_turbo_template_file, "../outside") }
         .to raise_error(ExpoTurbo::Rails::TemplateError, /outside the configured view root/)
+    end
+  end
+
+  it "renders a strict host XML document without changing its output" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(
+        File.join(root, "show.xml.erb"),
+        <<~XML
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Demo:Screen xmlns:Demo="urn:expo-demo" xml:space="preserve"><Demo:Text>first\r
+          second\rthird</Demo:Text></Demo:Screen>
+        XML
+      )
+      controller_class.expo_turbo_view_root(root)
+      status, headers, body = render_document
+      document = ExpoTurbo::Rails::Testing.parse_document(body)
+      text = document.at_xpath("/Demo:Screen/Demo:Text", "Demo" => "urn:expo-demo")
+
+      expect(status).to eq(200)
+      expect(headers.fetch("content-type")).to start_with(ExpoTurbo::Rails::MIME_TYPE)
+      expect(body).to include("xml:space=\"preserve\"><Demo:Text>first\nsecond\rthird")
+      expect(document.root["xml:space"]).to eq("preserve")
+      expect(text.text).to eq("first\nsecond\nthird")
+    end
+  end
+
+  it "rejects malformed host XML documents without exposing template source" do
+    invalid_templates = [
+      "<Demo:Screen><Demo:Text></Demo:Screen>",
+      "<Demo:Screen/><Other/>",
+      "<Demo:Screen><Demo:Text id=\"first\" id=\"second\"/></Demo:Screen>",
+      "<Demo:Screen><Demo:Text/></Demo:Screen><?build secret?>",
+      "<!DOCTYPE Demo [<!ENTITY secret \"not-for-errors\">]><Demo:Screen/>",
+      "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><Demo:Screen/>",
+      "<Demo:Screen><Demo:Text/></Demo:Screen>"
+    ]
+
+    invalid_templates.each do |template|
+      Dir.mktmpdir do |directory|
+        root = File.join(directory, "expo_turbo")
+        FileUtils.mkdir_p(root)
+        File.write(File.join(root, "show.xml.erb"), template)
+        controller_class.expo_turbo_view_root(root)
+
+        expect { render_document }
+          .to raise_error(ExpoTurbo::Rails::TemplateError) { |error|
+            expect(error.message).to eq("Expo Turbo templates must render well-formed UTF-8 XML")
+            expect(error.message).not_to include("Demo:Text", "not-for-errors", "secret")
+          }
+      end
     end
   end
 
@@ -182,6 +238,11 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     controller.request = ActionDispatch::TestRequest.create(headers)
     controller.response = ActionDispatch::TestResponse.new
     controller
+  end
+
+  def render_document
+    status, headers, body = controller_class.action(:show).call(ActionDispatch::TestRequest.create.env)
+    [status, headers, body.each.to_a.join]
   end
 
   def conditional_etag(controller, representation: "accounts/details-v1")
