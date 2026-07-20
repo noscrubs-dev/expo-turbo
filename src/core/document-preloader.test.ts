@@ -424,6 +424,158 @@ describe("document preloader", () => {
     expect(fetches).toBe(0)
   })
 
+  test("releases a retained preload before allocating an ID or invoking fetch", async () => {
+    const ids = requestIds()
+    let fetches = 0
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        async fetch() {
+          fetches += 1
+          throw new Error("released preload fetched")
+        },
+      },
+      ids,
+      new DocumentSnapshotCache(),
+    )
+
+    const lease = preloader.retain("/app/released")
+    lease.release()
+
+    await expect(lease.promise).resolves.toEqual({
+      status: "canceled",
+      url: "https://example.test/app/released",
+    })
+    expect(ids.count).toBe(0)
+    expect(fetches).toBe(0)
+  })
+
+  test("shares retained work until the final uncommitted lease releases", async () => {
+    const pending = deferred<TurboResponse>()
+    const requests: TurboRequest[] = []
+    const cache = new DocumentSnapshotCache()
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch(request) {
+          requests.push(request)
+          return pending.promise
+        },
+      },
+      requestIds(),
+      cache,
+    )
+
+    const first = preloader.retain("/app/shared-retain")
+    const second = preloader.retain("./shared-retain")
+    expect(second.promise).toBe(first.promise)
+    await Promise.resolve()
+    expect(requests).toHaveLength(1)
+
+    first.release()
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    second.release()
+    expect(requests[0]?.signal?.aborted).toBe(true)
+    pending.resolve(
+      response("<Gallery><Late /></Gallery>", "https://example.test/app/shared-retain"),
+    )
+
+    await expect(first.promise).resolves.toEqual({
+      requestId: "preload-1",
+      status: "canceled",
+      url: "https://example.test/app/shared-retain",
+    })
+    await expect(second.promise).resolves.toEqual({
+      requestId: "preload-1",
+      status: "canceled",
+      url: "https://example.test/app/shared-retain",
+    })
+    expect(cache.has("https://example.test/app/shared-retain")).toBe(false)
+  })
+
+  test("promotes retained work through a commit or direct preload", async () => {
+    const pending: Array<ReturnType<typeof deferred<TurboResponse>>> = []
+    const requests: TurboRequest[] = []
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch(request) {
+          requests.push(request)
+          const next = deferred<TurboResponse>()
+          pending.push(next)
+          return next.promise
+        },
+      },
+      requestIds(),
+      new DocumentSnapshotCache(),
+    )
+
+    const committed = preloader.retain("/app/committed-retain")
+    await Promise.resolve()
+    committed.commit()
+    committed.release()
+    expect(requests[0]?.signal?.aborted).toBe(false)
+    pending[0]?.resolve(
+      response("<Gallery><Committed /></Gallery>", "https://example.test/app/committed-retain"),
+    )
+    await expect(committed.promise).resolves.toMatchObject({ status: "cached" })
+
+    const joined = preloader.retain("/app/direct-join")
+    await Promise.resolve()
+    const direct = preloader.preload("./direct-join")
+    expect(direct).toBe(joined.promise)
+    joined.release()
+    expect(requests[1]?.signal?.aborted).toBe(false)
+    pending[1]?.resolve(
+      response("<Gallery><Direct /></Gallery>", "https://example.test/app/direct-join"),
+    )
+    await expect(joined.promise).resolves.toMatchObject({ status: "cached" })
+  })
+
+  test("does not let a released lease cancel a reentrant retry", async () => {
+    const pending: Array<ReturnType<typeof deferred<TurboResponse>>> = []
+    const requests: TurboRequest[] = []
+    let retry: Promise<unknown> | undefined
+    let preloader: DocumentPreloader
+    preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch(request) {
+          requests.push(request)
+          const next = deferred<TurboResponse>()
+          pending.push(next)
+          if (pending.length === 1) {
+            request.signal?.addEventListener("abort", () => {
+              retry = preloader.preload("./retained-retry")
+            })
+          }
+          return next.promise
+        },
+      },
+      requestIds(),
+      new DocumentSnapshotCache(),
+    )
+
+    const lease = preloader.retain("/app/retained-retry")
+    await Promise.resolve()
+    lease.release()
+    await Promise.resolve()
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]?.signal?.aborted).toBe(false)
+    lease.release()
+    expect(requests[1]?.signal?.aborted).toBe(false)
+    pending[0]?.resolve(
+      response("<Gallery><Late /></Gallery>", "https://example.test/app/retained-retry"),
+    )
+    pending[1]?.resolve(
+      response("<Gallery><Retried /></Gallery>", "https://example.test/app/retained-retry"),
+    )
+
+    await expect(lease.promise).resolves.toMatchObject({ status: "canceled" })
+    await expect(retry).resolves.toMatchObject({ requestId: "preload-2", status: "cached" })
+  })
+
   test("gives cancellation precedence over reentrant cache lookup and request-ID failures", async () => {
     const hitUrl = "https://example.test/app/cache-hit"
     const hitCache = new DocumentSnapshotCache()

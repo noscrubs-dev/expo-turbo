@@ -152,7 +152,9 @@ function DemoDocumentLinkComponent({
         accessibilityState={{ busy: pending, disabled: unavailable }}
         disabled={unavailable}
         onPressIn={prefetch}
+        onPressOut={prefetch.cancel}
         onPress={() => {
+          prefetch.commit();
           setError(undefined);
           setPending(true);
           void activate()
