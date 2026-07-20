@@ -50,10 +50,24 @@ export interface DocumentPreloadRequester {
   preload(source: string): Promise<DocumentPreloadReport>
 }
 
+export interface DocumentPreloadLease {
+  readonly promise: Promise<DocumentPreloadReport>
+  commit(): void
+  release(): void
+}
+
+export interface DocumentPreloadLeaseRequester extends DocumentPreloadRequester {
+  retain(source: string): DocumentPreloadLease
+}
+
 interface ActiveDocumentPreload {
   readonly controller: AbortController
   readonly promise: Promise<DocumentPreloadReport>
-  readonly state: { cacheCommitProtected: boolean }
+  readonly state: {
+    cacheCommitProtected: boolean
+    durable: boolean
+    leases: number
+  }
   readonly url: string
 }
 
@@ -155,44 +169,45 @@ export class DocumentPreloader {
   }
 
   preload(source: string): Promise<DocumentPreloadReport> {
-    let url: string
     try {
-      if (
-        typeof source !== "string" ||
-        source.trim() === "" ||
-        [...source].some((character) => {
-          const codePoint = character.codePointAt(0)
-          return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
-        })
-      ) {
-        throw new TargetError("Document preload source is invalid")
-      }
-      const disposition = classifyTopLevelLocation(this.session.tree, source)
-      if (disposition.classification !== "visitable") {
-        throw new TargetError("Document preload requires a root-visitable location", {
-          target: disposition.classification,
-        })
-      }
-      if (disposition.url.includes("#")) {
-        throw new TargetError("Document preload fragments require anchor preload support")
-      }
-      url = disposition.url
-      const current = this.active.get(url)
-      if (current) return current.promise
-
-      const controller = new AbortController()
-      const state = { cacheCommitProtected: false }
-      let active: ActiveDocumentPreload
-      const promise = Promise.resolve()
-        .then(() => this.perform(url, controller))
-        .finally(() => {
-          if (this.active.get(url) === active) this.active.delete(url)
-        })
-      active = Object.freeze({ controller, promise, state, url })
-      this.active.set(url, active)
-      return promise
+      return this.begin(source, true).promise
     } catch (error) {
       return Promise.reject(error)
+    }
+  }
+
+  retain(source: string): DocumentPreloadLease {
+    try {
+      const active = this.begin(source, false)
+      active.state.leases += 1
+      let retained = true
+      const settle = (durable: boolean) => {
+        if (!retained) return
+        retained = false
+        if (this.active.get(active.url) !== active) return
+        active.state.leases -= 1
+        if (durable) active.state.durable = true
+        if (
+          !durable &&
+          !active.state.durable &&
+          !active.state.cacheCommitProtected &&
+          active.state.leases === 0
+        ) {
+          this.active.delete(active.url)
+          active.controller.abort()
+        }
+      }
+      return Object.freeze({
+        commit: () => settle(true),
+        promise: active.promise,
+        release: () => settle(false),
+      })
+    } catch (error) {
+      return Object.freeze({
+        commit: () => undefined,
+        promise: Promise.reject(error),
+        release: () => undefined,
+      })
     }
   }
 
@@ -213,6 +228,45 @@ export class DocumentPreloader {
       canceled.push(preload)
     }
     for (const preload of canceled) preload.controller.abort()
+  }
+
+  private begin(source: string, durable: boolean): ActiveDocumentPreload {
+    if (
+      typeof source !== "string" ||
+      source.trim() === "" ||
+      [...source].some((character) => {
+        const codePoint = character.codePointAt(0)
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+      })
+    ) {
+      throw new TargetError("Document preload source is invalid")
+    }
+    const disposition = classifyTopLevelLocation(this.session.tree, source)
+    if (disposition.classification !== "visitable") {
+      throw new TargetError("Document preload requires a root-visitable location", {
+        target: disposition.classification,
+      })
+    }
+    if (disposition.url.includes("#")) {
+      throw new TargetError("Document preload fragments require anchor preload support")
+    }
+    const existing = this.active.get(disposition.url)
+    if (existing) {
+      if (durable) existing.state.durable = true
+      return existing
+    }
+
+    const controller = new AbortController()
+    const state = { cacheCommitProtected: false, durable, leases: 0 }
+    let active: ActiveDocumentPreload
+    const promise = Promise.resolve()
+      .then(() => this.perform(disposition.url, controller))
+      .finally(() => {
+        if (this.active.get(disposition.url) === active) this.active.delete(disposition.url)
+      })
+    active = Object.freeze({ controller, promise, state, url: disposition.url })
+    this.active.set(disposition.url, active)
+    return active
   }
 
   private async perform(url: string, controller: AbortController): Promise<DocumentPreloadReport> {
