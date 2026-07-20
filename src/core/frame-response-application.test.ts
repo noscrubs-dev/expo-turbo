@@ -234,6 +234,39 @@ describe("prepared Frame mutations", () => {
     expect(disposals).toBe(1)
   })
 
+  test("rejects paired permanent Frame replacements that would duplicate a retained descendant ID", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><DemoPanel id="permanent" data-turbo-permanent=""><Current id="duplicate" /></DemoPanel></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const permanent = session.tree.getElementById("permanent")
+    const duplicate = session.tree.getElementById("duplicate")
+    if (frame?.kind !== "frame" || !permanent || !duplicate) throw new Error("invalid fixture")
+    const children = frame.children
+    const revision = session.revision
+    const permanentSnapshot = session.getNodeSnapshot(permanent.key)
+    let disposals = 0
+    session.registerDisposal(permanent.key, () => {
+      disposals += 1
+    })
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><DemoPanel id="permanent" data-turbo-permanent=""><Incoming /></DemoPanel><Other id="duplicate" /></turbo-frame>',
+    )
+
+    expect(() => prepareFrameMutation(session, frame, prepared)).toThrow(ParseError)
+    expect(session.revision).toBe(revision)
+    expect(frame.children).toBe(children)
+    expect(session.tree.getElementById("permanent")).toBe(permanent)
+    expect(session.tree.getElementById("duplicate")).toBe(duplicate)
+    expect(session.getNodeSnapshot(permanent.key)).toBe(permanentSnapshot)
+    expect(disposals).toBe(0)
+  })
+
   test("does not treat permanent Frame wrappers as replacement candidates", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
