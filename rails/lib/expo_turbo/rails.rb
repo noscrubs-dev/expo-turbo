@@ -20,6 +20,8 @@ require_relative "rails/engine"
 
 module ExpoTurbo
   module Rails
+    autoload :XmlFragments, "expo_turbo/rails/xml_fragments"
+
     module Streams
       autoload :TagBuilder, "expo_turbo/rails/streams/tag_builder"
     end

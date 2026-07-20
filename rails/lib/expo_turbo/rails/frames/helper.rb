@@ -11,8 +11,12 @@ module ExpoTurbo
             raise ConfigurationError, "Turbo Frames helper is unavailable before Rails initializes"
           end
 
-          ::Turbo::FramesHelper.instance_method(:turbo_frame_tag)
+          frame = ::Turbo::FramesHelper.instance_method(:turbo_frame_tag)
             .bind_call(self, id, src: src, target: target, **attributes, &block)
+          XmlFragments.parse_frame_fragment(frame.to_s)
+          frame
+        rescue XmlFragments::ParseError
+          raise TemplateError, "Expo Turbo Frame output must be well-formed UTF-8 XML without DTDs or processing instructions"
         end
       end
     end

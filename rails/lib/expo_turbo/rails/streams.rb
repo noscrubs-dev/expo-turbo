@@ -39,7 +39,11 @@ module ExpoTurbo
           raise TemplateError, "Expo Turbo Stream broadcasts must render valid UTF-8" unless content.encoding == Encoding::UTF_8 && content.valid_encoding?
           raise ArgumentError, "content must be a nonblank String" unless content.present?
 
+          XmlFragments.parse_stream_fragment(content)
+
           content
+        rescue XmlFragments::ParseError
+          raise TemplateError, "Expo Turbo Stream broadcasts must contain well-formed XML Stream fragments"
         end
 
         def valid_stream_name!(stream_name)

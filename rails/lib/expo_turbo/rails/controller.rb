@@ -76,7 +76,11 @@ module ExpoTurbo
         body = streams.flatten.compact.join
         raise TemplateError, "Expo Turbo Stream responses must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
 
+        XmlFragments.parse_stream_fragment(body)
+
         render plain: body, content_type: TURBO_STREAM_MIME_TYPE, status: status
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo Stream responses must contain well-formed XML Stream fragments"
       end
 
       def broadcast_expo_turbo_stream_to(*streamables, content: nil)

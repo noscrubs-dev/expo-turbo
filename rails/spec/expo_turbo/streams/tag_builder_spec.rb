@@ -66,6 +66,43 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     expect(element.at_xpath("./template/Demo:Item", "Demo" => "urn:expo-demo")&.text).to eq("Saved")
   end
 
+  it "rejects malformed template markup from raw content, blocks, and partials" do
+    expect { stream.append("items", "<Demo:Item/>") }
+      .to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Item") }
+    expect { stream.append("items", "<DemoItem/>", xmlns: "urn:expo-test") }
+      .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
+    expect { stream.append("items") { "<Demo:Item/>".html_safe } }
+      .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
+
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "_item.xml.erb"), "<Demo:Item/>")
+      controller_class.expo_turbo_view_root(root)
+
+      expect { stream.append("items", partial: "item") }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
+    end
+  end
+
+  it "preserves inline xml:space content from XML partials" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(
+        File.join(root, "_message.xml.erb"),
+        '<DemoText xml:space="preserve"><%= message %></DemoText>'
+      )
+      controller_class.expo_turbo_view_root(root)
+
+      rendered = stream.append("messages", partial: "message", locals: {message: "first\r\nsecond\rthird"})
+      text = ExpoTurbo::Rails::Testing.parse_stream_fragment(rendered.to_s).at_xpath("//DemoText")
+
+      expect(text["xml:space"]).to eq("preserve")
+      expect(text.text).to eq("first\nsecond\nthird")
+    end
+  end
+
   it "uses keyword content as template markup for every template-bearing action" do
     actions = {
       append: ["items", "target"],

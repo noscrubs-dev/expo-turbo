@@ -79,9 +79,9 @@ module ExpoTurbo
           reject_content!(attributes)
 
           if request_id.nil?
-            turbo_stream_refresh_tag(**attributes)
+            validate_stream_fragment!(turbo_stream_refresh_tag(**attributes))
           else
-            turbo_stream_refresh_tag(request_id:, **attributes)
+            validate_stream_fragment!(turbo_stream_refresh_tag(request_id:, **attributes))
           end
         end
 
@@ -89,23 +89,27 @@ module ExpoTurbo
 
         def target_action(action, target, content, partial:, locals:, attributes:, method: nil, &block)
           ensure_present!(target, :target)
-          turbo_stream_action_tag(
-            action,
-            target: target,
-            template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
-            method: method,
-            **attributes
+          validate_stream_fragment!(
+            turbo_stream_action_tag(
+              action,
+              target: target,
+              template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
+              method: method,
+              **attributes
+            )
           )
         end
 
         def targets_action(action, targets, content, partial:, locals:, attributes:, method: nil, &block)
           ensure_present!(targets, :targets)
-          turbo_stream_action_tag(
-            action,
-            targets: targets,
-            template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
-            method: method,
-            **attributes
+          validate_stream_fragment!(
+            turbo_stream_action_tag(
+              action,
+              targets: targets,
+              template: template_for(action, content_from_attributes(content, attributes), partial:, locals:, &block),
+              method: method,
+              **attributes
+            )
           )
         end
 
@@ -157,6 +161,13 @@ module ExpoTurbo
 
         def ensure_present!(value, name)
           raise ArgumentError, "#{name} must be present" if value.blank?
+        end
+
+        def validate_stream_fragment!(stream)
+          XmlFragments.parse_stream_fragment(stream.to_s)
+          stream
+        rescue XmlFragments::ParseError
+          raise TemplateError, "Expo Turbo Stream output must be well-formed UTF-8 XML without DTDs or processing instructions"
         end
       end
     end

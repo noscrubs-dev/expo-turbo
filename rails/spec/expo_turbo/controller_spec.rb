@@ -4,6 +4,7 @@ require "action_controller/api"
 require "fileutils"
 require "tmpdir"
 require "spec_helper"
+require "expo_turbo/rails/testing"
 
 RSpec.describe ExpoTurbo::Rails::Controller do
   let(:controller_class) do
@@ -46,9 +47,45 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(frame.at_xpath("./DemoText")&.text).to eq("Loaded")
   end
 
+  it "requires self-contained XML Frame fragments without changing preserved text" do
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create
+    calls = 0
+    rendered = controller.view_context.expo_turbo_frame_tag("details") do
+      calls += 1
+      "<Demo:Text xmlns:Demo=\"urn:expo-demo\" xml:space=\"preserve\">first\r\nsecond\rthird</Demo:Text>".html_safe
+    end
+    frame = ExpoTurbo::Rails::Testing.parse_document(rendered.to_s).root
+    text = frame.at_xpath("./Demo:Text", "Demo" => "urn:expo-demo")
+
+    expect(calls).to eq(1)
+    expect(text["xml:space"]).to eq("preserve")
+    expect(text.text).to eq("first\nsecond\nthird")
+  end
+
+  it "rejects malformed Frame markup without exposing its source" do
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create
+
+    [
+      "<Demo:Text/>",
+      "<?xml version=\"1.0\"?><DemoText/>",
+      "<!DOCTYPE Demo [<!ENTITY secret \"not-for-errors\">]><DemoText/>",
+      "<?build data?><DemoText/>"
+    ].each do |markup|
+      expect {
+        controller.view_context.expo_turbo_frame_tag("details") { markup.html_safe }
+      }.to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Text", "not-for-errors") }
+    end
+
+    expect {
+      controller.view_context.expo_turbo_frame_tag("details", xmlns: "urn:expo-test")
+    }.to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
+  end
+
   it "rejects invalid Expo Turbo Frame IDs" do
     controller = controller_class.new
-    invalid_ids = [nil, :details, "", "  ", "\u2003", "details\nnext", "\xFF".dup.force_encoding(Encoding::UTF_8)]
+    invalid_ids = [nil, :details, "", "  ", "\u2003", "details\nnext", "\uFFFE", "\uFFFF", "\xFF".dup.force_encoding(Encoding::UTF_8)]
 
     invalid_ids.each do |id|
       expect { controller.view_context.expo_turbo_frame_tag(id) }
@@ -131,6 +168,13 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     controller.expo_turbo_vary_by_frame!
 
     expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame")
+  end
+
+  it "rejects non-Stream response fragments before rendering" do
+    invalid = '<Demo:Text xmlns:Demo="urn:expo-demo">not a Stream</Demo:Text>'
+
+    expect { controller_with_request.render_expo_turbo_stream(invalid) }
+      .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed XML Stream fragments/)
   end
 
   def controller_with_request(headers = {})

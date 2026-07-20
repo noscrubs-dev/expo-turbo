@@ -28,7 +28,7 @@ end
 
 The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content.
 
-For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts only a nonblank UTF-8 literal ID without control characters, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior.
+For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts only a nonblank UTF-8 literal ID without control characters, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior. Before returning, it parses the exact Frame output under a private synthetic root: markup must be valid UTF-8 XML without declarations, DTDs, or processing instructions, and any XML prefix must be declared by the Frame fragment itself. Validation does not serialize or alter the returned `SafeBuffer`, so inline `xml:space="preserve"` text keeps its authored bytes for the native parser.
 
 ```ruby
 def show
@@ -85,7 +85,7 @@ def update
 end
 ```
 
-`partial: "notices/notice"` resolves only `app/views/expo_turbo/notices/_notice.xml.erb`; it never searches normal host view paths or falls back to `.html.erb`. Raw positional content, keyword `content:`, and captured blocks are inserted as XML template payloads, so hosts must provide valid XML. For target and selector actions, keyword `content:` is consumed as the `<template>` payload rather than emitted as a `<turbo-stream content>` attribute; provide exactly one of positional content, keyword content, a block, or a partial. `remove`, `remove_all`, and `refresh` have no template and reject `content:`. The response uses `text/vnd.turbo-stream.html` and keeps multiple Stream actions as normal siblings without a custom wrapper. Record inference and layouts remain outside this API.
+`partial: "notices/notice"` resolves only `app/views/expo_turbo/notices/_notice.xml.erb`; it never searches normal host view paths or falls back to `.html.erb`. Raw positional content, keyword `content:`, and captured blocks are inserted as XML template payloads, so hosts must provide valid XML. For target and selector actions, keyword `content:` is consumed as the `<template>` payload rather than emitted as a `<turbo-stream content>` attribute; provide exactly one of positional content, keyword content, a block, or a partial. `remove`, `remove_all`, and `refresh` have no template and reject `content:`. Each generated tag and final response is parsed as a self-contained sibling Stream fragment before it is returned; malformed XML, declarations, DTDs, processing instructions, unbound prefixes, non-Stream roots, and empty responses fail before rendering. Use `head :no_content` when there is no Stream action. The response uses `text/vnd.turbo-stream.html` and keeps multiple Stream actions as normal siblings without a custom wrapper. Record inference and layouts remain outside this API.
 
 For a public Action Cable stream, render the source inside an Expo Turbo XML document and broadcast pre-rendered Stream markup from an explicit controller/view context:
 
@@ -103,7 +103,7 @@ broadcast_expo_turbo_stream_later_to @room do |stream|
 end
 ```
 
-All three operations use the same normalized streamables and append the fixed `:expo` suffix. For example, the literal streamables `:room, "42"` map to `room:42:expo`, keeping Expo XML distinct from the browser HTML stream `room:42`. `expo_turbo_stream_from` emits the standard `Turbo::StreamsChannel` descriptor with a matching signed stream name and reserves its channel/signature attributes. `ExpoTurbo::Rails::Streams.broadcast_to(*streamables, content:)` is available when the host already owns a rendered nonblank UTF-8 Stream payload; whole-payload XML validation remains separate work.
+All three operations use the same normalized streamables and append the fixed `:expo` suffix. For example, the literal streamables `:room, "42"` map to `room:42:expo`, keeping Expo XML distinct from the browser HTML stream `room:42`. `expo_turbo_stream_from` emits the standard `Turbo::StreamsChannel` descriptor with a matching signed stream name and reserves its channel/signature attributes. `ExpoTurbo::Rails::Streams.broadcast_to(*streamables, content:)` is available when the host already owns a rendered nonblank UTF-8 Stream payload; it parses that payload as a self-contained sibling Stream fragment before sending or enqueueing it, and the queued job validates again before delivery.
 
 `broadcast_expo_turbo_stream_to` sends immediately to the host's Action Cable pubsub. `broadcast_expo_turbo_stream_later_to` uses the host-configured Active Job adapter and enqueues `ExpoTurbo::Rails::Streams::BroadcastJob` with only the resolved stream-name string and already-rendered payload; it does not serialize a host model or render a template when the job runs. The job disables Active Job argument logging. The host owns Action Cable configuration (including its logger, adapter, and any mounted client endpoint) plus its Active Job adapter. This API does not establish a client connection, prove receipt, provide replay, issue credentials, or authorize protected resources. Do not use this public-stream API for sensitive XML; protected Channels and grants remain later work.
 
@@ -121,7 +121,7 @@ streams = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
 
 `parse_document` returns a strict `Nokogiri::XML::Document` for one XML document. `parse_stream_fragment` returns a document with a private synthetic root so one or more sibling `<turbo-stream>` elements retain their authored order. Both accept only nonblank UTF-8 input (including binary HTTP bytes that validate as UTF-8), reject recovery parsing, DTDs, entity declarations, processing instructions, malformed namespaces, and non-Stream top-level fragment content, and never make network requests.
 
-This entrypoint is deliberately opt-in: `require "expo_turbo/rails"` does not load Nokogiri. It is a test-support parser, not production template admission or whole-response protocol validation; hosts still own their XML view validation and semantic assertions.
+This entrypoint is deliberately opt-in: `require "expo_turbo/rails"` does not load Nokogiri. Production Frame/Stream fragments use the same strict parser lazily at their output boundaries, but this entrypoint remains test support: it does not admit complete XML document templates or perform component, style, duplicate-ID, or other semantic protocol validation.
 
 Run the gem against both supported server pins with:
 
