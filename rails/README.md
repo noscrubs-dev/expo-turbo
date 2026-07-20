@@ -1,8 +1,8 @@
 # expo_turbo-rails
 
-The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents and standard Turbo Stream response fragments. The Engine remains route-free.
+The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents, matching native Frame responses, and standard Turbo Stream response fragments. The Engine remains route-free.
 
-The package does not yet provide Frames, broadcasts, jobs, channels, or a compatibility claim.
+The package does not yet validate a whole XML document's Frame IDs, provide broadcasts/jobs/channels, or make a compatibility claim.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -26,7 +26,25 @@ class ExpoTurboController < ActionController::API
 end
 ```
 
-The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected.
+The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content.
+
+For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts only a nonblank UTF-8 literal ID without control characters, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or ETags.
+
+```ruby
+def show
+  return head :bad_request unless expo_turbo_frame_request_id == "account-details"
+
+  render_expo_turbo "accounts/details"
+end
+```
+
+```erb
+<%= expo_turbo_frame_tag "account-details" do %>
+  <AccountDetails id="account-details-content">...</AccountDetails>
+<% end %>
+```
+
+`expo_turbo_frame_request?` and `expo_turbo_frame_request_id` are also available in the XML view. A host that varies a response by this header must set the appropriate cache variation itself; complete XML/template and duplicate-ID validation remain later work.
 
 Use the same opt-in concern to emit one or more standard Stream siblings. The builder supports `append`, `prepend`, `before`, `after`, `replace`, `update`, `remove`, `refresh`, and their `*_all` selector variants:
 
