@@ -296,11 +296,17 @@ type FrameRefreshMorpher = (
   responseFrame: ProtocolElement,
 ) => readonly string[]
 
+type FramePermanentReplacer = (
+  frame: ProtocolElement,
+  responseFrame: ProtocolElement,
+) => readonly string[]
+
 type DocumentRefreshMorpher = (source: DocumentTree) => readonly string[]
 
 const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const frameRefreshMorphers = new WeakMap<DocumentTree, FrameRefreshMorpher>()
+const framePermanentReplacers = new WeakMap<DocumentTree, FramePermanentReplacer>()
 const documentRefreshMorphers = new WeakMap<DocumentTree, DocumentRefreshMorpher>()
 
 /** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
@@ -334,6 +340,17 @@ export function morphFrameRefreshChildren(
   const morph = frameRefreshMorphers.get(tree)
   if (!morph) throw new TargetError("Native Frame refresh morph requires an active document tree")
   return morph(frame, responseFrame)
+}
+
+/** @internal Frame response entrypoint; not re-exported from `expo-turbo/core`. */
+export function replaceFrameChildrenPreservingPermanents(
+  tree: DocumentTree,
+  frame: ProtocolElement,
+  responseFrame: ProtocolElement,
+): readonly string[] {
+  const replace = framePermanentReplacers.get(tree)
+  if (!replace) throw new TargetError("Native Frame replacement requires an active document tree")
+  return replace(frame, responseFrame)
 }
 
 /** @internal Current-document refresh entrypoint; not re-exported from `expo-turbo/core`. */
@@ -375,6 +392,9 @@ export class DocumentTree {
     )
     frameRefreshMorphers.set(this, (frame, responseFrame) =>
       this.morphFrameRefreshChildren(frame, responseFrame),
+    )
+    framePermanentReplacers.set(this, (frame, responseFrame) =>
+      this.replaceFrameChildrenPreservingPermanents(frame, responseFrame),
     )
     documentRefreshMorphers.set(this, (source) => this.morphCurrentDocumentRoot(source))
   }
@@ -523,6 +543,139 @@ export class DocumentTree {
     this.replaceChildren(parent, clones)
     for (const child of previous) setProtocolNodeParent(child, null)
     return [parent.key, ...removed, ...clones.flatMap(subtreeKeys)]
+  }
+
+  /**
+   * Matches Turbo's ordinary Frame renderer only for paired permanent application
+   * elements. Every unpaired response node remains a structural replacement.
+   */
+  private replaceFrameChildrenPreservingPermanents(
+    frame: ProtocolElement,
+    responseFrame: ProtocolElement,
+  ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
+    this.assertActiveParent(frame)
+    const frameId = attributeValue(frame, "id")
+    if (frame.kind !== "frame" || !frameId) {
+      throw new TargetError("Native Frame replacement requires an active Frame target", {
+        ...(frameId ? { target: frameId } : {}),
+      })
+    }
+
+    const permanentById = this.framePermanentPairs(frame, responseFrame)
+    if (permanentById.size === 0) {
+      return this.replaceChildrenWithClones(frame, responseFrame.children)
+    }
+
+    const previous = [...frame.children]
+    const previousKeys = previous.flatMap(subtreeKeys)
+    const previousMutationKey = this.mutationKey
+    const parents = new Map<ProtocolNode, ProtocolParentNode | null>()
+
+    try {
+      const children = responseFrame.children.map((source) =>
+        this.cloneFrameReplacementNode(source, frame, permanentById),
+      )
+      this.adoptFrameReplacementChildren(frame, children, parents)
+      this.replaceChildren(frame, children)
+
+      const retained = new Set(children)
+      for (const child of previous) {
+        if (retained.has(child)) continue
+        this.recordFrameReplacementParent(child, parents)
+        setProtocolNodeParent(child, null)
+      }
+
+      return [frame.key, ...previousKeys, ...children.flatMap(subtreeKeys)]
+    } catch (error) {
+      this.mutationKey = previousMutationKey
+      for (const [node, parent] of parents) setProtocolNodeParent(node, parent)
+      this.rebuildIndexes()
+      throw error
+    }
+  }
+
+  private framePermanentPairs(
+    frame: ProtocolElement,
+    responseFrame: ProtocolElement,
+  ): ReadonlyMap<string, ProtocolElement> {
+    const currentById = new Map<string, ProtocolElement>()
+    this.visitFrameApplicationElements(frame, (element) => {
+      const id = attributeValue(element, "id")
+      if (id?.trim() && isTurboPermanent(element)) currentById.set(id, element)
+    })
+
+    const pairs = new Map<string, ProtocolElement>()
+    this.visitFrameApplicationElements(responseFrame, (element) => {
+      const id = attributeValue(element, "id")
+      if (!id?.trim()) return
+      const current = currentById.get(id)
+      if (current && isTurboPermanent(element)) pairs.set(id, current)
+    })
+    return pairs
+  }
+
+  private visitFrameApplicationElements(
+    frame: ProtocolElement,
+    visit: (element: ProtocolElement) => void,
+  ): void {
+    const descend = (node: ProtocolNode): void => {
+      if (!isElement(node) || node.kind !== "element") return
+      visit(node)
+      for (const child of node.children) descend(child)
+    }
+    for (const child of frame.children) descend(child)
+  }
+
+  private cloneFrameReplacementNode(
+    source: ProtocolNode,
+    parent: ProtocolParentNode,
+    permanentById: ReadonlyMap<string, ProtocolElement>,
+  ): ProtocolNode {
+    if (!isElement(source) || source.kind !== "element") return this.cloneNode(source, parent)
+
+    const id = attributeValue(source, "id")
+    const permanent = id?.trim() ? permanentById.get(id) : undefined
+    if (permanent) return permanent
+
+    const clone: ProtocolElement = {
+      attributes: source.attributes.map((attribute) => ({ ...attribute })),
+      children: [],
+      key: id ? `id:${id}` : `mutation:${this.mutationKey++}`,
+      kind: source.kind,
+      localName: source.localName,
+      namespaceUri: source.namespaceUri,
+      parent,
+      prefix: source.prefix,
+      tagName: source.tagName,
+      ...(source.location ? { location: source.location } : {}),
+    }
+    setProtocolNodeChildren(
+      clone,
+      source.children.map((child) => this.cloneFrameReplacementNode(child, clone, permanentById)),
+    )
+    return clone
+  }
+
+  private adoptFrameReplacementChildren(
+    parent: ProtocolParentNode,
+    children: readonly ProtocolNode[],
+    parents: Map<ProtocolNode, ProtocolParentNode | null>,
+  ): void {
+    for (const child of children) {
+      if (child.parent !== parent) {
+        this.recordFrameReplacementParent(child, parents)
+        setProtocolNodeParent(child, parent)
+      }
+      if (isElement(child)) this.adoptFrameReplacementChildren(child, child.children, parents)
+    }
+  }
+
+  private recordFrameReplacementParent(
+    node: ProtocolNode,
+    parents: Map<ProtocolNode, ProtocolParentNode | null>,
+  ): void {
+    if (this.nodes.has(node) && !parents.has(node)) parents.set(node, node.parent)
   }
 
   /**
