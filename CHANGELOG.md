@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Discard queued Expo Stream broadcasts when Active Job cannot deserialize their arguments, matching Turbo's deferred broadcast behavior without retrying or broadcasting a partial payload. Normal Expo jobs remain pre-rendered stream-name and XML-string deliveries with argument logging disabled.
+
 - Validate each `render_expo_turbo` response as one strict UTF-8 XML document before rendering it. The shared lazy parser rejects malformed XML, multiple roots, invalid namespaces or duplicate attributes, DTDs, processing instructions, and non-UTF-8 declarations without rewriting the rendered bytes. Frame-ID uniqueness and component/style semantic validation remain separate work.
 
 - Validate generated Expo Turbo Frame/Stream fragments plus final Stream responses and public broadcast payloads before output or enqueue. The new lazy internal parser preserves original bytes, rejects malformed UTF-8 XML, declarations in fragments, DTD/entity declarations, processing instructions, unbound prefixes, and invalid Stream envelopes, and lets host inline `xml:space="preserve"` partial text reach the native parser unchanged. It does not admit complete XML document templates or add component, style, or duplicate-ID validation.

@@ -111,6 +111,17 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     expect(ExpoTurbo::Rails::Streams::BroadcastJob.log_arguments?).to be(false)
   end
 
+  it "discards queued argument deserialization failures without broadcasting" do
+    job = ExpoTurbo::Rails::Streams::BroadcastJob.new(
+      "room:expo",
+      content: '<turbo-stream action="remove" target="notice"></turbo-stream>'
+    ).serialize
+    job["arguments"] = [{"_aj_globalid" => "gid://expo-turbo-rails-spec-app/MissingRecord/1"}]
+
+    expect { ActiveJob::Base.execute(job) }.not_to raise_error
+    expect(broadcast_payloads("room:expo")).to be_empty
+  end
+
   it "rejects blank or invalid-UTF-8 broadcast content before it reaches Action Cable" do
     expect { described_class.broadcast_to("room", content: "") }.to raise_error(ArgumentError, /nonblank String/)
     expect { described_class.broadcast_later_to("room", content: "") }.to raise_error(ArgumentError, /nonblank String/)

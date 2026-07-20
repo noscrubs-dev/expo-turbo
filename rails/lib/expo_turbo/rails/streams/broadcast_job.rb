@@ -4,6 +4,8 @@ module ExpoTurbo
   module Rails
     module Streams
       class BroadcastJob < ::ActiveJob::Base
+        discard_on ActiveJob::DeserializationError
+
         self.log_arguments = false
 
         def perform(stream_name, content:)
