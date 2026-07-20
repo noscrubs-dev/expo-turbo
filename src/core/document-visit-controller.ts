@@ -22,6 +22,8 @@ import {
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
+  isDocumentContentTypeError,
+  isDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
@@ -36,13 +38,17 @@ import {
   BeforeVisitEvent,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  DocumentReloadEvent,
+  type DocumentReloadEventDetail,
   type DocumentVisitLifecycle,
   VisitEvent,
 } from "./document-visit-lifecycle"
 import { PropsError, RequestError, StateError, TargetError } from "./errors"
 import { resolveProtocolUrl } from "./protocol-request"
 import {
+  RequestLifecycleTransportError,
   type RequestOperationResult,
   requestLifecycleDefaultHandlingPrevented,
   settleRequestOperation,
@@ -937,6 +943,8 @@ export class DocumentVisitController {
     let redirectDelegation: RequestOperationResult<DocumentVisitDelegation> | undefined
     let redirectFollowupUrl: string | undefined
     let render: PreparedDocumentRender | undefined
+    const reloadEligible =
+      action !== "restore" && eventAction !== "restore" && historyGuard?.kind !== "traversal"
     const loaded = this.loader.load(source, this.requestOwner, {
       ...(snapshotCache && this.visitLifecycle
         ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
@@ -1251,6 +1259,7 @@ export class DocumentVisitController {
             status,
             error instanceof DocumentCommitError,
           )
+          if (status === "failed" && reloadEligible) this.notifyReload(error, epoch)
           if (!requestLifecycleDefaultHandlingPrevented(error)) this.notifyError(reported)
         }
         throw reported
@@ -1316,6 +1325,13 @@ export class DocumentVisitController {
       return
     }
     this.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](new VisitEvent(url, action))
+  }
+
+  private notifyReload(error: unknown, epoch: number): void {
+    if (!this.visitLifecycle || epoch !== this.visitEpoch || this.status !== "failed") return
+    const detail = documentReloadDetail(error)
+    if (!detail) return
+    this.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH](new DocumentReloadEvent(detail))
   }
 
   private assertHistoryPlan(plan: DocumentVisitHistoryPlan): void {
@@ -1640,6 +1656,20 @@ export class DocumentVisitController {
       })
     }
   }
+}
+
+function documentReloadDetail(error: unknown): DocumentReloadEventDetail | undefined {
+  if (isDocumentContentTypeError(error)) {
+    return { cause: "content-type", reason: "request-failed" }
+  }
+  if (
+    isDocumentTransportError(error) ||
+    (error instanceof RequestLifecycleTransportError &&
+      !requestLifecycleDefaultHandlingPrevented(error))
+  ) {
+    return { cause: "transport", reason: "request-failed" }
+  }
+  return undefined
 }
 
 function documentVisitControllerOptions(options: unknown): AdmittedDocumentVisitControllerOptions {

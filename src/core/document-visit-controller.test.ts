@@ -957,12 +957,18 @@ describe("Document visit controller", () => {
 
   test("keeps a prevented fetch error rejected while suppressing default error delegation", async () => {
     const lifecycle = new RequestLifecycle()
+    const visitLifecycle = new DocumentVisitLifecycle()
+    const reloads: unknown[] = []
     lifecycle.subscribe("fetch-request-error", (event) => event.preventDefault())
+    visitLifecycle.subscribe("reload", (event) => {
+      reloads.push(event.detail)
+    })
     const { controller } = harness({
       fetch: async () => {
         throw new Error("secret transport failure")
       },
       requestLifecycle: lifecycle,
+      visitLifecycle,
     })
     const errors: Error[] = []
     controller.subscribeErrors((error) => errors.push(error))
@@ -970,6 +976,7 @@ describe("Document visit controller", () => {
     await expect(controller.visit("/failed")).rejects.toThrow("Document request failed")
     expect(controller.state).toMatchObject({ busy: false, status: "failed" })
     expect(errors).toEqual([])
+    expect(reloads).toEqual([])
   })
 
   test("notifies visit before a paused before-fetch-request resumes", async () => {
@@ -1990,10 +1997,16 @@ describe("Document visit controller", () => {
         url: "https://example.test/failure",
       }),
     )
+    const lifecycle = new DocumentVisitLifecycle()
+    const reloads: unknown[] = []
+    lifecycle.subscribe("reload", (event) => {
+      reloads.push(event.detail)
+    })
     const failing = harness({
       fetch: async () => Promise.reject(new Error("offline")),
       history: historyFixture().history,
       snapshotCache: failingCache,
+      visitLifecycle: lifecycle,
     })
 
     await expect(failing.controller.visit("/failure")).rejects.toBeInstanceOf(RequestError)
@@ -2003,6 +2016,7 @@ describe("Document visit controller", () => {
       previewVisible: true,
       status: "failed",
     })
+    expect(reloads).toEqual([{ cause: "transport", reason: "request-failed" }])
 
     const canceledCache = new DocumentSnapshotCache()
     canceledCache.put(
@@ -4095,14 +4109,37 @@ describe("Document visit controller", () => {
     const fixtures: ReadonlyArray<{
       error: typeof ContentTypeError | typeof ParseError | typeof RequestError
       fetch: FetchAdapter["fetch"]
+      reloadCause?: "content-type" | "transport"
+      requestLifecycle?: RequestLifecycle
     }> = [
       {
         error: RequestError,
         fetch: async () => Promise.reject(new Error("network unavailable")),
+        reloadCause: "transport",
+      },
+      {
+        error: ContentTypeError,
+        fetch: async () => Promise.reject(new ContentTypeError("fetch adapter rejected")),
+        reloadCause: "transport",
+      },
+      {
+        error: RequestError,
+        fetch: async () =>
+          response("", {
+            text: async () => Promise.reject(new Error("response body unavailable")),
+          }),
+        reloadCause: "transport",
+      },
+      {
+        error: RequestError,
+        fetch: async () => Promise.reject(new Error("lifecycle network unavailable")),
+        reloadCause: "transport",
+        requestLifecycle: new RequestLifecycle(),
       },
       {
         error: ContentTypeError,
         fetch: async () => response("{}", { headers: { "Content-Type": "application/json" } }),
+        reloadCause: "content-type",
       },
       {
         error: ParseError,
@@ -4115,18 +4152,30 @@ describe("Document visit controller", () => {
       const snapshotCache = new DocumentSnapshotCache()
       const lifecycle = new DocumentVisitLifecycle()
       let cacheEvents = 0
+      const reloads: unknown[] = []
       lifecycle.subscribe("before-cache", () => {
         cacheEvents += 1
+      })
+      lifecycle.subscribe("reload", (event) => {
+        reloads.push(event.detail)
       })
       const { clock, controller, session } = harness({
         fetch: fixture.fetch,
         history: history.history,
+        ...(fixture.requestLifecycle ? { requestLifecycle: fixture.requestLifecycle } : {}),
         snapshotCache,
         visitLifecycle: lifecycle,
       })
       const tree = session.tree
       const errors: Error[] = []
-      controller.subscribeErrors((error) => errors.push(error))
+      const notifications: string[] = []
+      lifecycle.subscribe("reload", () => {
+        notifications.push("reload")
+      })
+      controller.subscribeErrors((error) => {
+        errors.push(error)
+        notifications.push("error")
+      })
 
       await expect(controller.visit("/failure")).rejects.toBeInstanceOf(fixture.error)
       expect(controller.state).toMatchObject({
@@ -4141,7 +4190,83 @@ describe("Document visit controller", () => {
       expect(snapshotCache.size).toBe(0)
       expect(cacheEvents).toBe(0)
       expect(history.writes).toEqual([])
+      expect(reloads).toEqual(
+        fixture.reloadCause ? [{ cause: fixture.reloadCause, reason: "request-failed" }] : [],
+      )
+      expect(notifications).toEqual(fixture.reloadCause ? ["reload", "error"] : ["error"])
     }
+  })
+
+  test("publishes reload after failure so its listener can start a new visit", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const order: string[] = []
+    let recovery: Promise<DocumentVisitResult> | undefined
+    const { controller, session } = harness({
+      fetch: async (request) => {
+        if (request.url.endsWith("/failed")) throw new Error("secret transport failure")
+        return response('<Gallery><Recovered id="recovered" /></Gallery>', { url: request.url })
+      },
+      visitLifecycle: lifecycle,
+    })
+    lifecycle.subscribe("reload", (event) => {
+      order.push("reload")
+      expect(event.detail).toEqual({ cause: "transport", reason: "request-failed" })
+      expect(controller.state.status).toBe("failed")
+      recovery = controller.visit("/recovered")
+    })
+    controller.subscribeErrors(() => {
+      order.push("error")
+    })
+
+    await expect(controller.visit("/failed")).rejects.toBeInstanceOf(RequestError)
+    expect(order).toEqual(["reload", "error"])
+    if (!recovery) throw new Error("Reload listener did not start recovery")
+    expect(await recovery).toMatchObject({ status: "committed" })
+    expect(controller.state.status).toBe("completed")
+    expect(session.tree.getElementById("recovered")?.tagName).toBe("Recovered")
+  })
+
+  test("does not publish reload for a host commit error that only resembles a MIME failure", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const reloads: unknown[] = []
+    lifecycle.subscribe("reload", (event) => {
+      reloads.push(event.detail)
+    })
+    const { history } = historyFixture(() => {
+      throw new ContentTypeError("Host history rejected the proposal")
+    })
+    const { controller } = harness({
+      fetch: async (request) =>
+        response('<Gallery><Next id="next" /></Gallery>', { url: request.url }),
+      history,
+      visitLifecycle: lifecycle,
+    })
+
+    await expect(controller.visit("/next")).rejects.toBeInstanceOf(StateError)
+    expect(reloads).toEqual([])
+  })
+
+  test("does not publish reload after explicit cancellation", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const reloads: unknown[] = []
+    let rejectFetch: ((error: unknown) => void) | undefined
+    lifecycle.subscribe("reload", (event) => {
+      reloads.push(event.detail)
+    })
+    const { controller } = harness({
+      fetch: () =>
+        new Promise<TurboResponse>((_resolve, reject) => {
+          rejectFetch = reject
+        }),
+      visitLifecycle: lifecycle,
+    })
+
+    const visit = controller.visit("/pending")
+    controller.cancel()
+    rejectFetch?.(new Error("secret canceled transport failure"))
+
+    expect(await visit).toMatchObject({ status: "canceled" })
+    expect(reloads).toEqual([])
   })
 
   test("cancels immediately and ignores every later request and timer callback", async () => {
@@ -4675,6 +4800,7 @@ describe("Document visit controller", () => {
       Readonly<{
         error?: typeof ContentTypeError | typeof ParseError
         name: string
+        reloadCause?: "content-type"
         response: TurboResponse
       }>
     > = [
@@ -4689,6 +4815,7 @@ describe("Document visit controller", () => {
       {
         error: ContentTypeError,
         name: "wrong MIME",
+        reloadCause: "content-type",
         response: response('{"ignored":true}', {
           headers: { "Content-Type": "application/json" },
           url: "https://example.test/current",
@@ -4705,7 +4832,15 @@ describe("Document visit controller", () => {
 
     for (const fixtureCase of fixtureCases) {
       const history = historyFixture()
-      const { controller, pending, session } = harness({ history: history.history })
+      const lifecycle = new DocumentVisitLifecycle()
+      const reloads: unknown[] = []
+      lifecycle.subscribe("reload", (event) => {
+        reloads.push(event.detail)
+      })
+      const { controller, pending, session } = harness({
+        history: history.history,
+        visitLifecycle: lifecycle,
+      })
       const tree = session.tree
       const entry = history.history.current
 
@@ -4720,6 +4855,11 @@ describe("Document visit controller", () => {
       expect(history.writes, fixtureCase.name).toEqual([])
       expect(history.history.current, fixtureCase.name).toBe(entry)
       expect(session.tree, fixtureCase.name).toBe(tree)
+      expect(reloads, fixtureCase.name).toEqual(
+        fixtureCase.reloadCause
+          ? [{ cause: fixtureCase.reloadCause, reason: "request-failed" }]
+          : [],
+      )
     }
   })
 
