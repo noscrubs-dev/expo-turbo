@@ -5430,7 +5430,9 @@ describe("React protocol renderer", () => {
           promise: new Promise<never>(() => undefined),
           release() {
             callbacks.push(`release:${source}`)
-            throw new Error("private hostile release failure")
+            if (source.endsWith("/release")) {
+              throw new Error("private hostile release failure")
+            }
           },
         }
       },
@@ -5463,12 +5465,48 @@ describe("React protocol renderer", () => {
 
     expect(callbacks).toEqual([
       "commit:https://example.test/commit",
+      "release:https://example.test/commit",
       "release:https://example.test/release",
     ])
     expect(errors).toHaveLength(2)
     expect(errors.map((event) => event.error.message)).toEqual([
       "Document link press-in prefetch failed",
       "Document link press-in prefetch failed",
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects malformed press-prefetch lease promises before treating them as a cache hit", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const preloader = {
+      preload: () => Promise.resolve({ status: "hit" as const, url: "https://example.test/unreachable" }),
+      retain: () =>
+        ({
+          commit: () => undefined,
+          promise: undefined,
+          release: () => undefined,
+        }) as never,
+    }
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async () => {
+        throw new Error("document activation must not run")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({ documentPreloader: preloader, onError: (event) => errors.push(event) }),
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Document link prefetch lease is invalid",
     ])
     act(() => harness.renderer.unmount())
   })

@@ -1751,8 +1751,16 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         ) {
           throw new StateError("Document link prefetch lease is invalid")
         }
+        const promise: unknown = lease.promise
+        if (
+          promise === null ||
+          (typeof promise !== "object" && typeof promise !== "function") ||
+          typeof (promise as PromiseLike<unknown>).then !== "function"
+        ) {
+          throw new StateError("Document link prefetch lease is invalid")
+        }
         commit = () => lease.commit()
-        preload = lease.promise
+        preload = Promise.resolve(promise)
         release = () => lease.release()
       } else {
         preload = documentPreloader.preload(prefetchUrl)
@@ -1813,9 +1821,10 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
       active.commit()
     } catch (error) {
       if (activePrefetch.current === active) activePrefetch.current = undefined
+      releaseActivePrefetch(active)
       reportLeaseFailure(active, error)
     }
-  }, [reportLeaseFailure])
+  }, [releaseActivePrefetch, reportLeaseFailure])
 
   return useMemo(
     () =>
