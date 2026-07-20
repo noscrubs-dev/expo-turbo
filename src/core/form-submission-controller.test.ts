@@ -5498,8 +5498,8 @@ describe("FormSubmissionController", () => {
             <turbo-stream action="update" target="frame-b">
               <template><StreamResult id="stream-result" /></template>
             </turbo-stream>
-            <turbo-stream action="update" target="status" method="morph">
-              <template><MorphResult id="morph-result" /></template>
+            <turbo-stream action="replace" target="status" method="morph">
+              <template><Status id="status"><MorphResult id="morph-result" /></Status></template>
             </turbo-stream>
           </turbo-frame>`,
         ),
@@ -5511,7 +5511,7 @@ describe("FormSubmissionController", () => {
         streams: {
           actions: [
             { action: "update", status: "applied" },
-            { action: "update", status: "applied" },
+            { action: "replace", status: "applied" },
           ],
         },
       },
