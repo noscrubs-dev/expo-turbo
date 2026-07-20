@@ -44,6 +44,7 @@ import {
   activeFrameAutofocusCandidates,
   commitPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
+  frameAutoscrollIntent,
   prepareFrameMutation,
   prepareFrameResponseTree,
 } from "./frame-response-application"
@@ -754,6 +755,7 @@ export class FrameRequestLoader {
               this.session,
               frame,
               activeFrameAutofocusCandidates(this.session, frame),
+              frameAutoscrollIntent(this.session, frame, prepared),
             )
           } catch (error) {
             if (this.session.revision !== revision) throw new FrameCommitError(candidate)

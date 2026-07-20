@@ -8,14 +8,19 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
 } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
+import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import { DemoVisibilityRegistry } from "./demo-visibility";
 
 const DemoVisibilityContext = createContext<DemoVisibilityRegistry | undefined>(undefined);
+const DemoFrameAutoscrollContext = createContext<DemoFrameAutoscrollRegistry | undefined>(
+  undefined,
+);
 
 export function DemoVisibilityProvider({
   children,
@@ -34,12 +39,30 @@ function useDemoVisibility(): DemoVisibilityRegistry {
   return visibility;
 }
 
+export function DemoFrameAutoscrollProvider({
+  children,
+  frameAutoscroll,
+}: Readonly<{ children: ReactNode; frameAutoscroll: DemoFrameAutoscrollRegistry }>) {
+  return (
+    <DemoFrameAutoscrollContext.Provider value={frameAutoscroll}>
+      {children}
+    </DemoFrameAutoscrollContext.Provider>
+  );
+}
+
+function useDemoFrameAutoscroll(): DemoFrameAutoscrollRegistry {
+  const frameAutoscroll = useContext(DemoFrameAutoscrollContext);
+  if (!frameAutoscroll) throw new Error("Demo Frame autoscroll is not configured");
+  return frameAutoscroll;
+}
+
 export function DemoFrameBoundary({
   accessibilityState,
   children,
   state,
 }: ExpoTurboFrameBoundaryProps) {
   const visibility = useDemoVisibility();
+  const frameAutoscroll = useDemoFrameAutoscroll();
   const boundary = useRef<View>(null);
   useEffect(
     () =>
@@ -48,10 +71,20 @@ export function DemoFrameBoundary({
       }),
     [state.frameId, visibility],
   );
+  useLayoutEffect(
+    () =>
+      frameAutoscroll.register(state.frameId, (listener) => {
+        boundary.current?.measureInWindow(listener);
+      }),
+    [frameAutoscroll, state.frameId],
+  );
   return (
     <View
       collapsable={false}
-      onLayout={() => visibility.remeasure(state.frameId)}
+      onLayout={() => {
+        visibility.remeasure(state.frameId);
+        frameAutoscroll.remeasure(state.frameId);
+      }}
       ref={boundary}
       style={{ gap: 8 }}
     >

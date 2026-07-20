@@ -25,8 +25,10 @@ import {
   DemoDocumentBoundary,
   DemoFormBoundary,
   DemoFrameBoundary,
+  DemoFrameAutoscrollProvider,
   DemoVisibilityProvider,
 } from "./demo-boundaries";
+import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
   createDemoDocumentRuntime,
   DEMO_CLOCK,
@@ -46,6 +48,7 @@ type DemoActionRuntime = ReturnType<typeof createDemoActionRuntime>;
 export interface DemoRuntime {
   readonly actionRuntime: DemoActionRuntime;
   readonly documentRuntime: DemoDocumentRuntime;
+  readonly frameAutoscroll: DemoFrameAutoscrollRegistry;
   readonly formController: FormSubmissionController;
   readonly formLinks: FormLinkSubmissionController;
   readonly forms: DocumentFormControls;
@@ -91,6 +94,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   );
   const actionRuntime = createDemoActionRuntime();
   const focus = new DemoFocusRegistry();
+  const frameAutoscroll = new DemoFrameAutoscrollRegistry();
   const visibility = new DemoVisibilityRegistry();
   const submissionLifecycle = new FormSubmissionLifecycle();
   const streamLifecycle = new StreamLifecycle();
@@ -137,6 +141,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   return Object.freeze({
     actionRuntime,
     documentRuntime,
+    frameAutoscroll,
     formController,
     formLinks,
     forms,
@@ -155,6 +160,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       navigation.dispose();
       forms.dispose();
       focus.dispose();
+      frameAutoscroll.dispose();
       frames.dispose();
       refresh.dispose();
       documentRuntime.dispose();
@@ -193,31 +199,34 @@ export function DemoRuntimeProvider({
     <DemoRuntimeContext.Provider value={runtime}>
       <DemoFocusProvider focus={runtime.focus}>
         <DemoVisibilityProvider visibility={runtime.visibility}>
-          <ExpoTurboProvider
-            actions={runtime.actionRuntime.actions}
-            autofocus={runtime.focus}
-            documentComponent={DemoDocumentBoundary}
-            documentController={runtime.documentRuntime.controller}
-            documentPreloader={runtime.documentRuntime.preloader}
-            frameComponent={DemoFrameBoundary}
-            formComponent={DemoFormBoundary}
-            formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
-            formLinks={runtime.formLinks}
-            frames={runtime.frames}
-            forms={runtime.forms}
-            navigation={runtime.navigation}
-            registry={DEMO_REGISTRY}
-            renderError={({ error }) => (
-              <Text selectable style={{ color: "#a62525" }}>
-                {error.name}: {error.message}
-              </Text>
-            )}
-            session={runtime.session}
-            state={runtime.actionRuntime.state}
-            styles={DEMO_STYLE_ADAPTER}
-          >
-            {children}
-          </ExpoTurboProvider>
+          <DemoFrameAutoscrollProvider frameAutoscroll={runtime.frameAutoscroll}>
+            <ExpoTurboProvider
+              actions={runtime.actionRuntime.actions}
+              autofocus={runtime.focus}
+              documentComponent={DemoDocumentBoundary}
+              documentController={runtime.documentRuntime.controller}
+              documentPreloader={runtime.documentRuntime.preloader}
+              frameAutoscroll={runtime.frameAutoscroll}
+              frameComponent={DemoFrameBoundary}
+              formComponent={DemoFormBoundary}
+              formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
+              formLinks={runtime.formLinks}
+              frames={runtime.frames}
+              forms={runtime.forms}
+              navigation={runtime.navigation}
+              registry={DEMO_REGISTRY}
+              renderError={({ error }) => (
+                <Text selectable style={{ color: "#a62525" }}>
+                  {error.name}: {error.message}
+                </Text>
+              )}
+              session={runtime.session}
+              state={runtime.actionRuntime.state}
+              styles={DEMO_STYLE_ADAPTER}
+            >
+              {children}
+            </ExpoTurboProvider>
+          </DemoFrameAutoscrollProvider>
         </DemoVisibilityProvider>
       </DemoFocusProvider>
     </DemoRuntimeContext.Provider>

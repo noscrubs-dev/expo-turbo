@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
-import { consumeFrameAutofocus } from "./frame-autofocus-internal"
+import { consumeFrameAutofocus, consumeFrameRenderEffects } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameLifecycle } from "./frame-lifecycle"
@@ -569,6 +569,83 @@ describe("Frame controller", () => {
     expect(consumeFrameAutofocus(controller, firstRevision)).toBeUndefined()
     expect(consumeFrameAutofocus(controller, latestRevision)).toEqual(["id:latest"])
     expect(consumeFrameAutofocus(controller, controller.state.revision)).toBeUndefined()
+  })
+
+  test("publishes mounted Frame autoscroll once and clears it when visual work is canceled", async () => {
+    const { controller, pending, session } = harness(
+      'src="/frame" autoscroll="" data-autoscroll-block="start" data-autoscroll-behavior="smooth"',
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    let resolveSealed: (() => void) | undefined
+    const waitForSeal = () =>
+      new Promise<void>((resolve) => {
+        resolveSealed = resolve
+      })
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      resolveSealed?.()
+      resolveSealed = undefined
+    })
+
+    const loaded = controller.connect()
+    const firstSealed = waitForSeal()
+    pending[0]?.resolve(response('<turbo-frame id="details"><Loaded /></turbo-frame>'))
+    await firstSealed
+
+    expect(consumeFrameRenderEffects(controller, controller.state.revision)).toEqual({
+      autoscroll: { alignment: "start", behavior: "smooth", frameId: "details" },
+    })
+    expect(consumeFrameRenderEffects(controller, controller.state.revision)).toBeUndefined()
+
+    acknowledgeFrameRender(session, frame, "details", session.revision)?.finish()
+    await expect(loaded).resolves.toMatchObject({ status: "completed" })
+
+    const canceled = controller.reload()
+    const cancellationSealed = waitForSeal()
+    pending[1]?.resolve(response('<turbo-frame id="details"><Canceled /></turbo-frame>'))
+    await cancellationSealed
+    await controller.setDisabled(true)
+
+    expect(consumeFrameRenderEffects(controller, controller.state.revision)).toBeUndefined()
+    await expect(canceled).resolves.toMatchObject({ status: "completed" })
+
+    unsubscribe()
+    releaseRenderer()
+  })
+
+  test("keeps Frame autoscroll bound to its exact mounted wrapper", async () => {
+    {
+      const { controller, pending, session } = harness('src="/frame" autoscroll=""')
+      const loaded = controller.connect()
+      pending[0]?.resolve(
+        response('<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>'),
+      )
+      await loaded
+      session.setAttribute("id:loaded", "data-unrelated", "true")
+
+      expect(consumeFrameRenderEffects(controller, controller.state.revision)).toEqual({
+        autoscroll: { alignment: "end", behavior: "auto", frameId: "details" },
+      })
+    }
+
+    {
+      const { controller, pending, session } = harness('src="/frame" autoscroll=""')
+      const loaded = controller.connect()
+      pending[0]?.resolve(response('<turbo-frame id="details"><Loaded /></turbo-frame>'))
+      await loaded
+      session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery><turbo-frame id="details"><Replacement /></turbo-frame></Gallery>',
+          { url: "https://example.test/page" },
+        ),
+      )
+
+      expect(consumeFrameRenderEffects(controller, controller.state.revision)).toBeUndefined()
+    }
   })
 
   test("cancels on disable, source replacement, and disconnect without stale state commits", async () => {

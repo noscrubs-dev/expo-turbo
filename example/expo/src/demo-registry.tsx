@@ -500,7 +500,7 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       </DemoDocumentLink>
     </DemoCard>
   </turbo-frame>
-  <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy">
+  <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy" autoscroll="" data-autoscroll-block="start" data-autoscroll-behavior="smooth">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>
     </DemoCard>

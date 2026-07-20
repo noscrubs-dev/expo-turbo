@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { ParseError, StateError } from "./errors"
 import {
   commitPreparedFrameMutation,
+  frameAutoscrollIntent,
   prepareFrameMutation,
   prepareFrameResponse,
 } from "./frame-response-application"
@@ -20,6 +21,66 @@ function sessionFixture(): DocumentSession {
 }
 
 describe("prepared Frame mutations", () => {
+  test("captures Frame autoscroll from either wrapper while retaining mounted settings", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" data-autoscroll-behavior="smooth" data-autoscroll-block="center"><Old /></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details" autoscroll="" data-autoscroll-behavior="auto" data-autoscroll-block="start"><Loaded /></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    expect(frameAutoscrollIntent(session, frame, prepared)).toEqual({
+      alignment: "center",
+      behavior: "smooth",
+      frameId: "details",
+    })
+  })
+
+  test("defaults malformed mounted Frame autoscroll settings and treats presence as enabled", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" autoscroll="false" data-autoscroll-behavior="instant" data-autoscroll-block="top"><Old /></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded /></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    expect(frameAutoscrollIntent(session, frame, prepared)).toEqual({
+      alignment: "end",
+      behavior: "auto",
+      frameId: "details",
+    })
+  })
+
+  test("does not create an autoscroll intent for Frames that did not request it", () => {
+    const session = sessionFixture()
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded /></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    expect(frameAutoscrollIntent(session, frame, prepared)).toBeUndefined()
+  })
+
   test("preserves the tree, Frame wrapper, and unrelated identities while retargeting URLs", () => {
     const session = sessionFixture()
     const tree = session.tree
