@@ -17,6 +17,7 @@ import {
   type AutofocusAdapter,
   type CableAdapter,
   defineStyleAdapter,
+  type DocumentAnchorScrollAdapter,
   type DocumentHistoryScrollAdapter,
   type DocumentRefreshScrollAdapter,
   type FormConfirmationAdapter,
@@ -163,6 +164,7 @@ function render(
   registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
     autofocus?: AutofocusAdapter
+    documentAnchorScroll?: DocumentAnchorScrollAdapter
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     documentHistoryScroll?: DocumentHistoryScrollAdapter
@@ -508,6 +510,7 @@ function renderDocumentLinks(
   controllerOptions?: DocumentVisitControllerOptions,
   createProviderOptions?: (session: DocumentSession) => Readonly<{
     autofocus?: AutofocusAdapter
+    documentAnchorScroll?: DocumentAnchorScrollAdapter
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -5671,6 +5674,323 @@ describe("React protocol renderer", () => {
     expect(clicks).toEqual(["https://example.test/after"])
     expect(requests).toHaveLength(1)
     expect(requests[0]?.url).toBe("https://example.test/after")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("types document anchor scrolling as synchronous", () => {
+    const adapter = {
+      scrollTo(_id: string, _alignment: "start") {
+        return undefined
+      },
+    } satisfies DocumentAnchorScrollAdapter
+    expect(adapter.scrollTo("section", "start")).toBeUndefined()
+
+    const invalidAdapter: DocumentAnchorScrollAdapter = {
+      // @ts-expect-error Document anchor scrolling cannot race later document ownership.
+      scrollTo: () => Promise.resolve(undefined),
+    }
+    void invalidAdapter
+  })
+
+  test("scrolls a same-document anchor without taking document ownership", async () => {
+    const clicks: string[] = []
+    const requests: TurboRequest[] = []
+    const scrolls: Readonly<{ alignment: string; id: string }>[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
+    const harness = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink id="anchor" href="#section" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current?tab=one",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id, alignment) {
+            scrolls.push({ alignment, id })
+          },
+        },
+      }),
+    )
+    const revision = harness.session.revision
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("#section")()
+    })
+
+    expect(result).toEqual({
+      kind: "anchor",
+      status: "requested",
+      targetId: "section",
+      url: "https://example.test/current?tab=one#section",
+    })
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(scrolls).toEqual([{ alignment: "start", id: "section" }])
+    expect(clicks).toEqual(["https://example.test/current?tab=one#section"])
+    expect(requests).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.session.revision).toBe(revision)
+    expect(harness.controller.state).toMatchObject({ busy: false, status: "initialized" })
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed for stale, unavailable, and failing same-document anchors", async () => {
+    const staleScrolls: string[] = []
+    const stale = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink id="anchor" href="#section" /></Gallery>',
+      async () => {
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            staleScrolls.push(id)
+          },
+        },
+      }),
+    )
+    const staleActivation = stale.activation("#section")
+    await act(async () => {
+      stale.session.setAttribute("id:anchor", "href", "#other")
+      await nextTurn()
+    })
+    await expect(staleActivation()).rejects.toEqual(
+      new TargetError("Document link href changed before activation"),
+    )
+    expect(staleScrolls).toEqual([])
+    act(() => stale.renderer.unmount())
+
+    const unavailable = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink href="#section" /></Gallery>',
+      async () => {
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current",
+    )
+    await expect(unavailable.activation("#section")()).rejects.toEqual(
+      new TargetError("Document link anchors require provider documentAnchorScroll support"),
+    )
+    expect(unavailable.documentRequestIdCount()).toBe(0)
+    act(() => unavailable.renderer.unmount())
+
+    for (const scroll of [
+      {
+        scrollTo() {
+          throw new Error("private anchor scroll failure")
+        },
+      },
+      {
+        scrollTo: (() => Promise.resolve()) as unknown as DocumentAnchorScrollAdapter["scrollTo"],
+      },
+      {
+        scrollTo: (() =>
+          Promise.reject(new Error("private anchor scroll failure"))) as unknown as DocumentAnchorScrollAdapter["scrollTo"],
+      },
+      {
+        scrollTo: (() =>
+          Object.freeze({
+            then(resolve: (value: undefined) => void) {
+              resolve(undefined)
+            },
+          })) as unknown as DocumentAnchorScrollAdapter["scrollTo"],
+      },
+    ] satisfies DocumentAnchorScrollAdapter[]) {
+      const failing = renderDocumentLinks(
+        '<Gallery><DemoText id="section">Section</DemoText><DocumentLink href="#section" /></Gallery>',
+        async () => {
+          throw new Error("same-document anchor must not fetch")
+        },
+        "https://example.test/current",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => ({ documentAnchorScroll: scroll }),
+      )
+      await expect(failing.activation("#section")()).rejects.toEqual(
+        new StateError("Document link anchor scrolling failed"),
+      )
+      expect(failing.documentRequestIdCount()).toBe(0)
+      await nextTurn()
+      act(() => failing.renderer.unmount())
+    }
+  })
+
+  test("honors anchor click cancellation and revalidates the target after click", async () => {
+    const canceledScrolls: string[] = []
+    const canceledLifecycle = new DocumentVisitLifecycle()
+    canceledLifecycle.subscribe("click", (event) => {
+      event.preventDefault()
+    })
+    const canceled = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink href="#section" /></Gallery>',
+      async () => {
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: canceledLifecycle },
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            canceledScrolls.push(id)
+          },
+        },
+      }),
+    )
+    await expect(canceled.activation("#section")()).resolves.toEqual({
+      kind: "link",
+      status: "canceled",
+      url: "https://example.test/current#section",
+    })
+    expect(canceledScrolls).toEqual([])
+    expect(canceled.documentRequestIdCount()).toBe(0)
+    act(() => canceled.renderer.unmount())
+
+    let activeSession: DocumentSession | undefined
+    const staleLifecycle = new DocumentVisitLifecycle()
+    staleLifecycle.subscribe("click", () => {
+      activeSession?.mutate((tree) => {
+        const target = tree.getElementById("section")
+        return target ? tree.removeNode(target) : []
+      })
+    })
+    const staleScrolls: string[] = []
+    const stale = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink href="#section" /></Gallery>',
+      async () => {
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: staleLifecycle },
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            staleScrolls.push(id)
+          },
+        },
+      }),
+    )
+    activeSession = stale.session
+    await act(async () => {
+      await expect(stale.activation("#section")()).rejects.toEqual(
+        new TargetError("Document link anchor changed before activation"),
+      )
+    })
+    expect(staleScrolls).toEqual([])
+    expect(stale.documentRequestIdCount()).toBe(0)
+    act(() => stale.renderer.unmount())
+  })
+
+  test("rejects same-document anchors outside the top-level application tree", async () => {
+    const scrolls: string[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DemoText id="top-frame-target">Top Frame</DemoText>
+        <DemoText id="blank-frame-target">Blank Frame</DemoText>
+        <DemoText id="named-frame-target">Named Frame</DemoText>
+        <DemoText id="frame-source-target">Frame Source</DemoText>
+        <DocumentLink href="#top-frame-target" data-turbo-frame="_top" />
+        <DocumentLink href="#blank-frame-target" data-turbo-frame="" />
+        <DocumentLink href="#named-frame-target" data-turbo-frame="named" />
+        <turbo-frame id="source-frame"><DocumentLink href="#frame-source-target" /></turbo-frame>
+        <turbo-frame id="frame-target"><DemoText>Frame Target</DemoText></turbo-frame>
+        <DocumentLink href="#frame-target" />
+      </Gallery>`,
+      async () => {
+        throw new Error("same-document anchor must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            scrolls.push(id)
+          },
+        },
+      }),
+    )
+
+    for (const href of [
+      "#top-frame-target",
+      "#blank-frame-target",
+      "#named-frame-target",
+      "#frame-source-target",
+      "#frame-target",
+    ]) {
+      await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
+    }
+    expect(scrolls).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects same-document anchors while a document visit owns the session", async () => {
+    let resolvePending: ((response: TurboResponse) => void) | undefined
+    const scrolls: string[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><DemoText id="section">Section</DemoText><DocumentLink href="#section" /><DocumentLink href="/pending" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((resolve) => {
+          resolvePending = resolve
+        }),
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            scrolls.push(id)
+          },
+        },
+      }),
+    )
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness.activation("/pending")()
+    })
+    expect(harness.controller.state).toMatchObject({ busy: true, status: "started" })
+
+    await expect(harness.activation("#section")()).rejects.toEqual(
+      new TargetError("Document link anchors require an idle document"),
+    )
+    expect(scrolls).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(1)
+
+    act(() => harness.controller.cancel())
+    await act(async () => {
+      resolvePending?.({
+        headers: {},
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: "https://example.test/pending",
+      })
+      await visit
+    })
     act(() => harness.renderer.unmount())
   })
 

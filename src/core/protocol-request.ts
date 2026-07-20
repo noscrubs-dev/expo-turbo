@@ -31,6 +31,11 @@ export type DocumentLinkUrlResolution =
       resolution: ProtocolUrlResolution
     }>
 
+export interface DocumentLinkAnchorResolution {
+  readonly targetId: string
+  readonly url: string
+}
+
 function requestHeaderValue(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -116,16 +121,7 @@ export function resolveDocumentLinkUrl(
   documentUrl: string,
   context: ExpoTurboErrorContext = {},
 ): DocumentLinkUrlResolution {
-  if (
-    typeof source !== "string" ||
-    source.trim() === "" ||
-    [...source].some((character) => {
-      const codePoint = character.codePointAt(0)
-      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
-    })
-  ) {
-    throw new TargetError("Document link URL is invalid", context)
-  }
+  assertDocumentLinkSource(source, context)
 
   try {
     const document = resolveProtocolUrl(documentUrl, documentUrl, documentUrl, context)
@@ -157,6 +153,58 @@ export function resolveDocumentLinkUrl(
     })
   } catch (error) {
     if (error instanceof TargetError) throw error
+    throw new TargetError("Document link URL is invalid", context)
+  }
+}
+
+/** Resolves only a nonempty same-document fragment for native anchor scrolling. */
+export function resolveDocumentLinkAnchor(
+  source: string,
+  documentUrl: string,
+  context: ExpoTurboErrorContext = {},
+): DocumentLinkAnchorResolution | undefined {
+  assertDocumentLinkSource(source, context)
+  try {
+    const document = resolveProtocolUrl(documentUrl, documentUrl, documentUrl, context)
+    const resolution = resolveProtocolUrl(source, document.url, document.url, context)
+    const target = new URL(resolution.url)
+    const hash = target.hash
+    if (hash === "") return undefined
+    target.hash = ""
+    const current = new URL(document.url)
+    current.hash = ""
+    if (target.toString() !== current.toString()) return undefined
+    let targetId: string
+    try {
+      targetId = decodeURIComponent(hash.slice(1))
+    } catch {
+      throw new TargetError("Document link anchor is invalid", context)
+    }
+    if (
+      targetId.trim() === "" ||
+      [...targetId].some((character) => {
+        const codePoint = character.codePointAt(0)
+        return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+      })
+    ) {
+      throw new TargetError("Document link anchor is invalid", context)
+    }
+    return Object.freeze({ targetId, url: resolution.url })
+  } catch (error) {
+    if (error instanceof TargetError) throw error
+    throw new TargetError("Document link URL is invalid", context)
+  }
+}
+
+function assertDocumentLinkSource(source: string, context: ExpoTurboErrorContext): void {
+  if (
+    typeof source !== "string" ||
+    source.trim() === "" ||
+    [...source].some((character) => {
+      const codePoint = character.codePointAt(0)
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+    })
+  ) {
     throw new TargetError("Document link URL is invalid", context)
   }
 }
