@@ -198,6 +198,51 @@ describe("document preloader", () => {
     expect(requests).toHaveLength(1)
   })
 
+  test("caches same-origin redirected preloads only under their original request URLs", async () => {
+    for (const fixture of [
+      {
+        finalUrl: "https://example.test/app/redirected-final",
+        redirected: true,
+        source: "/app/redirected",
+      },
+      {
+        finalUrl: "https://example.test/app/redirected-flagless-final",
+        redirected: false,
+        source: "/app/redirected-flagless",
+      },
+    ] as const) {
+      const cache = new DocumentSnapshotCache()
+      const ids = requestIds()
+      const preloader = new DocumentPreloader(
+        session(),
+        {
+          fetch: async () =>
+            response('<Gallery><Preloaded id="preloaded" /></Gallery>', fixture.finalUrl, {
+              redirected: fixture.redirected,
+            }),
+        },
+        ids,
+        cache,
+      )
+      const requestUrl = `https://example.test${fixture.source}`
+
+      expect(await preloader.preload(fixture.source)).toEqual({
+        requestId: "preload-1",
+        responseStatus: 200,
+        status: "cached",
+        url: requestUrl,
+      })
+      expect(cache.has(requestUrl)).toBe(true)
+      expect(cache.has(fixture.finalUrl)).toBe(false)
+      expect(cache.get(requestUrl)?.document.url).toBe(requestUrl)
+      expect(await preloader.preload(fixture.source)).toEqual({
+        status: "hit",
+        url: requestUrl,
+      })
+      expect(ids.count).toBe(1)
+    }
+  })
+
   test("reports a successful no-cache response without retaining a snapshot", async () => {
     const cache = new DocumentSnapshotCache()
     const preloader = new DocumentPreloader(
@@ -650,7 +695,7 @@ describe("document preloader", () => {
     expect(cache.has("https://example.test/app/body")).toBe(false)
   })
 
-  test("rejects unsuccessful, redirected, empty, wrong-MIME, and malformed responses", async () => {
+  test("rejects unsuccessful, unsafe final locations, empty, wrong-MIME, and malformed responses", async () => {
     const cases: Array<{
       expected:
         | typeof ContentTypeError
@@ -664,19 +709,6 @@ describe("document preloader", () => {
         expected: RequestError,
         response: (request) => response("<Gallery />", request.url, { status: 503 }),
         source: "/app/status",
-      },
-      {
-        expected: RequestError,
-        response: (request) => response("<Gallery />", request.url, { redirected: true }),
-        source: "/app/redirect-flag",
-      },
-      {
-        expected: RequestError,
-        response: () =>
-          response("<Gallery />", "https://example.test/app/redirected", {
-            redirected: false,
-          }),
-        source: "/app/redirect-location",
       },
       {
         expected: TargetError,

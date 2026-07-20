@@ -336,13 +336,7 @@ export class DocumentPreloader {
         responseStatus,
       })
     }
-    const finalUrl = resolveSameOriginProtocolUrl(responseUrl, request.url, request.url)
-    if (redirected || finalUrl !== request.url) {
-      throw new RequestError("Redirected document preloads are unsupported", {
-        method: "GET",
-        responseStatus,
-      })
-    }
+    resolveSameOriginProtocolUrl(responseUrl, request.url, request.url)
 
     let contentType: string | undefined
     try {
