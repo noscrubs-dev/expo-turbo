@@ -22,6 +22,8 @@ mock.module("react-native", () => ({
   Platform: { OS: "web" },
   Pressable: (props: Readonly<Record<string, unknown>>) =>
     createElement("pressable", props),
+  ScrollView: (props: Readonly<Record<string, unknown>>) =>
+    createElement("scroll-view", props),
   Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
   TextInput: (props: Readonly<Record<string, unknown>>) =>
     createElement("text-input", props),
@@ -417,6 +419,7 @@ describe("demo app runtime ownership", () => {
 
     expect(runtime.forms.isDisposed).toBeTrue();
     expect(() => runtime.focus.focus("id:first-name")).toThrow(/disposed/);
+    expect(() => runtime.visibility.register("late-frame", () => {})).toThrow(/disposed/);
     expect(runtime.actionRuntime.state.isDisposed).toBeTrue();
   });
 

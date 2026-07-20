@@ -48,6 +48,12 @@ export function createDemoFrameControllers(
                       <DemoFormInput id="frame-autofocus-name" autofocus="" label="Autofocused Frame field" name="frame_autofocus_name" value="" />
                     </DemoForm>
                   </turbo-frame></Gallery>`
+                : frameId === "nested-lazy-frame"
+                  ? `<Gallery><turbo-frame id="nested-lazy-frame">
+                      <DemoCard title="Nested lazy Frame loaded">
+                        <DemoText>The nested clipping chain admitted this Frame exactly once after it entered both visible regions.</DemoText>
+                      </DemoCard>
+                    </turbo-frame></Gallery>`
                 : request.url.endsWith("/demo/frame")
                   ? '<Gallery><turbo-frame id="demo-recurse" src="/demo/recurse" recurse="preview-frame" /></Gallery>'
                   : `<Gallery><turbo-frame id="preview-frame">

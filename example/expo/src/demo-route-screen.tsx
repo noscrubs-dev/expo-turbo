@@ -20,6 +20,7 @@ import {
 import type { DemoRouterNavigation } from "./demo-router-history";
 import { DemoRouterRouteOwner } from "./demo-router-route-owner";
 import { useDemoRuntime } from "./demo-runtime";
+import { DEMO_ROOT_VISIBILITY_CONTAINER_ID } from "./demo-visibility";
 import { PROTOCOL_SMOKE } from "./protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "./registry-smoke";
 
@@ -28,40 +29,45 @@ function CompatibilityGallery() {
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
   const scrollY = useRef(0);
-  const measureViewport = useCallback(() => {
-    runtime.visibility.measureViewport((listener) => {
-      scrollView.current?.getNativeScrollRef()?.measureInWindow(listener);
-    });
+  const remeasure = useCallback(() => {
+    runtime.visibility.remeasureAll();
     runtime.frameAutoscroll.remeasure();
   }, [runtime.frameAutoscroll, runtime.visibility]);
   useLayoutEffect(
     () =>
+      runtime.visibility.registerContainer(DEMO_ROOT_VISIBILITY_CONTAINER_ID, (listener) => {
+        scrollView.current?.getNativeScrollRef?.()?.measureInWindow(listener);
+      }),
+    [runtime.visibility],
+  );
+  useLayoutEffect(
+    () =>
       runtime.frameAutoscroll.registerContainer({
         getScrollY: () => scrollY.current,
-        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef()),
+        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
         measure: (listener) => {
-          scrollView.current?.getNativeScrollRef()?.measureInWindow(listener);
+          scrollView.current?.getNativeScrollRef?.()?.measureInWindow(listener);
         },
         scrollTo: (options) => scrollView.current?.scrollTo(options),
       }),
     [runtime.frameAutoscroll],
   );
   useEffect(() => {
-    measureViewport();
-  }, [measureViewport, window.height, window.width]);
+    remeasure();
+  }, [remeasure, window.height, window.width]);
 
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
       onContentSizeChange={() => {
-        runtime.visibility.remeasure();
+        runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();
       }}
-      onLayout={measureViewport}
+      onLayout={remeasure}
       onScroll={(event) => {
         scrollY.current = event.nativeEvent.contentOffset.y;
-        runtime.visibility.remeasure();
+        runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();
       }}
       ref={scrollView}
