@@ -3798,6 +3798,70 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1, 2, 3, 4])
   })
 
+  test("keeps compatible native component state through an exact Stream child morph", () => {
+    let nextInstance = 0
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    function Stateful(props: Readonly<{ children?: ReactNode; title: string }>): ReactNode {
+      const [instance] = useState(() => ++nextInstance)
+      useEffect(
+        () => () => {
+          unmounted.push(instance)
+        },
+        [instance],
+      )
+      useNodeDisposal(() => disposed.push(instance))
+      return createElement("section", { instance, title: props.title }, props.children)
+    }
+    const panel = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: (props) => host("panel", props),
+      schema: z.object({}),
+      tag: "Panel",
+    })
+    const stateful = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "text",
+      component: Stateful,
+      schema: z.object({ title: z.string() }),
+      tag: "Stateful",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [panel, stateful],
+        name: "stream-child-morph-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Panel id="panel"><Stateful id="left" title="Before">Before</Stateful><Stateful id="right" title="Right">Right</Stateful></Panel></Gallery>',
+      ),
+    )
+    const renderer = render(session, componentRegistry)
+    const instances = () =>
+      renderer.root.findAllByType("section").map((section) => section.props.instance as number)
+
+    expect(instances()).toEqual([1, 2])
+    act(() => {
+      dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Stateful id="right" title="Right">Right</Stateful><Stateful id="left" title="After">After</Stateful></template></turbo-stream>',
+      )
+    })
+
+    const rendered = renderer.root.findAllByType("section")
+    expect(instances()).toEqual([2, 1])
+    expect(rendered.map((section) => section.props.title)).toEqual(["Right", "After"])
+    expect(disposed).toEqual([])
+    expect(unmounted).toEqual([])
+
+    act(() => renderer.unmount())
+    expect([...disposed].sort()).toEqual([1, 2])
+    expect([...unmounted].sort()).toEqual([1, 2])
+  })
+
   test("exposes document visit accessibility and progress without remounting its boundary", async () => {
     const pending: {
       request: TurboRequest

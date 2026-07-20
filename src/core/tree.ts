@@ -200,6 +200,77 @@ function subtreeKeys(node: ProtocolNode): string[] {
   return keys
 }
 
+function isWithin(node: ProtocolNode, root: ProtocolNode): boolean {
+  let current: ProtocolNode | null = node
+  while (current) {
+    if (current === root) return true
+    current = current.parent
+  }
+  return false
+}
+
+function hasTurboPermanent(node: ProtocolNode): boolean {
+  let permanent = false
+  walk(node, (child) => {
+    if (isElement(child) && attributeValue(child, "data-turbo-permanent") !== undefined) {
+      permanent = true
+    }
+  })
+  return permanent
+}
+
+function isCompatibleMorphElement(current: ProtocolElement, source: ProtocolElement): boolean {
+  const currentId = attributeValue(current, "id")
+  return (
+    current.kind === "element" &&
+    source.kind === "element" &&
+    currentId !== undefined &&
+    currentId === attributeValue(source, "id") &&
+    current.tagName === source.tagName &&
+    current.localName === source.localName &&
+    current.namespaceUri === source.namespaceUri &&
+    current.prefix === source.prefix
+  )
+}
+
+interface MorphClonePlan {
+  readonly source: ProtocolNode
+  readonly type: "clone"
+}
+
+interface MorphReusePlan {
+  readonly children: readonly MorphPlan[]
+  readonly current: ProtocolElement
+  readonly source: ProtocolElement
+  readonly type: "reuse"
+}
+
+type MorphPlan = MorphClonePlan | MorphReusePlan
+
+interface MorphTransaction {
+  readonly attributes: Map<ProtocolElement, readonly ProtocolAttribute[]>
+  readonly children: Map<ProtocolParentNode, readonly ProtocolNode[]>
+  readonly parents: Map<ProtocolNode, ProtocolParentNode | null>
+}
+
+type StreamChildMorpher = (
+  parent: ProtocolElement,
+  sources: readonly ProtocolNode[],
+) => readonly string[]
+
+const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
+
+/** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
+export function morphStreamUpdateChildren(
+  tree: DocumentTree,
+  parent: ProtocolElement,
+  sources: readonly ProtocolNode[],
+): readonly string[] {
+  const morph = streamChildMorphers.get(tree)
+  if (!morph) throw new TargetError("Native Stream child morph requires an active document tree")
+  return morph(parent, sources)
+}
+
 export class DocumentTree {
   readonly document: ProtocolDocument
   private readonly allowDuplicateIds: boolean
@@ -220,6 +291,9 @@ export class DocumentTree {
     })
     this.allowDuplicateIds = options.allowDuplicateIds ?? false
     this.rebuildIndexes()
+    streamChildMorphers.set(this, (parent, sources) =>
+      this.morphStreamUpdateChildren(parent, sources),
+    )
   }
 
   private rebuildIndexes(): void {
@@ -368,6 +442,51 @@ export class DocumentTree {
     return [parent.key, ...removed, ...clones.flatMap(subtreeKeys)]
   }
 
+  /**
+   * Reconciles children for the narrow native Stream `update method="morph"` contract.
+   * Only same-parent, same-ID ordinary application elements retain their node identity.
+   */
+  private morphStreamUpdateChildren(
+    parent: ProtocolElement,
+    sources: readonly ProtocolNode[],
+  ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
+    this.assertActiveParent(parent)
+    const target = attributeValue(parent, "id")
+    if (parent.kind !== "element") {
+      throw new TargetError("Native Stream child morph requires an application-element target", {
+        ...(target ? { target } : {}),
+      })
+    }
+    if (hasTurboPermanent(parent) || sources.some(hasTurboPermanent)) {
+      throw new TargetError("Native Stream child morph does not support data-turbo-permanent", {
+        ...(target ? { target } : {}),
+      })
+    }
+
+    this.assertMorphSources(parent, sources)
+    const plans = this.buildMorphPlans(parent, sources)
+    const previousKeys = parent.children.flatMap(subtreeKeys)
+    const previousMutationKey = this.mutationKey
+    const transaction: MorphTransaction = {
+      attributes: new Map(),
+      children: new Map(),
+      parents: new Map(),
+    }
+
+    try {
+      this.applyMorphChildren(parent, plans, transaction)
+      this.rebuildIndexes()
+    } catch (error) {
+      this.mutationKey = previousMutationKey
+      this.restoreMorphTransaction(transaction)
+      this.rebuildIndexes()
+      throw error
+    }
+
+    return [parent.key, ...previousKeys, ...parent.children.flatMap(subtreeKeys)]
+  }
+
   replaceNodeWithClones(node: ProtocolNode, sources: readonly ProtocolNode[]): readonly string[] {
     assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(node) || node.kind === "document" || !node.parent) {
@@ -443,6 +562,146 @@ export class DocumentTree {
       throw new TargetError("Document URL must be a nonblank string")
     }
     setProtocolDocumentUrl(this.document, url)
+  }
+
+  private assertMorphSources(parent: ProtocolElement, sources: readonly ProtocolNode[]): void {
+    const ids = new Set<string>()
+    const visit = (source: ProtocolNode): void => {
+      if (source.kind === "document") {
+        throw new TargetError("A document cannot be used as a native Stream morph child")
+      }
+      if (!isElement(source)) return
+      const id = attributeValue(source, "id")
+      if (id !== undefined) {
+        if (!id.trim()) throw new TargetError("Element ids must not be blank")
+        if (ids.has(id)) {
+          throw new TargetError(
+            `Native Stream morph payload id ${JSON.stringify(id)} is declared more than once`,
+            {
+              target: id,
+            },
+          )
+        }
+        ids.add(id)
+        const active = this.idIndex.get(id)
+        if (active && (active === parent || !isWithin(active, parent))) {
+          throw new TargetError(
+            `Native Stream morph payload id ${JSON.stringify(id)} is outside the target subtree`,
+            { target: id },
+          )
+        }
+      }
+      for (const child of source.children) visit(child)
+    }
+    for (const source of sources) visit(source)
+  }
+
+  private buildMorphPlans(
+    parent: ProtocolElement,
+    sources: readonly ProtocolNode[],
+  ): readonly MorphPlan[] {
+    const currentById = new Map<string, ProtocolElement>()
+    for (const child of parent.children) {
+      if (!isElement(child)) continue
+      const id = attributeValue(child, "id")
+      if (id !== undefined) currentById.set(id, child)
+    }
+
+    return sources.map((source) => {
+      const id = isElement(source) ? attributeValue(source, "id") : undefined
+      const active = id === undefined ? undefined : this.idIndex.get(id)
+      const current = id === undefined ? undefined : currentById.get(id)
+      if (active && active !== current) {
+        throw new TargetError(
+          `Native Stream child morph cannot reparent id ${JSON.stringify(id)}`,
+          { ...(id ? { target: id } : {}) },
+        )
+      }
+      if (isElement(source) && source.kind === "element" && current) {
+        if (isCompatibleMorphElement(current, source)) {
+          return {
+            children: this.buildMorphPlans(current, source.children),
+            current,
+            source,
+            type: "reuse",
+          } as const
+        }
+      }
+
+      this.assertMorphCloneIds(source, current)
+      return { source, type: "clone" } as const
+    })
+  }
+
+  private assertMorphCloneIds(source: ProtocolNode, replacementRoot?: ProtocolElement): void {
+    const visit = (node: ProtocolNode): void => {
+      if (!isElement(node)) return
+      const id = attributeValue(node, "id")
+      const active = id === undefined ? undefined : this.idIndex.get(id)
+      if (active && (!replacementRoot || !isWithin(active, replacementRoot))) {
+        throw new TargetError(
+          `Native Stream child morph cannot reparent id ${JSON.stringify(id)}`,
+          { ...(id ? { target: id } : {}) },
+        )
+      }
+      for (const child of node.children) visit(child)
+    }
+    visit(source)
+  }
+
+  private applyMorphChildren(
+    parent: ProtocolParentNode,
+    plans: readonly MorphPlan[],
+    transaction: MorphTransaction,
+  ): void {
+    const previous = parent.children
+    if (!transaction.children.has(parent)) transaction.children.set(parent, previous)
+    const children = plans.map((plan) => this.materializeMorphPlan(plan, parent, transaction))
+    setProtocolNodeChildren(parent, children)
+
+    for (const child of children) this.recordMorphParent(child, transaction)
+    for (const child of children) setProtocolNodeParent(child, parent)
+
+    const retained = new Set(children)
+    for (const child of previous) {
+      if (retained.has(child)) continue
+      this.recordMorphParent(child, transaction)
+      setProtocolNodeParent(child, null)
+    }
+  }
+
+  private materializeMorphPlan(
+    plan: MorphPlan,
+    parent: ProtocolParentNode,
+    transaction: MorphTransaction,
+  ): ProtocolNode {
+    if (plan.type === "clone") return this.cloneNode(plan.source, parent)
+
+    const { current, source } = plan
+    if (!transaction.attributes.has(current)) {
+      transaction.attributes.set(current, current.attributes)
+    }
+    setProtocolElementAttributes(current, source.attributes)
+    this.applyMorphChildren(current, plan.children, transaction)
+    return current
+  }
+
+  private recordMorphParent(node: ProtocolNode, transaction: MorphTransaction): void {
+    if (this.nodes.has(node) && !transaction.parents.has(node)) {
+      transaction.parents.set(node, node.parent)
+    }
+  }
+
+  private restoreMorphTransaction(transaction: MorphTransaction): void {
+    for (const [element, attributes] of transaction.attributes) {
+      setProtocolElementAttributes(element, attributes)
+    }
+    for (const [parent, children] of transaction.children) {
+      setProtocolNodeChildren(parent, children)
+    }
+    for (const [node, parent] of transaction.parents) {
+      setProtocolNodeParent(node, parent)
+    }
   }
 
   private assertActiveParent(parent: ProtocolParentNode): void {

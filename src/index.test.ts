@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import * as core from "./core"
 import {
   BeforeCacheEvent,
   DocumentHistory,
@@ -22,6 +23,7 @@ describe("package status", () => {
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
     expect(BeforeCacheEvent).toBeFunction()
+    expect("morphStreamUpdateChildren" in core).toBe(false)
   })
 })
 

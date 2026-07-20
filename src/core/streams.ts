@@ -26,6 +26,7 @@ import {
   attributeValue,
   type DocumentTree,
   isElement,
+  morphStreamUpdateChildren,
   type ProtocolElement,
   type ProtocolNode,
   type ProtocolParentNode,
@@ -261,6 +262,7 @@ function applyToTarget(
   action: string,
   target: ProtocolElement,
   payload: readonly ProtocolNode[],
+  morph = false,
 ): boolean {
   const tree = session.tree
   if (!tree.contains(target)) return false
@@ -277,6 +279,10 @@ function applyToTarget(
   }
 
   if (action === "update") {
+    if (morph) {
+      mutate(session, (activeTree) => morphStreamUpdateChildren(activeTree, target, payload))
+      return true
+    }
     assertIdsAvailable(tree, payload, target.children, action)
     mutate(session, (activeTree) => activeTree.replaceChildrenWithClones(target, payload))
     return true
@@ -365,11 +371,12 @@ function renderAction(
     progress.matchedTargets = result.matchedTargets
     return result
   }
-  if (
-    (action === "replace" || action === "update") &&
-    attributeValue(stream, "method") === "morph"
-  ) {
-    throw actionError("Native Turbo Stream morph method requires morph support", action)
+  const morph = attributeValue(stream, "method") === "morph"
+  if (action === "replace" && morph) {
+    throw actionError("Native Turbo Stream replace morph requires outer morph support", action)
+  }
+  if (action === "update" && morph && attributeValue(stream, "target") === undefined) {
+    throw actionError("Native Turbo Stream child morph requires an exact target", action)
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)
@@ -384,7 +391,7 @@ function renderAction(
       break
     }
     if (!session.tree.contains(target)) continue
-    if (applyToTarget(session, action, target, payload)) progress.appliedTargets += 1
+    if (applyToTarget(session, action, target, payload, morph)) progress.appliedTargets += 1
   }
 
   return Object.freeze({
