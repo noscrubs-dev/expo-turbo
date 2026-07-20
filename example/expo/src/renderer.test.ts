@@ -7674,7 +7674,7 @@ describe("React protocol renderer", () => {
     })
     await controller.loaded
 
-    expect(events).toEqual(["child-layout", "render", "focus:id:focus", "load"])
+    expect(events).toEqual(["child-layout", "focus:id:focus", "render", "load"])
     expect(controller.state.status).toBe("completed")
     act(() => renderer.unmount())
   })

@@ -17,7 +17,8 @@ import {
 import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
 import {
   FRAME_RENDER_PREPARE_OPTION,
-  FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD,
+  FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD,
+  FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER,
   FRAME_REQUEST_LOADER_PREPARE_RENDER,
   FrameCommitError,
   type FrameLoadReport,
@@ -491,7 +492,21 @@ export class FrameController {
     if (!rendered || !prepared || report.status !== "completed" || epoch !== this.loadEpoch) {
       return
     }
-    this.loader[FRAME_REQUEST_LOADER_DISPATCH_RENDER_LOAD](prepared.commit)
+    if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
+    if (!this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)) return
+    if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
+    this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD](prepared)
+  }
+
+  private frameRenderContinuationCurrent(prepared: PreparedFrameRender, epoch: number): boolean {
+    return (
+      epoch === this.loadEpoch &&
+      this.connected &&
+      this.snapshot.status === "completed" &&
+      attributeValue(this.frameNode, "disabled") === undefined &&
+      this.session.tree.getElementById(this.frameId) === this.frameNode &&
+      prepared.isCurrent()
+    )
   }
 
   private applyLoadReport(report: FrameLoadReport): void {

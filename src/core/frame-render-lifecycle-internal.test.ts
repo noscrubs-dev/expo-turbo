@@ -4,6 +4,7 @@ import { FrameLifecycle } from "./frame-lifecycle"
 import {
   acknowledgeFrameRender,
   dispatchFrameLoad,
+  dispatchFrameRender,
   frameRenderLifecycleRevision,
   hasFrameRenderTicket,
   prepareFrameRender,
@@ -63,7 +64,7 @@ describe("Frame render lifecycle coordination", () => {
     })
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -76,12 +77,13 @@ describe("Frame render lifecycle coordination", () => {
     expect(acknowledgeFrameRender(session, target, "other", session.revision)).toBeUndefined()
     const acknowledgement = acknowledgeFrameRender(session, target, "details", session.revision)
 
-    expect(events).toEqual(["frame-render:details:https://example.test/frame"])
+    expect(events).toEqual([])
     expect(prepared.outcome).toBeUndefined()
     acknowledgement?.finish()
     expect(await prepared.rendered).toBe("rendered")
 
-    dispatchFrameLoad(lifecycle, prepared.commit)
+    expect(dispatchFrameRender(lifecycle, prepared)).toBe(true)
+    expect(dispatchFrameLoad(lifecycle, prepared)).toBe(true)
     expect(events).toEqual([
       "frame-render:details:https://example.test/frame",
       "frame-load:details:https://example.test/frame",
@@ -98,7 +100,7 @@ describe("Frame render lifecycle coordination", () => {
     })
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -115,9 +117,8 @@ describe("Frame render lifecycle coordination", () => {
 
   test("settles headless work immediately and tolerates deferred renderer disposal", async () => {
     const session = new DocumentSession(tree())
-    const lifecycle = new FrameLifecycle()
     const target = frame(session)
-    const headless = prepareFrameRender(session, lifecycle, {
+    const headless = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/headless",
@@ -129,7 +130,7 @@ describe("Frame render lifecycle coordination", () => {
     release()
     const keep = retainFrameRenderer(session, target)
     await Promise.resolve()
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -142,12 +143,31 @@ describe("Frame render lifecycle coordination", () => {
     keep()
   })
 
-  test("settles a mounted ticket as unavailable after its final renderer releases", async () => {
+  test("coordinates a mounted Frame without lifecycle observers", async () => {
     const session = new DocumentSession(tree())
-    const lifecycle = new FrameLifecycle()
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
+      frame: target,
+      frameId: "details",
+      url: "https://example.test/frame",
+    })
+
+    session.setAttribute(target.key, "data-committed", "true")
+    prepared.seal()
+    expect(frameRenderLifecycleRevision(session)).toBe(1)
+
+    acknowledgeFrameRender(session, target, "details", session.revision)?.finish()
+
+    expect(await prepared.rendered).toBe("rendered")
+    release()
+  })
+
+  test("settles a mounted ticket as unavailable after its final renderer releases", async () => {
+    const session = new DocumentSession(tree())
+    const target = frame(session)
+    const release = retainFrameRenderer(session, target)
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -159,17 +179,22 @@ describe("Frame render lifecycle coordination", () => {
     expect(await prepared.rendered).toBe("unavailable")
   })
 
-  test("retries after a render observer advances the session revision without duplicating render", async () => {
+  test("suppresses stale load after a render observer replaces the same-ID Frame", async () => {
     const session = new DocumentSession(tree())
     const lifecycle = new FrameLifecycle()
     const target = frame(session)
     const events: string[] = []
     lifecycle.subscribe("frame-render", (event) => {
       events.push(event.type)
-      session.setAttribute(target.key, "data-observer", "true")
+      session.replaceTree(tree("Replacement"))
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", (event) => {
+      events.push(event.type)
+      return undefined
     })
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -177,21 +202,51 @@ describe("Frame render lifecycle coordination", () => {
 
     session.setAttribute(target.key, "data-committed", "true")
     prepared.seal()
-    expect(acknowledgeFrameRender(session, target, "details", session.revision)).toBeUndefined()
-    expect(events).toEqual(["frame-render"])
     acknowledgeFrameRender(session, target, "details", session.revision)?.finish()
 
-    expect(events).toEqual(["frame-render"])
     expect(await prepared.rendered).toBe("rendered")
+    expect(dispatchFrameRender(lifecycle, prepared)).toBe(true)
+    expect(dispatchFrameLoad(lifecycle, prepared)).toBe(false)
+    expect(events).toEqual(["frame-render"])
     release()
+  })
+
+  test("suppresses stale load after a render observer releases the final renderer", async () => {
+    const session = new DocumentSession(tree())
+    const lifecycle = new FrameLifecycle()
+    const target = frame(session)
+    const events: string[] = []
+    const release = retainFrameRenderer(session, target)
+    lifecycle.subscribe("frame-render", (event) => {
+      events.push(event.type)
+      release()
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", (event) => {
+      events.push(event.type)
+      return undefined
+    })
+    const prepared = prepareFrameRender(session, {
+      frame: target,
+      frameId: "details",
+      url: "https://example.test/frame",
+    })
+
+    session.setAttribute(target.key, "data-committed", "true")
+    prepared.seal()
+    acknowledgeFrameRender(session, target, "details", session.revision)?.finish()
+
+    expect(await prepared.rendered).toBe("rendered")
+    expect(dispatchFrameRender(lifecycle, prepared)).toBe(true)
+    expect(dispatchFrameLoad(lifecycle, prepared)).toBe(false)
+    expect(events).toEqual(["frame-render"])
   })
 
   test("suppresses autofocus for a canceled current Frame ticket", async () => {
     const session = new DocumentSession(tree())
-    const lifecycle = new FrameLifecycle()
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -208,10 +263,9 @@ describe("Frame render lifecycle coordination", () => {
 
   test("marks a failed acknowledgement as non-focusable", async () => {
     const session = new DocumentSession(tree())
-    const lifecycle = new FrameLifecycle()
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",
@@ -228,10 +282,9 @@ describe("Frame render lifecycle coordination", () => {
 
   test("isolates and redacts render seal subscriber faults", async () => {
     const session = new DocumentSession(tree())
-    const lifecycle = new FrameLifecycle()
     const target = frame(session)
     const release = retainFrameRenderer(session, target)
-    const prepared = prepareFrameRender(session, lifecycle, {
+    const prepared = prepareFrameRender(session, {
       frame: target,
       frameId: "details",
       url: "https://example.test/frame",

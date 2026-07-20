@@ -104,6 +104,7 @@ import {
 } from "./frame-lifecycle"
 import {
   dispatchFrameLoad,
+  dispatchFrameRender,
   type PreparedFrameRender,
   prepareFrameRender,
 } from "./frame-render-lifecycle-internal"
@@ -990,7 +991,9 @@ export class FormSubmissionController {
         application.application === "frame" &&
         this.options.frameLifecycle
       ) {
-        dispatchFrameLoad(this.options.frameLifecycle, frameRender.commit)
+        if (dispatchFrameRender(this.options.frameLifecycle, frameRender)) {
+          dispatchFrameLoad(this.options.frameLifecycle, frameRender)
+        }
       }
       return settled
     } catch (error) {
@@ -1014,7 +1017,9 @@ export class FormSubmissionController {
           frameRender &&
           this.options.frameLifecycle
         ) {
-          dispatchFrameLoad(this.options.frameLifecycle, frameRender.commit)
+          if (dispatchFrameRender(this.options.frameLifecycle, frameRender)) {
+            dispatchFrameLoad(this.options.frameLifecycle, frameRender)
+          }
         }
       }
       throw reported
@@ -1248,12 +1253,13 @@ export class FormSubmissionController {
           if (!acquired) return this.canceled(candidate, destination)
           if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
         }
-        const lifecycle = this.options.frameLifecycle
-        if (lifecycle && onFrameRender) {
+        if (onFrameRender && this.options.frameLifecycle) {
+          const checkpoint = this.ownership.checkpointFrame(activeFrame)
           onFrameRender?.(
-            prepareFrameRender(this.session, lifecycle, {
+            prepareFrameRender(this.session, {
               frame: activeFrame,
               frameId,
+              ownerIsCurrent: () => this.ownership.frameCheckpointCurrent(checkpoint),
               url: candidate.url,
             }),
           )
