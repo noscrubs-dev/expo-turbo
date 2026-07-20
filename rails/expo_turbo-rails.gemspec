@@ -22,6 +22,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "actioncable", ">= 7.2", "< 8.2"
+  spec.add_dependency "activejob", ">= 7.2", "< 8.2"
   spec.add_dependency "railties", ">= 7.2", "< 8.2"
   spec.add_dependency "turbo-rails", ">= 2.0.10", "< 3"
 end
