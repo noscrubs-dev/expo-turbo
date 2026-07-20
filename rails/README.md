@@ -44,6 +44,16 @@ end
 <% end %>
 ```
 
+For records, use the opt-in `expo_turbo_dom_id` helper to derive literal target IDs before passing them to a Frame or Stream helper. It supports only the shared `record`, `document`, `frame`, `list`, `form`, `error`, and `loading` roles, so every role stays deterministic and distinct:
+
+```erb
+<%= expo_turbo_frame_tag expo_turbo_dom_id(@account, :frame) do %>
+  <AccountDetails id="<%= expo_turbo_dom_id(@account) %>">...</AccountDetails>
+<% end %>
+```
+
+For a persisted `Account` with ID `7`, those values are `account_7`, `document_account_7`, `frame_account_7`, `list_account_7`, `form_account_7`, `error_account_7`, and `loading_account_7`. Only `:list` accepts a model class, producing `list_account`; every record role requires `persisted?` plus a complete `to_key`, so unpersisted or incomplete records fail instead of producing a shared `new_*` target. Generated IDs must still be unique within each host document; the helper does not add tenant scope or accept a caller-supplied raw target segment.
+
 `expo_turbo_frame_request?` and `expo_turbo_frame_request_id` are also available in the XML view. For an endpoint that can emit a full document or a Frame, pass `expo_turbo_cache_key` to the host's existing conditional-GET API:
 
 ```ruby

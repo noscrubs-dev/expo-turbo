@@ -16,6 +16,7 @@ module ExpoTurbo
       included do
         class_attribute :expo_turbo_views_path, instance_accessor: false
         helper ExpoTurbo::Rails::Frames::Helper
+        helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
         helper_method :expo_turbo_frame_request?, :expo_turbo_frame_request_id
       end

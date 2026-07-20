@@ -15,10 +15,10 @@ module ExpoTurbo
           value.each_codepoint.none? { |codepoint| codepoint <= 31 || codepoint == 127 }
       end
 
-      def validate_id!(value)
+      def validate_id!(value, label: "Frame")
         return value if valid_id?(value)
 
-        raise TemplateError, "Expo Turbo Frame id must be a nonblank UTF-8 string without control characters"
+        raise TemplateError, "Expo Turbo #{label} id must be a nonblank UTF-8 string without control characters"
       end
 
       def cache_variant(frame_id)
