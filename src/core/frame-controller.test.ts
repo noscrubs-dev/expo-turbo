@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
+import { TargetError } from "./errors"
 import { consumeFrameAutofocus, consumeFrameRenderEffects } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
@@ -35,7 +36,11 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
   }
 }
 
-function harness(attributes = 'src="/frame"', visibility?: VisibilityAdapter) {
+function harness(
+  attributes = 'src="/frame"',
+  visibility?: VisibilityAdapter,
+  options: Readonly<{ frameLifecycle?: FrameLifecycle }> = {},
+) {
   const pending: PendingRequest[] = []
   const session = new DocumentSession(
     parseExpoTurboDocument(
@@ -53,6 +58,7 @@ function harness(attributes = 'src="/frame"', visibility?: VisibilityAdapter) {
         }),
     },
     { next: () => `request-${++requestId}` },
+    options,
   )
   return {
     controller: new FrameController(session, "details", loader, visibility),
@@ -205,6 +211,233 @@ describe("Frame controller", () => {
       unsubscribe()
       releaseRenderer()
     }
+  })
+
+  test("uses bounded morph only for a direct reload with exact refresh metadata", async () => {
+    const pending: PendingRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame" refresh="morph"><Stable id="stable" tone="before" /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const initialStable = session.tree.getElementById("stable")
+    if (frame?.kind !== "frame" || !initialStable) throw new Error("Frame fixture is missing")
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-frame-render", (event) => {
+      events.push(`before:${event.detail.renderMethod}`)
+      return undefined
+    })
+    lifecycle.subscribe("frame-render", (event) => {
+      events.push(`render:${event.detail.renderMethod}`)
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", () => {
+      events.push("load")
+      return undefined
+    })
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `request-${pending.length + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+    const controller = new FrameController(session, "details", loader)
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "details", session.revision)?.finish()
+    })
+
+    const initial = controller.connect()
+    pending[0]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="initial" /></turbo-frame>'),
+    )
+    await initial
+    const afterConnect = session.tree.getElementById("stable")
+    if (!afterConnect) throw new Error("initial Frame response did not commit")
+    expect(afterConnect).not.toBe(initialStable)
+
+    const reloaded = controller.reload()
+    pending[1]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="morphed" /></turbo-frame>'),
+    )
+    await reloaded
+    const afterReload = session.tree.getElementById("stable")
+    if (!afterReload) throw new Error("morph Frame response did not commit")
+    expect(afterReload).toBe(afterConnect)
+    expect(attributeValue(afterReload, "tone")).toBe("morphed")
+
+    const loaded = controller.load()
+    pending[2]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="loaded" /></turbo-frame>'),
+    )
+    await loaded
+    const afterLoad = session.tree.getElementById("stable")
+    if (!afterLoad) throw new Error("explicit Frame load did not commit")
+    expect(afterLoad).not.toBe(afterReload)
+
+    const visited = controller.visit(controller.source ?? "")
+    pending[3]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="visited" /></turbo-frame>'),
+    )
+    await visited
+    const afterVisit = session.tree.getElementById("stable")
+    if (!afterVisit) throw new Error("same-source Frame visit did not commit")
+    expect(afterVisit).not.toBe(afterLoad)
+    expect(events).toEqual([
+      "before:replace",
+      "render:replace",
+      "load",
+      "before:morph",
+      "render:morph",
+      "load",
+      "before:replace",
+      "render:replace",
+      "load",
+      "before:replace",
+      "render:replace",
+      "load",
+    ])
+
+    unsubscribe()
+    releaseRenderer()
+  })
+
+  test("keeps non-exact refresh values on the ordinary replacement path", async () => {
+    for (const refresh of ["Morph", "MORPH", " morph"]) {
+      const { controller, pending, session } = harness(`src="/frame" refresh="${refresh}"`)
+      const initial = controller.connect()
+      pending[0]?.resolve(
+        response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'),
+      )
+      await initial
+      const stable = session.tree.getElementById("stable")
+      if (!stable) throw new Error("initial Frame response did not commit")
+
+      const reloaded = controller.reload()
+      pending[1]?.resolve(
+        response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'),
+      )
+      await reloaded
+
+      expect(session.tree.getElementById("stable")).not.toBe(stable)
+    }
+  })
+
+  test("captures direct reload morph intent before the response arrives", async () => {
+    const { controller, pending, session } = harness('src="/frame" refresh="morph"')
+    const initial = controller.connect()
+    pending[0]?.resolve(response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'))
+    await initial
+    const stable = session.tree.getElementById("stable")
+    const frame = session.tree.getElementById("details")
+    if (!stable || frame?.kind !== "frame") throw new Error("initial Frame response did not commit")
+
+    const reloaded = controller.reload()
+    session.removeAttribute(frame.key, "refresh")
+    pending[1]?.resolve(response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'))
+    await reloaded
+
+    expect(session.tree.getElementById("stable")).toBe(stable)
+  })
+
+  test("keeps a direct reload resolved through recurse on the replacement path", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/frame" refresh="morph"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const lifecycle = new FrameLifecycle()
+    const renderMethods: string[] = []
+    lifecycle.subscribe("before-frame-render", (event) => {
+      renderMethods.push(event.detail.renderMethod)
+      return undefined
+    })
+    let request = 0
+    const controller = new FrameController(
+      session,
+      "details",
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async () => {
+            request += 1
+            if (request === 1) {
+              return response(
+                '<turbo-frame id="details"><Stable id="stable" tone="initial" /></turbo-frame>',
+              )
+            }
+            if (request === 2) {
+              return response(
+                '<Gallery><turbo-frame id="bridge" src="/nested" recurse="details" /></Gallery>',
+              )
+            }
+            return response(
+              '<turbo-frame id="details"><Stable id="stable" tone="recursive" /></turbo-frame>',
+            )
+          },
+        },
+        { next: () => `recurse-${request + 1}` },
+        { frameLifecycle: lifecycle },
+      ),
+    )
+
+    await controller.connect()
+    const stable = session.tree.getElementById("stable")
+    if (!stable) throw new Error("initial Frame response did not commit")
+    renderMethods.length = 0
+
+    await controller.reload()
+
+    const recursive = session.tree.getElementById("stable")
+    if (!recursive) throw new Error("recursive Frame response did not commit")
+    expect(recursive).not.toBe(stable)
+    expect(attributeValue(recursive, "tone")).toBe("recursive")
+    expect(renderMethods).toEqual(["replace"])
+  })
+
+  test("fails a rejected Frame morph before lifecycle render or structural replacement", async () => {
+    const lifecycle = new FrameLifecycle()
+    const { controller, pending, session } = harness('src="/frame" refresh="morph"', undefined, {
+      frameLifecycle: lifecycle,
+    })
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const events: string[] = []
+    lifecycle.subscribe("before-frame-render", () => {
+      events.push("before")
+      return undefined
+    })
+    const initial = controller.connect()
+    pending[0]?.resolve(response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'))
+    await initial
+    const stable = session.tree.getElementById("stable")
+    const revision = session.revision
+    if (!stable) throw new Error("initial Frame response did not commit")
+    events.length = 0
+
+    const rejected = controller.reload()
+    pending[1]?.resolve(
+      response(
+        '<turbo-frame id="details"><Stable id="stable" data-turbo-permanent="" /></turbo-frame>',
+      ),
+    )
+    await expect(rejected).rejects.toBeInstanceOf(TargetError)
+    expect(controller.state.status).toBe("error")
+    expect(session.revision).toBe(revision)
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(events).toEqual([])
   })
 
   test("keeps a mounted Frame busy until its exact replacement commits without lifecycle observers", async () => {

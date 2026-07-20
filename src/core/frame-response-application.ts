@@ -6,6 +6,7 @@ import {
   FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH,
   type FrameLifecycle,
   type FrameRenderer,
+  type FrameRenderMethod,
 } from "./frame-lifecycle"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import type { DocumentSession } from "./session"
@@ -20,6 +21,7 @@ import {
   attributeValue,
   type DocumentTree,
   isElement,
+  morphFrameRefreshChildren,
   type ProtocolElement,
   type ProtocolNode,
 } from "./tree"
@@ -44,10 +46,16 @@ export interface PreparedFrameMutation {
   readonly frameId: string
 }
 
+interface PrepareFrameMutationOptions
+  extends Pick<CommitPreparedFrameResponseOptions, "documentUrl" | "finalUrl"> {
+  readonly renderMethod?: FrameRenderMethod
+}
+
 interface PreparedFrameMutationState {
   readonly activeFrame: ProtocolElement
   readonly documentUrl?: string
   readonly finalUrl?: string
+  readonly renderMethod: FrameRenderMethod
   readonly responseFrame: ProtocolElement
   readonly revision: number
   readonly tree: DocumentTree
@@ -172,7 +180,7 @@ export function prepareFrameMutation(
   session: DocumentSession,
   activeFrame: ProtocolElement,
   prepared: PreparedFrameResponse,
-  options: Pick<CommitPreparedFrameResponseOptions, "documentUrl" | "finalUrl"> = {},
+  options: PrepareFrameMutationOptions = {},
 ): PreparedFrameMutation {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TargetError("Prepared Frame mutation options must be an object")
@@ -186,6 +194,13 @@ export function prepareFrameMutation(
     })
   }
 
+  const renderMethod = options.renderMethod ?? "replace"
+  if (renderMethod !== "morph" && renderMethod !== "replace") {
+    throw new TargetError("Prepared Frame mutation render method is invalid", {
+      frameId: prepared.frameId,
+    })
+  }
+
   const preflight = session.tree.clone()
   const responseFrame = preflight.getElementById(prepared.frameId)
   if (responseFrame?.kind !== "frame") {
@@ -193,7 +208,11 @@ export function prepareFrameMutation(
       frameId: prepared.frameId,
     })
   }
-  preflight.replaceChildrenWithClones(responseFrame, prepared.responseFrame.children)
+  if (renderMethod === "morph") {
+    morphFrameRefreshChildren(preflight, responseFrame, prepared.responseFrame)
+  } else {
+    preflight.replaceChildrenWithClones(responseFrame, prepared.responseFrame.children)
+  }
   if (options.finalUrl) preflight.setAttribute(responseFrame, "src", options.finalUrl)
   if (options.documentUrl !== undefined) preflight.retargetDocumentUrl(options.documentUrl)
 
@@ -202,6 +221,7 @@ export function prepareFrameMutation(
     activeFrame,
     ...(options.documentUrl !== undefined ? { documentUrl: options.documentUrl } : {}),
     ...(options.finalUrl ? { finalUrl: options.finalUrl } : {}),
+    renderMethod,
     responseFrame,
     revision: session.revision,
     tree: session.tree,
@@ -220,9 +240,10 @@ export function commitPreparedFrameMutation(
   preparedFrameMutations.delete(mutation)
 
   session.mutate((tree) => {
-    const changed = [
-      ...tree.replaceChildrenWithClones(state.activeFrame, state.responseFrame.children),
-    ]
+    const changed =
+      state.renderMethod === "morph"
+        ? [...morphFrameRefreshChildren(tree, state.activeFrame, state.responseFrame)]
+        : [...tree.replaceChildrenWithClones(state.activeFrame, state.responseFrame.children)]
     if (state.finalUrl) tree.setAttribute(state.activeFrame, "src", state.finalUrl)
     if (state.documentUrl !== undefined && tree.document.url !== state.documentUrl) {
       tree.retargetDocumentUrl(state.documentUrl)
@@ -257,6 +278,7 @@ export function prepareFrameBeforeRender(
   lifecycle: FrameLifecycle | undefined,
   prepared: PreparedFrameResponse,
   url: string,
+  renderMethod: FrameRenderMethod = "replace",
 ): FrameRenderer | undefined {
   if (!lifecycle) return undefined
   return lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](
@@ -265,6 +287,7 @@ export function prepareFrameBeforeRender(
       prepared.responseFrame,
       url,
       defaultFrameRenderer,
+      renderMethod,
     ),
   )
 }

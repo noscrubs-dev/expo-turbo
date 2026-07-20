@@ -179,6 +179,7 @@ describe("Frame lifecycle", () => {
       newFrame,
       "https://example.test/details",
       (context) => context.renderDefault(),
+      "morph",
     )
 
     lifecycle.subscribe("before-frame-render", (received) => {
@@ -187,7 +188,7 @@ describe("Frame lifecycle", () => {
       expect(received.detail).toMatchObject({
         frameId: "details",
         newFrame,
-        renderMethod: "replace",
+        renderMethod: "morph",
         url: "https://example.test/details",
       })
       expect(Object.keys(received.detail).sort()).toEqual([

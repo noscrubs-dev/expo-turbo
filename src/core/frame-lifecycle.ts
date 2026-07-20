@@ -131,7 +131,7 @@ export class FrameMissingEvent extends CancellableEvent<"frame-missing", FrameMi
   }
 }
 
-export type FrameRenderMethod = "replace"
+export type FrameRenderMethod = "morph" | "replace"
 
 export interface FrameRenderContext {
   readonly frameId: string
@@ -169,10 +169,16 @@ class ExactBeforeFrameRenderEventDetail implements BeforeFrameRenderEventDetail 
   readonly renderMethod: FrameRenderMethod
   readonly url: string
 
-  constructor(frameId: string, newFrame: ProtocolElement, url: string, renderer: FrameRenderer) {
+  constructor(
+    frameId: string,
+    newFrame: ProtocolElement,
+    url: string,
+    renderer: FrameRenderer,
+    renderMethod: FrameRenderMethod,
+  ) {
     this.frameId = frameId
     this.newFrame = newFrame
-    this.renderMethod = "replace"
+    this.renderMethod = renderMethod
     this.url = url
     beforeFrameRenderDetailStates.set(this, { renderer })
     Object.freeze(this)
@@ -196,10 +202,16 @@ class ExactBeforeFrameRenderEvent extends NotificationEvent<
   "before-frame-render",
   BeforeFrameRenderEventDetail
 > {
-  constructor(frameId: string, newFrame: ProtocolElement, url: string, renderer: FrameRenderer) {
+  constructor(
+    frameId: string,
+    newFrame: ProtocolElement,
+    url: string,
+    renderer: FrameRenderer,
+    renderMethod: FrameRenderMethod,
+  ) {
     super(
       "before-frame-render",
-      new ExactBeforeFrameRenderEventDetail(frameId, newFrame, url, renderer),
+      new ExactBeforeFrameRenderEventDetail(frameId, newFrame, url, renderer, renderMethod),
     )
     Object.freeze(this)
   }
@@ -411,8 +423,9 @@ export function createBeforeFrameRenderEvent(
   newFrame: ProtocolElement,
   url: string,
   renderer: FrameRenderer,
+  renderMethod: FrameRenderMethod = "replace",
 ): BeforeFrameRenderEvent {
-  return new ExactBeforeFrameRenderEvent(frameId, newFrame, url, renderer)
+  return new ExactBeforeFrameRenderEvent(frameId, newFrame, url, renderer, renderMethod)
 }
 
 export function hasFrameMissingVisitIntent(event: FrameMissingEvent): boolean {

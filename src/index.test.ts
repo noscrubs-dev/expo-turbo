@@ -25,6 +25,7 @@ describe("package status", () => {
     expect(BeforeCacheEvent).toBeFunction()
     expect("morphStreamReplaceElement" in core).toBe(false)
     expect("morphStreamUpdateChildren" in core).toBe(false)
+    expect("morphFrameRefreshChildren" in core).toBe(false)
   })
 })
 

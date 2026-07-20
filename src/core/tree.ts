@@ -258,8 +258,14 @@ type StreamChildMorpher = (
   sources: readonly ProtocolNode[],
 ) => readonly string[]
 
+type FrameRefreshMorpher = (
+  frame: ProtocolElement,
+  responseFrame: ProtocolElement,
+) => readonly string[]
+
 const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
+const frameRefreshMorphers = new WeakMap<DocumentTree, FrameRefreshMorpher>()
 
 /** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
 export function morphStreamUpdateChildren(
@@ -281,6 +287,17 @@ export function morphStreamReplaceElement(
   const morph = streamOuterMorphers.get(tree)
   if (!morph) throw new TargetError("Native Stream outer morph requires an active document tree")
   return morph(target, sources)
+}
+
+/** @internal Frame response entrypoint; not re-exported from `expo-turbo/core`. */
+export function morphFrameRefreshChildren(
+  tree: DocumentTree,
+  frame: ProtocolElement,
+  responseFrame: ProtocolElement,
+): readonly string[] {
+  const morph = frameRefreshMorphers.get(tree)
+  if (!morph) throw new TargetError("Native Frame refresh morph requires an active document tree")
+  return morph(frame, responseFrame)
 }
 
 export class DocumentTree {
@@ -308,6 +325,9 @@ export class DocumentTree {
     )
     streamOuterMorphers.set(this, (target, sources) =>
       this.morphStreamReplaceElement(target, sources),
+    )
+    frameRefreshMorphers.set(this, (frame, responseFrame) =>
+      this.morphFrameRefreshChildren(frame, responseFrame),
     )
   }
 
@@ -519,6 +539,32 @@ export class DocumentTree {
     return this.commitMorphPlans(target, this.buildMorphPlans(target, source.children), source)
   }
 
+  /**
+   * Reconciles children for the narrow native Frame `reload()` + `refresh="morph"` contract.
+   * The mounted Frame wrapper always retains its identity and attributes.
+   */
+  private morphFrameRefreshChildren(
+    frame: ProtocolElement,
+    responseFrame: ProtocolElement,
+  ): readonly string[] {
+    assertDocumentTreeMutationAllowed(this)
+    this.assertActiveParent(frame)
+    const frameId = attributeValue(frame, "id")
+    if (frame.kind !== "frame" || !frameId) {
+      throw new TargetError("Native Frame refresh morph requires an active Frame target", {
+        ...(frameId ? { target: frameId } : {}),
+      })
+    }
+    if (hasTurboPermanent(frame) || hasTurboPermanent(responseFrame)) {
+      throw new TargetError("Native Frame refresh morph does not support data-turbo-permanent", {
+        target: frameId,
+      })
+    }
+
+    this.assertMorphSources(frame, responseFrame.children)
+    return this.commitMorphPlans(frame, this.buildMorphPlans(frame, responseFrame.children))
+  }
+
   replaceNodeWithClones(node: ProtocolNode, sources: readonly ProtocolNode[]): readonly string[] {
     assertDocumentTreeMutationAllowed(this)
     if (!this.nodes.has(node) || node.kind === "document" || !node.parent) {
@@ -600,7 +646,7 @@ export class DocumentTree {
     const ids = new Set<string>()
     const visit = (source: ProtocolNode): void => {
       if (source.kind === "document") {
-        throw new TargetError("A document cannot be used as a native Stream morph child")
+        throw new TargetError("A document cannot be used as a native morph child")
       }
       if (!isElement(source)) return
       const id = attributeValue(source, "id")
@@ -608,7 +654,7 @@ export class DocumentTree {
         if (!id.trim()) throw new TargetError("Element ids must not be blank")
         if (ids.has(id)) {
           throw new TargetError(
-            `Native Stream morph payload id ${JSON.stringify(id)} is declared more than once`,
+            `Native morph payload id ${JSON.stringify(id)} is declared more than once`,
             {
               target: id,
             },
@@ -618,7 +664,7 @@ export class DocumentTree {
         const active = this.idIndex.get(id)
         if (active && (active === parent || !isWithin(active, parent))) {
           throw new TargetError(
-            `Native Stream morph payload id ${JSON.stringify(id)} is outside the target subtree`,
+            `Native morph payload id ${JSON.stringify(id)} is outside the target subtree`,
             { target: id },
           )
         }
@@ -644,10 +690,9 @@ export class DocumentTree {
       const active = id === undefined ? undefined : this.idIndex.get(id)
       const current = id === undefined ? undefined : currentById.get(id)
       if (active && active !== current) {
-        throw new TargetError(
-          `Native Stream child morph cannot reparent id ${JSON.stringify(id)}`,
-          { ...(id ? { target: id } : {}) },
-        )
+        throw new TargetError(`Native morph cannot reparent id ${JSON.stringify(id)}`, {
+          ...(id ? { target: id } : {}),
+        })
       }
       if (isElement(source) && source.kind === "element" && current) {
         if (isCompatibleMorphElement(current, source)) {
@@ -671,10 +716,9 @@ export class DocumentTree {
       const id = attributeValue(node, "id")
       const active = id === undefined ? undefined : this.idIndex.get(id)
       if (active && (!replacementRoot || !isWithin(active, replacementRoot))) {
-        throw new TargetError(
-          `Native Stream child morph cannot reparent id ${JSON.stringify(id)}`,
-          { ...(id ? { target: id } : {}) },
-        )
+        throw new TargetError(`Native morph cannot reparent id ${JSON.stringify(id)}`, {
+          ...(id ? { target: id } : {}),
+        })
       }
       for (const child of node.children) visit(child)
     }
