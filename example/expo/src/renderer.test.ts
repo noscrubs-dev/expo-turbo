@@ -94,6 +94,7 @@ import {
   useDocumentState,
   useExpoTurboDocument,
   useExpoTurboDocumentLink,
+  useExpoTurboDocumentLinkPrefetch,
   useExpoTurboForm,
   useExpoTurboFormControl,
   useExpoTurboFrame,
@@ -512,6 +513,7 @@ function renderDocumentLinks(
   }>,
 ) {
   const activations = new Map<string, () => Promise<unknown>>()
+  const prefetches = new Map<string, () => void>()
   let documentRequestIds = 0
   let renders = 0
   function DocumentLink({
@@ -526,7 +528,9 @@ function renderDocumentLinks(
   }): ReactNode {
     renders += 1
     activations.set(href, useExpoTurboDocumentLink(href))
-    return createElement("link", { disabled, href })
+    const prefetch = useExpoTurboDocumentLinkPrefetch(href)
+    prefetches.set(href, prefetch)
+    return createElement("link", { disabled, href, onPressIn: prefetch })
   }
   const link = defineComponent({
     attributes: {
@@ -600,9 +604,25 @@ function renderDocumentLinks(
     documentRequestIdCount: () => documentRequestIds,
     formLinks,
     frames,
+    prefetch(href: string) {
+      const prefetch = prefetches.get(href)
+      if (!prefetch) throw new Error(`Document link ${href} did not render`)
+      prefetch()
+    },
     renderCount: () => renders,
     renderer,
     session,
+    updateDocumentPreloader(documentPreloader: ExpoTurboProviderProps["documentPreloader"]) {
+      const { strict, ...options } = rendererOptions
+      const provider = createElement(
+        ExpoTurboProvider,
+        { registry: componentRegistry, session, ...options, documentPreloader },
+        createElement(ExpoTurboRoot),
+      )
+      act(() => {
+        renderer.update(strict ? createElement(StrictMode, null, provider) : provider)
+      })
+    },
     updateErrorObserver(onError: (event: ExpoTurboRenderError) => void) {
       const { strict, ...options } = rendererOptions
       const provider = createElement(
@@ -4467,6 +4487,85 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("preloads eligible document links on press-in and supplies the next preview", async () => {
+    const prefetchRequests: TurboRequest[] = []
+    const documentRequests: TurboRequest[] = []
+    let resolveDocument: ((response: TurboResponse) => void) | undefined
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery data-turbo-root="/app"><DocumentLink href="/app/next" /></Gallery>',
+      async (request) => {
+        prefetchRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () =>
+            '<Gallery data-turbo-root="/app"><DemoText id="preloaded">Preloaded preview</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      {
+        documentFetch: (request) => {
+          documentRequests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveDocument = resolve
+          })
+        },
+        url: "https://example.test/app/current",
+      },
+    )
+
+    act(() => {
+      harness.prefetch("/app/next")
+      harness.prefetch("/app/next")
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(prefetchRequests).toHaveLength(1)
+    expect(prefetchRequests[0]).toMatchObject({
+      headers: { Accept: EXPO_TURBO_MIME_TYPE, "X-Sec-Purpose": "prefetch" },
+      method: "GET",
+      url: "https://example.test/app/next",
+    })
+    expect(harness.cache.has("https://example.test/app/next")).toBe(true)
+    expect(harness.requestIdCount()).toBe(1)
+    expect(harness.session.revision).toBe(0)
+
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness.activation("/app/next")()
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(harness.session.treeState.preview).toBe(true)
+    expect(harness.session.tree.getElementById("preloaded")).toBeDefined()
+    expect(documentRequests.map((request) => request.url)).toEqual([
+      "https://example.test/app/next",
+    ])
+
+    await act(async () => {
+      if (!resolveDocument || !documentRequests[0] || !visit) {
+        throw new Error("canonical press-in prefetch revalidation did not start")
+      }
+      resolveDocument({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery data-turbo-root="/app"><DemoText id="canonical">Canonical</DemoText></Gallery>',
+        url: documentRequests[0].url,
+      })
+      await visit
+    })
+    expect(harness.session.treeState.preview).toBe(false)
+    expect(harness.session.tree.getElementById("canonical")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
   test("uses an automatically preloaded snapshot as the next document visit preview", async () => {
     const documentRequests: TurboRequest[] = []
     let resolveDocument: ((response: TurboResponse) => void) | undefined
@@ -4528,6 +4627,197 @@ describe("React protocol renderer", () => {
     expect(harness.session.tree.getElementById("canonical")).toBeDefined()
 
     act(() => harness.renderer.unmount())
+  })
+
+  test("skips unsafe press-in document link prefetches", async () => {
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      `<Gallery id="gallery" data-turbo-root="/app">
+        <DocumentLink href="/app/eligible" />
+        <DocumentLink href="/app/current" />
+        <DocumentLink href="/app/current#fragment" />
+        <DocumentLink disabled="" href="/app/disabled" />
+        <DocumentLink data-turbo-confirm="" href="/app/confirm" />
+        <DocumentLink data-turbo-method="get" href="/app/method" />
+        <DocumentLink data-turbo-stream="" href="/app/stream" />
+        <DocumentLink data-turbo-frame="_top" href="/app/frame-target" />
+        <DocumentLink download="" href="/app/download" />
+        <DocumentLink href="/app/target" target="_self" />
+        <DocumentLink data-remote="true" href="/app/remote" />
+        <Gallery data-turbo-prefetch="false">
+          <DocumentLink href="/app/prefetch-opted-out" />
+          <Gallery data-turbo-prefetch="true">
+            <DocumentLink href="/app/prefetch-override" />
+          </Gallery>
+        </Gallery>
+        <Gallery data-turbo="false">
+          <DocumentLink href="/app/turbo-opted-out" />
+          <Gallery data-turbo="true">
+            <DocumentLink href="/app/turbo-override" />
+          </Gallery>
+        </Gallery>
+        <turbo-frame id="frame">
+          <DocumentLink href="/app/frame" />
+        </turbo-frame>
+        <DocumentLink href="/app/archive.pdf" />
+        <DocumentLink href="/outside" />
+        <DocumentLink href="https://outside.test/app/external" />
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery data-turbo-root="/app"><DemoText>Cached</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      { url: "https://example.test/app/current" },
+    )
+
+    act(() => {
+      for (const href of [
+        "/app/eligible",
+        "/app/eligible",
+        "/app/current",
+        "/app/current#fragment",
+        "/app/disabled",
+        "/app/confirm",
+        "/app/method",
+        "/app/stream",
+        "/app/frame-target",
+        "/app/download",
+        "/app/target",
+        "/app/remote",
+        "/app/prefetch-opted-out",
+        "/app/prefetch-override",
+        "/app/turbo-opted-out",
+        "/app/turbo-override",
+        "/app/frame",
+        "/app/archive.pdf",
+        "/outside",
+        "https://outside.test/app/external",
+      ]) {
+        harness.prefetch(href)
+      }
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/app/eligible",
+      "https://example.test/app/prefetch-override",
+      "https://example.test/app/turbo-override",
+    ])
+    expect(harness.requestIdCount()).toBe(3)
+    expect(harness.session.revision).toBe(0)
+    expect(harness.cache.size).toBe(3)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("reports current press-in prefetch failures and suppresses unmounted errors", async () => {
+    let reject: ((error: unknown) => void) | undefined
+    const errors: ExpoTurboRenderError[] = []
+    const current = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          reject = fail
+        }),
+      { onError: (event) => errors.push(event) },
+    )
+    act(() => current.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+    if (!reject) throw new Error("press-in prefetch request did not start")
+
+    await act(async () => {
+      reject?.(new Error("private press-in prefetch secret"))
+      await nextTurn()
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({
+      error: new RequestError("Document preload request failed", { method: "GET" }),
+      nodeKey: "id:link",
+    })
+    expect(errors[0]?.error.cause).toBeUndefined()
+    act(() => current.renderer.unmount())
+
+    let lateReject: ((error: unknown) => void) | undefined
+    const lateErrors: ExpoTurboRenderError[] = []
+    const unmounted = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="late" href="/late" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          lateReject = fail
+        }),
+      { onError: (event) => lateErrors.push(event) },
+    )
+    act(() => unmounted.prefetch("/late"))
+    await act(async () => {
+      await nextTurn()
+    })
+    if (!lateReject) throw new Error("late press-in prefetch request did not start")
+    act(() => unmounted.renderer.unmount())
+    await act(async () => {
+      lateReject?.(new Error("private late press-in prefetch secret"))
+      await nextTurn()
+    })
+    expect(lateErrors).toEqual([])
+
+    let changedReject: ((error: unknown) => void) | undefined
+    const changedErrors: ExpoTurboRenderError[] = []
+    const changed = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="changed" href="/before-change" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          changedReject = fail
+        }),
+      { onError: (event) => changedErrors.push(event) },
+    )
+    act(() => changed.prefetch("/before-change"))
+    await act(async () => {
+      await nextTurn()
+    })
+    if (!changedReject) throw new Error("changed press-in prefetch request did not start")
+    await act(async () => {
+      changed.session.setAttribute("id:changed", "href", "/after-change")
+      await nextTurn()
+    })
+    await act(async () => {
+      changedReject?.(new Error("private stale press-in prefetch secret"))
+      await nextTurn()
+    })
+    expect(changedErrors).toEqual([])
+    act(() => changed.renderer.unmount())
+
+    let swappedReject: ((error: unknown) => void) | undefined
+    const swappedErrors: ExpoTurboRenderError[] = []
+    const swapped = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="swapped" href="/swapped" /></Gallery>',
+      () =>
+        new Promise<TurboResponse>((_resolve, fail) => {
+          swappedReject = fail
+        }),
+      { onError: (event) => swappedErrors.push(event) },
+    )
+    act(() => swapped.prefetch("/swapped"))
+    await act(async () => {
+      await nextTurn()
+    })
+    if (!swappedReject) throw new Error("swapped press-in prefetch request did not start")
+    swapped.updateDocumentPreloader(undefined)
+    await act(async () => {
+      swappedReject?.(new Error("private replaced-preloader secret"))
+      await nextTurn()
+    })
+    expect(swappedErrors).toEqual([])
+    act(() => swapped.renderer.unmount())
   })
 
   test("skips markers that do not represent a supported document preload", async () => {
