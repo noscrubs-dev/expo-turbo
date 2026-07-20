@@ -30,6 +30,33 @@ export class LinkClickEvent extends CancellableEvent<
   }
 }
 
+export class BeforePrefetchEvent extends CancellableEvent<
+  "before-prefetch",
+  Readonly<{ nodeKey: string; url: string }>
+> {
+  constructor(nodeKey: string, url: string) {
+    super("before-prefetch", Object.freeze({ nodeKey, url }))
+    let prevented = false
+    Object.defineProperties(this, {
+      defaultPrevented: {
+        configurable: false,
+        enumerable: true,
+        get: () => prevented,
+      },
+      detail: { writable: false },
+      preventDefault: {
+        configurable: false,
+        value: () => {
+          prevented = true
+        },
+        writable: false,
+      },
+      type: { writable: false },
+    })
+    Object.freeze(this)
+  }
+}
+
 export class BeforeVisitEvent extends CancellableEvent<"before-visit", Readonly<{ url: string }>> {
   constructor(url: string) {
     super("before-visit", Object.freeze({ url }))
@@ -97,6 +124,7 @@ export class DocumentReloadEvent extends NotificationEvent<"reload", DocumentRel
 
 export type DocumentVisitLifecycleEvent =
   | BeforeCacheEvent
+  | BeforePrefetchEvent
   | BeforeVisitEvent
   | DocumentLoadEvent
   | DocumentReloadEvent
@@ -106,6 +134,7 @@ export type DocumentVisitLifecycleEvent =
 
 export interface DocumentVisitLifecycleEventMap {
   readonly "before-cache": BeforeCacheEvent
+  readonly "before-prefetch": BeforePrefetchEvent
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
   readonly load: DocumentLoadEvent
@@ -130,6 +159,9 @@ export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-cache-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.before-prefetch-dispatch",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.click-dispatch",
 )
@@ -148,8 +180,8 @@ export const DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH = Symbol(
 
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
- * Click and before-visit listeners may cancel admission; visit, before-cache,
- * render, load, and reload listeners are notification observers.
+ * Click, before-prefetch, and before-visit listeners may cancel admission;
+ * visit, before-cache, render, load, and reload listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -168,6 +200,7 @@ export class DocumentVisitLifecycle {
   ): () => void {
     if (
       type !== "before-cache" &&
+      type !== "before-prefetch" &&
       type !== "before-visit" &&
       type !== "click" &&
       type !== "load" &&
@@ -209,6 +242,27 @@ export class DocumentVisitLifecycle {
         throw new StateError("Click listener failed")
       }
       throw new StateError("Click listener must return undefined")
+    }
+    return event
+  }
+
+  [DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH](
+    event: BeforePrefetchEvent,
+  ): BeforePrefetchEvent {
+    for (const listener of [...(this.listeners.get("before-prefetch") ?? [])]) {
+      let result: unknown
+      try {
+        result = listener(event)
+      } catch {
+        throw new StateError("Before-prefetch listener failed")
+      }
+      if (result === undefined) continue
+      try {
+        consumeThenableResult(result)
+      } catch {
+        throw new StateError("Before-prefetch listener failed")
+      }
+      throw new StateError("Before-prefetch listener must return undefined")
     }
     return event
   }

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import * as core from "./core"
 import {
   BeforeCacheEvent,
+  BeforePrefetchEvent,
   DocumentHistory,
   EXPO_TURBO_STATUS,
   FormSubmissionController,
@@ -23,6 +24,7 @@ describe("package status", () => {
     expect(DocumentHistory).toBeFunction()
     expect(subscribeDocumentHistoryTraversal).toBeFunction()
     expect(BeforeCacheEvent).toBeFunction()
+    expect(BeforePrefetchEvent).toBeFunction()
     expect("morphStreamReplaceElement" in core).toBe(false)
     expect("morphStreamUpdateChildren" in core).toBe(false)
     expect("morphFrameRefreshChildren" in core).toBe(false)

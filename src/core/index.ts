@@ -10,6 +10,7 @@ export * from "./document-snapshot-cache"
 export * from "./document-visit-controller"
 export {
   BeforeCacheEvent,
+  BeforePrefetchEvent,
   BeforeVisitEvent,
   DocumentLoadEvent,
   type DocumentLoadEventDetail,

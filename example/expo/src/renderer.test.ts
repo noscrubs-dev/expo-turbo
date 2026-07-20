@@ -652,6 +652,7 @@ function renderPreloadingDocumentLinks(
     requestLifecycle?: RequestLifecycle
     strict?: boolean
     url?: string
+    visitLifecycle?: DocumentVisitLifecycle
   }> = {},
 ) {
   const cache = new DocumentSnapshotCache()
@@ -667,7 +668,10 @@ function renderPreloadingDocumentLinks(
     undefined,
     undefined,
     undefined,
-    { snapshotCache: cache },
+    {
+      snapshotCache: cache,
+      ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
+    },
     (session) => {
       options.prepareSession?.(session)
       preloader = new DocumentPreloader(
@@ -4888,6 +4892,221 @@ describe("React protocol renderer", () => {
     })
     expect(harness.session.treeState.preview).toBe(false)
     expect(harness.session.tree.getElementById("canonical")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("admits press-in prefetch through before-prefetch before requesting a preload", async () => {
+    const events: string[] = []
+    const requests: TurboRequest[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    const requestLifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-prefetch", (event) => {
+      events.push(`before-prefetch:${event.detail.nodeKey}:${event.detail.url}`)
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+    })
+    lifecycle.subscribe("click", () => {
+      events.push("click")
+    })
+    lifecycle.subscribe("before-visit", () => {
+      events.push("before-visit")
+    })
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    requestLifecycle.subscribe("before-fetch-request", (event) => {
+      expect(event.detail.context).toMatchObject({ kind: "document", purpose: "preload" })
+      events.push("before-fetch-request")
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery><DemoText>Cached</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      { requestLifecycle, visitLifecycle: lifecycle },
+    )
+
+    act(() => harness.prefetch("/next"))
+
+    expect(events).toEqual(["before-prefetch:id:link:https://example.test/next"])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+    expect(requests).toEqual([])
+    expect(harness.session.revision).toBe(0)
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(events).toEqual([
+      "before-prefetch:id:link:https://example.test/next",
+      "before-fetch-request",
+    ])
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      headers: { "X-Sec-Purpose": "prefetch" },
+      method: "GET",
+      url: "https://example.test/next",
+    })
+    expect(harness.requestIdCount()).toBe(1)
+    expect(harness.cache.has("https://example.test/next")).toBe(true)
+    expect(harness.session.revision).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("cancels press-in prefetch without affecting a later document visit", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requestLifecycle = new RequestLifecycle()
+    const prefetchRequests: TurboRequest[] = []
+    const documentRequests: TurboRequest[] = []
+    const errors: ExpoTurboRenderError[] = []
+    let requestLifecycleEvents = 0
+    lifecycle.subscribe("before-prefetch", (event) => {
+      event.preventDefault()
+    })
+    requestLifecycle.subscribe("before-fetch-request", () => {
+      requestLifecycleEvents += 1
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/next" /></Gallery>',
+      async (request) => {
+        prefetchRequests.push(request)
+        throw new Error("canceled press-in prefetch must not fetch")
+      },
+      {
+        documentFetch: async (request) => {
+          documentRequests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => '<Gallery><DemoText id="visited">Visited</DemoText></Gallery>',
+            url: request.url,
+          }
+        },
+        onError: (event) => errors.push(event),
+        requestLifecycle,
+        visitLifecycle: lifecycle,
+      },
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(prefetchRequests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+    expect(requestLifecycleEvents).toBe(0)
+    expect(errors).toEqual([])
+    expect(harness.session.revision).toBe(0)
+
+    await act(async () => {
+      await expect(harness.activation("/next")()).resolves.toMatchObject({
+        status: "committed",
+        url: "https://example.test/next",
+      })
+    })
+    expect(documentRequests).toHaveLength(1)
+    expect(harness.session.tree.getElementById("visited")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when a before-prefetch listener changes the live link", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink id="link" href="/before" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("stale press-in prefetch must not fetch")
+      },
+      { visitLifecycle: lifecycle },
+    )
+    lifecycle.subscribe("before-prefetch", () => {
+      harness.session.setAttribute("id:link", "href", "/after")
+    })
+
+    act(() => harness.prefetch("/before"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("fails closed when a before-prefetch listener fails", () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    lifecycle.subscribe("before-prefetch", () => {
+      throw new Error("private before-prefetch listener failure")
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        throw new Error("failed before-prefetch must not fetch")
+      },
+      { visitLifecycle: lifecycle },
+    )
+
+    expect(() => act(() => harness.prefetch("/next"))).toThrow("Before-prefetch listener failed")
+    expect(requests).toEqual([])
+    expect(harness.requestIdCount()).toBe(0)
+    expect(harness.cache.size).toBe(0)
+
+    act(() => harness.renderer.unmount())
+  })
+
+  test("keeps automatic and direct preload work out of before-prefetch", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const requests: TurboRequest[] = []
+    let events = 0
+    lifecycle.subscribe("before-prefetch", () => {
+      events += 1
+    })
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink href="/automatic" data-turbo-preload="" /></Gallery>',
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => '<Gallery><DemoText>Cached</DemoText></Gallery>',
+          url: request.url,
+        }
+      },
+      { visitLifecycle: lifecycle },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+    await act(async () => {
+      await harness.preloader.preload("/manual")
+    })
+
+    expect(events).toBe(0)
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://example.test/automatic",
+      "https://example.test/manual",
+    ])
 
     act(() => harness.renderer.unmount())
   })
