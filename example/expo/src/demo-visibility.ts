@@ -13,18 +13,42 @@ export type DemoMeasureInWindow = (
   listener: (x: number, y: number, width: number, height: number) => void,
 ) => void;
 
+/**
+ * Example-owned native virtual-list membership. Geometry alone is insufficient
+ * for a buffered FlatList row: it must also be reported viewable by FlatList.
+ */
+export interface DemoViewabilityRegion {
+  readonly id: string;
+  dispose(): void;
+  setItems(ids: readonly string[]): void;
+  setVisibleItems(ids: readonly string[]): void;
+}
+
+export interface DemoFrameViewability {
+  readonly itemId: string;
+  readonly region: DemoViewabilityRegion;
+}
+
 interface DemoFrameVisibilityRecord {
   readonly clipIds: readonly string[];
   readonly measure: DemoMeasureInWindow;
   measureEpoch: number;
   rect: DemoVisibilityRect | undefined;
   visible: boolean;
+  readonly viewability: DemoFrameViewability | undefined;
 }
 
 interface DemoVisibilityContainerRecord {
   readonly measure: DemoMeasureInWindow;
   measureEpoch: number;
   rect: DemoVisibilityRect | undefined;
+}
+
+interface DemoViewabilityRegionRecord {
+  itemIds: readonly string[];
+  readonly items: Set<string>;
+  readonly region: DemoViewabilityRegion;
+  readonly visibleItems: Set<string>;
 }
 
 function finiteRect(rect: DemoVisibilityRect): boolean {
@@ -74,6 +98,17 @@ function clipIds(ids: readonly string[] | undefined): readonly string[] {
   return Object.freeze(admitted);
 }
 
+function viewabilityItemIds(ids: readonly string[]): readonly string[] {
+  if (
+    !Array.isArray(ids) ||
+    ids.some((id) => typeof id !== "string" || id === "") ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new TypeError("Demo FlatList viewability requires unique nonempty item ids");
+  }
+  return Object.freeze([...ids]);
+}
+
 /**
  * Example-owned visibility registry for Frame layout clipped by registered
  * root and nested ScrollView rectangles in one shared window coordinate space.
@@ -83,6 +118,11 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
   private disposed = false;
   private readonly frames = new Map<string, DemoFrameVisibilityRecord>();
   private readonly listeners = new Map<string, Set<(visible: boolean) => void>>();
+  private readonly viewabilityRegionOwners = new WeakMap<
+    DemoViewabilityRegion,
+    readonly string[]
+  >();
+  private readonly viewabilityRegions = new Map<string, DemoViewabilityRegionRecord>();
   private viewport: DemoVisibilityRect | undefined;
   private viewportMeasureEpoch = 0;
 
@@ -107,7 +147,12 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
     };
   }
 
-  register(id: string, measure: DemoMeasureInWindow, clips?: readonly string[]): Unsubscribe {
+  register(
+    id: string,
+    measure: DemoMeasureInWindow,
+    clips?: readonly string[],
+    viewability?: DemoFrameViewability,
+  ): Unsubscribe {
     this.assertActive();
     if (typeof id !== "string" || id === "") {
       throw new TypeError("Demo visibility registration requires a nonempty Frame id");
@@ -122,6 +167,7 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
       measureEpoch: 0,
       rect: undefined,
       visible: false,
+      viewability: this.assertViewability(viewability),
     };
     this.frames.set(id, record);
     if (previous?.visible) this.publish(id, false);
@@ -157,6 +203,51 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
       record.measureEpoch += 1;
       this.invalidateFramesForContainer(id);
     };
+  }
+
+  createViewabilityRegion(id: string, itemIds: readonly string[] = []): DemoViewabilityRegion {
+    this.assertActive();
+    if (typeof id !== "string" || id === "") {
+      throw new TypeError("Demo FlatList viewability regions require a nonempty id");
+    }
+    const ownedItems = viewabilityItemIds(itemIds);
+    let region!: DemoViewabilityRegion;
+    region = Object.freeze({
+      dispose: () => this.disposeViewabilityRegion(id, region),
+      id,
+      setItems: (itemIds: readonly string[]) => this.setViewabilityItems(id, region, itemIds),
+      setVisibleItems: (itemIds: readonly string[]) =>
+        this.setViewabilityVisibleItems(id, region, itemIds),
+    });
+    this.viewabilityRegionOwners.set(region, ownedItems);
+    return region;
+  }
+
+  activateViewabilityRegion(region: DemoViewabilityRegion): Unsubscribe {
+    this.assertActive();
+    this.assertViewabilityRegion(region);
+    const previous = this.viewabilityRegions.get(region.id);
+    if (previous?.region === region) return () => {};
+    if (previous) {
+      this.viewabilityRegions.delete(region.id);
+      this.invalidateFramesForViewabilityRegion(region.id);
+    }
+    const itemIds = this.viewabilityRegionOwners.get(region);
+    if (!itemIds) throw new TypeError("Demo FlatList viewability regions must belong to this registry");
+    this.viewabilityRegions.set(region.id, {
+      itemIds,
+      items: new Set<string>(itemIds),
+      region,
+      visibleItems: new Set<string>(),
+    });
+    this.updateFramesForViewabilityRegion(region);
+    return () => this.disposeViewabilityRegion(region.id, region);
+  }
+
+  registerViewabilityRegion(id: string): DemoViewabilityRegion {
+    const region = this.createViewabilityRegion(id);
+    this.activateViewabilityRegion(region);
+    return region;
   }
 
   setViewport(rect: DemoVisibilityRect): void {
@@ -204,11 +295,44 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
     this.frames.clear();
     this.containers.clear();
     this.listeners.clear();
+    this.viewabilityRegions.clear();
     this.viewport = undefined;
   }
 
   private assertActive(): void {
     if (this.disposed) throw new Error("Demo visibility registry has been disposed");
+  }
+
+  private assertViewability(
+    viewability: DemoFrameViewability | undefined,
+  ): DemoFrameViewability | undefined {
+    if (viewability === undefined) return undefined;
+    if (
+      !viewability ||
+      typeof viewability !== "object" ||
+      typeof viewability.itemId !== "string" ||
+      viewability.itemId === "" ||
+      !viewability.region ||
+      typeof viewability.region !== "object" ||
+      typeof viewability.region.id !== "string" ||
+      viewability.region.id === "" ||
+      !this.viewabilityRegionOwners.has(viewability.region)
+    ) {
+      throw new TypeError("Demo Frame viewability requires an owned FlatList region item");
+    }
+    return Object.freeze({ itemId: viewability.itemId, region: viewability.region });
+  }
+
+  private assertViewabilityRegion(region: DemoViewabilityRegion): void {
+    if (
+      !region ||
+      typeof region !== "object" ||
+      typeof region.id !== "string" ||
+      region.id === "" ||
+      !this.viewabilityRegionOwners.has(region)
+    ) {
+      throw new TypeError("Demo FlatList viewability regions must belong to this registry");
+    }
   }
 
   private containerRect(id: string): DemoVisibilityRect | undefined {
@@ -261,6 +385,62 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
     }
   }
 
+  private invalidateFramesForViewabilityRegion(id: string): void {
+    for (const [frameId, record] of this.frames) {
+      if (record.viewability?.region.id === id) this.publishIfChanged(frameId, record, false);
+    }
+  }
+
+  private disposeViewabilityRegion(id: string, region: DemoViewabilityRegion): void {
+    if (this.viewabilityRegions.get(id)?.region !== region) return;
+    this.viewabilityRegions.delete(id);
+    this.invalidateFramesForViewabilityRegion(id);
+  }
+
+  private setViewabilityItems(
+    id: string,
+    region: DemoViewabilityRegion,
+    itemIds: readonly string[],
+  ): void {
+    const record = this.viewabilityRegions.get(id);
+    if (record?.region !== region) return;
+    const nextItems = viewabilityItemIds(itemIds);
+    const changed =
+      nextItems.length !== record.itemIds.length ||
+      nextItems.some((itemId, index) => itemId !== record.itemIds[index]);
+    if (!changed) return;
+    record.itemIds = nextItems;
+    record.items.clear();
+    for (const itemId of nextItems) record.items.add(itemId);
+    record.visibleItems.clear();
+    this.updateFramesForViewabilityRegion(region);
+  }
+
+  private setViewabilityVisibleItems(
+    id: string,
+    region: DemoViewabilityRegion,
+    itemIds: readonly string[],
+  ): void {
+    const record = this.viewabilityRegions.get(id);
+    if (record?.region !== region) return;
+    const nextItems = viewabilityItemIds(itemIds).filter((itemId) => record.items.has(itemId));
+    if (
+      nextItems.length === record.visibleItems.size &&
+      nextItems.every((itemId) => record.visibleItems.has(itemId))
+    ) {
+      return;
+    }
+    record.visibleItems.clear();
+    for (const itemId of nextItems) record.visibleItems.add(itemId);
+    this.updateFramesForViewabilityRegion(region);
+  }
+
+  private updateFramesForViewabilityRegion(region: DemoViewabilityRegion): void {
+    for (const [frameId, record] of this.frames) {
+      if (record.viewability?.region === region) this.updateFrameVisibility(frameId, record);
+    }
+  }
+
   private updateFrameVisibility(id: string, record: DemoFrameVisibilityRecord): void {
     let viewport: DemoVisibilityRect | undefined;
     for (const clipId of record.clipIds) {
@@ -275,10 +455,24 @@ export class DemoVisibilityRegistry implements VisibilityAdapter {
         return;
       }
     }
+    if (!this.isViewable(record.viewability)) {
+      this.publishIfChanged(id, record, false);
+      return;
+    }
     this.publishIfChanged(
       id,
       record,
       Boolean(record.rect && finiteRect(record.rect) && viewport && intersects(viewport, record.rect)),
+    );
+  }
+
+  private isViewable(viewability: DemoFrameViewability | undefined): boolean {
+    if (!viewability) return true;
+    const region = this.viewabilityRegions.get(viewability.region.id);
+    return (
+      region?.region === viewability.region &&
+      region.items.has(viewability.itemId) &&
+      region.visibleItems.has(viewability.itemId)
     );
   }
 

@@ -4,6 +4,7 @@ import {
   type ExpoTurboFrameBoundaryProps,
 } from "expo-turbo/react";
 import {
+  Children,
   createContext,
   type ReactNode,
   useCallback,
@@ -12,12 +13,22 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import {
+  FlatList,
+  type FlatListProps,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
   DEMO_ROOT_VISIBILITY_CONTAINER_ID,
+  type DemoFrameViewability,
+  type DemoViewabilityRegion,
   DemoVisibilityRegistry,
 } from "./demo-visibility";
 
@@ -25,9 +36,22 @@ const DemoVisibilityContext = createContext<DemoVisibilityRegistry | undefined>(
 const DemoVisibilityClipContext = createContext<readonly string[]>([
   DEMO_ROOT_VISIBILITY_CONTAINER_ID,
 ]);
+const DemoVisibilityViewabilityContext = createContext<DemoFrameViewability | undefined>(
+  undefined,
+);
 const DemoFrameAutoscrollContext = createContext<DemoFrameAutoscrollRegistry | undefined>(
   undefined,
 );
+
+interface DemoFlatListItem {
+  readonly id: string;
+  readonly node: ReactNode;
+}
+
+const DEMO_FLAT_LIST_VIEWABILITY_CONFIG = Object.freeze({ viewAreaCoveragePercentThreshold: 0 });
+type DemoFlatListViewabilityCallback = NonNullable<
+  FlatListProps<DemoFlatListItem>["onViewableItemsChanged"]
+>;
 
 export function DemoVisibilityProvider({
   children,
@@ -48,6 +72,10 @@ function useDemoVisibility(): DemoVisibilityRegistry {
 
 function useDemoVisibilityClips(): readonly string[] {
   return useContext(DemoVisibilityClipContext);
+}
+
+function useDemoFrameViewability(): DemoFrameViewability | undefined {
+  return useContext(DemoVisibilityViewabilityContext);
 }
 
 export function DemoFrameAutoscrollProvider({
@@ -103,6 +131,119 @@ export function DemoNestedScrollRegion({
   );
 }
 
+function flatListItems(
+  children: ReactNode,
+  frameIds: readonly string[],
+): readonly DemoFlatListItem[] {
+  const nodes = Children.toArray(children);
+  if (nodes.length !== frameIds.length) {
+    throw new TypeError("Demo FlatList regions require one direct Frame row per frame id");
+  }
+  const ids = new Set<string>();
+  const items = nodes.map((node, index) => {
+    const id = frameIds[index];
+    if (typeof id !== "string" || id === "" || ids.has(id)) {
+      throw new TypeError("Demo FlatList regions require unique nonempty frame ids");
+    }
+    ids.add(id);
+    return Object.freeze({ id, node });
+  });
+  return Object.freeze(items);
+}
+
+/**
+ * Example-only horizontal virtualizer. A Frame must intersect the root/list
+ * clipping geometry and be in this FlatList's native viewability set to load.
+ */
+export function DemoFlatListRegion({
+  children,
+  frameIds,
+  id,
+}: Readonly<{ children?: ReactNode; frameIds: readonly string[]; id: string }>) {
+  const visibility = useDemoVisibility();
+  const parentClips = useDemoVisibilityClips();
+  const flatList = useRef<FlatList<DemoFlatListItem>>(null);
+  const regionRef = useRef<DemoViewabilityRegion | undefined>(undefined);
+  const items = useMemo(() => flatListItems(children, frameIds), [children, frameIds]);
+  const region = useMemo(
+    () => visibility.createViewabilityRegion(id, items.map((item) => item.id)),
+    [id, items, visibility],
+  );
+  const clips = useMemo(() => Object.freeze([...parentClips, id]), [id, parentClips]);
+  const remeasure = useCallback(() => visibility.remeasureAll(), [visibility]);
+  const onViewableItemsChanged = useCallback<DemoFlatListViewabilityCallback>(
+    ({ viewableItems }) => {
+      if (regionRef.current !== region) return;
+      const visibleItems: string[] = [];
+      for (const token of viewableItems) {
+        const item = typeof token.index === "number" ? items[token.index] : undefined;
+        if (
+          token.isViewable &&
+          item === token.item &&
+          token.key === item?.id
+        ) {
+          visibleItems.push(item.id);
+        }
+      }
+      region.setVisibleItems(visibleItems);
+    },
+    [items, region],
+  );
+
+  useLayoutEffect(() => {
+    regionRef.current = region;
+    const deactivate = visibility.activateViewabilityRegion(region);
+    return () => {
+      if (regionRef.current === region) regionRef.current = undefined;
+      deactivate();
+    };
+  }, [region, visibility]);
+
+  useLayoutEffect(
+    () =>
+      visibility.registerContainer(id, (listener) => {
+        const nativeScrollRef = flatList.current?.getNativeScrollRef?.();
+        if (
+          nativeScrollRef &&
+          "measureInWindow" in nativeScrollRef &&
+          typeof nativeScrollRef.measureInWindow === "function"
+        ) {
+          nativeScrollRef.measureInWindow(listener);
+        }
+      }),
+    [id, region, visibility],
+  );
+
+  return (
+    <FlatList
+      contentContainerStyle={{ gap: 10, padding: 10 }}
+      data={items}
+      horizontal
+      keyExtractor={(item) => item.id}
+      onContentSizeChange={remeasure}
+      onLayout={remeasure}
+      onScroll={remeasure}
+      onViewableItemsChanged={onViewableItemsChanged}
+      ref={flatList}
+      renderItem={({ item }) => (
+        <DemoVisibilityClipContext.Provider value={clips}>
+          <DemoVisibilityViewabilityContext.Provider
+            value={Object.freeze({ itemId: item.id, region })}
+          >
+            <View collapsable={false} style={{ width: 260 }}>
+              {item.node}
+            </View>
+          </DemoVisibilityViewabilityContext.Provider>
+        </DemoVisibilityClipContext.Provider>
+      )}
+      scrollEventThrottle={32}
+      showsHorizontalScrollIndicator
+      style={{ borderColor: "#9eb0c3", borderRadius: 10, borderWidth: 1, height: 176 }}
+      viewabilityConfig={DEMO_FLAT_LIST_VIEWABILITY_CONFIG}
+    />
+  );
+}
+
 export function DemoFrameBoundary({
   accessibilityState,
   children,
@@ -110,14 +251,25 @@ export function DemoFrameBoundary({
 }: ExpoTurboFrameBoundaryProps) {
   const visibility = useDemoVisibility();
   const clips = useDemoVisibilityClips();
+  const viewability = useDemoFrameViewability();
+  if (viewability && viewability.itemId !== state.frameId) {
+    throw new Error("Demo FlatList rows must contain exactly one direct Frame with the declared id");
+  }
+  const frameViewability = useMemo(
+    () =>
+      viewability
+        ? Object.freeze({ itemId: viewability.itemId, region: viewability.region })
+        : undefined,
+    [viewability],
+  );
   const frameAutoscroll = useDemoFrameAutoscroll();
   const boundary = useRef<View>(null);
   useLayoutEffect(
     () =>
       visibility.register(state.frameId, (listener) => {
         boundary.current?.measureInWindow(listener);
-      }, clips),
-    [clips, state.frameId, visibility],
+      }, clips, frameViewability),
+    [clips, frameViewability, state.frameId, visibility],
   );
   useLayoutEffect(
     () =>

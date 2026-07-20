@@ -18,6 +18,7 @@ import type {
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
   Alert: { alert: () => undefined },
+  FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
   Linking: { openURL: async () => undefined },
   Platform: { OS: "web" },
   Pressable: (props: Readonly<Record<string, unknown>>) =>

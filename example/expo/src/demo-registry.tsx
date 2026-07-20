@@ -3,6 +3,7 @@ import {
   defineComponent,
   defineComponentModule,
   enumCodec,
+  jsonCodec,
   presenceCodec,
   stringCodec,
   tokenListCodec,
@@ -21,7 +22,7 @@ import {
   useExpoTurboFormControl,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
-import { DemoNestedScrollRegion } from "./demo-boundaries";
+import { DemoFlatListRegion, DemoNestedScrollRegion } from "./demo-boundaries";
 import { useDemoFocusHandle } from "./demo-focus";
 import { useDemoComponentStyle } from "./demo-style-runtime";
 import {
@@ -111,6 +112,22 @@ const scrollRegion = defineComponent({
   component: DemoNestedScrollRegion,
   schema: z.object({ id: z.string().trim().min(1) }),
   tag: "DemoScrollRegion",
+});
+
+const flatListFrameIds = z.array(z.string().trim().min(1)).min(1).max(8).readonly();
+
+const flatListRegion = defineComponent({
+  attributes: {
+    "frame-ids": {
+      codec: jsonCodec("demo-flat-list-frame-ids", flatListFrameIds, { maxBytes: 512 }),
+      prop: "frameIds",
+    },
+    id: { codec: stringCodec, prop: "id" },
+  },
+  children: "nodes",
+  component: DemoFlatListRegion,
+  schema: z.object({ frameIds: flatListFrameIds, id: z.string().trim().min(1) }),
+  tag: "DemoFlatListRegion",
 });
 
 function DemoDocumentLinkComponent({
@@ -452,6 +469,7 @@ export const DEMO_REGISTRY = createRegistry(
       card,
       text,
       scrollRegion,
+      flatListRegion,
       action,
       documentLink,
       form,
@@ -525,6 +543,22 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
         </DemoCard>
       </turbo-frame>
     </DemoScrollRegion>
+  </DemoCard>
+  <DemoCard id="flatlist-visibility-card" title="Virtualized lazy Frame visibility" style-tokens="tone:info space:compact">
+    <DemoText>Each horizontal FlatList row has one explicit Frame ID. A mounted buffered row remains idle until both its measured clipping geometry and native FlatList viewability membership admit it.</DemoText>
+    <DemoFlatListRegion id="flatlist-frame-gallery" frame-ids='["flatlist-lazy-frame-one","flatlist-lazy-frame-two","flatlist-lazy-frame-three"]'><turbo-frame id="flatlist-lazy-frame-one" loading="lazy" src="/demo/flatlist/one">
+        <DemoCard title="Virtualized Frame one" style-tokens="tone:warning space:compact">
+          <DemoText>Swipe horizontally to admit this lazy Frame through FlatList viewability.</DemoText>
+        </DemoCard>
+      </turbo-frame><turbo-frame id="flatlist-lazy-frame-two" loading="lazy" src="/demo/flatlist/two">
+        <DemoCard title="Virtualized Frame two" style-tokens="tone:warning space:compact">
+          <DemoText>This buffered row must not load from geometry alone.</DemoText>
+        </DemoCard>
+      </turbo-frame><turbo-frame id="flatlist-lazy-frame-three" loading="lazy" src="/demo/flatlist/three">
+        <DemoCard title="Virtualized Frame three" style-tokens="tone:warning space:compact">
+          <DemoText>Recycled callbacks cannot make this row visible under a stale frame ID.</DemoText>
+        </DemoCard>
+      </turbo-frame></DemoFlatListRegion>
   </DemoCard>
   <turbo-frame id="preview-frame" src="/demo/frame" loading="lazy" autoscroll="" data-autoscroll-block="start" data-autoscroll-behavior="smooth">
     <DemoCard title="Frame boundary" style-tokens="tone:warning space:compact">
