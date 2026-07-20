@@ -1015,7 +1015,7 @@ export type ExpoTurboDocumentLinkDelegation =
   | Readonly<{
       action: "advance"
       kind: "navigation"
-      reason: "opt-out"
+      reason: "form-mode-off" | "opt-out"
       status: "delegated"
       url: string
     }>
@@ -1165,6 +1165,26 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     const resolved = linkUrl.resolution
     const documentVisitOptions = navigation ? { navigation } : {}
     const disposition = classifyTopLevelLocation(session.tree, resolved.url)
+    const delegateNativeNavigation = async (reason: "form-mode-off" | "opt-out") => {
+      if (!navigation) throw new TargetError("Document link delegation requires host navigation")
+      if (reason === "opt-out" && resolved.urlOrigin !== resolved.documentOrigin) {
+        await navigation.openExternal(resolved.url)
+        return Object.freeze({
+          kind: "external" as const,
+          reason,
+          status: "delegated" as const,
+          url: resolved.url,
+        })
+      }
+      await navigation.visit(resolved.url, "advance")
+      return Object.freeze({
+        action: "advance" as const,
+        kind: "navigation" as const,
+        reason,
+        status: "delegated" as const,
+        url: resolved.url,
+      })
+    }
     if (!optedOut && disposition.classification !== "visitable") {
       if (!navigation) throw new TargetError("Document link delegation requires host navigation")
       if (disposition.classification === "external") {
@@ -1194,7 +1214,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         throw new TargetError("Generated form links require provider form-link submissions")
       }
       if (!formLinks.shouldInterceptSubmission(node.key)) {
-        throw new TargetError("Generated form-link submission is disabled")
+        return delegateNativeNavigation("form-mode-off")
       }
       return formLinks.submit(node.key, href)
     }
@@ -1241,24 +1261,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       }
     }
     if (optedOut) {
-      if (!navigation) throw new TargetError("Document link delegation requires host navigation")
-      if (resolved.urlOrigin !== resolved.documentOrigin) {
-        await navigation.openExternal(resolved.url)
-        return Object.freeze({
-          kind: "external",
-          reason: "opt-out",
-          status: "delegated",
-          url: resolved.url,
-        })
-      }
-      await navigation.visit(resolved.url, "advance")
-      return Object.freeze({
-        action: "advance",
-        kind: "navigation",
-        reason: "opt-out",
-        status: "delegated",
-        url: resolved.url,
-      })
+      return delegateNativeNavigation("opt-out")
     }
     return documentController.visit(href, {
       ...(action !== undefined ? { action } : {}),
