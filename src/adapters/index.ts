@@ -1,3 +1,4 @@
+import type { DocumentScrollPosition } from "../core/document-history"
 import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-activity"
 import type { ProtocolInspectorAdapter } from "../core/inspector"
 import type { StyleAdapter } from "./styles"
@@ -136,6 +137,12 @@ export interface DocumentRefreshScrollAdapter {
   reset(): void
 }
 
+/** Host-owned restoration for the mounted owning-document scroll container. */
+export interface DocumentHistoryScrollAdapter {
+  canRestore(): boolean
+  restore(position: DocumentScrollPosition): void
+}
+
 export interface StorageAdapter {
   delete(key: string): Promise<void>
   get(key: string): Promise<string | undefined>
@@ -171,6 +178,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
   readonly confirmation?: FormConfirmationAdapter
+  readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly fetch: FetchAdapter
   readonly focus: FocusAdapter

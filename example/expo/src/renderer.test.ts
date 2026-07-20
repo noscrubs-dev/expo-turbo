@@ -17,6 +17,7 @@ import {
   type AutofocusAdapter,
   type CableAdapter,
   defineStyleAdapter,
+  type DocumentHistoryScrollAdapter,
   type DocumentRefreshScrollAdapter,
   type FormConfirmationAdapter,
   type FormSubmissionAnnouncementAdapter,
@@ -164,6 +165,7 @@ function render(
     autofocus?: AutofocusAdapter
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
+    documentHistoryScroll?: DocumentHistoryScrollAdapter
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     documentRefreshScroll?: DocumentRefreshScrollAdapter
     frameAutoscroll?: FrameAutoscrollAdapter
@@ -4249,6 +4251,327 @@ describe("React protocol renderer", () => {
       act(() => renderer.unmount())
     }
   })
+
+  test("restores stored root history scroll after an acknowledged cached traversal", async () => {
+    const currentUrl = "https://example.test/current";
+    const restoredUrl = "https://example.test/restored";
+    const currentEntry = Object.freeze({
+      restorationIdentifier: "history-current",
+      restorationIndex: 2,
+      url: currentUrl,
+    });
+    const restoredEntry = Object.freeze({
+      restorationIdentifier: "history-restored",
+      restorationIndex: 1,
+      url: restoredUrl,
+    });
+    const history = new DocumentHistory({ next: () => "unused" }, { write: () => undefined });
+    history.initialize({ entry: currentEntry, kind: "managed" });
+    history.adoptTraversal(restoredEntry);
+    const restorationData = history.updateRestorationData(restoredEntry.restorationIdentifier, {
+      scrollPosition: { x: 12, y: 34 },
+    });
+    history.adoptTraversal(currentEntry);
+    const snapshotCache = new DocumentSnapshotCache();
+    snapshotCache.put(
+      restoredUrl,
+      parseExpoTurboDocument(
+        '<Gallery><DemoText id="focus" autofocus="">Restored</DemoText></Gallery>',
+        { url: restoredUrl },
+      ),
+    );
+    const lifecycle = new DocumentVisitLifecycle();
+    const order: string[] = [];
+    lifecycle.subscribe("render", (event) => {
+      order.push(`render:${event.detail.generation}`);
+    });
+    lifecycle.subscribe("load", (event) => {
+      order.push(`load:${event.detail.generation}`);
+    });
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+        url: currentUrl,
+      }),
+    );
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("cached traversal must not fetch")) },
+        { next: () => "history-scroll-cached" },
+      ),
+      { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+      { history, snapshotCache, visitLifecycle: lifecycle },
+    );
+    const restored: Readonly<{ x: number; y: number }>[] = [];
+    const renderer = render(session, registryWithCounters(), {
+      autofocus: {
+        canFocus: () => true,
+        focus: (nodeKey) => {
+          order.push(`focus:${nodeKey}`);
+        },
+      },
+      documentController: controller,
+      documentHistoryScroll: {
+        canRestore: () => {
+          order.push("can-restore");
+          return true;
+        },
+        restore: (position) => {
+          restored.push(position);
+          order.push(`restore:${position.x},${position.y}`);
+        },
+      },
+    });
+
+    let result: unknown;
+    await act(async () => {
+      result = await controller.restoreTraversal(restoredEntry);
+    });
+
+    expect(result).toMatchObject({ source: "snapshot", status: "restored" });
+    const restorationScroll = restorationData.scrollPosition;
+    if (!restorationScroll) {
+      throw new Error("expected traversal restoration data to include root scroll");
+    }
+    expect(restored).toEqual([restorationScroll]);
+    expect(restored[0]).toBe(restorationScroll);
+    expect(order).toEqual(["render:1", "focus:id:focus", "can-restore", "restore:12,34", "load:1"]);
+    expect(JSON.stringify(renderer.toJSON())).toContain("Restored");
+    act(() => renderer.unmount());
+  });
+
+  test("limits root history scroll restoration to successful host traversal documents", async () => {
+    const currentUrl = "https://example.test/current";
+    const restoredUrl = "https://example.test/restored";
+    for (const status of [200, 422] as const) {
+      const currentEntry = Object.freeze({
+        restorationIdentifier: `history-current-${status}`,
+        restorationIndex: 2,
+        url: currentUrl,
+      });
+      const restoredEntry = Object.freeze({
+        restorationIdentifier: `history-restored-${status}`,
+        restorationIndex: 1,
+        url: restoredUrl,
+      });
+      const history = new DocumentHistory({ next: () => "unused" }, { write: () => undefined });
+      history.initialize({ entry: currentEntry, kind: "managed" });
+      history.adoptTraversal(restoredEntry);
+      history.updateRestorationData(restoredEntry.restorationIdentifier, {
+        scrollPosition: { x: 5, y: 8 },
+      });
+      history.adoptTraversal(currentEntry);
+      const lifecycle = new DocumentVisitLifecycle();
+      const session = new DocumentSession(
+        parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+          url: currentUrl,
+        }),
+      );
+      const controller = new DocumentVisitController(
+        new DocumentRequestLoader(
+          session,
+          {
+            fetch: async () => ({
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status,
+              text: async () => "<Gallery><DemoText>Restored</DemoText></Gallery>",
+              url: restoredUrl,
+            }),
+          },
+          { next: () => `history-scroll-network-${status}` },
+        ),
+        { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+        { history, snapshotCache: new DocumentSnapshotCache(), visitLifecycle: lifecycle },
+      );
+      const restored: Readonly<{ x: number; y: number }>[] = [];
+      const renderer = render(session, registryWithCounters(), {
+        documentController: controller,
+        documentHistoryScroll: {
+          canRestore: () => true,
+          restore: (position) => {
+            restored.push(position);
+          },
+        },
+      });
+
+      let result: unknown;
+      await act(async () => {
+        result = await controller.restoreTraversal(restoredEntry);
+      });
+
+      expect(result).toMatchObject({ source: "network" });
+      expect(restored).toEqual(status === 200 ? [{ x: 5, y: 8 }] : []);
+      act(() => renderer.unmount());
+    }
+  });
+
+  test("consumes unavailable root history scroll restoration without a later replay", async () => {
+    const currentUrl = "https://example.test/current";
+    const restoredUrl = "https://example.test/restored";
+    const currentEntry = Object.freeze({
+      restorationIdentifier: "history-current-unavailable",
+      restorationIndex: 2,
+      url: currentUrl,
+    });
+    const restoredEntry = Object.freeze({
+      restorationIdentifier: "history-restored-unavailable",
+      restorationIndex: 1,
+      url: restoredUrl,
+    });
+    const history = new DocumentHistory({ next: () => "unused" }, { write: () => undefined });
+    history.initialize({ entry: currentEntry, kind: "managed" });
+    history.adoptTraversal(restoredEntry);
+    history.updateRestorationData(restoredEntry.restorationIdentifier, {
+      scrollPosition: { x: 3, y: 4 },
+    });
+    history.adoptTraversal(currentEntry);
+    const snapshotCache = new DocumentSnapshotCache();
+    snapshotCache.put(
+      restoredUrl,
+      parseExpoTurboDocument("<Gallery><DemoText>Restored</DemoText></Gallery>", {
+        url: restoredUrl,
+      }),
+    );
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+        url: currentUrl,
+      }),
+    );
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("cached traversal must not fetch")) },
+        { next: () => "history-scroll-unavailable" },
+      ),
+      { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+      { history, snapshotCache, visitLifecycle: new DocumentVisitLifecycle() },
+    );
+    const registry = registryWithCounters();
+    const calls: string[] = [];
+    const renderer = render(session, registry, {
+      documentController: controller,
+      documentHistoryScroll: {
+        canRestore: () => false,
+        restore: () => {
+          calls.push("unexpected");
+        },
+      },
+    });
+
+    await act(async () => {
+      await controller.restoreTraversal(restoredEntry);
+    });
+
+    act(() => {
+      renderer.update(
+        createElement(
+          ExpoTurboProvider,
+          {
+            documentController: controller,
+            documentHistoryScroll: {
+              canRestore: () => true,
+              restore: () => {
+                calls.push("late");
+              },
+            },
+            registry,
+            session,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      );
+    });
+
+    expect(calls).toEqual([]);
+    expect(JSON.stringify(renderer.toJSON())).toContain("Restored");
+    act(() => renderer.unmount());
+  });
+
+  test("redacts root history scroll adapter failures after retaining restored children", async () => {
+    for (const documentHistoryScroll of [
+      {
+        canRestore() {
+          throw new Error("secret availability failure");
+        },
+        restore: () => undefined,
+      },
+      {
+        canRestore: (() => "secret nonboolean result") as unknown as () => boolean,
+        restore: () => undefined,
+      },
+      {
+        canRestore: () => true,
+        restore() {
+          throw new Error("secret restoration failure");
+        },
+      },
+      {
+        canRestore: () => true,
+        restore: (() =>
+          Promise.reject(new Error("secret restoration promise failure"))) as unknown as () => void,
+      },
+    ] satisfies DocumentHistoryScrollAdapter[]) {
+      const currentUrl = "https://example.test/current";
+      const restoredUrl = "https://example.test/restored";
+      const currentEntry = Object.freeze({
+        restorationIdentifier: "history-current-failure",
+        restorationIndex: 2,
+        url: currentUrl,
+      });
+      const restoredEntry = Object.freeze({
+        restorationIdentifier: "history-restored-failure",
+        restorationIndex: 1,
+        url: restoredUrl,
+      });
+      const history = new DocumentHistory({ next: () => "unused" }, { write: () => undefined });
+      history.initialize({ entry: currentEntry, kind: "managed" });
+      history.adoptTraversal(restoredEntry);
+      history.updateRestorationData(restoredEntry.restorationIdentifier, {
+        scrollPosition: { x: 6, y: 9 },
+      });
+      history.adoptTraversal(currentEntry);
+      const snapshotCache = new DocumentSnapshotCache();
+      snapshotCache.put(
+        restoredUrl,
+        parseExpoTurboDocument("<Gallery><DemoText>Restored</DemoText></Gallery>", {
+          url: restoredUrl,
+        }),
+      );
+      const errors: ExpoTurboRenderError[] = [];
+      const session = new DocumentSession(
+        parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+          url: currentUrl,
+        }),
+      );
+      const controller = new DocumentVisitController(
+        new DocumentRequestLoader(
+          session,
+          { fetch: async () => Promise.reject(new Error("cached traversal must not fetch")) },
+          { next: () => "history-scroll-failure" },
+        ),
+        { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+        { history, snapshotCache, visitLifecycle: new DocumentVisitLifecycle() },
+      );
+      const renderer = render(session, registryWithCounters(), {
+        documentController: controller,
+        documentHistoryScroll,
+        onError: (event) => {
+          errors.push(event);
+        },
+      });
+
+      await act(async () => {
+        await controller.restoreTraversal(restoredEntry);
+      });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.error).toBeInstanceOf(StateError);
+      expect(String(errors[0]?.error)).not.toContain("secret");
+      expect(JSON.stringify(renderer.toJSON())).toContain("Restored");
+      act(() => renderer.unmount());
+    }
+  });
 
   test("exposes document visit accessibility and progress without remounting its boundary", async () => {
     const pending: {

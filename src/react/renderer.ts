@@ -17,6 +17,7 @@ import {
 
 import type {
   AutofocusAdapter,
+  DocumentHistoryScrollAdapter,
   DocumentRefreshScrollAdapter,
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
@@ -227,6 +228,7 @@ interface RendererContextValue {
   readonly autofocus: AutofocusAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentController: DocumentVisitController | undefined
+  readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
   readonly documentRefreshScroll: DocumentRefreshScrollAdapter | undefined
   readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
@@ -447,6 +449,7 @@ export interface ExpoTurboProviderProps {
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentController?: DocumentVisitController
+  readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentPreloader?: DocumentPreloadRequester
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly frameAutoscroll?: FrameAutoscrollAdapter
@@ -492,6 +495,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       autofocus: props.autofocus,
       documentComponent: props.documentComponent,
       documentController: props.documentController,
+      documentHistoryScroll: props.documentHistoryScroll,
       documentPreloader: props.documentPreloader,
       documentRefreshScroll: props.documentRefreshScroll,
       frameAutoscroll: props.frameAutoscroll,
@@ -515,6 +519,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.autofocus,
       props.documentComponent,
       props.documentController,
+      props.documentHistoryScroll,
       props.documentPreloader,
       props.documentRefreshScroll,
       props.frameAutoscroll,
@@ -1634,6 +1639,50 @@ function applyDocumentRefreshScroll(
   }
 }
 
+function applyDocumentHistoryScroll(
+  adapter: DocumentHistoryScrollAdapter | undefined,
+  position: Readonly<{ x: number; y: number }>,
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+): void {
+  if (!adapter) return
+  try {
+    let available: unknown
+    try {
+      available = adapter.canRestore()
+    } catch {
+      throw new StateError("Document history scroll availability check failed")
+    }
+    if (typeof available !== "boolean") {
+      consumeUnexpectedAdapterResult(available)
+      throw new StateError("Document history scroll availability check failed")
+    }
+    if (!available) return
+
+    let result: unknown
+    try {
+      result = adapter.restore(position)
+    } catch {
+      throw new StateError("Document history scroll restoration failed")
+    }
+    if (result !== undefined) {
+      consumeUnexpectedAdapterResult(result)
+      throw new StateError("Document history scroll restoration failed")
+    }
+  } catch (error) {
+    const reported =
+      error instanceof Error ? error : new StateError("Document history scroll restoration failed")
+    if (!onError) throw reported
+    try {
+      onError({ error: reported, nodeKey })
+    } catch {
+      const reportingError = new StateError("Document history scroll error reporting failed")
+      alreadyReportedRenderErrors.add(reportingError)
+      throw reportingError
+    }
+  }
+}
+
 function applyFrameAutoscroll(
   adapter: FrameAutoscrollAdapter | undefined,
   intent: FrameAutoscrollIntent,
@@ -1808,7 +1857,8 @@ interface DocumentRenderBoundaryProps {
 }
 
 function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
-  const { autofocus, documentRefreshScroll, onError, session } = useRenderer()
+  const { autofocus, documentHistoryScroll, documentRefreshScroll, onError, session } =
+    useRenderer()
   const subscribeRenderLifecycle = useCallback(
     (listener: () => void) => subscribeDocumentRenderLifecycle(session, listener),
     [session],
@@ -1866,12 +1916,17 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
       discardDocumentRefreshScroll(session, props.generation)
       return
     }
+    const historyScroll = acknowledgement?.consumeHistoryScroll()
+    if (historyScroll) {
+      applyDocumentHistoryScroll(documentHistoryScroll, historyScroll, props.document.key, onError)
+    }
     if (consumeDocumentRefreshScroll(session, props.document, props.generation)) {
       applyDocumentRefreshScroll(documentRefreshScroll, props.document.key, onError)
     }
   }, [
     autofocus,
     coordinationRevision,
+    documentHistoryScroll,
     documentRefreshScroll,
     onError,
     props.document,
