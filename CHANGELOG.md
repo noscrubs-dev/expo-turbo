@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add XML-only Expo Stream rendering variants without delegating to the HTML Turbo renderer. Explicit XML partials now share their confined resolver with inferred records, `layout:` wraps a captured block through a confined XML layout partial, and XML-format `render_in` objects receive a narrow partial/capture context rather than the host's general view renderer. Their output still receives strict Stream-fragment admission; host templates and renderables remain trusted Ruby code, not a sandbox.
+
 - Discard queued Expo Stream broadcasts when Active Job cannot deserialize their arguments, matching Turbo's deferred broadcast behavior without retrying or broadcasting a partial payload. Normal Expo jobs remain pre-rendered stream-name and XML-string deliveries with argument logging disabled.
 
 - Validate each `render_expo_turbo` response as one strict UTF-8 XML document before rendering it. The shared lazy parser rejects malformed XML, multiple roots, invalid namespaces or duplicate attributes, DTDs, processing instructions, and non-UTF-8 declarations without rewriting the rendered bytes. Frame-ID uniqueness and component/style semantic validation remain separate work.

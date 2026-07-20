@@ -6,6 +6,56 @@ require "tmpdir"
 require "spec_helper"
 require "expo_turbo/rails/testing"
 
+class ExpoTurboTagBuilderSpecRecord
+  ModelName = Struct.new(:param_key)
+
+  def self.model_name
+    @model_name ||= ModelName.new("demo_record")
+  end
+
+  attr_reader :id, :label
+
+  def initialize(id, label)
+    @id = id
+    @label = label
+  end
+
+  def to_key
+    [id]
+  end
+
+  def to_model
+    self
+  end
+
+  def persisted?
+    true
+  end
+
+  def model_name
+    self.class.model_name
+  end
+
+  def to_partial_path
+    "records/record"
+  end
+end
+
+class ExpoTurboTagBuilderSpecRenderable
+  attr_reader :context, :format
+
+  def initialize(format: :xml, partial: "message", locals: {})
+    @format = format
+    @partial = partial
+    @locals = locals
+  end
+
+  def render_in(context)
+    @context = context
+    context.render(partial: @partial, locals: @locals)
+  end
+end
+
 RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
   let(:controller_class) do
     Class.new(ActionController::API) do
@@ -163,6 +213,12 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
       .to raise_error(ArgumentError, /template-bearing Stream actions/)
     expect { stream.refresh(**{"content" => "<DemoItem/>"}) }
       .to raise_error(ArgumentError, /template-bearing Stream actions/)
+    expect { stream.remove("item", layout: "layouts/stream_wrapper") }
+      .to raise_error(ArgumentError, /layout is only supported by template-bearing Stream actions/)
+    expect { stream.remove_all(".item", layout: "layouts/stream_wrapper") }
+      .to raise_error(ArgumentError, /layout is only supported by template-bearing Stream actions/)
+    expect { stream.refresh(layout: "layouts/stream_wrapper") }
+      .to raise_error(ArgumentError, /layout is only supported by template-bearing Stream actions/)
   end
 
   it "renders only confined host XML partials" do
@@ -176,6 +232,118 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
 
       expect(stream.append("items", partial: "item", locals: {item_id: "item-1", label: "XML only"}).to_s)
         .to eq('<turbo-stream action="append" target="items"><template><DemoText id="item-1">XML only</DemoText></template></turbo-stream>')
+    end
+  end
+
+  it "renders XML layouts around captured blocks without emitting a Stream layout attribute" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(File.join(root, "layouts"))
+      File.write(
+        File.join(root, "layouts", "_stream_wrapper.xml.erb"),
+        '<DemoShell tone="<%= tone %>"><%= yield %></DemoShell>'
+      )
+      File.write(File.join(root, "layouts", "_stream_wrapper.html.erb"), "<div>HTML fallback</div>")
+      File.write(File.join(directory, "_outside.xml.erb"), "<Outside/>")
+      controller_class.expo_turbo_view_root(root)
+
+      expect(
+        stream.append("items", layout: "layouts/stream_wrapper", locals: {tone: "info"}) {
+          '<DemoText id="yielded">Yielded</DemoText>'.html_safe
+        }.to_s
+      ).to eq('<turbo-stream action="append" target="items"><template><DemoShell tone="info"><DemoText id="yielded">Yielded</DemoText></DemoShell></template></turbo-stream>')
+      expect { stream.append("items", layout: "layouts/stream_wrapper") }
+        .to raise_error(ArgumentError, /layout requires a block/)
+      expect { stream.append("items", "<DemoItem/>", layout: "layouts/stream_wrapper") { "<DemoItem/>" } }
+        .to raise_error(ArgumentError, /layout with a block/)
+      expect { stream.append("items", partial: "item", layout: "layouts/stream_wrapper") { "<DemoItem/>" } }
+        .to raise_error(ArgumentError, /layout with a block/)
+      expect { stream.append("items", layout: "../outside") { "<DemoItem/>" } }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /outside the configured view root/)
+    end
+  end
+
+  it "renders inferred records through their confined XML partials" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(File.join(root, "records"))
+      File.write(
+        File.join(root, "records", "_record.xml.erb"),
+        '<DemoRecord id="<%= record.id %>"><%= record.label %></DemoRecord>'
+      )
+      File.write(File.join(root, "records", "_record.html.erb"), "<div>HTML fallback</div>")
+      controller_class.expo_turbo_view_root(root)
+      record = ExpoTurboTagBuilderSpecRecord.new(7, "XML only")
+
+      expect(stream.replace(record).to_s)
+        .to eq('<turbo-stream action="replace" target="demo_record_7"><template><DemoRecord id="7">XML only</DemoRecord></template></turbo-stream>')
+      expect(stream.append("records", record).to_s)
+        .to eq('<turbo-stream action="append" target="records"><template><DemoRecord id="7">XML only</DemoRecord></template></turbo-stream>')
+
+      wrapper = Class.new do
+        def initialize(record)
+          @record = record
+        end
+
+        def id
+          @record.id
+        end
+
+        def label
+          "Wrapped #{@record.label}"
+        end
+
+        def to_model
+          @record
+        end
+
+        def to_key
+          @record.to_key
+        end
+
+        def model_name
+          @record.model_name
+        end
+
+        def persisted?
+          @record.persisted?
+        end
+      end.new(record)
+
+      expect(stream.replace(wrapper).to_s)
+        .to eq('<turbo-stream action="replace" target="demo_record_7"><template><DemoRecord id="7">Wrapped XML only</DemoRecord></template></turbo-stream>')
+    end
+  end
+
+  it "renders XML format renderables through the confined partial renderer" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "_message.xml.erb"), '<DemoText id="<%= id %>"><%= label %></DemoText>')
+      File.write(File.join(root, "_message.html.erb"), "<div>HTML fallback</div>")
+      File.write(File.join(root, "_host_only.html.erb"), "<div>Host fallback</div>")
+      controller_class.expo_turbo_view_root(root)
+
+      renderable = ExpoTurboTagBuilderSpecRenderable.new(locals: {id: "message-1", label: "XML only"})
+      expect(stream.append("messages", renderable).to_s)
+        .to eq('<turbo-stream action="append" target="messages"><template><DemoText id="message-1">XML only</DemoText></template></turbo-stream>')
+      expect(renderable.context).not_to equal(controller_class.new.view_context)
+      expect { stream.append("messages", ExpoTurboTagBuilderSpecRenderable.new(partial: "host_only")) }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /template does not exist/)
+      expect { stream.append("messages", ExpoTurboTagBuilderSpecRenderable.new(format: :html)) }
+        .to raise_error(ArgumentError, /declare format: :xml/)
+
+      unsupported_renderer = Object.new
+      unsupported_renderer.define_singleton_method(:format) { :xml }
+      unsupported_renderer.define_singleton_method(:render_in) { |context| context.render(template: "host_only") }
+      expect { stream.append("messages", unsupported_renderer) }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /may render only configured XML partials/)
+
+      malformed_renderer = Object.new
+      malformed_renderer.define_singleton_method(:format) { :xml }
+      malformed_renderer.define_singleton_method(:render_in) { |_context| "<Demo:Item/>" }
+      expect { stream.append("messages", malformed_renderer) }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
     end
   end
 
