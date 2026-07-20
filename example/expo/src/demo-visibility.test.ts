@@ -223,6 +223,146 @@ describe("demo Frame visibility", () => {
     expect(requests).toHaveLength(1);
   });
 
+  test("requires a buffered FlatList row to be both geometrically visible and viewable", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const transitions: boolean[] = [];
+    const region = visibility.registerViewabilityRegion("flatlist");
+    region.setItems(["flatlist-lazy-frame"]);
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.registerContainer("flatlist", (listener) => listener(0, 0, 100, 100));
+    visibility.subscribe("flatlist-lazy-frame", (visible) => transitions.push(visible));
+    visibility.register(
+      "flatlist-lazy-frame",
+      (listener) => listener(80, 20, 20, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region },
+    );
+
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(false);
+
+    region.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(true);
+
+    region.setVisibleItems([]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(false);
+    expect(transitions).toEqual([true, false]);
+  });
+
+  test("loads a viewable FlatList Frame once and never from buffered geometry alone", async () => {
+    const visibility = new DemoVisibilityRegistry();
+    const requests: TurboRequest[] = [];
+    let settle: ((response: TurboResponse) => void) | undefined;
+    const region = visibility.registerViewabilityRegion("flatlist");
+    region.setItems(["flatlist-lazy-frame"]);
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.registerContainer("flatlist", (listener) => listener(0, 0, 100, 100));
+    visibility.register(
+      "flatlist-lazy-frame",
+      (listener) => listener(0, 0, 80, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region },
+    );
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="flatlist-lazy-frame" loading="lazy" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/demo" },
+      ),
+    );
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) => {
+          requests.push(request);
+          return new Promise<TurboResponse>((resolve) => {
+            settle = resolve;
+          });
+        },
+      },
+      { next: () => "flatlist-lazy-request" },
+    );
+    const controller = new FrameController(session, "flatlist-lazy-frame", loader, visibility);
+
+    expect(await controller.connect()).toBeUndefined();
+    expect(requests).toHaveLength(0);
+
+    region.setVisibleItems(["flatlist-lazy-frame"]);
+    const loaded = controller.loaded;
+    expect(requests).toHaveLength(1);
+    settle?.({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () =>
+        '<Gallery><turbo-frame id="flatlist-lazy-frame"><Loaded /></turbo-frame></Gallery>',
+      url: "https://example.test/frame",
+    });
+    expect(await loaded).toMatchObject({ status: "completed" });
+
+    region.setVisibleItems([]);
+    region.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("clears replaced FlatList membership and ignores stale row snapshots", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const region = visibility.registerViewabilityRegion("flatlist");
+    region.setItems(["flatlist-lazy-frame"]);
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.registerContainer("flatlist", (listener) => listener(0, 0, 100, 100));
+    visibility.register(
+      "flatlist-lazy-frame",
+      (listener) => listener(0, 0, 80, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region },
+    );
+
+    region.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(true);
+
+    region.setItems(["replacement-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(false);
+
+    region.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(false);
+  });
+
+  test("replaces same-ID FlatList regions without accepting stale callbacks", () => {
+    const visibility = new DemoVisibilityRegistry();
+    const oldRegion = visibility.registerViewabilityRegion("flatlist");
+    oldRegion.setItems(["flatlist-lazy-frame"]);
+    visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+    visibility.registerContainer("flatlist", (listener) => listener(0, 0, 100, 100));
+    visibility.register(
+      "flatlist-lazy-frame",
+      (listener) => listener(0, 0, 80, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region: oldRegion },
+    );
+    oldRegion.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(true);
+
+    const currentRegion = visibility.registerViewabilityRegion("flatlist");
+    oldRegion.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(false);
+    visibility.register(
+      "stale-flatlist-frame",
+      (listener) => listener(0, 0, 80, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region: oldRegion },
+    );
+    expect(visibility.isVisible("stale-flatlist-frame")).toBe(false);
+
+    currentRegion.setItems(["flatlist-lazy-frame"]);
+    visibility.register(
+      "flatlist-lazy-frame",
+      (listener) => listener(0, 0, 80, 40),
+      ["demo-root-scroll", "flatlist"],
+      { itemId: "flatlist-lazy-frame", region: currentRegion },
+    );
+    currentRegion.setVisibleItems(["flatlist-lazy-frame"]);
+    expect(visibility.isVisible("flatlist-lazy-frame")).toBe(true);
+  });
+
   test("unregisters identity-safely and releases subscriber state", () => {
     const visibility = new DemoVisibilityRegistry();
     const transitions: boolean[] = [];
@@ -312,6 +452,7 @@ describe("demo Frame visibility", () => {
     expect(() => visibility.subscribe("", () => {})).toThrow(TypeError);
     expect(() => visibility.measureViewport(undefined as never)).toThrow(TypeError);
     expect(() => visibility.registerContainer("", () => {})).toThrow(TypeError);
+    expect(() => visibility.registerViewabilityRegion("")).toThrow(TypeError);
     expect(() => visibility.register("frame", () => {}, [])).toThrow(TypeError);
     expect(() => visibility.register("frame", () => {}, ["clip", "clip"])).toThrow(TypeError);
     expect(() =>
@@ -320,5 +461,9 @@ describe("demo Frame visibility", () => {
     expect(() => visibility.setViewport({ height: -1, width: 1, x: 0, y: 0 })).toThrow(
       TypeError,
     );
+
+    const region = visibility.registerViewabilityRegion("flatlist");
+    expect(() => region.setItems(["row", "row"])).toThrow(TypeError);
+    expect(() => region.setVisibleItems(["row", "row"])).toThrow(TypeError);
   });
 });

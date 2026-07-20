@@ -34,6 +34,12 @@ export function createDemoFrameControllers(
       {
         fetch: async (request) => {
           const frameId = request.headers["Turbo-Frame"];
+          const flatListFrameId =
+            frameId === "flatlist-lazy-frame-one" ||
+            frameId === "flatlist-lazy-frame-two" ||
+            frameId === "flatlist-lazy-frame-three"
+              ? frameId
+              : undefined;
           return {
             headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
             redirected: false,
@@ -54,7 +60,13 @@ export function createDemoFrameControllers(
                         <DemoText>The nested clipping chain admitted this Frame exactly once after it entered both visible regions.</DemoText>
                       </DemoCard>
                     </turbo-frame></Gallery>`
-                : request.url.endsWith("/demo/frame")
+                  : flatListFrameId
+                    ? `<Gallery><turbo-frame id="${flatListFrameId}">
+                        <DemoCard title="Virtualized lazy Frame loaded" style-tokens="tone:positive space:compact">
+                          <DemoText>The current FlatList row was both measured inside its clipping chain and reported viewable by the native virtualizer.</DemoText>
+                        </DemoCard>
+                      </turbo-frame></Gallery>`
+                  : request.url.endsWith("/demo/frame")
                   ? '<Gallery><turbo-frame id="demo-recurse" src="/demo/recurse" recurse="preview-frame" /></Gallery>'
                   : `<Gallery><turbo-frame id="preview-frame">
                       <DemoCard title="Recursive Frame source loaded">
