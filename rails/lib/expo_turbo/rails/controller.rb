@@ -101,6 +101,14 @@ module ExpoTurbo
         ExpoTurbo::Rails::Streams.broadcast_later_to(*streamables, content: content)
       end
 
+      def broadcast_expo_turbo_refresh_to(*streamables, request_id: ::Turbo.current_request_id, **attributes)
+        ExpoTurbo::Rails::Streams.broadcast_refresh_to(*streamables, request_id:, **attributes)
+      end
+
+      def broadcast_expo_turbo_refresh_later_to(*streamables, request_id: ::Turbo.current_request_id, **attributes)
+        ExpoTurbo::Rails::Streams.broadcast_refresh_later_to(*streamables, request_id:, **attributes)
+      end
+
       private
 
       def expo_turbo_template_file(template)

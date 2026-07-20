@@ -67,6 +67,10 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     controller_class.new.expo_turbo_stream
   end
 
+  def upstream_stream
+    ::Turbo::Streams::TagBuilder.new(controller_class.new.view_context)
+  end
+
   it "emits canonical built-in target and selector Stream tags" do
     expect(stream.append("items", "<DemoItem id=\"appended\"/>").to_s)
       .to eq('<turbo-stream action="append" target="items"><template><DemoItem id="appended"/></template></turbo-stream>')
@@ -96,6 +100,25 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     expect(stream.update_all(".item", "<DemoItem/>", method: :morph).to_s)
       .to eq('<turbo-stream method="morph" action="update" targets=".item"><template><DemoItem/></template></turbo-stream>')
     expect(stream.remove_all(".item").to_s).to eq('<turbo-stream action="remove" targets=".item"></turbo-stream>')
+  end
+
+  it "keeps an explicit refresh request ID authoritative" do
+    ::Turbo.with_request_id("ambient-request") do
+      expect(stream.refresh.to_s)
+        .to eq('<turbo-stream request-id="ambient-request" action="refresh"></turbo-stream>')
+      expect(stream.refresh(request_id: nil).to_s)
+        .to eq('<turbo-stream action="refresh"></turbo-stream>')
+    end
+
+    expect(stream.refresh(request_id: "").to_s)
+      .to eq(upstream_stream.refresh(request_id: "").to_s)
+    expect(stream.refresh(request_id: false).to_s)
+      .to eq(upstream_stream.refresh(request_id: false).to_s)
+
+    expect { stream.refresh(**{"request-id" => "forged"}) }
+      .to raise_error(ArgumentError, /request_id must be provided/)
+    expect { stream.refresh(request_id: "request-1", **{"request-id" => "forged"}) }
+      .to raise_error(ArgumentError, /request_id must be provided/)
   end
 
   it "captures block content without switching to HTML rendering" do

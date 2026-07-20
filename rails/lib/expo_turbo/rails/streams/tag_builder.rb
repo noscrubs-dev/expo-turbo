@@ -11,6 +11,8 @@ module ExpoTurbo
         include ::Turbo::Streams::ActionHelper
 
         CONTENT_ATTRIBUTE_KEYS = [:content, "content"].freeze
+        REQUEST_ID_ATTRIBUTE_KEYS = [:"request-id", "request-id"].freeze
+        REQUEST_ID_UNSET = Object.new.freeze
 
         class XmlRenderableContext < BasicObject
           def initialize(view_context, partial_renderer)
@@ -98,12 +100,15 @@ module ExpoTurbo
           targets_action(:remove, targets, nil, partial: nil, locals: {}, attributes:)
         end
 
-        def refresh(request_id: nil, layout: nil, **attributes)
+        def refresh(request_id: REQUEST_ID_UNSET, layout: nil, **attributes)
           reject_content!(attributes)
+          reject_request_id!(attributes)
           reject_layout!(layout)
 
-          if request_id.nil?
+          if request_id.equal?(REQUEST_ID_UNSET)
             validate_stream_fragment!(turbo_stream_refresh_tag(**attributes))
+          elsif request_id.nil?
+            validate_stream_fragment!(turbo_stream_action_tag(:refresh, **attributes))
           else
             validate_stream_fragment!(turbo_stream_refresh_tag(request_id:, **attributes))
           end
@@ -217,6 +222,12 @@ module ExpoTurbo
           return unless content_attribute_key(attributes)
 
           raise ArgumentError, "content is only supported by template-bearing Stream actions"
+        end
+
+        def reject_request_id!(attributes)
+          return unless REQUEST_ID_ATTRIBUTE_KEYS.any? { |key| attributes.key?(key) }
+
+          raise ArgumentError, "request_id must be provided with request_id:"
         end
 
         def reject_layout!(layout)

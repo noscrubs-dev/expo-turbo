@@ -10,6 +10,17 @@ require "action_cable/subscription_adapter/test"
 require "active_job/queue_adapters/test_adapter"
 require "logger"
 
+class ExpoTurboRefreshDebouncer
+  def debounce(&block)
+    @block = block
+  end
+
+  def flush
+    callback, @block = @block, nil
+    callback.call
+  end
+end
+
 RSpec.describe ExpoTurbo::Rails::Streams do
   let(:controller_class) do
     Class.new(ActionController::API) do
@@ -65,6 +76,17 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     ])
   end
 
+  it "builds immediate refresh broadcasts through the Expo-only stream" do
+    controller = controller_class.new
+
+    controller.broadcast_expo_turbo_refresh_to("room", request_id: "request-1", method: "morph", scroll: "preserve")
+
+    expect(broadcast_payloads("room:expo")).to eq([
+      '<turbo-stream request-id="request-1" method="morph" scroll="preserve" action="refresh"></turbo-stream>'
+    ])
+    expect(broadcast_payloads("room")).to be_empty
+  end
+
   it "enqueues an exact Expo-only stream without broadcasting immediately" do
     streamable = Class.new do
       def to_gid_param
@@ -105,6 +127,102 @@ RSpec.describe ExpoTurbo::Rails::Streams do
       {content: '<turbo-stream request-id="request-1" method="morph" scroll="preserve" action="refresh"></turbo-stream>'}
     ])
     expect(broadcast_payloads("room:expo")).to be_empty
+  end
+
+  it "forwards delayed controller refresh broadcasts through the shared boundary" do
+    debouncers = stub_refresh_debouncers
+    controller = controller_class.new
+
+    controller.broadcast_expo_turbo_refresh_later_to(
+      "room",
+      request_id: "request-1",
+      method: "morph",
+      scroll: "preserve"
+    )
+
+    expect(@job_adapter.enqueued_jobs).to be_empty
+    debouncers.values.fetch(0).flush
+
+    arguments = ActiveJob::Arguments.deserialize(@job_adapter.enqueued_jobs.fetch(0)[:args])
+    expect(arguments).to eq([
+      "room:expo",
+      {content: '<turbo-stream request-id="request-1" method="morph" scroll="preserve" action="refresh"></turbo-stream>'}
+    ])
+  end
+
+  it "captures a refresh stream name and request ID before delayed enqueueing" do
+    debouncers = stub_refresh_debouncers
+    streamable = Struct.new(:value) do
+      def to_param
+        value
+      end
+    end.new("room")
+
+    ::Turbo.with_request_id("request-1") do
+      described_class.broadcast_refresh_later_to(streamable, method: "morph", scroll: "preserve")
+    end
+    streamable.value = "changed"
+
+    ::Turbo.with_request_id("request-2") do
+      debouncers.values.fetch(0).flush
+    end
+
+    arguments = ActiveJob::Arguments.deserialize(@job_adapter.enqueued_jobs.fetch(0)[:args])
+    expect(arguments).to eq([
+      "room:expo",
+      {content: '<turbo-stream request-id="request-1" method="morph" scroll="preserve" action="refresh"></turbo-stream>'}
+    ])
+    expect(broadcast_payloads("room:expo")).to be_empty
+  end
+
+  it "keeps an explicit nil refresh request ID absent despite ambient request state" do
+    debouncers = stub_refresh_debouncers
+
+    ::Turbo.with_request_id("ambient-request") do
+      described_class.broadcast_refresh_later_to("room", request_id: nil)
+      described_class.broadcast_refresh_later_to("room", request_id: "ambient-request")
+    end
+
+    expect(debouncers).to have_attributes(size: 2)
+    debouncers.each_value(&:flush)
+
+    arguments = @job_adapter.enqueued_jobs.map { |job| ActiveJob::Arguments.deserialize(job[:args]) }
+    expect(arguments).to contain_exactly(
+      ["room:expo", {content: '<turbo-stream action="refresh"></turbo-stream>'}],
+      ["room:expo", {content: '<turbo-stream request-id="ambient-request" action="refresh"></turbo-stream>'}]
+    )
+  end
+
+  it "debounces queued refreshes only by their full Expo stream and request ID" do
+    debouncers = stub_refresh_debouncers
+
+    described_class.broadcast_refresh_later_to("room", request_id: "request:one", method: "morph")
+    described_class.broadcast_refresh_later_to("room", request_id: "request:one", method: "replace")
+    described_class.broadcast_refresh_later_to("room", request_id: "one", method: "morph")
+    described_class.broadcast_refresh_later_to("room", request_id: "other:expo:one", method: "morph")
+    described_class.broadcast_refresh_later_to("room:expo:other", request_id: "one", method: "morph")
+
+    expect(debouncers).to have_attributes(size: 4)
+    expect(@job_adapter.enqueued_jobs).to be_empty
+
+    debouncers.each_value(&:flush)
+
+    arguments = @job_adapter.enqueued_jobs.map { |job| ActiveJob::Arguments.deserialize(job[:args]) }
+    expect(arguments).to contain_exactly(
+      ["room:expo", {content: '<turbo-stream request-id="request:one" method="replace" action="refresh"></turbo-stream>'}],
+      ["room:expo", {content: '<turbo-stream request-id="one" method="morph" action="refresh"></turbo-stream>'}],
+      ["room:expo", {content: '<turbo-stream request-id="other:expo:one" method="morph" action="refresh"></turbo-stream>'}],
+      ["room:expo:other:expo", {content: '<turbo-stream request-id="one" method="morph" action="refresh"></turbo-stream>'}]
+    )
+  end
+
+  it "rejects refresh template content before it can be deferred" do
+    expect {
+      described_class.broadcast_refresh_later_to("room", request_id: "request-1", content: "<DemoText/>")
+    }.to raise_error(ArgumentError, /template-bearing Stream actions/)
+    expect {
+      described_class.broadcast_refresh_later_to("room", request_id: "request-1", **{"request-id" => "forged"})
+    }.to raise_error(ArgumentError, /request_id must be provided/)
   end
 
   it "does not log raw queued broadcast arguments" do
@@ -185,5 +303,13 @@ RSpec.describe ExpoTurbo::Rails::Streams do
 
   def broadcast_payloads(stream)
     @test_adapter.broadcasts(stream).map { |message| ActiveSupport::JSON.decode(message) }
+  end
+
+  def stub_refresh_debouncers
+    debouncers = {}
+    allow(::Turbo::ThreadDebouncer).to receive(:for) do |key|
+      debouncers[key] ||= ExpoTurboRefreshDebouncer.new
+    end
+    debouncers
   end
 end
