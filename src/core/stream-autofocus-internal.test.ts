@@ -146,15 +146,64 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(session, session.revision)).toEqual(["id:second"])
   })
 
-  test("excludes morph, canceled, and no-op stream actions", () => {
-    const morphSession = sessionFor('<Gallery><Panel id="panel" /></Gallery>')
-    const morphReport = dispatchTurboStreamFragment(
-      morphSession,
-      '<turbo-stream action="replace" target="panel" method="morph"><template><Panel id="panel"><Field id="morph" autofocus="" /></Panel></template></turbo-stream>',
+  test("stages autofocus for retained exact-target standalone Stream morph candidates", () => {
+    const updateSession = sessionFor(
+      '<Gallery><Panel id="panel"><Field id="update-candidate" /></Panel></Gallery>',
     )
-    expect(morphReport.actions).toMatchObject([{ status: "applied" }])
-    expect(morphSession.tree.getElementById("morph")).toBeDefined()
-    expect(consumeStandaloneStreamAutofocus(morphSession, morphSession.revision)).toBeUndefined()
+    const updateCandidate = updateSession.tree.getElementById("update-candidate")
+    if (!updateCandidate) throw new Error("update candidate fixture is missing")
+
+    const updateReport = dispatchTurboStreamFragment(
+      updateSession,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Field id="update-candidate" autofocus="" /></template></turbo-stream>',
+    )
+
+    expect(updateReport.actions).toMatchObject([{ status: "applied" }])
+    expect(updateSession.tree.getElementById("update-candidate")).toBe(updateCandidate)
+    expect(consumeStandaloneStreamAutofocus(updateSession, updateSession.revision)).toEqual([
+      "id:update-candidate",
+    ])
+
+    const replaceSession = sessionFor('<Gallery><Panel id="replace-candidate" /></Gallery>')
+    const replaceCandidate = replaceSession.tree.getElementById("replace-candidate")
+    if (!replaceCandidate) throw new Error("replace candidate fixture is missing")
+
+    const replaceReport = dispatchTurboStreamFragment(
+      replaceSession,
+      '<turbo-stream action="replace" target="replace-candidate" method="morph"><template><Panel id="replace-candidate" autofocus="" /></template></turbo-stream>',
+    )
+
+    expect(replaceReport.actions).toMatchObject([{ status: "applied" }])
+    expect(replaceSession.tree.getElementById("replace-candidate")).toBe(replaceCandidate)
+    expect(consumeStandaloneStreamAutofocus(replaceSession, replaceSession.revision)).toEqual([
+      "id:replace-candidate",
+    ])
+  })
+
+  test("excludes permanent-bearing and unsupported morph, canceled, and no-op stream actions", () => {
+    const permanentMorphSession = sessionFor(
+      '<Gallery><Panel id="panel"><Field id="permanent" data-turbo-permanent="" /><Field id="eligible" /></Panel></Gallery>',
+    )
+    const permanentMorphReport = dispatchTurboStreamFragment(
+      permanentMorphSession,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Field id="permanent" data-turbo-permanent="" autofocus="" /><Field id="eligible" autofocus="" /></template></turbo-stream>',
+    )
+    expect(permanentMorphReport.actions).toMatchObject([{ status: "applied" }])
+    expect(permanentMorphSession.tree.getElementById("eligible")).toBeDefined()
+    expect(
+      consumeStandaloneStreamAutofocus(permanentMorphSession, permanentMorphSession.revision),
+    ).toBeUndefined()
+
+    const unsupportedMorphSession = sessionFor('<Gallery id="gallery" />')
+    const unsupportedMorphReport = dispatchTurboStreamFragment(
+      unsupportedMorphSession,
+      '<turbo-stream action="append" target="gallery" method="morph"><template><Field id="morph" autofocus="" /></template></turbo-stream>',
+    )
+    expect(unsupportedMorphReport.actions).toMatchObject([{ status: "applied" }])
+    expect(unsupportedMorphSession.tree.getElementById("morph")).toBeDefined()
+    expect(
+      consumeStandaloneStreamAutofocus(unsupportedMorphSession, unsupportedMorphSession.revision),
+    ).toBeUndefined()
 
     const canceledSession = sessionFor('<Gallery id="gallery" />')
     const lifecycle = new StreamLifecycle()

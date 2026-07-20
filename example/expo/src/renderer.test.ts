@@ -7763,6 +7763,37 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
+  test("focuses a retained exact standalone Stream morph candidate", () => {
+    const fixture = documentAutofocusFixture(
+      '<Gallery><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" /></Gallery>',
+    )
+    const candidateBefore = fixture.session.tree.getElementById("candidate")
+    if (!candidateBefore) throw new Error("morph candidate fixture is missing")
+    let focusedId: string | undefined
+    const autofocus: AutofocusAdapter = {
+      ...fixture.autofocus,
+      focus: (nodeKey) => {
+        focusedId = nodeKey
+        fixture.focused.push(nodeKey)
+      },
+      getFocusedId: () => focusedId,
+    }
+    const renderer = render(fixture.session, fixture.registry, { autofocus })
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        fixture.session,
+        '<turbo-stream action="replace" target="candidate" method="morph"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
+      )
+    })
+
+    expect(fixture.session.tree.getElementById("candidate")).toBe(candidateBefore)
+    expect(fixture.mounted).toEqual(new Set(["id:candidate"]))
+    expect(fixture.focused).toEqual(["id:candidate"])
+
+    act(() => renderer.unmount())
+  })
+
   test("preserves the first standalone Stream autofocus intent across a batched later message", () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     let focusedId: string | undefined
