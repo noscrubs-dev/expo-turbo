@@ -4418,6 +4418,9 @@ describe("React protocol renderer", () => {
       `<Gallery data-turbo-root="/app">
         <DocumentLink id="first" href="/app/first" data-turbo-preload="" />
         <DocumentLink id="duplicate" href="./first" data-turbo-preload="false" />
+        <DocumentLink id="fragment" href="/app/first#section" data-turbo-preload="" />
+        <DocumentLink id="relative-fragment" href="./first#other" data-turbo-preload="" />
+        <DocumentLink id="empty-fragment" href="/app/first#" data-turbo-preload="" />
         <DocumentLink id="self" href="/app/self" target="_self" data-turbo-preload="" />
         <turbo-frame id="frame">
           <DocumentLink id="top" href="/app/top" data-turbo-frame="_top" data-turbo-preload="" />
@@ -4458,6 +4461,8 @@ describe("React protocol renderer", () => {
     expect(harness.cache.has("https://example.test/app/top")).toBe(true)
     expect(harness.session.revision).toBe(0)
     expect(harness.session.tree.document.url).toBe("https://example.test/app/current")
+    await expect(harness.activation("/app/first#section")()).rejects.toBeInstanceOf(TargetError)
+    expect(requests).toHaveLength(3)
 
     act(() => harness.renderer.unmount())
   })
@@ -4543,9 +4548,6 @@ describe("React protocol renderer", () => {
         </turbo-frame>
         <DocumentLink href="/app/named" data-turbo-frame="destination" data-turbo-preload="" />
         <turbo-frame id="destination" />
-        <DocumentLink href="#" data-turbo-preload="" />
-        <DocumentLink href="/app/empty-fragment#" data-turbo-preload="" />
-        <DocumentLink href="/app/fragment#section" data-turbo-preload="" />
         <DocumentLink href="/app/&#x9;control" data-turbo-preload="" />
         <DocumentLink href="/outside" data-turbo-preload="" />
         <DocumentLink href="/app/archive.pdf" data-turbo-preload="" />
@@ -4755,6 +4757,13 @@ describe("React protocol renderer", () => {
       await nextTurn()
     })
     expect(requests.map((request) => request.url)).toEqual(["https://example.test/app/first"])
+
+    await act(async () => {
+      harness.session.setAttribute("id:dynamic", "href", "/app/first#section")
+      await nextTurn()
+    })
+    expect(requests.map((request) => request.url)).toEqual(["https://example.test/app/first"])
+    expect(harness.requestIdCount()).toBe(1)
 
     await act(async () => {
       harness.session.removeAttribute("id:dynamic", "data-turbo-preload")

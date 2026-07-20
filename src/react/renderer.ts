@@ -98,7 +98,11 @@ import {
 } from "../core/frame-render-lifecycle-internal"
 import type { FrameAutoscrollIntent } from "../core/frame-response-application"
 import { resolveFormSubmissionDestination } from "../core/frames"
-import { type ExternalDocumentLinkScheme, resolveDocumentLinkUrl } from "../core/protocol-request"
+import {
+  type ExternalDocumentLinkScheme,
+  resolveDocumentLinkUrl,
+  resolveProtocolUrl,
+} from "../core/protocol-request"
 import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
 import type {
@@ -272,6 +276,23 @@ function hasProtocolAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
 }
 
+function canonicalDocumentPreloadUrl(source: string, documentUrl: string): string {
+  if (
+    typeof source !== "string" ||
+    source.trim() === "" ||
+    [...source].some((character) => {
+      const codePoint = character.codePointAt(0)
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127)
+    })
+  ) {
+    throw new TargetError("Document link URL is invalid")
+  }
+  const resolved = resolveProtocolUrl(source, documentUrl, documentUrl)
+  const url = new URL(resolved.url)
+  url.hash = ""
+  return url.toString()
+}
+
 function automaticDocumentPreloadUrl(
   session: DocumentSession,
   node: ProtocolElement,
@@ -308,14 +329,20 @@ function automaticDocumentPreloadUrl(
   try {
     const documentUrl = session.tree.document.url
     if (!documentUrl) return undefined
-    const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
-    if (linkUrl.kind !== "protocol") return undefined
+    let preloadUrl: string
+    if (href.includes("#")) {
+      preloadUrl = canonicalDocumentPreloadUrl(href, documentUrl)
+    } else {
+      const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
+      if (linkUrl.kind !== "protocol") return undefined
+      preloadUrl = linkUrl.resolution.url
+    }
     const frameTarget = attributeValue(node, "data-turbo-frame")
     const destination = resolveFormSubmissionDestination(session.tree, node, {
       ...(frameTarget !== undefined ? { formTarget: frameTarget } : {}),
     })
     if (destination.kind !== "document") return undefined
-    const disposition = classifyTopLevelLocation(session.tree, linkUrl.resolution.url)
+    const disposition = classifyTopLevelLocation(session.tree, preloadUrl)
     if (disposition.classification !== "visitable") return undefined
     return disposition.url
   } catch {
