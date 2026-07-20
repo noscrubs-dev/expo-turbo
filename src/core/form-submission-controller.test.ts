@@ -1556,6 +1556,61 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("preserves paired permanent Frame children for authoritative 422 form responses", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoInput id="editable" value="client" /><DemoPanel id="permanent" data-turbo-permanent="" tone="client"><DemoInput id="locked" value="client" /></DemoPanel></DemoForm></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("frame")
+    const editable = session.tree.getElementById("editable")
+    const permanent = session.tree.getElementById("permanent")
+    const locked = session.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || !editable || !permanent || !locked) {
+      throw new Error("invalid fixture")
+    }
+
+    const permanentSnapshot = session.getNodeSnapshot(permanent.key)
+    let permanentDisposals = 0
+    session.registerDisposal(permanent.key, () => {
+      permanentDisposals += 1
+    })
+    session.registerDisposal(locked.key, () => {
+      permanentDisposals += 1
+    })
+
+    const result = await new FormSubmissionController(session, {
+      fetch: async (request) =>
+        response(
+          request,
+          '<turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoInput id="editable" value="server" /><DemoPanel id="permanent" data-turbo-permanent="" tone="server"><DemoInput id="locked" value="server" /></DemoPanel><ValidationError id="error" /></DemoForm></turbo-frame>',
+          { status: 422 },
+        ),
+    }).submit(proposal(registry(session, "form"), "frame-422"))
+
+    const nextEditable = session.tree.getElementById("editable")
+    const nextPermanent = session.tree.getElementById("permanent")
+    const nextLocked = session.tree.getElementById("locked")
+    if (!nextEditable || !nextPermanent || !nextLocked) throw new Error("missing Frame result")
+    expect(result).toMatchObject({
+      application: "frame",
+      classification: "client-error",
+      destination: { frameId: "frame", kind: "frame" },
+      status: "applied",
+    })
+    expect(session.tree.getElementById("frame")).toBe(frame)
+    expect(nextEditable).not.toBe(editable)
+    expect(nextPermanent).toBe(permanent)
+    expect(nextLocked).toBe(locked)
+    expect(session.getNodeSnapshot(permanent.key)?.identity).toBe(permanentSnapshot?.identity)
+    expect(attributeValue(nextEditable, "value")).toBe("server")
+    expect(attributeValue(nextPermanent, "tone")).toBe("client")
+    expect(attributeValue(nextLocked, "value")).toBe("client")
+    expect(session.tree.getElementById("error")).toBeDefined()
+    expect(permanentDisposals).toBe(0)
+  })
+
   test("shares each exact Frame lane with GET requests in both directions", async () => {
     {
       const session = fixture()

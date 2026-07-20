@@ -131,6 +131,163 @@ describe("prepared Frame mutations", () => {
     expect(() => commitPreparedFrameMutation(session, mutation)).toThrow(StateError)
   })
 
+  test("preserves paired permanent Frame descendants during ordinary replacement", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><DemoForm id="form" tone="client"><DemoInput id="editable" value="client" /><DemoPanel id="permanent" data-turbo-permanent="" tone="client"><DemoInput id="locked" value="client" /></DemoPanel></DemoForm><Old id="same" /></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const form = session.tree.getElementById("form")
+    const editable = session.tree.getElementById("editable")
+    const permanent = session.tree.getElementById("permanent")
+    const locked = session.tree.getElementById("locked")
+    const same = session.tree.getElementById("same")
+    if (frame?.kind !== "frame" || !form || !editable || !permanent || !locked || !same) {
+      throw new Error("invalid fixture")
+    }
+
+    const permanentSnapshot = session.getNodeSnapshot(permanent.key)
+    let permanentDisposals = 0
+    let replacedDisposals = 0
+    session.registerDisposal(permanent.key, () => {
+      permanentDisposals += 1
+    })
+    session.registerDisposal(locked.key, () => {
+      permanentDisposals += 1
+    })
+    for (const node of [form, editable, same]) {
+      session.registerDisposal(node.key, () => {
+        replacedDisposals += 1
+      })
+    }
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><DemoForm id="form" tone="server"><DemoGroup id="new-parent"><DemoInput id="editable" value="server" /><DemoPanel id="permanent" data-turbo-permanent="" tone="server"><DemoInput id="locked" value="server" /></DemoPanel></DemoGroup></DemoForm><New id="same" /></turbo-frame>',
+    )
+    const mutation = prepareFrameMutation(session, frame, prepared)
+    commitPreparedFrameMutation(session, mutation)
+
+    const nextForm = session.tree.getElementById("form")
+    const nextParent = session.tree.getElementById("new-parent")
+    const nextEditable = session.tree.getElementById("editable")
+    const nextPermanent = session.tree.getElementById("permanent")
+    const nextLocked = session.tree.getElementById("locked")
+    const nextSame = session.tree.getElementById("same")
+    if (!nextForm || !nextParent || !nextEditable || !nextPermanent || !nextLocked || !nextSame) {
+      throw new Error("missing replacement result")
+    }
+
+    expect(nextForm).not.toBe(form)
+    expect(nextEditable).not.toBe(editable)
+    expect(nextSame).not.toBe(same)
+    expect(nextPermanent).toBe(permanent)
+    expect(nextLocked).toBe(locked)
+    expect(nextPermanent.parent).toBe(nextParent)
+    expect(session.getNodeSnapshot(permanent.key)?.identity).toBe(permanentSnapshot?.identity)
+    expect(attributeValue(nextForm, "tone")).toBe("server")
+    expect(attributeValue(nextEditable, "value")).toBe("server")
+    expect(attributeValue(nextPermanent, "tone")).toBe("client")
+    expect(attributeValue(nextLocked, "value")).toBe("client")
+    expect(permanentDisposals).toBe(0)
+    expect(replacedDisposals).toBe(3)
+
+    const responseForm = prepared.responseFrame.children.find(isElement)
+    const responseGroup = responseForm?.children.find(isElement)
+    const responsePermanent = responseGroup?.children.find(
+      (child) => isElement(child) && attributeValue(child, "id") === "permanent",
+    )
+    if (!responsePermanent || !isElement(responsePermanent)) {
+      throw new Error("invalid prepared response")
+    }
+    expect(responsePermanent).not.toBe(permanent)
+    expect(attributeValue(responsePermanent, "tone")).toBe("server")
+  })
+
+  test("replaces one-sided permanent Frame descendants normally", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><DemoPanel id="permanent" data-turbo-permanent="" tone="client" /></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const permanent = session.tree.getElementById("permanent")
+    if (frame?.kind !== "frame" || !permanent) throw new Error("invalid fixture")
+    let disposals = 0
+    session.registerDisposal(permanent.key, () => {
+      disposals += 1
+    })
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><DemoPanel id="permanent" tone="server" /></turbo-frame>',
+    )
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    const replacement = session.tree.getElementById("permanent")
+    if (!replacement) throw new Error("missing replacement")
+    expect(replacement).not.toBe(permanent)
+    expect(attributeValue(replacement, "tone")).toBe("server")
+    expect(disposals).toBe(1)
+  })
+
+  test("rejects paired permanent Frame replacements that would duplicate a retained descendant ID", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><DemoPanel id="permanent" data-turbo-permanent=""><Current id="duplicate" /></DemoPanel></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const permanent = session.tree.getElementById("permanent")
+    const duplicate = session.tree.getElementById("duplicate")
+    if (frame?.kind !== "frame" || !permanent || !duplicate) throw new Error("invalid fixture")
+    const children = frame.children
+    const revision = session.revision
+    const permanentSnapshot = session.getNodeSnapshot(permanent.key)
+    let disposals = 0
+    session.registerDisposal(permanent.key, () => {
+      disposals += 1
+    })
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><DemoPanel id="permanent" data-turbo-permanent=""><Incoming /></DemoPanel><Other id="duplicate" /></turbo-frame>',
+    )
+
+    expect(() => prepareFrameMutation(session, frame, prepared)).toThrow(ParseError)
+    expect(session.revision).toBe(revision)
+    expect(frame.children).toBe(children)
+    expect(session.tree.getElementById("permanent")).toBe(permanent)
+    expect(session.tree.getElementById("duplicate")).toBe(duplicate)
+    expect(session.getNodeSnapshot(permanent.key)).toBe(permanentSnapshot)
+    expect(disposals).toBe(0)
+  })
+
+  test("does not treat permanent Frame wrappers as replacement candidates", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" data-turbo-permanent=""><Old id="old" /></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details" data-turbo-permanent=""><Loaded id="loaded" /></turbo-frame>',
+    )
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    expect(session.tree.getElementById("details")).toBe(frame)
+    expect(session.tree.getElementById("old")).toBeUndefined()
+    expect(session.tree.getElementById("loaded")).toBeDefined()
+  })
+
   test("morphs Frame reload children without replacing the mounted wrapper or eligible app identity", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

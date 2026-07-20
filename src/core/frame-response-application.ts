@@ -24,6 +24,7 @@ import {
   morphFrameRefreshChildren,
   type ProtocolElement,
   type ProtocolNode,
+  replaceFrameChildrenPreservingPermanents,
 } from "./tree"
 
 export interface PreparedFrameResponse {
@@ -211,7 +212,7 @@ export function prepareFrameMutation(
   if (renderMethod === "morph") {
     morphFrameRefreshChildren(preflight, responseFrame, prepared.responseFrame)
   } else {
-    preflight.replaceChildrenWithClones(responseFrame, prepared.responseFrame.children)
+    replaceFrameChildrenPreservingPermanents(preflight, responseFrame, prepared.responseFrame)
   }
   if (options.finalUrl) preflight.setAttribute(responseFrame, "src", options.finalUrl)
   if (options.documentUrl !== undefined) preflight.retargetDocumentUrl(options.documentUrl)
@@ -243,7 +244,13 @@ export function commitPreparedFrameMutation(
     const changed =
       state.renderMethod === "morph"
         ? [...morphFrameRefreshChildren(tree, state.activeFrame, state.responseFrame)]
-        : [...tree.replaceChildrenWithClones(state.activeFrame, state.responseFrame.children)]
+        : [
+            ...replaceFrameChildrenPreservingPermanents(
+              tree,
+              state.activeFrame,
+              state.responseFrame,
+            ),
+          ]
     if (state.finalUrl) tree.setAttribute(state.activeFrame, "src", state.finalUrl)
     if (state.documentUrl !== undefined && tree.document.url !== state.documentUrl) {
       tree.retargetDocumentUrl(state.documentUrl)
