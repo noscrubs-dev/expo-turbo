@@ -429,10 +429,14 @@ function pressInDocumentPrefetchUrl(
   node: ProtocolElement,
   href: string,
 ): string | undefined {
+  const turboMethod = attributeValue(node, "data-turbo-method")
   if (
     hasProtocolAttribute(node, "disabled") ||
     hasProtocolAttribute(node, "target") ||
-    UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))
+    UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some(
+      (name) => name !== "data-turbo-method" && hasProtocolAttribute(node, name),
+    ) ||
+    (turboMethod !== undefined && turboMethod !== "" && turboMethod.toLowerCase() !== "get")
   ) {
     return undefined
   }

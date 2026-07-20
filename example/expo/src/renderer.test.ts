@@ -4955,7 +4955,7 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("prefetches document-targeted Frame links and skips unsafe press-in document links", async () => {
+  test("prefetches document-targeted Frame links and safe press-in GET links", async () => {
     const requests: TurboRequest[] = []
     const harness = renderPreloadingDocumentLinks(
       `<Gallery id="gallery" data-turbo-root="/app">
@@ -4964,7 +4964,11 @@ describe("React protocol renderer", () => {
         <DocumentLink href="/app/current#fragment" />
         <DocumentLink disabled="" href="/app/disabled" />
         <DocumentLink data-turbo-confirm="" href="/app/confirm" />
-        <DocumentLink data-turbo-method="get" href="/app/method" />
+        <DocumentLink data-turbo-method="" href="/app/method-empty" />
+        <DocumentLink data-turbo-method="get" href="/app/method-get" />
+        <DocumentLink data-turbo-method="GET" href="/app/method-upper-get" />
+        <DocumentLink data-turbo-method="post" href="/app/method-post" />
+        <DocumentLink data-turbo-method=" get " href="/app/method-spaced-get" />
         <DocumentLink data-turbo-stream="" href="/app/stream" />
         <DocumentLink data-turbo-frame="_top" href="/app/top-level-target" />
         <DocumentLink download="" href="/app/download" />
@@ -5025,7 +5029,11 @@ describe("React protocol renderer", () => {
         "/app/current#fragment",
         "/app/disabled",
         "/app/confirm",
-        "/app/method",
+        "/app/method-empty",
+        "/app/method-get",
+        "/app/method-upper-get",
+        "/app/method-post",
+        "/app/method-spaced-get",
         "/app/stream",
         "/app/top-level-target",
         "/app/download",
@@ -5058,13 +5066,16 @@ describe("React protocol renderer", () => {
       "https://example.test/app/frame-default-top",
       "https://example.test/app/frame-explicit-top",
       "https://example.test/app/frame-parent-top",
+      "https://example.test/app/method-empty",
+      "https://example.test/app/method-get",
+      "https://example.test/app/method-upper-get",
       "https://example.test/app/prefetch-override",
       "https://example.test/app/top-level-target",
       "https://example.test/app/turbo-override",
     ])
-    expect(harness.requestIdCount()).toBe(7)
+    expect(harness.requestIdCount()).toBe(10)
     expect(harness.session.revision).toBe(0)
-    expect(harness.cache.size).toBe(7)
+    expect(harness.cache.size).toBe(10)
 
     act(() => harness.renderer.unmount())
   })
