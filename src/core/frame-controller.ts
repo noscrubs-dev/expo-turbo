@@ -552,7 +552,7 @@ export class FrameController {
       return
     }
     if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
-    if (!this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)) return
+    this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)
     if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
     this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD](prepared)
     if (!this.frameRenderContinuationCurrent(prepared, epoch) || !report.frame) return

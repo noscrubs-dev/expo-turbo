@@ -491,6 +491,81 @@ describe("Frame controller", () => {
     registry.dispose()
   })
 
+  test("cascades an acknowledged outer morph reload without lifecycle observers", async () => {
+    const pending: PendingRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="outer" src="/outer" refresh="morph" loading="lazy"><turbo-frame id="inner" src="/inner" refresh="morph" loading="lazy"><Before id="inner-content" /></turbo-frame></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const outerFrame = session.tree.getElementById("outer")
+    const innerFrame = session.tree.getElementById("inner")
+    const innerContent = session.tree.getElementById("inner-content")
+    if (outerFrame?.kind !== "frame" || innerFrame?.kind !== "frame" || !innerContent) {
+      throw new Error("Frame fixture is missing")
+    }
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `nested-without-lifecycle-${pending.length + 1}` },
+    )
+    const registry = new FrameControllerRegistry(session, loader)
+    const outer = registry.get("outer")
+    const inner = registry.get("inner")
+    const releaseOuter = retainFrameRenderer(session, outerFrame)
+    const releaseInner = retainFrameRenderer(session, innerFrame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      for (const frameId of ["outer", "inner"]) {
+        const current = session.tree.getElementById(frameId)
+        if (current?.kind !== "frame") continue
+        const acknowledgement = acknowledgeFrameRender(session, current, frameId, session.revision)
+        if (acknowledgement) {
+          acknowledgement.finish()
+          return
+        }
+      }
+    })
+
+    await outer.connect()
+    await inner.connect()
+    const reloaded = outer.reload()
+    pending[0]?.resolve(
+      response(
+        '<turbo-frame id="outer"><turbo-frame id="inner" src="/inner" refresh="morph" loading="lazy"><Ignored id="inner-content" /></turbo-frame></turbo-frame>',
+        { url: "https://example.test/outer" },
+      ),
+    )
+
+    await expect(reloaded).resolves.toMatchObject({ frameId: "outer", status: "completed" })
+    expect(session.tree.getElementById("inner")).toBe(innerFrame)
+    expect(session.tree.getElementById("inner-content")).toBe(innerContent)
+    expect(pending).toHaveLength(2)
+    pending[1]?.resolve(
+      response('<turbo-frame id="inner"><Loaded id="inner-content" /></turbo-frame>', {
+        url: "https://example.test/inner",
+      }),
+    )
+    await expect(inner.loaded).resolves.toMatchObject({ frameId: "inner", status: "completed" })
+    expect(session.tree.getElementById("inner-content")?.kind).toBe("element")
+    expect(
+      (session.tree.getElementById("inner-content") as { tagName?: string } | undefined)?.tagName,
+    ).toBe("Loaded")
+
+    unsubscribe()
+    releaseInner()
+    releaseOuter()
+    registry.dispose()
+  })
+
   test("keeps non-exact refresh values on the ordinary replacement path", async () => {
     for (const refresh of ["Morph", "MORPH", " morph"]) {
       const { controller, pending, session } = harness(`src="/frame" refresh="${refresh}"`)
