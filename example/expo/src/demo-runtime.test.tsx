@@ -5,6 +5,7 @@ import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapt
 import {
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
+  isElement,
   StateError,
 } from "expo-turbo/core";
 import { createElement, Fragment, StrictMode } from "react";
@@ -43,6 +44,7 @@ const { DemoRouterRouteOwner } = await import("./demo-router-route-owner");
 const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
   "./demo-runtime"
 );
+const { DEMO_REGISTRY } = await import("./demo-registry");
 const { ExpoTurboRoot } = await import("expo-turbo/react");
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -255,6 +257,29 @@ describe("demo app runtime ownership", () => {
     } finally {
       unsubscribeBefore();
       unsubscribeAction();
+      runtime.dispose();
+    }
+  });
+
+  test("keeps virtualized Frame responses inside the declared style vocabulary", async () => {
+    const runtime = createDemoRuntime();
+
+    try {
+      const controller = runtime.frames.get("flatlist-lazy-frame-one");
+      await controller.setLoading("eager");
+      await controller.connect();
+      await controller.loaded;
+      const frame = runtime.session.tree.getElementById("flatlist-lazy-frame-one");
+      const card = frame?.children.find(
+        (node) => isElement(node) && node.tagName === "DemoCard",
+      );
+      if (!card || !isElement(card)) throw new Error("Virtualized Frame card did not load");
+
+      expect(DEMO_REGISTRY.decode(card).props).toMatchObject({
+        styleTokens: ["space:compact"],
+        tone: "positive",
+      });
+    } finally {
       runtime.dispose();
     }
   });

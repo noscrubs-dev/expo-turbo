@@ -257,7 +257,7 @@ function DemoFormSurface({ children }: { children?: ReactNode }) {
     <View
       accessibilityLabel={form.state.busy ? "Form submitting" : "Form ready"}
       accessibilityState={form.accessibilityState}
-      accessible
+      accessible={false}
       style={{
         backgroundColor: "#f6f8fa",
         borderColor: "#c8d1dc",

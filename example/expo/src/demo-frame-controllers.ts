@@ -62,7 +62,7 @@ export function createDemoFrameControllers(
                     </turbo-frame></Gallery>`
                   : flatListFrameId
                     ? `<Gallery><turbo-frame id="${flatListFrameId}">
-                        <DemoCard title="Virtualized lazy Frame loaded" style-tokens="tone:positive space:compact">
+                        <DemoCard title="Virtualized lazy Frame loaded" tone="positive" style-tokens="space:compact">
                           <DemoText>The current FlatList row was both measured inside its clipping chain and reported viewable by the native virtualizer.</DemoText>
                         </DemoCard>
                       </turbo-frame></Gallery>`
