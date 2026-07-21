@@ -546,11 +546,16 @@ describe("demo Expo Router history bridge", () => {
     fixture.navigation.goBack();
     fixture.navigation.reset(fixture.navigation.state);
     fixture.navigation.reset(forwardState);
+    const forwardRouteKey = forwardState.routes[forwardState.index]?.key;
+    if (!forwardRouteKey) throw new Error("forward route key was missing");
+    const detachForward = fixture.bridge.attach(fixture.navigation, forwardRouteKey);
+    fixture.bridge.reconcile();
     fixture.navigation.reset(forwardState);
 
     expect(traversals).toEqual([initial, proposal.entry]);
     expect(fixture.history.current).toEqual(proposal.entry);
     expect(fixture.navigation.state.routes[1]?.key).toBe(`${DEMO_ROUTER_ROUTE_NAME}-2`);
+    detachForward();
   });
 
   test("restores query-bearing entries after Router back and forward traversal", () => {
@@ -568,9 +573,14 @@ describe("demo Expo Router history bridge", () => {
 
     fixture.navigation.goBack();
     fixture.navigation.reset(forwardState);
+    const forwardRouteKey = forwardState.routes[forwardState.index]?.key;
+    if (!forwardRouteKey) throw new Error("forward route key was missing");
+    const detachForward = fixture.bridge.attach(fixture.navigation, forwardRouteKey);
+    fixture.bridge.reconcile();
 
     expect(traversals).toEqual([initial, proposal.entry]);
     expect(fixture.history.current).toEqual(proposal.entry);
+    detachForward();
   });
 
   test("reconciles a focus change that happened before a replacement attachment", () => {
@@ -591,6 +601,38 @@ describe("demo Expo Router history bridge", () => {
     expect(traversals).toEqual([initial]);
     expect(fixture.history.current).toEqual(initial);
     detachReplacement();
+  });
+
+  test("waits for the focused destination root before reconciling a traversal", () => {
+    const fixture = harness();
+    const initial = initialize(fixture).entry;
+    const proposal = fixture.history.proposeAdvance(LINKED_URL);
+    fixture.history.commitProposal(proposal);
+    const linkedRouteKey = fixture.navigation.state.routes[1]?.key;
+    if (!linkedRouteKey) throw new Error("linked route key was missing");
+
+    const detachLinked = fixture.bridge.attach(fixture.navigation, linkedRouteKey);
+    fixture.navigation.goBack();
+    detachLinked();
+
+    const detachInitial = fixture.bridge.attach(fixture.navigation, INITIAL_ROUTE_KEY, {
+      deferReconciliation: true,
+    });
+    const traversals: DocumentHistoryEntry[] = [];
+    fixture.bridge.subscribe((entry) => {
+      traversals.push(entry);
+      fixture.history.adoptTraversal(entry);
+    });
+    fixture.navigation.reset(fixture.navigation.state);
+
+    expect(traversals).toEqual([]);
+    expect(fixture.history.current).toEqual(proposal.entry);
+
+    fixture.bridge.reconcile();
+
+    expect(traversals).toEqual([initial]);
+    expect(fixture.history.current).toEqual(initial);
+    detachInitial();
   });
 
   test("keeps no-op and thrown Router writes retryable", () => {

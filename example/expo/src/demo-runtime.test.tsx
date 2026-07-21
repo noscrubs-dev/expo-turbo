@@ -8,7 +8,7 @@ import {
   isElement,
   StateError,
 } from "expo-turbo/core";
-import { createElement, Fragment, StrictMode } from "react";
+import { createElement, Fragment, forwardRef, StrictMode, useImperativeHandle, useRef } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type {
@@ -16,6 +16,55 @@ import type {
   DemoRouterRoute,
   DemoRouterState,
 } from "./demo-router-history";
+
+interface NativeScrollCall {
+  readonly containerId: number;
+  readonly options: Readonly<{ animated: boolean; x: number; y: number }>;
+}
+
+interface NativeScrollViewHandle {
+  readonly getNativeScrollRef: () => Readonly<{
+    measureInWindow: (
+      listener: (x: number, y: number, width: number, height: number) => void,
+    ) => void;
+  }>;
+  readonly scrollTo: (options: Readonly<{ animated?: boolean; x?: number; y?: number }>) => void;
+}
+
+const nativeScrollCalls: NativeScrollCall[] = [];
+const nativeRootScrollContainerIds: number[] = [];
+let nextNativeScrollContainerId = 0;
+
+const NativeScrollView = forwardRef<NativeScrollViewHandle, Readonly<Record<string, unknown>>>(
+  (props, ref) => {
+    const containerId = useRef(0);
+    if (containerId.current === 0) {
+      containerId.current = ++nextNativeScrollContainerId;
+      if (props.contentInsetAdjustmentBehavior === "automatic") {
+        nativeRootScrollContainerIds.push(containerId.current);
+      }
+    }
+    useImperativeHandle(ref, () => ({
+      getNativeScrollRef: () => ({
+        measureInWindow(listener) {
+          listener(0, 0, 390, 844);
+        },
+      }),
+      scrollTo(options) {
+        nativeScrollCalls.push({
+          containerId: containerId.current,
+          options: {
+            animated: options.animated ?? false,
+            x: options.x ?? 0,
+            y: options.y ?? 0,
+          },
+        });
+      },
+    }));
+    return createElement("scroll-view", props);
+  },
+);
+NativeScrollView.displayName = "NativeScrollView";
 
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
@@ -26,10 +75,11 @@ mock.module("react-native", () => ({
   Platform: { OS: "web" },
   Pressable: (props: Readonly<Record<string, unknown>>) =>
     createElement("pressable", props),
-  ScrollView: (props: Readonly<Record<string, unknown>>) => createElement("scroll-view", props),
+  ScrollView: NativeScrollView,
   Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
   TextInput: (props: Readonly<Record<string, unknown>>) =>
     createElement("text-input", props),
+  useWindowDimensions: () => ({ height: 844, width: 390 }),
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
 }));
 
@@ -58,6 +108,7 @@ const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
 );
 const { createDemoFixtureFetchAdapter } = await import("./demo-document-controller");
 const { DEMO_REGISTRY } = await import("./demo-registry");
+const { DemoCompatibilityGallery } = await import("./demo-route-screen");
 const { ExpoTurboRoot } = await import("expo-turbo/react");
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -116,6 +167,7 @@ const GALLERY_QUERY_LINKED_URL =
   "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
 const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
+const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 
 interface FixtureTimer {
   readonly callback: () => void;
@@ -641,6 +693,163 @@ describe("demo app runtime ownership", () => {
       await Promise.resolve();
     });
     unregisterScroll();
+  });
+
+  test("restores the gallery root scroll after a cached native history traversal", async () => {
+    nativeScrollCalls.length = 0;
+    nativeRootScrollContainerIds.length = 0;
+    nextNativeScrollContainerId = 0;
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+    const routeTree = (
+      initialFocused: boolean,
+      linkedFocused: boolean,
+      linkedRouteKey?: string,
+    ) =>
+      createElement(
+        DemoRuntimeProvider,
+        { runtime },
+        createElement(
+          Fragment,
+          null,
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: initialFocused, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(DemoCompatibilityGallery),
+          ),
+          linkedRouteKey
+            ? createElement(
+                DemoRouterRouteOwner,
+                { focused: linkedFocused, navigation, routeKey: linkedRouteKey, runtime },
+                createElement(DemoCompatibilityGallery),
+              )
+            : null,
+        ),
+      );
+
+    try {
+      await act(async () => {
+        renderer = create(
+          routeTree(true, false),
+          {
+            createNodeMock(element) {
+              if (element.type === "text-input") return { blur() {}, focus() {} };
+              if (element.type === "view") {
+                return {
+                  measureInWindow(
+                    listener: (x: number, y: number, width: number, height: number) => void,
+                  ) {
+                    listener(0, 0, 320, 40);
+                  },
+                };
+              }
+              return {};
+            },
+          },
+        );
+        await nextTurn();
+        await nextTurn();
+      });
+      if (!renderer) throw new Error("history-scroll gallery did not render");
+
+      const galleryScroll = renderer.root
+        .findAll(
+          (node) =>
+            String(node.type) === "scroll-view" &&
+            node.props.contentInsetAdjustmentBehavior === "automatic",
+        )
+        .at(0);
+      if (!galleryScroll) throw new Error("gallery root ScrollView was not rendered");
+      const initialScrollContainerId = nativeRootScrollContainerIds.at(-1);
+      if (!initialScrollContainerId) throw new Error("initial gallery ScrollView did not mount");
+      const initialEntry = runtime.documentRuntime.history.current;
+      if (!initialEntry) throw new Error("gallery history did not initialize");
+
+      act(() => {
+        galleryScroll.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 384 } } });
+      });
+      expect(
+        runtime.documentRuntime.history.getRestorationData(initialEntry.restorationIdentifier),
+      ).toEqual({ scrollPosition: { x: 0, y: 384 } });
+
+      const historyLink = renderer.root
+        .findAll((node) => String(node.type) === "pressable")
+        .find((pressable) =>
+          pressable.findAll(
+            (node) =>
+              String(node.type) === "native-text" &&
+              node.children.includes("Open the native history scroll restoration proof."),
+          ).length > 0,
+        );
+      if (!historyLink) throw new Error("history-scroll fixture link was not rendered");
+
+      await act(async () => {
+        historyLink.props.onPress();
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(runtime.session.tree.document.url).toBe(HISTORY_SCROLL_URL);
+      expect(runtime.session.tree.getElementById("history-scroll-linked-document")).toBeDefined();
+      expect(navigation.state.index).toBe(1);
+      const linkedRouteKey = navigation.state.routes.at(1)?.key;
+      if (!linkedRouteKey) throw new Error("history-scroll linked route was not pushed");
+
+      await act(async () => {
+        renderer?.update(routeTree(false, true, linkedRouteKey));
+        await nextTurn();
+        await nextTurn();
+      });
+      const linkedScrollContainerId = nativeRootScrollContainerIds.at(-1);
+      if (!linkedScrollContainerId) throw new Error("linked gallery ScrollView did not mount");
+      expect(linkedScrollContainerId).not.toBe(initialScrollContainerId);
+      const fetchesBeforeBack = requests.length;
+
+      await act(async () => {
+        navigation.goBack();
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(runtime.session.tree.document.url).toBe(HISTORY_SCROLL_URL);
+      expect(nativeScrollCalls).toEqual([]);
+
+      await act(async () => {
+        renderer?.update(routeTree(true, false, linkedRouteKey));
+        await nextTurn();
+        await nextTurn();
+      });
+
+      expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+      expect(runtime.session.tree.getElementById("history-scroll-marker")).toBeDefined();
+      expect(runtime.documentRuntime.history.current).toEqual(initialEntry);
+      expect(requests).toHaveLength(fetchesBeforeBack);
+      const restoredScrollContainerId = nativeRootScrollContainerIds.at(-1);
+      if (!restoredScrollContainerId) {
+        throw new Error("restored gallery ScrollView did not mount");
+      }
+      expect(restoredScrollContainerId).not.toBe(initialScrollContainerId);
+      expect(restoredScrollContainerId).not.toBe(linkedScrollContainerId);
+      expect(nativeScrollCalls).toEqual([
+        {
+          containerId: restoredScrollContainerId,
+          options: { animated: false, x: 0, y: 384 },
+        },
+      ]);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+    }
   });
 
   test("uses the gallery's automatic preload as a visible preview before canonical revalidation", async () => {

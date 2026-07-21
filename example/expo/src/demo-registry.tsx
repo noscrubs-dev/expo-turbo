@@ -632,4 +632,10 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoText>The root-only native adapter scrolled here without fetching, visiting, or mutating Router history.</DemoText>
     </DemoCard>
   </DemoAnchorTarget>
+  <DemoCard id="history-scroll-marker" title="Native history scroll checkpoint" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>Open the next document, then use the native iOS back action to return here at this root-scroll position from cached history.</DemoText>
+    <DemoDocumentLink href="/demo/linked?history=scroll">
+      <DemoText>Open the native history scroll restoration proof.</DemoText>
+    </DemoDocumentLink>
+  </DemoCard>
 </Gallery>`;

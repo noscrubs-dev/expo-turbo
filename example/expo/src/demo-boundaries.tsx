@@ -9,6 +9,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -26,6 +27,7 @@ import {
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
 import { useDemoDocumentAnchorScrollContent } from "./demo-document-anchor-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
+import { useOptionalDemoRouterRouteReady } from "./demo-router-route-owner";
 import {
   DEMO_ROOT_VISIBILITY_CONTAINER_ID,
   type DemoFrameViewability,
@@ -319,9 +321,14 @@ export function DemoDocumentBoundary({
   state,
 }: ExpoTurboDocumentBoundaryProps) {
   const anchorScrollContent = useDemoDocumentAnchorScrollContent();
+  const markRouteReady = useOptionalDemoRouterRouteReady();
   const accessibilityLabel = state.previewVisible
     ? `Document visit: ${state.status}, showing cached preview`
     : `Document visit: ${state.status}`;
+
+  useEffect(() => {
+    markRouteReady?.();
+  }, [markRouteReady]);
 
   return (
     <View style={{ gap: 12 }}>

@@ -69,6 +69,12 @@ const REFRESHED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
 </Gallery>`;
 
+const HISTORY_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="history-scroll-linked-document" title="Native history scroll restoration is ready" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>Use the native iOS back action to return to the saved gallery root-scroll checkpoint without another document GET.</DemoText>
+  </DemoCard>
+</Gallery>`;
+
 const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 export const DEMO_CLOCK: ClockAdapter = {
@@ -106,6 +112,8 @@ export function createDemoFixtureFetchAdapter(
       } else if (url.pathname === "/demo/linked" && url.search === "?refresh=scroll") {
         xml = refreshScenarioPending === undefined ? REFRESH_SCENARIO_DOCUMENT : REFRESHED_DOCUMENT;
         refreshScenarioPending = undefined;
+      } else if (url.pathname === "/demo/linked" && url.search === "?history=scroll") {
+        xml = HISTORY_SCROLL_DOCUMENT;
       } else {
         xml = LINKED_DOCUMENT;
       }

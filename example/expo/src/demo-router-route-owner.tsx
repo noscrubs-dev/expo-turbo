@@ -1,8 +1,12 @@
 import { StateError } from "expo-turbo/core";
 import {
+  createContext,
   type ReactNode,
+  useCallback,
+  useContext,
   useEffect,
   useMemo,
+  useRef,
   useSyncExternalStore,
 } from "react";
 import { Text } from "react-native";
@@ -15,6 +19,12 @@ interface DemoRouterRouteOwnerState {
   readonly error?: Error;
   readonly routeKey: string;
   readonly status: "error" | "pending" | "ready";
+}
+
+const DemoRouterRouteReadyContext = createContext<(() => void) | undefined>(undefined);
+
+export function useOptionalDemoRouterRouteReady(): (() => void) | undefined {
+  return useContext(DemoRouterRouteReadyContext);
 }
 
 class DemoRouterRouteGate {
@@ -64,6 +74,20 @@ function ActiveDemoRouterRouteOwner({
 }: Omit<DemoRouterRouteOwnerProps, "focused">) {
   const gate = useMemo(() => new DemoRouterRouteGate(routeKey), [routeKey]);
   const owner = useSyncExternalStore(gate.subscribe, gate.snapshot, gate.snapshot);
+  const reconciled = useRef(false);
+  const markRootReady = useCallback(() => {
+    if (reconciled.current) return;
+    try {
+      runtime.navigation.reconcile();
+      reconciled.current = true;
+    } catch (error) {
+      runtime.navigation.reportError(
+        error instanceof Error
+          ? error
+          : new StateError("Demo Router history reconciliation failed"),
+      );
+    }
+  }, [runtime.navigation]);
 
   useEffect(() => {
     let active = true;
@@ -77,7 +101,7 @@ function ActiveDemoRouterRouteOwner({
     });
     const initialize = async (): Promise<void> => {
       try {
-        detach = runtime.navigation.attach(navigation, routeKey);
+        detach = runtime.navigation.attach(navigation, routeKey, { deferReconciliation: true });
         let documentUrl = runtime.session.tree.document.url;
         if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
         const routeState = runtime.navigation.readRouteState();
@@ -106,7 +130,6 @@ function ActiveDemoRouterRouteOwner({
             runtime.navigation.readInitialState(documentUrl),
           );
         }
-        runtime.navigation.reconcile();
         initialized = true;
         runtime.navigation.clearError();
         if (active) gate.ready(routeKey);
@@ -137,7 +160,11 @@ function ActiveDemoRouterRouteOwner({
       </Text>
     );
   }
-  return children;
+  return (
+    <DemoRouterRouteReadyContext.Provider value={markRootReady}>
+      {children}
+    </DemoRouterRouteReadyContext.Provider>
+  );
 }
 
 /** Owns the one focused Router attachment and logical document root. */
