@@ -24,19 +24,11 @@ export interface ActionCableWebSocket {
   send(data: string): void
 }
 
-export type ActionCableWebSocketHeaders = Readonly<Record<string, string>>
-
 export interface ActionCableWebSocketAdapterOptions {
   readonly createSocket: (
     url: string,
     protocols: readonly [typeof ACTION_CABLE_V1_JSON_PROTOCOL],
-    headers?: ActionCableWebSocketHeaders,
   ) => ActionCableWebSocket
-  /**
-   * Optional host-owned handshake headers. They are validated, cloned, and
-   * frozen before the socket factory receives them.
-   */
-  readonly headers?: ActionCableWebSocketHeaders
   /** Receives only redacted transport failures; callbacks still receive their terminal state. */
   readonly onError: (error: SubscriptionError) => void
   /** Absolute `ws:` or `wss:` endpoint without URL userinfo, query, or fragment. */
@@ -138,63 +130,13 @@ function isWebSocketUrl(value: string): boolean {
   }
 }
 
-const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
-
-function hasHeaderValueControl(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index)
-    if (code <= 31 || code === 127) return true
-  }
-  return false
-}
-
-function socketHeaders(value: unknown): ActionCableWebSocketHeaders | undefined {
-  if (value === undefined) return undefined
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw adapterError("Action Cable WebSocket headers are invalid")
-  }
-
-  try {
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw adapterError("Action Cable WebSocket headers are invalid")
-    }
-
-    const snapshot = Object.create(null) as Record<string, string>
-    const names = Object.keys(value)
-    const normalizedNames = new Set<string>()
-    for (const name of names) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, name)
-      const headerValue = descriptor && "value" in descriptor ? descriptor.value : undefined
-      const normalizedName = name.toLowerCase()
-      if (
-        !descriptor ||
-        !("value" in descriptor) ||
-        !HEADER_NAME.test(name) ||
-        normalizedNames.has(normalizedName) ||
-        typeof headerValue !== "string" ||
-        hasHeaderValueControl(headerValue)
-      ) {
-        throw adapterError("Action Cable WebSocket headers are invalid")
-      }
-      normalizedNames.add(normalizedName)
-      snapshot[name] = headerValue
-    }
-    return Object.freeze(snapshot)
-  } catch (error) {
-    if (error instanceof SubscriptionError) throw error
-    throw adapterError("Action Cable WebSocket headers are invalid")
-  }
-}
-
 /**
  * A bounded Action Cable v1 JSON transport over one host-owned WebSocket at a time.
  *
- * This deliberately owns no credential selection, URL derivation, lifecycle
- * integration, reconnect timing, or retry policy. Hosts may provide an immutable
- * handshake-header snapshot to their socket factory. It only rotates after an
- * explicit valid server `disconnect` frame requests reconnecting; terminal socket
- * failures otherwise require the host to construct a fresh adapter.
+ * This deliberately owns no credentials, URL derivation, lifecycle integration,
+ * reconnect timing, or retry policy. It only rotates after an explicit valid
+ * server `disconnect` frame requests reconnecting; terminal socket failures
+ * otherwise require the host to construct a fresh adapter.
  */
 export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private active = true
@@ -202,7 +144,6 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private creatingConnection = false
   private generation = 0
   private readonly groups = new Map<string, SubscriptionGroup>()
-  private readonly headers: ActionCableWebSocketHeaders | undefined
   private readonly pendingConnectionRecords = new Set<SubscriptionRecord>()
   private terminated = false
   private welcomed = false
@@ -224,12 +165,10 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     if (optionsAreArray) throw adapterError("Action Cable WebSocket adapter options are invalid")
 
     let createSocket: ActionCableWebSocketAdapterOptions["createSocket"]
-    let headers: unknown
     let onError: ActionCableWebSocketAdapterOptions["onError"]
     let url: string
     try {
       createSocket = options.createSocket
-      headers = options.headers
       onError = options.onError
       url = options.url
     } catch {
@@ -246,7 +185,6 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     }
 
     this.createSocket = createSocket
-    this.headers = socketHeaders(headers)
     this.onError = onError
     this.url = url
   }
@@ -319,7 +257,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     let socket: ActionCableWebSocket
     this.creatingConnection = true
     try {
-      socket = this.createSocket(this.url, [ACTION_CABLE_V1_JSON_PROTOCOL], this.headers)
+      socket = this.createSocket(this.url, [ACTION_CABLE_V1_JSON_PROTOCOL])
     } catch {
       this.creatingConnection = false
       if (this.failPendingConnectionRecords()) {
