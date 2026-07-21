@@ -55,7 +55,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] **XML and document tree:** strict namespace-aware document and Turbo Stream-fragment parsing, limits, deterministic XML/tree diagnostics, stable IDs, and structural selectors.
 - [x] **Native rendering:** typed component registries, schema/attribute admission, component actions, scoped state, and a React renderer for registered XML components.
 - [x] **Native XML direction:** validated `dir="ltr|rtl|auto"` inheritance across the document root, registered components, and Frames, exposed through `useExpoTurboDirection()`. The package stays React-only; the example maps that context to React Native layout/text props without changing global device direction.
-- [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents.
+- [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents. The standalone gallery visibly exercises an automatic cached document preview followed by its canonical response in iOS Simulator/Expo Go; Android interaction, physical-device, and release-build confirmation remain pending.
 - [x] **Nested Frame refresh morph:** a direct outer `FrameController.reload()` with exact `refresh="morph"` retains eligible nested Frame wrappers and current children, ignores stale nested response content, then reloads each eligible child after the outer renderer acknowledgement. The standalone Rails panel has iOS Simulator/Expo Go evidence; Android, physical-device, and release-build confirmation remain pending.
 - [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. The Expo example exposes an opt-in native-only Frame-form panel against the standalone Rails host. A controlled renderer test and separate desktop provider/root smoke cover initial Frame loading, server-owned `422` XML, a successful `204` that preserves the mounted Frame and edited input, and an adapter-followed canonical `303` GET with replacement-input reset; a focused iOS Simulator run also confirms the real Rails `204` leaves that mounted Frame and native input intact. This is not release-build or physical-device evidence. Multipart and File/Blob uploads are not supported.
 - [x] **Turbo Streams:** built-in and registered custom actions, target/selector dispatch, refresh handling, and identity-safe cleanup.
@@ -226,6 +226,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-22**:
+
+- Changed: Added a gallery link at `/demo/linked?preview=automatic` that warms one XML snapshot through `data-turbo-preload`, renders it as a provisional native document, and then replaces it with an authoritative fixture response.
+- Why: Cached-preview semantics already had core coverage, but the standalone native gallery offered no observable iOS path through automatic preload, provisional rendering, and canonical revalidation.
+- Impact: The focused runtime test and iOS Simulator/Expo Go flow prove the bounded document-preview contract. Android interaction, physical-device, and release-build confirmation remain later gates.
 
 **2026-07-22**:
 

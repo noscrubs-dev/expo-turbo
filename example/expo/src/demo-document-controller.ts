@@ -27,11 +27,61 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
 </Gallery>`;
 
+const CACHED_PREVIEW_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="cached-preview-document" title="Cached preview is visible" style-tokens="tone:info space:comfortable surface:elevated">
+    <DemoText>This provisional document came from data-turbo-preload while its canonical response is still loading.</DemoText>
+  </DemoCard>
+</Gallery>`;
+
+const CANONICAL_PREVIEW_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="canonical-preview-document" title="Canonical document replaced the preview" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The authoritative response replaced the cached preview and completed the document visit.</DemoText>
+  </DemoCard>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
+const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
+
 export const DEMO_CLOCK: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   now: Date.now,
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 };
+
+export function createDemoFixtureFetchAdapter(
+  clock: ClockAdapter = DEMO_CLOCK,
+): FetchAdapter {
+  return {
+    async fetch(request): Promise<TurboResponse> {
+      const url = new URL(request.url);
+      let xml: string;
+      if (url.pathname === "/demo") {
+        xml = DEMO_DOCUMENT;
+      } else if (url.pathname === "/demo/linked" && url.search === "?preview=automatic") {
+        xml =
+          request.headers["X-Sec-Purpose"] === "prefetch"
+            ? CACHED_PREVIEW_DOCUMENT
+            : await new Promise<string>((resolve) => {
+                clock.setTimeout(
+                  () => resolve(CANONICAL_PREVIEW_DOCUMENT),
+                  PREVIEW_REVALIDATION_DELAY_MS,
+                );
+              });
+      } else {
+        xml = LINKED_DOCUMENT;
+      }
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => xml,
+        url: request.url,
+      };
+    },
+  };
+}
 
 export interface DemoDocumentRuntime {
   bootstrapInitialState(
@@ -67,19 +117,7 @@ function statesEqual(left: DocumentHistoryState, right: DocumentHistoryState): b
 export function createDemoDocumentRuntime(
   session: DocumentSession,
   historyHost: DocumentHistoryHostAdapter,
-  fetchAdapter: FetchAdapter = {
-    async fetch(request): Promise<TurboResponse> {
-      const url = new URL(request.url);
-      const xml = url.pathname === "/demo" ? DEMO_DOCUMENT : LINKED_DOCUMENT;
-      return {
-        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
-        redirected: false,
-        status: 200,
-        text: async () => xml,
-        url: request.url,
-      };
-    },
-  },
+  fetchAdapter: FetchAdapter = createDemoFixtureFetchAdapter(),
 ): DemoDocumentRuntime {
   let requestId = 0;
   let restorationIdentifier = 0;

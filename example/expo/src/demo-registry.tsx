@@ -536,6 +536,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked?source=gallery&amp;tag=a&amp;tag=b&amp;empty=">
     <DemoText>Open a query-bearing same-origin document and retain repeated and empty values through native history.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/linked?preview=automatic" data-turbo-preload="">
+    <DemoText>Open a cached document preview, then replace it with the canonical response.</DemoText>
+  </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked" data-turbo-action="replace">
     <DemoText>Replace this Router entry with the linked document.</DemoText>
   </DemoDocumentLink>

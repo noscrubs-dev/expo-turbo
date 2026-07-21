@@ -317,10 +317,14 @@ export function DemoDocumentBoundary({
   children,
   state,
 }: ExpoTurboDocumentBoundaryProps) {
+  const accessibilityLabel = state.previewVisible
+    ? `Document visit: ${state.status}, showing cached preview`
+    : `Document visit: ${state.status}`;
+
   return (
     <View style={{ gap: 12 }}>
       <View
-        accessibilityLabel={`Document visit: ${state.status}`}
+        accessibilityLabel={accessibilityLabel}
         accessibilityState={accessibilityState}
         accessible
         style={{
@@ -334,6 +338,11 @@ export function DemoDocumentBoundary({
         <Text selectable style={{ color: "#435160", fontSize: 12 }}>
           Document: {state.busy ? "Loading" : state.status}
         </Text>
+        {state.previewVisible ? (
+          <Text selectable style={{ color: "#435160", fontSize: 12 }}>
+            Showing cached preview while loading canonical response.
+          </Text>
+        ) : null}
         {state.progressVisible ? (
           <Text selectable style={{ color: "#435160", fontSize: 12 }}>
             Visit is taking longer than 500 ms…

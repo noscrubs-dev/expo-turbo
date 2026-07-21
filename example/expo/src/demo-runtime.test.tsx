@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
 import { describe, expect, mock, test } from "bun:test";
-import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
+import type { ClockAdapter, FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
 import {
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
@@ -45,6 +45,7 @@ const { DemoRouterRouteOwner } = await import("./demo-router-route-owner");
 const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
   "./demo-runtime"
 );
+const { createDemoFixtureFetchAdapter } = await import("./demo-document-controller");
 const { DEMO_REGISTRY } = await import("./demo-registry");
 const { ExpoTurboRoot } = await import("expo-turbo/react");
 
@@ -102,6 +103,27 @@ const LINKED_QUERY_URL = "https://example.test/demo/linked?source=deep-link&tag=
 const LINKED_REPLACEMENT_QUERY_URL = "https://example.test/demo/linked?source=changed";
 const GALLERY_QUERY_LINKED_URL =
   "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
+const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
+
+interface FixtureTimer {
+  readonly callback: () => void;
+  readonly delayMs: number;
+}
+
+function createFixtureClock(): readonly [ClockAdapter, FixtureTimer[]] {
+  const timers: FixtureTimer[] = [];
+  return [
+    {
+      clearTimeout() {},
+      now: () => 0,
+      setTimeout(callback, delayMs): unknown {
+        timers.push({ callback, delayMs });
+        return timers.length;
+      },
+    },
+    timers,
+  ];
+}
 
 function routeParams(
   url: string,
@@ -506,6 +528,114 @@ describe("demo app runtime ownership", () => {
     expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
       GALLERY_QUERY_LINKED_URL,
     );
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("uses the gallery's automatic preload as a visible preview before canonical revalidation", async () => {
+    const [clock, timers] = createFixtureClock();
+    const fixtureFetch = createDemoFixtureFetchAdapter(clock);
+    const requests: TurboRequest[] = [];
+    const fetch: FetchAdapter = {
+      fetch(request) {
+        requests.push(request);
+        return fixtureFetch.fetch(request);
+      },
+    };
+    const runtime = createDemoRuntime({ documentFetch: fetch });
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery cached-preview fixture did not render");
+    const preload = requests[0];
+    if (!preload) throw new Error("automatic cached-preview preload did not start");
+    expect(preload.url).toBe(PREVIEW_URL);
+    expect(preload.headers["X-Sec-Purpose"]).toBe("prefetch");
+    expect(runtime.documentRuntime.snapshotCache.has(PREVIEW_URL)).toBe(true);
+
+    const previewLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find(
+        (pressable) =>
+          pressable.findAll(
+            (node) =>
+              String(node.type) === "native-text" &&
+              node.children.includes(
+                "Open a cached document preview, then replace it with the canonical response.",
+              ),
+          ).length > 0,
+      );
+    if (!previewLink) throw new Error("gallery cached-preview link was not rendered");
+
+    await act(async () => {
+      previewLink.props.onPress();
+      await nextTurn();
+    });
+
+    const canonical = requests[1];
+    if (!canonical) throw new Error("cached preview canonical revalidation did not start");
+    expect(canonical.url).toBe(PREVIEW_URL);
+    expect(canonical.headers["X-Sec-Purpose"]).toBeUndefined();
+    const timer = timers[0];
+    if (!timer) throw new Error("cached preview canonical revalidation did not delay");
+    expect(timer.delayMs).toBe(4_000);
+    expect(
+      renderer.root.findAll(
+        (node) =>
+          node.props.accessibilityLabel === "Document visit: started, showing cached preview",
+      ),
+    ).not.toHaveLength(0);
+    expect(runtime.session.treeState.preview).toBe(true);
+    expect(runtime.session.tree.getElementById("cached-preview-document")).toBeDefined();
+    expect(runtime.documentRuntime.controller.state.previewVisible).toBe(true);
+    expect(navigation.state.routes[1]?.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
+      "demo",
+      "linked",
+    ]);
+
+    await act(async () => {
+      timer.callback();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(runtime.session.treeState.preview).toBe(false);
+    expect(runtime.session.tree.getElementById("canonical-preview-document")).toBeDefined();
+    expect(runtime.documentRuntime.controller.state.previewVisible).toBe(false);
+    expect(runtime.documentRuntime.history.current?.url).toBe(PREVIEW_URL);
 
     await act(async () => {
       renderer?.unmount();
