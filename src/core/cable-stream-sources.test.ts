@@ -14,7 +14,10 @@ import {
   CableStreamSourceRegistry,
 } from "./cable-stream-sources"
 import { DocumentRequestLoader } from "./document-loader"
-import { DocumentRefreshController } from "./document-refresh-controller"
+import {
+  DocumentReconnectReconciler,
+  DocumentRefreshController,
+} from "./document-refresh-controller"
 import { DocumentVisitController } from "./document-visit-controller"
 import { StateError, SubscriptionError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
@@ -360,6 +363,135 @@ describe("Cable stream source registry", () => {
     })
     await visit
     registry.dispose()
+    refresh.dispose()
+  })
+
+  test("defers reconnect reconciliation until the active current-document visit settles", async () => {
+    const currentUrl = "https://example.test/current"
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const clock = new ManualClock()
+    const requests: TurboRequest[] = []
+    let resolveVisit: ((response: TurboResponse) => void) | undefined
+    const loader = new DocumentRequestLoader(
+      document,
+      {
+        fetch: (request) => {
+          requests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveVisit = resolve
+          })
+        },
+      },
+      { next: () => "request-1" },
+    )
+    const visits = new DocumentVisitController(loader, clock)
+    const refresh = new DocumentRefreshController(document, visits, clock)
+    const reconnectRefresh = new DocumentReconnectReconciler(refresh, visits)
+    const cable = new FakeCable()
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh,
+    })
+    registry.retain(source(document, "source"))
+    const record = cable.records[0]
+    if (!record) throw new Error("Missing Cable subscription")
+
+    const visit = visits.visit(currentUrl)
+    await Promise.resolve()
+    expect(requests).toHaveLength(1)
+
+    record.callbacks.connected(false)
+    record.callbacks.disconnected(true)
+    record.callbacks.connected(true)
+    expect(clock.timers).toHaveLength(1)
+
+    const resolve = resolveVisit
+    if (!resolve) throw new Error("Missing active document visit")
+    resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => "<Gallery/>",
+      url: currentUrl,
+    })
+    await visit
+
+    expect(clock.timers).toHaveLength(2)
+    clock.fire(1)
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toMatchObject({ method: "GET", url: currentUrl })
+
+    registry.dispose()
+    reconnectRefresh.dispose()
+    refresh.dispose()
+  })
+
+  test("drops deferred reconnect reconciliation when the settled visit changes documents", async () => {
+    const currentUrl = "https://example.test/current"
+    const nextUrl = "https://example.test/next"
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const clock = new ManualClock()
+    const requests: TurboRequest[] = []
+    let resolveVisit: ((response: TurboResponse) => void) | undefined
+    const loader = new DocumentRequestLoader(
+      document,
+      {
+        fetch: (request) => {
+          requests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveVisit = resolve
+          })
+        },
+      },
+      { next: () => "request-1" },
+    )
+    const visits = new DocumentVisitController(loader, clock)
+    const refresh = new DocumentRefreshController(document, visits, clock)
+    const reconnectRefresh = new DocumentReconnectReconciler(refresh, visits)
+    const cable = new FakeCable()
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh,
+    })
+    registry.retain(source(document, "source"))
+    const record = cable.records[0]
+    if (!record) throw new Error("Missing Cable subscription")
+
+    const visit = visits.visit(nextUrl)
+    await Promise.resolve()
+    expect(requests).toHaveLength(1)
+
+    record.callbacks.connected(false)
+    record.callbacks.disconnected(true)
+    record.callbacks.connected(true)
+
+    const resolve = resolveVisit
+    if (!resolve) throw new Error("Missing active document visit")
+    resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => "<Gallery/>",
+      url: nextUrl,
+    })
+    await visit
+
+    expect(clock.timers).toHaveLength(2)
+    clock.fire(1)
+    expect(requests).toHaveLength(1)
+
+    registry.dispose()
+    reconnectRefresh.dispose()
     refresh.dispose()
   })
 

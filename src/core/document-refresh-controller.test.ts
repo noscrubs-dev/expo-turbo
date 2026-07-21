@@ -4,9 +4,10 @@ import type { ClockAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { DocumentRequestLoader } from "./document-loader"
 import {
   DOCUMENT_REFRESH_DEBOUNCE_MS,
+  DocumentReconnectReconciler,
   DocumentRefreshController,
 } from "./document-refresh-controller"
-import { DocumentVisitController } from "./document-visit-controller"
+import { DocumentVisitController, type DocumentVisitSnapshot } from "./document-visit-controller"
 import { RequestError, StateError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
@@ -100,6 +101,31 @@ function terminalVisit(visits: DocumentVisitController): Promise<void> {
       }
     })
   })
+}
+
+class ReconnectVisitStub {
+  private readonly listeners = new Set<() => void>()
+  private status: DocumentVisitSnapshot["status"] = "initialized"
+
+  get state(): DocumentVisitSnapshot {
+    return Object.freeze({
+      busy: this.status === "started",
+      previewVisible: false,
+      progressVisible: false,
+      revision: 0,
+      status: this.status,
+    })
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  setStatus(status: DocumentVisitSnapshot["status"]): void {
+    this.status = status
+    for (const listener of [...this.listeners]) listener()
+  }
 }
 
 describe("document refresh controller", () => {
@@ -345,5 +371,91 @@ describe("document refresh controller", () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]).toBeInstanceOf(RequestError)
     expect(errors[0]?.message).toBe("Document request failed")
+  })
+
+  test("defers one reconnect reconciliation until the active visit settles", () => {
+    for (const status of ["completed", "failed", "canceled"] as const) {
+      const visits = new ReconnectVisitStub()
+      const requests: unknown[] = []
+      const reconciler = new DocumentReconnectReconciler(
+        { request: (request) => requests.push(request) },
+        visits,
+      )
+
+      visits.setStatus("started")
+      reconciler.request({ baseUrl: "https://example.test/older", scroll: "reset" })
+      reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+      expect(requests).toEqual([])
+
+      visits.setStatus(status)
+      expect(requests).toEqual([{ baseUrl: "https://example.test/current", scroll: "preserve" }])
+      expect(Object.isFrozen(requests[0])).toBe(true)
+
+      visits.setStatus(status)
+      expect(requests).toHaveLength(1)
+    }
+  })
+
+  test("drops a deferred reconnect reconciliation after disposal", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: unknown[] = []
+    const reconciler = new DocumentReconnectReconciler(
+      { request: (request) => requests.push(request) },
+      visits,
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+    reconciler.dispose()
+    visits.setStatus("completed")
+
+    expect(requests).toEqual([])
+    expect(() => reconciler.request({ baseUrl: "https://example.test/current" })).toThrow(
+      StateError,
+    )
+  })
+
+  test("waits through a reentrant newer visit before handing off once", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: unknown[] = []
+    let startNewerVisit = true
+    visits.subscribe(() => {
+      if (!startNewerVisit || visits.state.status !== "completed") return
+      startNewerVisit = false
+      visits.setStatus("started")
+    })
+    const reconciler = new DocumentReconnectReconciler(
+      { request: (request) => requests.push(request) },
+      visits,
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+    visits.setStatus("completed")
+    expect(requests).toEqual([])
+
+    visits.setStatus("completed")
+    expect(requests).toEqual([{ baseUrl: "https://example.test/current", scroll: "preserve" }])
+  })
+
+  test("redacts a deferred reconnect handoff failure", () => {
+    const visits = new ReconnectVisitStub()
+    const errors: Error[] = []
+    const reconciler = new DocumentReconnectReconciler(
+      {
+        request: () => {
+          throw new Error("secret refresh transport details")
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+    visits.setStatus("completed")
+
+    expect(errors).toEqual([new RequestError("Document reconnect reconciliation failed")])
+    expect(errors[0]?.cause).toBeUndefined()
   })
 })
