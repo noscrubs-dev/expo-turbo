@@ -1,0 +1,10 @@
+<%= expo_turbo_frame_tag "demo-form-frame" do %>
+  <DemoForm id="demo-form" action="/api/expo_turbo/demo/form" method="post">
+    <DemoText id="demo-form-title">Rails Frame form</DemoText>
+    <DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="<%= ERB::Util.html_escape(first_name) %>" />
+    <% if error %>
+      <DemoText id="demo-form-error"><%= ERB::Util.html_escape(error) %></DemoText>
+    <% end %>
+    <DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" />
+  </DemoForm>
+<% end %>

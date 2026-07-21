@@ -91,7 +91,7 @@ jobs:
         working-directory: example/rails
 
   rails-action-cable-smoke:
-    name: Rails Action Cable desktop smoke
+    name: Rails desktop smoke
     runs-on: ubuntu-latest
     services:
       redis:
@@ -119,7 +119,7 @@ jobs:
       - run: bun run build
       - run: bun install --frozen-lockfile
         working-directory: example/expo
-      - name: Smoke Rails Action Cable WebSocket
+      - name: Smoke Rails Action Cable WebSocket and Frame form
         working-directory: example/rails
         run: |
           set -eu
@@ -141,7 +141,9 @@ jobs:
             if curl --fail --silent --show-error --max-time 1 http://127.0.0.1:3001/up >/dev/null 2>&1; then
               (
                 cd ../expo
-                EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test src/demo-live-cable.redis-smoke.test.ts
+                EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test \
+                  src/demo-live-cable.redis-smoke.test.ts \
+                  src/demo-live-form.rails-smoke.test.ts
               )
               exit $?
             fi

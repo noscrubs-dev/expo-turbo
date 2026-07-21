@@ -62,7 +62,8 @@ module ExpoTurbo
       end
 
       def expo_turbo_frame_request_id
-        frame_id = request.headers["Turbo-Frame"]
+        frame_id = request.get_header("HTTP_TURBO_FRAME")
+        frame_id = frame_id.dup.force_encoding(Encoding::UTF_8) if frame_id.is_a?(String)
         Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
