@@ -1,4 +1,4 @@
-import type { FetchAdapter } from "expo-turbo/adapters";
+import type { ClockAdapter, FetchAdapter } from "expo-turbo/adapters";
 import { Linking, Text } from "react-native";
 import {
   DocumentFormControls,
@@ -32,7 +32,9 @@ import { DemoDocumentRefreshScrollRegistry } from "./demo-document-refresh-scrol
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
   createDemoDocumentRuntime,
+  createDemoFixtureFetchAdapter,
   DEMO_CLOCK,
+  type DemoFixtureFetchAdapter,
   type DemoDocumentRuntime,
 } from "./demo-document-controller";
 import { createDemoFrameControllers } from "./demo-frame-controllers";
@@ -66,6 +68,7 @@ export interface DemoRuntime {
 }
 
 export interface DemoRuntimeOptions {
+  readonly clock?: ClockAdapter;
   readonly documentFetch?: FetchAdapter;
 }
 
@@ -74,6 +77,8 @@ const runtimeOwners = new WeakMap<DemoRuntime, number>();
 let sharedRuntime: DemoRuntime | undefined;
 
 export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime {
+  const clock = options.clock ?? DEMO_CLOCK;
+  const documentFetch = options.documentFetch ?? createDemoFixtureFetchAdapter(clock);
   const session = new DocumentSession(
     parseExpoTurboDocument(DEMO_DOCUMENT, {
       url: "https://example.test/demo",
@@ -87,12 +92,32 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   documentRuntime = createDemoDocumentRuntime(
     session,
     navigation,
-    options.documentFetch,
+    documentFetch,
+    clock,
   );
+  const fixtureFetch = isDemoFixtureFetchAdapter(documentFetch) ? documentFetch : undefined;
   const refresh = new DocumentRefreshController(
     session,
-    documentRuntime.controller,
-    DEMO_CLOCK,
+    {
+      refreshCurrent(...args: Parameters<DemoDocumentRuntime["controller"]["refreshCurrent"]>) {
+        const canRefreshFixture =
+          documentRuntime.controller.state.status !== "started" &&
+          session.tree.document.url === args[0];
+        const disarm = canRefreshFixture ? fixtureFetch?.armRefreshScenario(args[0]) : undefined;
+        try {
+          const refreshed = documentRuntime.controller.refreshCurrent(...args);
+          void refreshed.then(
+            () => disarm?.(),
+            () => disarm?.(),
+          );
+          return refreshed;
+        } catch (error) {
+          disarm?.();
+          throw error;
+        }
+      },
+    },
+    clock,
   );
   const actionRuntime = createDemoActionRuntime();
   const documentRefreshScroll = new DemoDocumentRefreshScrollRegistry();
@@ -173,6 +198,10 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       actionRuntime.state.dispose();
     },
   });
+}
+
+function isDemoFixtureFetchAdapter(fetchAdapter: FetchAdapter): fetchAdapter is DemoFixtureFetchAdapter {
+  return "armRefreshScenario" in fetchAdapter && typeof fetchAdapter.armRefreshScenario === "function";
 }
 
 function getSharedDemoRuntime(): DemoRuntime {

@@ -16,6 +16,7 @@ import type {
   DemoRouterRoute,
   DemoRouterState,
 } from "./demo-router-history";
+
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
   Alert: { alert: () => undefined },
@@ -25,12 +26,22 @@ mock.module("react-native", () => ({
   Platform: { OS: "web" },
   Pressable: (props: Readonly<Record<string, unknown>>) =>
     createElement("pressable", props),
-  ScrollView: (props: Readonly<Record<string, unknown>>) =>
-    createElement("scroll-view", props),
+  ScrollView: (props: Readonly<Record<string, unknown>>) => createElement("scroll-view", props),
   Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
   TextInput: (props: Readonly<Record<string, unknown>>) =>
     createElement("text-input", props),
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
+}));
+
+mock.module("expo-router", () => ({
+  Stack: { Screen: () => null },
+  useIsFocused: () => true,
+  useNavigation: () => undefined,
+  useNavigationContainerRef: () => ({
+    addListener: () => () => undefined,
+    isReady: () => true,
+  }),
+  useRoute: () => ({ key: "demo-route-1" }),
 }));
 
 const {
@@ -104,9 +115,11 @@ const LINKED_REPLACEMENT_QUERY_URL = "https://example.test/demo/linked?source=ch
 const GALLERY_QUERY_LINKED_URL =
   "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
 const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
+const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 
 interface FixtureTimer {
   readonly callback: () => void;
+  cleared: boolean;
   readonly delayMs: number;
 }
 
@@ -114,11 +127,15 @@ function createFixtureClock(): readonly [ClockAdapter, FixtureTimer[]] {
   const timers: FixtureTimer[] = [];
   return [
     {
-      clearTimeout() {},
+      clearTimeout(handle) {
+        const timer = timers.find((candidate) => candidate === handle);
+        if (timer) timer.cleared = true;
+      },
       now: () => 0,
       setTimeout(callback, delayMs): unknown {
-        timers.push({ callback, delayMs });
-        return timers.length;
+        const timer: FixtureTimer = { callback, cleared: false, delayMs };
+        timers.push(timer);
+        return timer;
       },
     },
     timers,
@@ -641,6 +658,145 @@ describe("demo app runtime ownership", () => {
       renderer?.unmount();
       await Promise.resolve();
     });
+  });
+
+  test("cancels the delayed preview fixture timer when canonical revalidation aborts", async () => {
+    const [clock, timers] = createFixtureClock();
+    const adapter = createDemoFixtureFetchAdapter(clock);
+    const controller = new AbortController();
+    let resolved = false;
+    const pending = adapter.fetch({
+      headers: {},
+      method: "GET",
+      signal: controller.signal,
+      url: PREVIEW_URL,
+    });
+    void pending.then(
+      () => {
+        resolved = true;
+      },
+      () => undefined,
+    );
+    const timer = timers[0];
+    if (!timer) throw new Error("canonical preview timer did not start");
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(timer.cleared).toBe(true);
+    timer.callback();
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+  });
+
+  test("commits the gallery Refresh Stream scenario and resets its owning root ScrollView", async () => {
+    const [clock, timers] = createFixtureClock();
+    const runtime = createDemoRuntime({
+      clock,
+      documentFetch: createDemoFixtureFetchAdapter(clock),
+    });
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+    const scrollCalls: string[] = [];
+    const unregisterScroll = runtime.documentRefreshScroll.registerContainer({
+      isAvailable: () => true,
+      scrollTo: () => undefined,
+      scrollToTop: () => {
+        scrollCalls.push("top");
+      },
+    });
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery Refresh Stream scenario did not render");
+
+    await act(async () => {
+      await runtime.documentRuntime.controller.visit(REFRESH_SCENARIO_URL);
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(REFRESH_SCENARIO_URL);
+    expect(runtime.session.tree.getElementById("refresh-ready-document")).toBeDefined();
+    const scenarioRouteKey = navigation.state.routes[navigation.state.index]?.key;
+    if (!scenarioRouteKey) throw new Error("Refresh Stream scenario route did not become focused");
+
+    await act(async () => {
+      renderer?.update(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: scenarioRouteKey, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+
+    act(() => {
+      dispatchTurboStreamFragment(
+        runtime.session,
+        '<turbo-stream action="refresh" method="replace" target="ignored"><template><DemoText>Ignored refresh payload.</DemoText></template></turbo-stream>',
+        { refresh: runtime.refresh, streamLifecycle: runtime.streamLifecycle },
+      );
+    });
+    const refreshTimer = timers.find((timer) => timer.delayMs === 150 && !timer.cleared);
+    if (!refreshTimer) throw new Error("Refresh Stream debounce timer did not start");
+
+    await act(async () => {
+      refreshTimer.callback();
+      await nextTurn();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.getElementById("refresh-completed-document")).toBeDefined();
+    expect(scrollCalls).toEqual(["top"]);
+
+    await act(async () => {
+      await runtime.documentRuntime.controller.visit(REFRESH_SCENARIO_URL);
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.getElementById("refresh-ready-document")).toBeDefined();
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterScroll();
   });
 
   test("direct disposal releases every runtime-owned state surface", () => {

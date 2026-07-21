@@ -539,6 +539,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked?preview=automatic" data-turbo-preload="">
     <DemoText>Open a cached document preview, then replace it with the canonical response.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/linked?refresh=scroll">
+    <DemoText>Open a Refresh Stream scenario and reset the owning root scroll after its canonical update.</DemoText>
+  </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked" data-turbo-action="replace">
     <DemoText>Replace this Router entry with the linked document.</DemoText>
   </DemoDocumentLink>
