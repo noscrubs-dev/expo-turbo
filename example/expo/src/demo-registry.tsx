@@ -16,7 +16,9 @@ import { z } from "zod";
 import {
   useComponentAction,
   useDocumentState,
+  type ExpoTurboDirection,
   useExpoTurboDocumentLink,
+  useExpoTurboDirection,
   useExpoTurboDocumentLinkPrefetch,
   ExpoTurboFormScope,
   useExpoTurboForm,
@@ -33,12 +35,19 @@ import {
   type DemoStyleToken,
 } from "./demo-styles";
 
+function nativeLayoutDirection(direction: ExpoTurboDirection | undefined): "inherit" | "ltr" | "rtl" {
+  return direction === "ltr" || direction === "rtl" ? direction : "inherit";
+}
+
+function DemoGalleryComponent({ children }: { children?: ReactNode }) {
+  const direction = useExpoTurboDirection();
+  return <View style={[{ gap: 12 }, { direction: nativeLayoutDirection(direction) }]}>{children}</View>;
+}
+
 const gallery = defineComponent({
   attributes: {},
   children: "nodes",
-  component: ({ children }: { children?: ReactNode }) => (
-    <View style={{ gap: 12 }}>{children}</View>
-  ),
+  component: DemoGalleryComponent,
   schema: z.object({}),
   tag: "Gallery",
 });
@@ -54,16 +63,15 @@ function DemoCardComponent({
   title: string;
   tone?: keyof typeof DEMO_CARD_TONE_STYLES;
 }) {
+  const direction = useExpoTurboDirection();
   const resolvedStyle = useDemoComponentStyle({
     component: DEMO_CARD_BASE_STYLE,
     ...(tone ? { props: DEMO_CARD_TONE_STYLES[tone] } : {}),
     tokens: styleTokens,
   });
   return (
-    <View
-      style={resolvedStyle}
-    >
-      <Text selectable style={{ fontSize: 17, fontWeight: "600" }}>
+    <View style={[resolvedStyle, { direction: nativeLayoutDirection(direction) }]}>
+      <Text selectable style={{ fontSize: 17, fontWeight: "600", writingDirection: direction ?? "auto" }}>
         {title}
       </Text>
       {children}
@@ -95,14 +103,19 @@ const card = defineComponent({
   tag: "DemoCard",
 });
 
+function DemoTextComponent({ children }: { children?: ReactNode }) {
+  const direction = useExpoTurboDirection();
+  return (
+    <Text selectable style={{ color: "#435160", fontSize: 14, lineHeight: 21, writingDirection: direction ?? "auto" }}>
+      {children}
+    </Text>
+  );
+}
+
 const text = defineComponent({
   attributes: {},
   children: "text",
-  component: ({ children }: { children?: ReactNode }) => (
-    <Text selectable style={{ color: "#435160", fontSize: 14, lineHeight: 21 }}>
-      {children}
-    </Text>
-  ),
+  component: DemoTextComponent,
   schema: z.object({}),
   tag: "DemoText",
 });
@@ -338,6 +351,7 @@ function DemoFormInputComponent({
   required: boolean;
   value: string;
 }) {
+  const direction = useExpoTurboDirection();
   const [current, setCurrent] = useState(value);
   const inputRef = useRef<TextInput>(null);
   const validation = required
@@ -358,8 +372,8 @@ function DemoFormInputComponent({
   });
   const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
   return (
-    <View style={{ gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
-      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+    <View style={{ direction: nativeLayoutDirection(direction), gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
+      <Text style={{ color: "#435160", fontSize: 13, writingDirection: direction ?? "auto" }}>{label}</Text>
       <TextInput
         accessibilityHint={!validity.valid ? validity.message : undefined}
         accessibilityLabel={label}
@@ -377,11 +391,12 @@ function DemoFormInputComponent({
           color: "#172230",
           paddingHorizontal: 12,
           paddingVertical: 10,
+          writingDirection: direction ?? "auto",
         }}
         value={current}
       />
       {!validity.valid ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
+        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13, writingDirection: direction ?? "auto" }}>
           {validity.message}
         </Text>
       ) : null}
@@ -491,6 +506,15 @@ export const DEMO_REGISTRY = createRegistry(
 export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="static-renderer" title="Rendered from XML" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>This native card was admitted by Zod and rendered through expo-turbo/react.</DemoText>
+  </DemoCard>
+  <DemoCard id="direction-card" dir="rtl" title="Native direction inheritance" style-tokens="tone:info space:compact">
+    <DemoText>This text and card inherit the XML right-to-left direction.</DemoText>
+    <DemoCard id="direction-ltr" dir="ltr" title="Explicit LTR override" style-tokens="space:compact">
+      <DemoText>This nested card explicitly restores left-to-right direction.</DemoText>
+    </DemoCard>
+    <DemoCard id="direction-auto" dir="auto" title="Host-native automatic direction" style-tokens="space:compact">
+      <DemoText>This text asks the native host to choose its writing direction.</DemoText>
+    </DemoCard>
   </DemoCard>
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">

@@ -3,6 +3,7 @@ import type { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
 import type { FormContainerRole } from "../core/forms"
+import { protocolDirection } from "../core/protocol-direction"
 import {
   attributeValue,
   isElement,
@@ -205,13 +206,8 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
       .filter((attribute) => attribute.name.startsWith("data-"))
       .map((attribute) => [attribute.name.slice(5), attribute.value]),
   )
-  const direction = attributeValue(element, "dir")
+  const direction = protocolDirection(element)
   const form = attributeValue(element, "form")
-  if (direction && !["auto", "ltr", "rtl"].includes(direction)) {
-    throw new PropsError(`Invalid shared dir attribute on ${JSON.stringify(element.tagName)}`, {
-      target: element.tagName,
-    })
-  }
   const xmlSpace = attributeValue(element, "xml:space")
   if (xmlSpace && !["default", "preserve"].includes(xmlSpace)) {
     throw new PropsError(
@@ -227,7 +223,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
     autofocus: attributeValue(element, "autofocus") !== undefined,
     classNames: Object.freeze(classes),
     data: Object.freeze(data),
-    ...(direction === "auto" || direction === "ltr" || direction === "rtl" ? { direction } : {}),
+    ...(direction ? { direction } : {}),
     ...(form !== undefined ? { form } : {}),
     ...(id ? { id } : {}),
     ...(xmlSpace === "default" || xmlSpace === "preserve" ? { xmlSpace } : {}),

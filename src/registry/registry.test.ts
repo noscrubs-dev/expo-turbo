@@ -81,7 +81,7 @@ describe("typed component registry", () => {
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
       element(
-        '<DemoCard id="card" autofocus="false" class="featured" data-state="ready" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
+        '<DemoCard id="card" autofocus="false" class="featured" data-state="ready" dir="rtl" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
       ),
     )
 
@@ -99,6 +99,7 @@ describe("typed component registry", () => {
       autofocus: true,
       classNames: ["featured"],
       data: { state: "ready" },
+      direction: "rtl",
       form: "profile",
       id: "card",
     })
@@ -148,6 +149,9 @@ describe("typed component registry", () => {
       registry.decode(element('<DemoCard heading="Hello" count="1" className="dynamic" />')),
     ).toThrow(PropsError)
     expect(() => registry.decode(element('<DemoCard heading="" count="1" />'))).toThrow(PropsError)
+    expect(() =>
+      registry.decode(element('<DemoCard heading="Hello" count="1" dir="sideways" />')),
+    ).toThrow(PropsError)
     expect(() => registry.decode(element("<DemoText><DemoCard /></DemoText>"))).toThrow(
       /text children only/,
     )
