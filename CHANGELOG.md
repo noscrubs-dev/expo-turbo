@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Normalize Expo Stream record/class target coercion and blank refresh request-ID handling to the Turbo 8.0.23 baseline across the supported `turbo-rails` 2.0.10 and 2.0.23 matrix.
+
 - Require host-declared Expo Turbo template capabilities to render documents and apply that same policy to the controller's Frame, Stream, and raw-broadcast output whenever declared. Those paths reject undeclared components, prefixed protocol wrappers, and invalid `style-tokens` before response bytes are sent or controller broadcasts enqueue. The declaration mirrors the installed registry/style adapter; context-free broadcast APIs remain structural-only because they have no host rendering policy.
 
 - Add public package-boundary checks over source imports, manifest dependency sections, compiled artifacts, and source-map source content.
