@@ -552,6 +552,97 @@ describe("demo app runtime ownership", () => {
     });
   });
 
+  test("activates the gallery's registered same-document anchor without fetching or writing history", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation();
+    const scrolls: Readonly<{ x: number; y: number }>[] = [];
+    const unregisterScroll = runtime.documentAnchorScroll.registerContainer({
+      isAvailable: () => true,
+      scrollTo(position) {
+        scrolls.push(position);
+      },
+    });
+    runtime.documentAnchorScroll.setDocumentOffset(40);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery anchor fixture did not render");
+    const content = renderer.root.findByProps({ testID: "demo-document-anchor-content" });
+    const target = renderer.root.findByProps({ testID: "demo-anchor-target-native-anchor-target" });
+    act(() => {
+      content.props.onLayout({ nativeEvent: { layout: { y: 64 } } });
+      target.props.onLayout({ nativeEvent: { layout: { y: 480 } } });
+    });
+    const requestsBeforeAnchor = requests.length;
+    const anchorLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Jump to the registered native anchor target without a request or Router history write.",
+            ),
+        ).length > 0,
+      );
+    if (!anchorLink) throw new Error("gallery anchor link was not rendered");
+
+    await act(async () => {
+      anchorLink.props.onPress();
+      await nextTurn();
+    });
+
+    expect(scrolls).toEqual([{ x: 0, y: 584 }]);
+    expect(requests).toHaveLength(requestsBeforeAnchor);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterScroll();
+  });
+
   test("uses the gallery's automatic preload as a visible preview before canonical revalidation", async () => {
     const [clock, timers] = createFixtureClock();
     const fixtureFetch = createDemoFixtureFetchAdapter(clock);

@@ -24,6 +24,7 @@ import {
 } from "react-native";
 
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
+import { useDemoDocumentAnchorScrollContent } from "./demo-document-anchor-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
   DEMO_ROOT_VISIBILITY_CONTAINER_ID,
@@ -317,6 +318,7 @@ export function DemoDocumentBoundary({
   children,
   state,
 }: ExpoTurboDocumentBoundaryProps) {
+  const anchorScrollContent = useDemoDocumentAnchorScrollContent();
   const accessibilityLabel = state.previewVisible
     ? `Document visit: ${state.status}, showing cached preview`
     : `Document visit: ${state.status}`;
@@ -349,7 +351,13 @@ export function DemoDocumentBoundary({
           </Text>
         ) : null}
       </View>
-      {children}
+      <View
+        collapsable={false}
+        onLayout={anchorScrollContent.onLayout}
+        testID="demo-document-anchor-content"
+      >
+        {children}
+      </View>
     </View>
   );
 }
