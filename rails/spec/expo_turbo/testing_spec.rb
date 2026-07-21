@@ -78,7 +78,6 @@ RSpec.describe ExpoTurbo::Rails::Testing do
       "plain text<turbo-stream action=\"remove\" target=\"notice\"/>",
       "<DemoText/>",
       "<x:turbo-stream xmlns:x=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>",
-      "<turbo-stream xmlns=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>",
       "<turbo-stream action=\"remove\" target=\"notice\">"
     ]
 
@@ -86,5 +85,11 @@ RSpec.describe ExpoTurbo::Rails::Testing do
       expect { described_class.parse_stream_fragment(xml) }
         .to raise_error(parse_error, /well-formed UTF-8 XML/)
     end
+
+    document = described_class.parse_stream_fragment(
+      "<turbo-stream xmlns=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>"
+    )
+
+    expect(document.root.element_children.first.namespace.href).to eq("urn:expo-test")
   end
 end

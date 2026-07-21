@@ -16,7 +16,8 @@ module ExpoTurbo
 
           frame = ::Turbo::FramesHelper.instance_method(:turbo_frame_tag)
             .bind_call(self, id, src: src, target: target, **attributes, &block)
-          XmlFragments.parse_frame_fragment(frame.to_s)
+          document = XmlFragments.parse_frame_fragment(frame.to_s)
+          controller.send(:expo_turbo_validate_frame_fragment!, document)
           frame
         rescue XmlFragments::ParseError
           raise TemplateError, "Expo Turbo Frame output must be well-formed UTF-8 XML without DTDs or processing instructions"

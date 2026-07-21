@@ -24,7 +24,7 @@ RSpec.describe "standalone demo host" do
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
     expect(response.charset).to eq("utf-8")
     expect(response.body.dup.force_encoding(Encoding::UTF_8)).to be_valid_encoding
-    expect(document.root.name).to eq("DemoScreen")
+    expect(document.root.name).to eq("Gallery")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
     source = document.at_xpath("//turbo-cable-stream-source[@id='demo-stream-source']")
     expect(source&.[]("channel")).to eq("Turbo::StreamsChannel")

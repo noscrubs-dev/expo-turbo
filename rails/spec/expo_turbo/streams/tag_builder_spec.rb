@@ -142,8 +142,6 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
   it "rejects malformed template markup from raw content, blocks, and partials" do
     expect { stream.append("items", "<Demo:Item/>") }
       .to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Item") }
-    expect { stream.append("items", "<DemoItem/>", xmlns: "urn:expo-test") }
-      .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
     expect { stream.append("items") { "<Demo:Item/>".html_safe } }
       .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
 
@@ -156,6 +154,13 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
       expect { stream.append("items", partial: "item") }
         .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
     end
+  end
+
+  it "allows unprefixed Stream envelopes in a default namespace" do
+    rendered = stream.append("items", "<DemoItem/>", xmlns: "urn:expo-test")
+    stream_element = ExpoTurbo::Rails::Testing.parse_stream_fragment(rendered.to_s).root.element_children.first
+
+    expect(stream_element.namespace.href).to eq("urn:expo-test")
   end
 
   it "preserves inline xml:space content from XML partials" do

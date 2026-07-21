@@ -7,7 +7,8 @@ module ExpoTurbo
         def expo_turbo_stream
           TagBuilder.new(
             self,
-            partial_resolver: ->(partial) { controller.send(:expo_turbo_partial_file, partial) }
+            partial_resolver: ->(partial) { controller.send(:expo_turbo_partial_file, partial) },
+            fragment_validator: ->(document) { controller.send(:expo_turbo_validate_stream_fragment!, document) }
           )
         end
 

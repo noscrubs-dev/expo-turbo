@@ -19,6 +19,16 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
 
+      expo_turbo_template_capabilities(
+        components: {
+          "Demo:Screen" => {},
+          "Demo:Text" => {},
+          "DemoText" => {},
+          "Screen" => {},
+          "Text" => {}
+        }
+      )
+
       def show
         render_expo_turbo "show"
       end
@@ -37,6 +47,44 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
       expect { controller.send(:expo_turbo_template_file, "../outside") }
         .to raise_error(ExpoTurbo::Rails::TemplateError, /outside the configured view root/)
+    end
+  end
+
+  it "requires declared capabilities for a configured Expo Turbo view root" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "show.xml.erb"), "<DemoScreen/>")
+      unconfigured_controller = Class.new(ActionController::API) do
+        include ExpoTurbo::Rails::Controller
+
+        def show
+          render_expo_turbo "show"
+        end
+      end
+      unconfigured_controller.expo_turbo_view_root(root)
+
+      expect {
+        unconfigured_controller.action(:show).call(ActionDispatch::TestRequest.create.env)
+      }.to raise_error(
+        ExpoTurbo::Rails::ConfigurationError,
+        "configure expo_turbo_template_capabilities before rendering Expo Turbo templates"
+      )
+    end
+  end
+
+  it "redacts semantic template admission failures" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "show.xml.erb"), '<DemoScreen><PrivateComponent secret="value"/></DemoScreen>')
+      controller_class.expo_turbo_view_root(root)
+      controller_class.expo_turbo_template_capabilities(components: {"DemoScreen" => {}})
+
+      expect { render_document }
+        .to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens") { |error|
+          expect(error.message).not_to include("PrivateComponent", "secret", "value")
+        }
     end
   end
 
@@ -199,10 +247,16 @@ RSpec.describe ExpoTurbo::Rails::Controller do
         controller.view_context.expo_turbo_frame_tag("details") { markup.html_safe }
       }.to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Text", "not-for-errors") }
     end
+  end
 
-    expect {
-      controller.view_context.expo_turbo_frame_tag("details", xmlns: "urn:expo-test")
-    }.to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed UTF-8 XML/)
+  it "allows unprefixed Frame tags in a default namespace" do
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create
+    rendered = controller.view_context.expo_turbo_frame_tag("details", xmlns: "urn:expo-test")
+    frame = ExpoTurbo::Rails::Testing.parse_document(rendered.to_s).root
+
+    expect(frame.name).to eq("turbo-frame")
+    expect(frame.namespace.href).to eq("urn:expo-test")
   end
 
   it "rejects invalid Expo Turbo Frame IDs" do
@@ -297,6 +351,33 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
     expect { controller_with_request.render_expo_turbo_stream(invalid) }
       .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed XML Stream fragments/)
+  end
+
+  it "validates Frame and Stream helper output against configured capabilities" do
+    controller_class.expo_turbo_template_capabilities(components: {"DemoText" => {}})
+    controller = controller_with_request
+
+    expect {
+      controller.view_context.expo_turbo_frame_tag("details") { "<PrivateComponent/>".html_safe }
+    }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens")
+    expect {
+      controller.expo_turbo_stream.append("details", "<PrivateComponent/>")
+    }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens")
+  end
+
+  it "validates raw controller broadcast payloads against configured capabilities" do
+    controller_class.expo_turbo_template_capabilities(components: {"DemoText" => {}})
+    controller = controller_with_request
+    payload = '<turbo-stream action="append" target="details"><template><PrivateComponent secret="value"/></template></turbo-stream>'
+
+    expect {
+      controller.broadcast_expo_turbo_stream_to("details", content: payload)
+    }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens") { |error|
+      expect(error.message).not_to include("PrivateComponent", "secret", "value")
+    }
+    expect {
+      controller.broadcast_expo_turbo_stream_later_to("details", content: payload)
+    }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens")
   end
 
   def controller_with_request(headers = {})
