@@ -48,6 +48,26 @@ module ExpoTurbo
           valid_stream_name!(stream_name)
         end
 
+        def valid_stream_name?(stream_name)
+          stream_name.is_a?(String) &&
+            stream_name.encoding == Encoding::UTF_8 &&
+            stream_name.valid_encoding? &&
+            stream_name.present? &&
+            stream_name.end_with?(":#{STREAM_NAMESPACE}")
+        end
+
+        def valid_content!(content)
+          raise ArgumentError, "content must be a nonblank String" unless content.is_a?(String)
+          raise TemplateError, "Expo Turbo Stream broadcasts must render valid UTF-8" unless content.encoding == Encoding::UTF_8 && content.valid_encoding?
+          raise ArgumentError, "content must be a nonblank String" unless content.present?
+
+          XmlFragments.parse_stream_fragment(content)
+
+          content
+        rescue XmlFragments::ParseError
+          raise TemplateError, "Expo Turbo Stream broadcasts must contain well-formed XML Stream fragments"
+        end
+
         private
 
         def refresh_content(request_id:, **attributes)
@@ -67,25 +87,8 @@ module ExpoTurbo
           ::Turbo::ThreadDebouncer.for(key)
         end
 
-        def valid_content!(content)
-          raise ArgumentError, "content must be a nonblank String" unless content.is_a?(String)
-          raise TemplateError, "Expo Turbo Stream broadcasts must render valid UTF-8" unless content.encoding == Encoding::UTF_8 && content.valid_encoding?
-          raise ArgumentError, "content must be a nonblank String" unless content.present?
-
-          XmlFragments.parse_stream_fragment(content)
-
-          content
-        rescue XmlFragments::ParseError
-          raise TemplateError, "Expo Turbo Stream broadcasts must contain well-formed XML Stream fragments"
-        end
-
         def valid_stream_name!(stream_name)
-          valid_stream_name = stream_name.is_a?(String) &&
-            stream_name.encoding == Encoding::UTF_8 &&
-            stream_name.valid_encoding? &&
-            stream_name.present? &&
-            stream_name.end_with?(":#{STREAM_NAMESPACE}")
-          unless valid_stream_name
+          unless valid_stream_name?(stream_name)
             raise ArgumentError, "stream name must be a nonblank UTF-8 String ending in :#{STREAM_NAMESPACE}"
           end
 

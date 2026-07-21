@@ -2,7 +2,7 @@
 
 The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents, matching native Frame responses, standard Turbo Stream response fragments, and immediate or queued public Stream broadcasts. Use `ExpoTurbo::Rails::Controller` rather than including its helper modules directly. The Engine remains route-free.
 
-The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. It does not provide protected Channels or make a compatibility claim.
+The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. Its optional protected Cable boundary delegates all credentials and resource policy to the host; it does not make a compatibility claim.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -120,7 +120,47 @@ broadcast_expo_turbo_refresh_later_to @room, request_id: Turbo.current_request_i
 
 All three operations use the same normalized streamables and append the fixed `:expo` suffix. For example, the literal streamables `:room, "42"` map to `room:42:expo`, keeping Expo XML distinct from the browser HTML stream `room:42`. `expo_turbo_stream_from` emits the standard `Turbo::StreamsChannel` descriptor with a matching signed stream name and reserves its channel/signature attributes. `ExpoTurbo::Rails::Streams.broadcast_to(*streamables, content:)` is available when the host already owns a rendered nonblank UTF-8 Stream payload; it parses that payload as a self-contained sibling Stream fragment before sending or enqueueing it, and the queued job validates again before delivery.
 
-`broadcast_expo_turbo_stream_to` sends immediately to the host's Action Cable pubsub. `broadcast_expo_turbo_stream_later_to` uses the host-configured Active Job adapter and enqueues `ExpoTurbo::Rails::Streams::BroadcastJob` with only the resolved stream-name string and already-rendered payload; it does not serialize a host model or render a template when the job runs. The dedicated refresh variants build and validate their tag before sending or deferring it. The later variant uses Turbo's caller-thread debouncer for an identical resolved Expo stream name plus request ID, so repeated refreshes on that thread collapse to the newest pre-rendered XML while different streams or request IDs remain independent. It does not coordinate across threads or processes. The job disables Active Job argument logging and discards an argument-deserialization failure rather than retrying it. Context-free `ExpoTurbo::Rails::Streams.broadcast_to` remains structural-only because it has no host capability declaration; render a payload through a configured controller before sending when component/style admission is required. The host owns Action Cable configuration (including its logger, adapter, and any mounted client endpoint) plus its Active Job adapter. This API does not establish a client connection, prove receipt, provide replay, issue credentials, or authorize protected resources. Do not use this public-stream API for sensitive XML; protected Channels and grants remain later work.
+`broadcast_expo_turbo_stream_to` sends immediately to the host's Action Cable pubsub. `broadcast_expo_turbo_stream_later_to` uses the host-configured Active Job adapter and enqueues `ExpoTurbo::Rails::Streams::BroadcastJob` with only the resolved stream-name string and already-rendered payload; it does not serialize a host model or render a template when the job runs. The dedicated refresh variants build and validate their tag before sending or deferring it. The later variant uses Turbo's caller-thread debouncer for an identical resolved Expo stream name plus request ID, so repeated refreshes on that thread collapse to the newest pre-rendered XML while different streams or request IDs remain independent. It does not coordinate across threads or processes. The job disables Active Job argument logging and discards an argument-deserialization failure rather than retrying it. Context-free `ExpoTurbo::Rails::Streams.broadcast_to` remains structural-only because it has no host capability declaration; render a payload through a configured controller before sending when component/style admission is required. The host owns Action Cable configuration (including its logger, adapter, and any mounted client endpoint) plus its Active Job adapter. This API does not establish a client connection, prove receipt, provide replay, issue credentials, or authorize protected resources. Do not use this public-stream API for sensitive XML.
+
+## Protected Cable streams
+
+For a protected resource, configure host-owned credential, subject, authorization, and redacted callback-error hooks during application boot. Include the connection module in the host's chosen Cable connection; it resolves and caches the subject only when a protected subscription asks for it, and does not add an Action Cable connection identifier.
+
+```ruby
+ExpoTurbo::Rails::Cable.configure(
+  credential_extractor: ->(connection) { host_extract_short_lived_credential(connection) },
+  subject_resolver: ->(credential) { host_resolve_subject(credential) },
+  subscription_authorizer: ->(subject:, stream_name:, grant:) {
+    host_authorize_expo_stream(subject:, stream_name:, grant:)
+  },
+  subscription_error_reporter: ->(code:, error_class:) {
+    host_report_expo_turbo_cable_error(code:, error_class:)
+  }
+)
+
+class ApplicationCable::Connection < ActionCable::Connection::Base
+  include ExpoTurbo::Rails::Cable::Connection
+end
+```
+
+Render a protected source with a short-lived, resource-bound client-visible grant, then publish only through the matching protected API:
+
+```erb
+<%= expo_turbo_protected_stream_from @room, grant: expo_stream_grant(@room) %>
+```
+
+```ruby
+ExpoTurbo::Rails::Cable.broadcast_protected_to(
+  @room,
+  content: expo_turbo_stream.remove("notice").to_s
+)
+```
+
+The helper renders `ExpoTurbo::Rails::Cable::ProtectedStreamsChannel`, a token from the gem's own verifier, and `data-grant`. The Channel decodes that token to the canonical Expo stream name only for the host authorizer, but subscribes and broadcasts on the opaque token itself. The generic `Turbo::StreamsChannel` cannot verify the token, so it cannot bypass the host authorizer or receive protected broadcasts through the public `:expo` topic. Invalid descriptors, missing subjects, invalid grants, and false authorization reject only that subscription. Callback failures reject and send only a code and exception class to the configured reporter; grant, credential, token, and exception message are never passed to it.
+
+The gem deliberately does not choose a WebSocket header, ticket encoding, identity type, grant schema, expiry, rotation, tenant policy, or native reconnect policy. The grant is delivered in XML and is therefore client-visible: make it short-lived, resource-bound, and safe to send to that client. The host must authenticate the socket, validate grant expiry and resource ownership in `subscription_authorizer`, and recreate/reconnect the native Cable client when identity or credentials change.
+
+`subscription_authorizer` is evaluated when the subscription is admitted; it is not a reauthorization lease. When a grant expires or is revoked, the host must terminate the affected subscription or connection and require a fresh admission. If targeted disconnect is needed, the host may use its own safe Action Cable connection identity or channel mechanism; this gem intentionally adds no connection identifier.
 
 ## Structural XML test helpers
 
@@ -143,5 +183,13 @@ Run the gem against both supported server pins with:
 ```sh
 bundle exec appraisal ruby "$(bundle show rake)/exe/rake"
 ```
+
+## Changelog
+
+**2026-07-21**:
+
+- Changed: Added an opt-in protected Cable source, Channel, verifier namespace, and immediate/queued broadcast APIs.
+- Why: Public Turbo stream signatures cannot carry host resource authorization safely.
+- Impact: Protected hosts must configure the four callbacks above and terminate affected subscriptions or connections after grant expiry/revocation; public stream behavior remains unchanged.
 
 See the repository [README](../README.md) for project status and development commands.
