@@ -27,6 +27,7 @@ import {
   type FrameLoadReport,
   type FrameRequestLoader,
 } from "./frame-loader"
+import { notifyFrameMorphReload } from "./frame-morph-reload-internal"
 import {
   clearFrameRenderSuppression,
   type PreparedFrameRender,
@@ -551,9 +552,11 @@ export class FrameController {
       return
     }
     if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
-    if (!this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)) return
+    this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)
     if (!this.frameRenderContinuationCurrent(prepared, epoch)) return
     this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD](prepared)
+    if (!this.frameRenderContinuationCurrent(prepared, epoch) || !report.frame) return
+    notifyFrameMorphReload(this, report.frame)
   }
 
   private frameRenderContinuationCurrent(prepared: PreparedFrameRender, epoch: number): boolean {

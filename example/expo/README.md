@@ -38,6 +38,8 @@ The opt-in Rails panels are not rendered on web because the standalone Rails hos
 
 A separate native-only Frame-form panel uses the configured Rails origin to load `GET /api/expo_turbo/demo/form`, submit URL-encoded values to its Frame, render Rails-owned matching `422` XML, retain the mounted Frame and edited input after a successful `204`, and follow the `303` back to the canonical Frame URL. Its controlled renderer test and separate Bun desktop provider/root smoke cover those request/response paths and replacement-input reset; a focused iOS Simulator run also confirms the real `204` preservation path. CORS/origin-policy, device-network, auth/ticket, reconnect/heartbeat, AppState/network, release-build, and physical-device evidence remain later work.
 
+A separate native-only nested-morph panel reloads `GET /api/expo_turbo/demo/morph/outer`; the outer response deliberately carries stale nested content, which the mounted `morph-inner` Frame ignores before its own `GET /api/expo_turbo/demo/morph/inner` reload. The focused renderer test and iOS Simulator/Expo Go proof cover that renderer-acknowledged cascade. Android, physical-device, and release-build evidence remain later work.
+
 The example install links its React into the local `file:../..` source checkout so the package and native app resolve one peer instance. Published package consumers use normal peer-dependency resolution and do not need this source-development link.
 
 Start with Expo Go where supported. Release builds and physical iOS/Android evidence remain required before compatibility can be claimed.

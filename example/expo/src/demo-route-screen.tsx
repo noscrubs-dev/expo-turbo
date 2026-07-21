@@ -22,6 +22,7 @@ import type { DemoRouterNavigation } from "./demo-router-history";
 import { DemoRouterRouteOwner } from "./demo-router-route-owner";
 import { DemoLiveCableProof } from "./demo-live-cable";
 import { DemoLiveFormProof } from "./demo-live-form";
+import { DemoLiveMorphProof } from "./demo-live-morph";
 import { useDemoRuntime } from "./demo-runtime";
 import { DEMO_ROOT_VISIBILITY_CONTAINER_ID } from "./demo-visibility";
 import { PROTOCOL_SMOKE } from "./protocol-smoke";
@@ -131,6 +132,7 @@ function CompatibilityGallery() {
         <>
           <DemoLiveCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveFormProof origin={DEMO_LIVE_RAILS_ORIGIN} />
+          <DemoLiveMorphProof origin={DEMO_LIVE_RAILS_ORIGIN} />
         </>
       ) : null}
       <Pressable

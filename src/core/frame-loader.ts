@@ -36,6 +36,7 @@ import {
   frameLifecycleOption,
 } from "./frame-lifecycle"
 import { frameLoadRenderMethod } from "./frame-load-render-method-internal"
+import { recordFrameMorphReloadReport } from "./frame-morph-reload-internal"
 import {
   dispatchFrameLoad,
   dispatchFrameRender,
@@ -763,7 +764,7 @@ export class FrameRequestLoader {
           const revision = this.session.revision
           let frameReport: FrameResponseReport
           try {
-            commitPreparedFrameMutation(this.session, mutation)
+            const nestedFrames = commitPreparedFrameMutation(this.session, mutation)
             const streams = dispatchPreparedFrameResponseStreams(
               this.session,
               prepared,
@@ -772,16 +773,21 @@ export class FrameRequestLoader {
                 shouldContinue: () => Boolean(active.lease && this.ownership.retains(active.lease)),
               },
             )
-            frameReport = recordFrameAutofocusReport(
-              Object.freeze({
-                finalUrl: responseUrl,
-                frameId,
-                streams,
-              }),
+            frameReport = recordFrameMorphReloadReport(
+              recordFrameAutofocusReport(
+                Object.freeze({
+                  finalUrl: responseUrl,
+                  frameId,
+                  streams,
+                }),
+                this.session,
+                frame,
+                activeFrameAutofocusCandidates(this.session, frame),
+                frameAutoscrollIntent(this.session, frame, prepared),
+              ),
               this.session,
               frame,
-              activeFrameAutofocusCandidates(this.session, frame),
-              frameAutoscrollIntent(this.session, frame, prepared),
+              nestedFrames,
             )
           } catch (error) {
             if (this.session.revision !== revision) throw new FrameCommitError(candidate)

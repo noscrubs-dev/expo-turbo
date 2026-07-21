@@ -278,7 +278,23 @@ interface MorphPermanentPlan {
   readonly type: "permanent"
 }
 
-type MorphPlan = MorphClonePlan | MorphPermanentPlan | MorphReusePlan
+interface MorphFrameReloadPlan {
+  readonly current: ProtocolElement
+  readonly type: "frame-reload"
+}
+
+type MorphPlan = MorphClonePlan | MorphFrameReloadPlan | MorphPermanentPlan | MorphReusePlan
+
+interface FrameRefreshMorphResult {
+  readonly changed: readonly string[]
+  readonly nestedFrames: readonly ProtocolElement[]
+}
+
+interface FrameRefreshMorphContext {
+  readonly nestedFrames: ProtocolElement[]
+  readonly outerFrame: ProtocolElement
+  readonly seenFrames: Set<ProtocolElement>
+}
 
 interface MorphTransaction {
   readonly attributes: Map<ProtocolElement, readonly ProtocolAttribute[]>
@@ -294,7 +310,7 @@ type StreamChildMorpher = (
 type FrameRefreshMorpher = (
   frame: ProtocolElement,
   responseFrame: ProtocolElement,
-) => readonly string[]
+) => FrameRefreshMorphResult
 
 type FramePermanentReplacer = (
   frame: ProtocolElement,
@@ -336,7 +352,7 @@ export function morphFrameRefreshChildren(
   tree: DocumentTree,
   frame: ProtocolElement,
   responseFrame: ProtocolElement,
-): readonly string[] {
+): FrameRefreshMorphResult {
   const morph = frameRefreshMorphers.get(tree)
   if (!morph) throw new TargetError("Native Frame refresh morph requires an active document tree")
   return morph(frame, responseFrame)
@@ -747,7 +763,7 @@ export class DocumentTree {
   private morphFrameRefreshChildren(
     frame: ProtocolElement,
     responseFrame: ProtocolElement,
-  ): readonly string[] {
+  ): FrameRefreshMorphResult {
     assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(frame)
     const frameId = attributeValue(frame, "id")
@@ -763,7 +779,19 @@ export class DocumentTree {
     }
 
     this.assertMorphSources(frame, responseFrame.children)
-    return this.commitMorphPlans(frame, this.buildMorphPlans(frame, responseFrame.children))
+    const context: FrameRefreshMorphContext = {
+      nestedFrames: [],
+      outerFrame: frame,
+      seenFrames: new Set(),
+    }
+    const changed = this.commitMorphPlans(
+      frame,
+      this.buildMorphPlans(frame, responseFrame.children, context),
+    )
+    return Object.freeze({
+      changed: Object.freeze([...changed]),
+      nestedFrames: Object.freeze([...context.nestedFrames]),
+    })
   }
 
   /**
@@ -947,6 +975,7 @@ export class DocumentTree {
   private buildMorphPlans(
     parent: ProtocolElement,
     sources: readonly ProtocolNode[],
+    frameRefresh?: FrameRefreshMorphContext,
   ): readonly MorphPlan[] {
     const currentById = new Map<string, ProtocolElement>()
     for (const child of parent.children) {
@@ -956,7 +985,15 @@ export class DocumentTree {
     }
     this.assertMatchedPermanentChildren(parent, sources, currentById)
 
-    return sources.map((source) => {
+    const sourceIndexByCurrent = new Map<ProtocolElement, number>()
+    for (const [index, source] of sources.entries()) {
+      if (!isElement(source)) continue
+      const id = attributeValue(source, "id")
+      const current = id === undefined ? undefined : currentById.get(id)
+      if (current) sourceIndexByCurrent.set(current, index)
+    }
+
+    const plans = sources.map((source) => {
       const id = isElement(source) ? attributeValue(source, "id") : undefined
       const active = id === undefined ? undefined : this.idIndex.get(id)
       const current = id === undefined ? undefined : currentById.get(id)
@@ -965,11 +1002,19 @@ export class DocumentTree {
           ...(id ? { target: id } : {}),
         })
       }
+      if (
+        current &&
+        frameRefresh &&
+        this.shouldReloadNestedFrameWithMorph(current, source, frameRefresh)
+      ) {
+        this.recordNestedFrameReload(current, frameRefresh)
+        return { current, type: "frame-reload" } as const
+      }
       if (isElement(source) && source.kind === "element" && current) {
         if (isTurboPermanent(current)) return { current, type: "permanent" } as const
         if (isCompatibleMorphElement(current, source)) {
           return {
-            children: this.buildMorphPlans(current, source.children),
+            children: this.buildMorphPlans(current, source.children, frameRefresh),
             current,
             source,
             type: "reuse",
@@ -985,6 +1030,83 @@ export class DocumentTree {
       this.assertMorphCloneIds(source, current)
       return { source, type: "clone" } as const
     })
+
+    if (!frameRefresh) return plans
+
+    const missing = parent.children.filter(
+      (current): current is ProtocolElement =>
+        isElement(current) &&
+        !sourceIndexByCurrent.has(current) &&
+        this.shouldReloadNestedFrameWithMorph(current, undefined, frameRefresh),
+    )
+    for (const current of missing) {
+      this.recordNestedFrameReload(current, frameRefresh)
+      const currentIndex = parent.children.indexOf(current)
+      const nextCurrent = parent.children
+        .slice(currentIndex + 1)
+        .find(
+          (child): child is ProtocolElement => isElement(child) && sourceIndexByCurrent.has(child),
+        )
+      const sourceIndex = nextCurrent ? sourceIndexByCurrent.get(nextCurrent) : undefined
+      if (sourceIndex === undefined) plans.push({ current, type: "frame-reload" })
+      else plans.splice(sourceIndex, 0, { current, type: "frame-reload" })
+    }
+    return plans
+  }
+
+  private shouldReloadNestedFrameWithMorph(
+    current: ProtocolElement,
+    source: ProtocolNode | undefined,
+    context: FrameRefreshMorphContext,
+  ): boolean {
+    const id = attributeValue(current, "id")
+    const sourceUrl = attributeValue(current, "src")
+    if (
+      current.kind !== "frame" ||
+      !id ||
+      !sourceUrl?.trim() ||
+      attributeValue(current, "refresh") !== "morph" ||
+      hasPermanentAncestor(current) ||
+      this.closestFrameReloadableWithMorphing(current) !== context.outerFrame
+    ) {
+      return false
+    }
+    if (source === undefined) return true
+    if (source.kind !== "frame" || attributeValue(source, "id") !== id) return false
+    const incomingSource = attributeValue(source, "src")
+    return !incomingSource?.trim() || this.frameSourcesMatch(sourceUrl, incomingSource)
+  }
+
+  private closestFrameReloadableWithMorphing(node: ProtocolElement): ProtocolElement | undefined {
+    let current = node.parent
+    while (current && current.kind !== "document") {
+      if (
+        current.kind === "frame" &&
+        attributeValue(current, "src")?.trim() &&
+        attributeValue(current, "refresh") === "morph"
+      ) {
+        return current
+      }
+      current = current.parent
+    }
+    return undefined
+  }
+
+  private frameSourcesMatch(current: string, incoming: string): boolean {
+    if (current === incoming) return true
+    const base = this.document.url
+    if (!base) return false
+    try {
+      return new URL(current, base).href === new URL(incoming, base).href
+    } catch {
+      return false
+    }
+  }
+
+  private recordNestedFrameReload(frame: ProtocolElement, context: FrameRefreshMorphContext): void {
+    if (context.seenFrames.has(frame)) return
+    context.seenFrames.add(frame)
+    context.nestedFrames.push(frame)
   }
 
   private assertMatchedPermanentChildren(
@@ -1137,7 +1259,7 @@ export class DocumentTree {
     transaction: MorphTransaction,
   ): ProtocolNode {
     if (plan.type === "clone") return this.cloneNode(plan.source, parent)
-    if (plan.type === "permanent") return plan.current
+    if (plan.type === "permanent" || plan.type === "frame-reload") return plan.current
 
     const { current, source } = plan
     if (!transaction.attributes.has(current)) {

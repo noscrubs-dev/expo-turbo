@@ -14,6 +14,11 @@ import {
 } from "./frame-history-internal"
 import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
 import {
+  consumeFrameMorphReloads,
+  registerFrameMorphReloadController,
+} from "./frame-morph-reload-internal"
+import type { FrameResponseReport } from "./frames"
+import {
   type ResolvedFrameTarget,
   type ResolveFrameTargetOptions,
   resolveFrameTarget,
@@ -119,6 +124,9 @@ export class FrameControllerRegistry
       frame,
       this.options.frameHistory,
     )
+    registerFrameMorphReloadController(controller, (report) => {
+      this.reloadNestedMorphFrames(controller, report)
+    })
     let record!: FrameControllerRecord
     const frameHistory = this.options.frameHistory
     const historyInvalidation = frameHistory ? new AbortController() : undefined
@@ -256,5 +264,46 @@ export class FrameControllerRegistry
     record.historyInvalidation?.abort()
     if (unregisterDisposal) record.unregisterDisposal()
     record.controller.disconnect()
+  }
+
+  private reloadNestedMorphFrames(outer: FrameController, report: FrameResponseReport): void {
+    const outerRecord = this.controllers.get(outer.frameId)
+    if (!outerRecord || outerRecord.controller !== outer) return
+    const frames = consumeFrameMorphReloads(report, this.session, outerRecord.node)
+    for (const frame of frames) {
+      if (!this.currentNestedMorphFrame(frame, outerRecord.node)) continue
+      const controller = this.findMounted(frame)
+      if (!controller || controller === outer) continue
+      try {
+        void controller.reload().catch(() => undefined)
+      } catch {
+        // A stale child must not turn an already-rendered outer Frame into a failed load.
+      }
+    }
+  }
+
+  private currentNestedMorphFrame(frame: ProtocolElement, outer: ProtocolElement): boolean {
+    if (
+      frame.kind !== "frame" ||
+      attributeValue(frame, "disabled") !== undefined ||
+      !attributeValue(frame, "src")?.trim() ||
+      attributeValue(frame, "refresh") !== "morph"
+    ) {
+      return false
+    }
+    if (attributeValue(frame, "data-turbo-permanent") !== undefined) return false
+    let current = frame.parent
+    while (current && current.kind !== "document") {
+      if (attributeValue(current, "data-turbo-permanent") !== undefined) return false
+      if (
+        current.kind === "frame" &&
+        attributeValue(current, "src")?.trim() &&
+        attributeValue(current, "refresh") === "morph"
+      ) {
+        return current === outer
+      }
+      current = current.parent
+    }
+    return false
   }
 }

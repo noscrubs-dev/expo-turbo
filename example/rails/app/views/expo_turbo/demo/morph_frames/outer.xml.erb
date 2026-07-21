@@ -1,0 +1,8 @@
+<turbo-frame id="morph-outer" src="/api/expo_turbo/demo/morph/outer" refresh="morph">
+  <Gallery id="morph-shell">
+    <DemoText id="morph-outer-version">Outer Frame response</DemoText>
+    <turbo-frame id="morph-inner" src="/api/expo_turbo/demo/morph/inner" refresh="morph">
+      <DemoText id="morph-inner-stale">This nested response is intentionally ignored before its own reload</DemoText>
+    </turbo-frame>
+  </Gallery>
+</turbo-frame>
