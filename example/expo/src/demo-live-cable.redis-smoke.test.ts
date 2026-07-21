@@ -19,6 +19,8 @@ import {
   DocumentRequestLoader,
   DocumentSession,
   EXPO_TURBO_MIME_TYPE,
+  FrameControllerRegistry,
+  FrameRequestLoader,
   nodeTextContent,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
@@ -26,6 +28,8 @@ import {
 const origin = process.env.EXPO_TURBO_DEMO_ORIGIN;
 const liveTest = origin ? test : test.skip;
 const DOCUMENT_PATH = "/api/expo_turbo/demo/document";
+const FRAME_ID = "demo-frame";
+const FRAME_PATH = "/api/expo_turbo/demo/frame";
 const BROADCAST_PATH = "/api/expo_turbo/demo/broadcast";
 const CABLE_PATH = "/cable";
 const WAIT_TIMEOUT_MS = 5_000;
@@ -73,6 +77,7 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
 
   const base = new URL(origin).origin;
   const documentUrl = new URL(DOCUMENT_PATH, base).toString();
+  const frameUrl = new URL(FRAME_PATH, base).toString();
   const broadcastUrl = new URL(BROADCAST_PATH, base).toString();
   const cableUrl = resolveActionCableEndpoint(origin, CABLE_PATH);
   const session = new DocumentSession(
@@ -81,6 +86,12 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
   const loader = new DocumentRequestLoader(session, createFetchAdapter(), {
     next: () => "redis-websocket-smoke-document",
   });
+  const frames = new FrameControllerRegistry(
+    session,
+    new FrameRequestLoader(session, createFetchAdapter(), {
+      next: () => "redis-websocket-smoke-frame",
+    }),
+  );
   const errors: Error[] = [];
   const commands: string[] = [];
   const socketCalls: { protocols: readonly string[]; url: string }[] = [];
@@ -135,6 +146,12 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
     const document = await loader.load(documentUrl);
     expect(document.status).toBe("committed");
 
+    await expect(frames.get(FRAME_ID).connect()).resolves.toMatchObject({
+      frameId: FRAME_ID,
+      status: "completed",
+      url: frameUrl,
+    });
+
     const source = session.tree.getElementById("demo-stream-source");
     if (!source || source.kind !== "stream-source") throw new Error("Demo stream source is missing");
     const signedStreamName = source.attributes.find((attribute) => attribute.name === "signed-stream-name")?.value;
@@ -176,6 +193,7 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
     release?.();
     await Promise.resolve();
     streamSources.dispose();
+    frames.dispose();
     cable.dispose();
   }
 

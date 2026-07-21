@@ -7,7 +7,6 @@ import {
   encodeActionCableUnsubscribe,
   type ActionCableWebSocket,
   type ActionCableWebSocketEventType,
-  type ClockAdapter,
 } from "expo-turbo/adapters";
 import { EXPO_TURBO_MIME_TYPE, nodeTextContent } from "expo-turbo/core";
 import { createElement, StrictMode } from "react";
@@ -39,36 +38,10 @@ globalWithAct.IS_REACT_ACT_ENVIRONMENT = true;
 
 type CableSocketListener = (event: Readonly<{ readonly data?: unknown }>) => void;
 
-interface TimerRecord {
-  readonly callback: () => void;
-  cleared: boolean;
-  readonly delayMs: number;
-  readonly handle: object;
-}
+type RecordedRequest = Readonly<{ request: DemoLiveCableFetchRequest; url: string }>;
 
-class ManualClock implements ClockAdapter {
-  readonly timers: TimerRecord[] = [];
-
-  clearTimeout(handle: unknown): void {
-    const timer = this.timers.find((candidate) => candidate.handle === handle);
-    if (timer) timer.cleared = true;
-  }
-
-  now(): number {
-    return 0;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): unknown {
-    const handle = Object.freeze({});
-    this.timers.push({ callback, cleared: false, delayMs, handle });
-    return handle;
-  }
-
-  fire(index: number): void {
-    const timer = this.timers[index];
-    if (!timer) throw new Error("Missing timer " + index);
-    if (!timer.cleared) timer.callback();
-  }
+function unabortedRequests(requests: readonly RecordedRequest[]): readonly RecordedRequest[] {
+  return requests.filter(({ request }) => !request.signal?.aborted);
 }
 
 class FakeActionCableSocket implements ActionCableWebSocket {
@@ -119,14 +92,16 @@ const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 describe("standalone Rails Action Cable proof", () => {
   test("waits for confirmation, applies XML Streams, and releases its socket", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
     const broadcastUrl = "http://demo.example:3000/api/expo_turbo/demo/broadcast";
     const signedStreamName = "signed-demo-stream";
     const identifier = JSON.stringify({
       channel: "Turbo::StreamsChannel",
       signed_stream_name: signedStreamName,
     });
-    const document = `<Gallery id="demo-document"><DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="${signedStreamName}" /></Gallery>`;
-    const requests: Readonly<{ request: DemoLiveCableFetchRequest; url: string }>[] = [];
+    const document = `<Gallery id="demo-document"><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>`;
+    const frame = `<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="${signedStreamName}" /></turbo-frame>`;
+    const requests: RecordedRequest[] = [];
     const sockets: FakeActionCableSocket[] = [];
     const socketCalls: Readonly<{ protocols: readonly string[]; url: string }>[] = [];
     const fetch = async (url: string, request: DemoLiveCableFetchRequest) => {
@@ -141,6 +116,19 @@ describe("standalone Rails Action Cable proof", () => {
           redirected: false,
           status: 200,
           text: async () => document,
+          url,
+        };
+      }
+      if (url === frameUrl) {
+        return {
+          headers: {
+            forEach(callback: (value: string, name: string) => void): void {
+              callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+            },
+          },
+          redirected: false,
+          status: 200,
+          text: async () => frame,
           url,
         };
       }
@@ -191,7 +179,8 @@ describe("standalone Rails Action Cable proof", () => {
             createElement(DemoLiveCablePanel, { proof }),
           ),
         );
-        await Promise.resolve();
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
       });
       const socket = sockets[0];
       if (!socket) throw new Error("missing Action Cable socket");
@@ -199,10 +188,21 @@ describe("standalone Rails Action Cable proof", () => {
       expect(socketCalls).toEqual([
         { protocols: [ACTION_CABLE_V1_JSON_PROTOCOL], url: "ws://demo.example:3000/cable" },
       ]);
+      expect(requests).toHaveLength(3);
+      expect(requests.filter(({ request }) => request.signal?.aborted)).toHaveLength(1);
+      const initialRequests = unabortedRequests(requests);
+      expect(initialRequests).toHaveLength(2);
+      expect(initialRequests[1]).toMatchObject({
+        request: {
+          headers: { "Turbo-Frame": "demo-frame", Accept: EXPO_TURBO_MIME_TYPE },
+          method: "GET",
+        },
+        url: frameUrl,
+      });
       const broadcastButton = () => renderer?.root.findByProps({ accessibilityRole: "button" });
       expect(broadcastButton()?.props.disabled).toBe(true);
       broadcastButton()?.props.onPress();
-      expect(requests).toHaveLength(1);
+      expect(requests).toHaveLength(3);
 
       await act(async () => {
         socket.emitOpen();
@@ -237,13 +237,15 @@ describe("standalone Rails Action Cable proof", () => {
       expect(JSON.stringify(renderer?.toJSON())).toContain(
         "Turbo Stream refresh requires a document refresh controller",
       );
-      expect(requests).toHaveLength(1);
+      expect(requests).toHaveLength(3);
 
       await act(async () => {
         broadcastButton()?.props.onPress();
         await Promise.resolve();
       });
-      expect(requests[1]).toMatchObject({
+      const requestsAfterBroadcast = unabortedRequests(requests);
+      expect(requestsAfterBroadcast).toHaveLength(3);
+      expect(requestsAfterBroadcast[2]).toMatchObject({
         request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
         url: broadcastUrl,
       });
@@ -265,23 +267,24 @@ describe("standalone Rails Action Cable proof", () => {
     expect(socket.closeCalls).toBe(1);
   });
 
-  test("reconciles canonical XML after a server-directed reconfirmation", async () => {
+  test("reconciles its active Frame after a server-directed reconfirmation", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
     const signedStreamName = "signed-demo-stream";
     const identifier = JSON.stringify({
       channel: "Turbo::StreamsChannel",
       signed_stream_name: signedStreamName,
     });
-    const initialDocument =
-      '<Gallery id="demo-document"><DemoText id="demo-stream-message">Initial XML document</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></Gallery>';
-    const reconciledDocument =
-      '<Gallery id="demo-document"><DemoText id="demo-stream-message">Canonical XML after reconnect</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></Gallery>';
-    const clock = new ManualClock();
-    const requests: Readonly<{ request: DemoLiveCableFetchRequest; url: string }>[] = [];
+    const document =
+      '<Gallery id="demo-document"><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>';
+    const initialFrame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Initial XML Frame</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const reconciledFrame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Canonical XML Frame after reconnect</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const requests: RecordedRequest[] = [];
     const sockets: FakeActionCableSocket[] = [];
-    let documentRequests = 0;
+    let frameRequests = 0;
     const proof = await createDemoLiveCableRuntime({
-      clock,
       createSocket() {
         const socket = new FakeActionCableSocket();
         sockets.push(socket);
@@ -289,8 +292,7 @@ describe("standalone Rails Action Cable proof", () => {
       },
       fetch: async (url, request) => {
         requests.push({ request, url });
-        if (url !== documentUrl) throw new Error("unexpected demo request");
-        documentRequests += 1;
+        if (url !== documentUrl && url !== frameUrl) throw new Error("unexpected demo request");
         return {
           headers: {
             forEach(callback: (value: string, name: string) => void): void {
@@ -299,8 +301,11 @@ describe("standalone Rails Action Cable proof", () => {
           },
           redirected: false,
           status: 200,
-          text: async () =>
-            documentRequests === 1 ? initialDocument : reconciledDocument,
+          text: async () => {
+            if (url === documentUrl) return document;
+            frameRequests += 1;
+            return frameRequests === 1 ? initialFrame : reconciledFrame;
+          },
           url,
         };
       },
@@ -317,7 +322,8 @@ describe("standalone Rails Action Cable proof", () => {
             createElement(DemoLiveCablePanel, { proof }),
           ),
         );
-        await Promise.resolve();
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
       });
       const original = sockets[0];
       if (!original) throw new Error("missing original Action Cable socket");
@@ -347,49 +353,44 @@ describe("standalone Rails Action Cable proof", () => {
         replacement.emitMessage(
           '{"identifier":' + JSON.stringify(identifier) + ',"type":"confirm_subscription"}',
         );
-        await Promise.resolve();
-      });
-      expect(replacement.sent).toEqual([encodeActionCableSubscribe(identifier)]);
-      expect(clock.timers).toHaveLength(1);
-      expect(clock.timers[0]?.delayMs).toBe(150);
-      expect(requests).toHaveLength(1);
-
-      await act(async () => {
-        clock.fire(0);
         await nextTurn();
       });
-
-      expect(requests).toHaveLength(2);
-      expect(requests[1]).toMatchObject({
-        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "GET" },
-        url: documentUrl,
+      expect(replacement.sent).toContain(encodeActionCableSubscribe(identifier));
+      expect(requests).toHaveLength(4);
+      expect(requests.filter(({ request }) => request.signal?.aborted)).toHaveLength(1);
+      const reconciledRequests = unabortedRequests(requests);
+      expect(reconciledRequests).toHaveLength(3);
+      expect(reconciledRequests.filter((request) => request.url === documentUrl)).toHaveLength(1);
+      expect(reconciledRequests[1]).toMatchObject({
+        request: {
+          headers: { "Turbo-Frame": "demo-frame", Accept: EXPO_TURBO_MIME_TYPE },
+          method: "GET",
+        },
+        url: frameUrl,
       });
       expect(requests[0]?.request.headers["X-Turbo-Request-Id"]).toBe(
         "demo-live-document-1",
       );
+      expect(reconciledRequests[1]?.request.headers["X-Turbo-Request-Id"]).toBe(
+        "demo-live-frame-2",
+      );
+      expect(reconciledRequests[2]).toMatchObject({
+        request: {
+          headers: { "Turbo-Frame": "demo-frame", Accept: EXPO_TURBO_MIME_TYPE },
+          method: "GET",
+        },
+        url: frameUrl,
+      });
+      expect(reconciledRequests[2]?.request.headers["X-Turbo-Request-Id"]).toBe(
+        "demo-live-frame-3",
+      );
       expect(requests[1]?.request.headers["X-Turbo-Request-Id"]).toBe(
-        "demo-live-document-2",
+        "demo-live-frame-1",
       );
       const message = proof.session.tree.getElementById("demo-stream-message");
       expect(message ? nodeTextContent(message) : undefined).toBe(
-        "Canonical XML after reconnect",
+        "Canonical XML Frame after reconnect",
       );
-      const rebound = sockets[2];
-      if (!rebound) throw new Error("missing canonical document source socket");
-      const timerCount = clock.timers.length;
-
-      await act(async () => {
-        rebound.emitOpen();
-        rebound.emitMessage('{"type":"welcome"}');
-        rebound.emitMessage(
-          '{"identifier":' + JSON.stringify(identifier) + ',"type":"confirm_subscription"}',
-        );
-        await Promise.resolve();
-      });
-
-      expect(rebound.sent).toEqual([encodeActionCableSubscribe(identifier)]);
-      expect(clock.timers).toHaveLength(timerCount);
-      expect(requests).toHaveLength(2);
     } finally {
       await act(async () => {
         renderer?.unmount();
@@ -399,20 +400,21 @@ describe("standalone Rails Action Cable proof", () => {
     }
   });
 
-  test("cancels a pending reconnect reconciliation when the runtime is disposed", async () => {
+  test("does not reload the active Frame after runtime disposal during reconnect", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
     const signedStreamName = "signed-demo-stream";
     const identifier = JSON.stringify({
       channel: "Turbo::StreamsChannel",
       signed_stream_name: signedStreamName,
     });
     const document =
-      '<Gallery id="demo-document"><DemoText id="demo-stream-message">Initial XML document</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></Gallery>';
-    const clock = new ManualClock();
-    const requests: Readonly<{ request: DemoLiveCableFetchRequest; url: string }>[] = [];
+      '<Gallery id="demo-document"><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>';
+    const frame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Initial XML Frame</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const requests: RecordedRequest[] = [];
     const sockets: FakeActionCableSocket[] = [];
     const proof = await createDemoLiveCableRuntime({
-      clock,
       createSocket() {
         const socket = new FakeActionCableSocket();
         sockets.push(socket);
@@ -420,7 +422,7 @@ describe("standalone Rails Action Cable proof", () => {
       },
       fetch: async (url, request) => {
         requests.push({ request, url });
-        if (url !== documentUrl) throw new Error("unexpected demo request");
+        if (url !== documentUrl && url !== frameUrl) throw new Error("unexpected demo request");
         return {
           headers: {
             forEach(callback: (value: string, name: string) => void): void {
@@ -429,39 +431,66 @@ describe("standalone Rails Action Cable proof", () => {
           },
           redirected: false,
           status: 200,
-          text: async () => document,
+          text: async () => (url === documentUrl ? document : frame),
           url,
         };
       },
       origin: "http://demo.example:3000",
     });
-    const source = proof.session.tree.getElementById("demo-stream-source");
-    if (!source) throw new Error("missing demo stream source");
-    proof.streamSources.retain(source);
+    let renderer: ReactTestRenderer | undefined;
 
-    const original = sockets[0];
-    if (!original) throw new Error("missing original Action Cable socket");
-    original.emitOpen();
-    original.emitMessage('{"type":"welcome"}');
-    original.emitMessage(
-      '{"identifier":' + JSON.stringify(identifier) + ',"type":"confirm_subscription"}',
-    );
-    original.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}');
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(
+            StrictMode,
+            undefined,
+            createElement(DemoLiveCablePanel, { proof }),
+          ),
+        );
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
+      });
+      const original = sockets[0];
+      if (!original) throw new Error("missing original Action Cable socket");
+      await act(async () => {
+        original.emitOpen();
+        original.emitMessage('{"type":"welcome"}');
+        original.emitMessage(
+          '{"identifier":' + JSON.stringify(identifier) + ',"type":"confirm_subscription"}',
+        );
+        await Promise.resolve();
+      });
+      await act(async () => {
+        original.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}');
+        await Promise.resolve();
+      });
 
-    const replacement = sockets[1];
-    if (!replacement) throw new Error("missing replacement Action Cable socket");
-    replacement.emitOpen();
-    replacement.emitMessage('{"type":"welcome"}');
-    replacement.emitMessage(
-      '{"identifier":' + JSON.stringify(identifier) + ',"type":"confirm_subscription"}',
-    );
-    expect(clock.timers).toHaveLength(1);
+      const replacement = sockets[1];
+      if (!replacement) throw new Error("missing replacement Action Cable socket");
+      await act(async () => {
+        replacement.emitOpen();
+        replacement.emitMessage('{"type":"welcome"}');
+        await Promise.resolve();
+      });
+      expect(replacement.sent).toEqual([encodeActionCableSubscribe(identifier)]);
 
-    proof.dispose();
-    clock.fire(0);
-    await nextTurn();
+      await act(async () => {
+        renderer?.unmount();
+        renderer = undefined;
+        await Promise.resolve();
+      });
+      await nextTurn();
 
-    expect(requests).toHaveLength(1);
-    expect(replacement.closeCalls).toBe(1);
+      expect(requests).toHaveLength(3);
+      expect(unabortedRequests(requests)).toHaveLength(2);
+      expect(replacement.closeCalls).toBe(1);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
   });
 });

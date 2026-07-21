@@ -1,3 +1,4 @@
 <%= expo_turbo_frame_tag "demo-frame" do %>
-  <DemoText id="demo-frame-message"><%= message %></DemoText>
+  <DemoText id="demo-stream-message"><%= message %></DemoText>
+  <%= expo_turbo_stream_from "demo-stream", id: "demo-stream-source" %>
 <% end %>

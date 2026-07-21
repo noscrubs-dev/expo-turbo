@@ -1,5 +1,6 @@
 <Gallery id="demo-document">
   <DemoText id="welcome">Standalone Rails host</DemoText>
-  <DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText>
-  <%= expo_turbo_stream_from "demo-stream", id: "demo-stream-source" %>
+  <turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame">
+    <DemoText id="demo-frame-message">Loading the public Action Cable Frame</DemoText>
+  </turbo-frame>
 </Gallery>
