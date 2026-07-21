@@ -21,8 +21,8 @@ import {
   StateError,
 } from "expo-turbo/core";
 import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
-import { type ReactNode, useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { AppState, Pressable, Text, View } from "react-native";
 
 import { DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
@@ -75,6 +75,19 @@ export interface DemoLiveCableRuntime {
   dispose(): void;
 }
 
+export type DemoLiveCableLifecycleState = "active" | "background" | "inactive";
+
+export interface DemoLiveCableLifecycle {
+  currentState(): DemoLiveCableLifecycleState;
+  subscribe(listener: (state: DemoLiveCableLifecycleState) => void): () => void;
+}
+
+export interface DemoLiveCableProofProps {
+  readonly createRuntime?: () => Promise<DemoLiveCableRuntime>;
+  readonly lifecycle?: DemoLiveCableLifecycle;
+  readonly origin: string;
+}
+
 function asDisplayError(error: unknown): Error {
   return error instanceof ExpoTurboError
     ? error
@@ -91,6 +104,25 @@ function nativeSocket(
   }
   return new NativeWebSocket(url, [...protocols]) as unknown as ActionCableWebSocket;
 }
+
+function asDemoLiveCableLifecycleState(
+  state: string | null | undefined,
+): DemoLiveCableLifecycleState {
+  if (state === "active" || state === "background") return state;
+  return "inactive";
+}
+
+const nativeDemoLiveCableLifecycle: DemoLiveCableLifecycle = Object.freeze({
+  currentState: () => asDemoLiveCableLifecycleState(AppState.currentState),
+  subscribe(listener: (state: DemoLiveCableLifecycleState) => void) {
+    const subscription = AppState.addEventListener("change", (state) => {
+      listener(asDemoLiveCableLifecycleState(state));
+    });
+    return () => {
+      subscription.remove();
+    };
+  },
+});
 
 export function resolveDemoLiveCableEndpoints(origin: string): DemoLiveCableEndpoints {
   const cableUrl = resolveActionCableEndpoint(origin, CABLE_PATH);
@@ -311,7 +343,7 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its fixed local controls broadcast either a replace or ordinary refresh Stream; refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. It has no user document navigation, Forms, auth, heartbeat, background policy, or client retry.
+          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its fixed local controls broadcast either a replace or ordinary refresh Stream; refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, Forms, auth, heartbeat, network policy, or client retry.
         </Text>
         <ExpoTurboRoot />
         <Pressable
@@ -366,33 +398,98 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
   );
 }
 
-export function DemoLiveCableProof({ origin }: Readonly<{ origin: string }>) {
+export function DemoLiveCableProof({
+  createRuntime,
+  lifecycle = nativeDemoLiveCableLifecycle,
+  origin,
+}: DemoLiveCableProofProps) {
+  const startRuntime = useCallback(
+    () => createRuntime?.() ?? createDemoLiveCableRuntime({ origin }),
+    [createRuntime, origin],
+  );
+  const [backgrounded, setBackgrounded] = useState(
+    () => lifecycle.currentState() === "background",
+  );
   const [error, setError] = useState<Error | undefined>();
   const [proof, setProof] = useState<DemoLiveCableRuntime | undefined>();
 
   useEffect(() => {
-    let active = true;
-    let handedOff = false;
-    let created: DemoLiveCableRuntime | undefined;
-    void createDemoLiveCableRuntime({ origin })
-      .then((nextProof) => {
-        created = nextProof;
-        if (!active) {
-          nextProof.dispose();
-          return;
-        }
-        handedOff = true;
-        setProof(nextProof);
-      })
-      .catch((nextError) => {
-        if (active) setError(asDisplayError(nextError));
-      });
-    return () => {
-      active = false;
-      if (!handedOff) created?.dispose();
-    };
-  }, [origin]);
+    let disposed = false;
+    let inBackground = lifecycle.currentState() === "background";
+    let currentProof: DemoLiveCableRuntime | undefined;
+    let generation = 0;
+    let starting = false;
 
+    const release = () => {
+      generation += 1;
+      starting = false;
+      currentProof?.dispose();
+      currentProof = undefined;
+      if (!disposed) setProof(undefined);
+    };
+    const start = () => {
+      if (disposed || inBackground || starting || currentProof) return;
+      const requestGeneration = ++generation;
+      starting = true;
+      setError(undefined);
+      void Promise.resolve()
+        .then(() => {
+          if (disposed || inBackground || requestGeneration !== generation) return undefined;
+          return startRuntime();
+        })
+        .then((nextProof) => {
+          if (!nextProof) return;
+          if (disposed || inBackground || requestGeneration !== generation) {
+            nextProof.dispose();
+            return;
+          }
+          currentProof = nextProof;
+          setProof(nextProof);
+        })
+        .catch((nextError) => {
+          if (!disposed && !inBackground && requestGeneration === generation) {
+            setError(asDisplayError(nextError));
+          }
+        })
+        .finally(() => {
+          if (requestGeneration === generation) starting = false;
+        });
+    };
+    const unsubscribe = lifecycle.subscribe((state) => {
+      if (state === "background") {
+        if (inBackground) return;
+        inBackground = true;
+        setBackgrounded(true);
+        setError(undefined);
+        release();
+        return;
+      }
+      if (state === "active" && inBackground) {
+        inBackground = false;
+        setBackgrounded(false);
+        start();
+      }
+    });
+    if (!inBackground) start();
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      release();
+    };
+  }, [lifecycle, startRuntime]);
+
+  if (backgrounded) {
+    return (
+      <Text
+        accessibilityLabel="Action Cable paused in background"
+        selectable
+        style={{ color: "#435160" }}
+      >
+        Action Cable pauses while the app is in the background.
+      </Text>
+    );
+  }
   if (error) {
     return (
       <Text selectable style={{ color: "#a62525" }}>

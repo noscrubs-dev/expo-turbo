@@ -13,11 +13,20 @@ import { EXPO_TURBO_MIME_TYPE, nodeTextContent } from "expo-turbo/core";
 import { createElement, StrictMode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-import type { DemoLiveCableFetchRequest } from "./demo-live-cable";
+import type {
+  DemoLiveCableFetchRequest,
+  DemoLiveCableLifecycle,
+  DemoLiveCableLifecycleState,
+  DemoLiveCableRuntime,
+} from "./demo-live-cable";
 
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
   Alert: { alert: () => undefined },
+  AppState: {
+    addEventListener: () => ({ remove: () => undefined }),
+    currentState: "active",
+  },
   FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
   Linking: { openURL: async () => undefined },
   Platform: { OS: "web" },
@@ -30,7 +39,9 @@ mock.module("react-native", () => ({
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
 }));
 
-const { createDemoLiveCableRuntime, DemoLiveCablePanel } = await import("./demo-live-cable");
+const { createDemoLiveCableRuntime, DemoLiveCablePanel, DemoLiveCableProof } = await import(
+  "./demo-live-cable"
+);
 
 const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -85,6 +96,28 @@ class FakeActionCableSocket implements ActionCableWebSocket {
     event: Readonly<{ readonly data?: unknown }> = {},
   ): void {
     for (const listener of this.listeners[type]) listener(event);
+  }
+}
+
+class FakeDemoLiveCableLifecycle implements DemoLiveCableLifecycle {
+  private readonly listeners = new Set<(state: DemoLiveCableLifecycleState) => void>();
+
+  constructor(private state: DemoLiveCableLifecycleState = "active") {}
+
+  currentState(): DemoLiveCableLifecycleState {
+    return this.state;
+  }
+
+  subscribe(listener: (state: DemoLiveCableLifecycleState) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  emit(state: DemoLiveCableLifecycleState): void {
+    this.state = state;
+    for (const listener of this.listeners) listener(state);
   }
 }
 
@@ -328,6 +361,201 @@ describe("standalone Rails Action Cable proof", () => {
       encodeActionCableUnsubscribe(identifier),
     ]);
     expect(socket.closeCalls).toBe(1);
+  });
+
+  test("restarts the host-owned runtime once after an iOS background transition", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
+    const broadcastUrl = "http://demo.example:3000/api/expo_turbo/demo/broadcast";
+    const signedStreamName = "signed-demo-stream";
+    const identifier = JSON.stringify({
+      channel: "Turbo::StreamsChannel",
+      signed_stream_name: signedStreamName,
+    });
+    const document =
+      '<Gallery id="demo-document"><DemoText id="demo-document-state">Canonical document</DemoText><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>';
+    const frame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const lifecycle = new FakeDemoLiveCableLifecycle();
+    const proofs: DemoLiveCableRuntime[] = [];
+    const requests: RecordedRequest[] = [];
+    const sockets: FakeActionCableSocket[] = [];
+    let runtimeCreations = 0;
+    const createRuntime = async () => {
+      runtimeCreations += 1;
+      const proof = await createDemoLiveCableRuntime({
+        createSocket() {
+          const socket = new FakeActionCableSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        fetch: async (url, request) => {
+          requests.push({ request, url });
+          if (url !== documentUrl && url !== frameUrl && url !== broadcastUrl) {
+            throw new Error("unexpected demo request");
+          }
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                if (url !== broadcastUrl) callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: url === broadcastUrl ? 204 : 200,
+            text: async () => (url === documentUrl ? document : url === frameUrl ? frame : ""),
+            url,
+          };
+        },
+        origin: "http://demo.example:3000",
+      });
+      proofs.push(proof);
+      return proof;
+    };
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(DemoLiveCableProof, {
+            createRuntime,
+            lifecycle,
+            origin: "http://demo.example:3000",
+          }),
+        );
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(runtimeCreations).toBe(1);
+      const initialProof = proofs[0];
+      if (!initialProof) throw new Error("missing initial Cable runtime");
+      await act(async () => {
+        await initialProof.frames.get("demo-frame").loaded;
+        await nextTurn();
+      });
+      const initialSocket = sockets[0];
+      if (!initialSocket) throw new Error("missing initial Action Cable socket");
+      await act(async () => {
+        initialSocket.emitOpen();
+        initialSocket.emitMessage('{"type":"welcome"}');
+        initialSocket.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await Promise.resolve();
+      });
+      const replaceButton = () =>
+        renderer?.root.findByProps({ accessibilityLabel: "Broadcast XML replace" });
+      expect(replaceButton()?.props.disabled).toBe(false);
+
+      await act(async () => {
+        lifecycle.emit("inactive");
+        await nextTurn();
+      });
+      expect(initialSocket.closeCalls).toBe(0);
+      expect(runtimeCreations).toBe(1);
+
+      await act(async () => {
+        lifecycle.emit("background");
+        await nextTurn();
+      });
+      expect(initialSocket.closeCalls).toBe(1);
+      expect(runtimeCreations).toBe(1);
+      expect(
+        renderer?.root.findByProps({ accessibilityLabel: "Action Cable paused in background" }),
+      ).toBeDefined();
+
+      await act(async () => {
+        lifecycle.emit("background");
+        lifecycle.emit("active");
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(runtimeCreations).toBe(2);
+      const recreatedProof = proofs[1];
+      if (!recreatedProof) throw new Error("missing recreated Cable runtime");
+      await act(async () => {
+        await recreatedProof.frames.get("demo-frame").loaded;
+        await nextTurn();
+      });
+      const recreatedSocket = sockets[1];
+      if (!recreatedSocket) throw new Error("missing recreated Action Cable socket");
+      expect(
+        unabortedRequests(requests).filter(({ url }) => url === documentUrl),
+      ).toHaveLength(2);
+      expect(unabortedRequests(requests).filter(({ url }) => url === frameUrl)).toHaveLength(2);
+
+      await act(async () => {
+        recreatedSocket.emitOpen();
+        recreatedSocket.emitMessage('{"type":"welcome"}');
+        recreatedSocket.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await Promise.resolve();
+      });
+      expect(replaceButton()?.props.disabled).toBe(false);
+
+      await act(async () => {
+        lifecycle.emit("active");
+        replaceButton()?.props.onPress();
+        await Promise.resolve();
+      });
+      expect(runtimeCreations).toBe(2);
+      expect(unabortedRequests(requests).at(-1)).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
+        url: broadcastUrl,
+      });
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
+
+    const recreatedSocket = sockets[1];
+    if (!recreatedSocket) throw new Error("missing recreated Action Cable socket");
+    expect(recreatedSocket.closeCalls).toBe(1);
+  });
+
+  test("disposes a runtime that resolves after the proof backgrounds", async () => {
+    const lifecycle = new FakeDemoLiveCableLifecycle();
+    const lateProof = {
+      dispose: mock(() => undefined),
+    } as unknown as DemoLiveCableRuntime;
+    let resolveRuntime: ((proof: DemoLiveCableRuntime) => void) | undefined;
+    const createRuntime = () =>
+      new Promise<DemoLiveCableRuntime>((resolve) => {
+        resolveRuntime = resolve;
+      });
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(DemoLiveCableProof, {
+            createRuntime,
+            lifecycle,
+            origin: "http://demo.example:3000",
+          }),
+        );
+        await nextTurn();
+      });
+      if (!resolveRuntime) throw new Error("missing pending Cable runtime");
+
+      await act(async () => {
+        lifecycle.emit("background");
+        resolveRuntime?.(lateProof);
+        await nextTurn();
+      });
+      expect(lateProof.dispose).toHaveBeenCalledTimes(1);
+      expect(
+        renderer?.root.findByProps({ accessibilityLabel: "Action Cable paused in background" }),
+      ).toBeDefined();
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+    }
   });
 
   test("reconciles its active Frame after a server-directed reconfirmation", async () => {

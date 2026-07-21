@@ -68,6 +68,7 @@ const MockFlatList = forwardRef<
 MockFlatList.displayName = "MockFlatList";
 
 mock.module("react-native", () => ({
+  AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
   FlatList: MockFlatList,
   Platform: { OS: "web" },
   Pressable: ({ children }: NativeProps) => createElement("pressable", undefined, children),
