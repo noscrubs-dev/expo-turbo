@@ -15,6 +15,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type {
   DemoLiveCableFetchRequest,
+  DemoLiveCableFetchResponse,
   DemoLiveCableLifecycle,
   DemoLiveCableLifecycleState,
   DemoLiveCableRuntime,
@@ -42,6 +43,7 @@ mock.module("react-native", () => ({
 const { createDemoLiveCableRuntime, DemoLiveCablePanel, DemoLiveCableProof } = await import(
   "./demo-live-cable"
 );
+const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html";
 
 const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -361,6 +363,158 @@ describe("standalone Rails Action Cable proof", () => {
       encodeActionCableUnsubscribe(identifier),
     ]);
     expect(socket.closeCalls).toBe(1);
+  });
+
+  test("applies an ordered HTTP Stream response from a Rails-authored link", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
+    const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream";
+    const document = `<Gallery id="demo-document"><DemoDocumentLink id="demo-http-stream-link" href="/api/expo_turbo/demo/stream" data-turbo-stream=""><DemoText>Apply sibling Rails HTTP Stream response</DemoText></DemoDocumentLink><Gallery id="demo-http-stream-message"><DemoText id="demo-http-stream-message-value">Waiting for a Rails HTTP Stream response</DemoText></Gallery><Gallery id="demo-http-stream-list"></Gallery><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>`;
+    const frame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const stream = `<turbo-stream action="update" target="demo-http-stream-message"><template><DemoText id="demo-http-stream-message-value">Rendered from XML partial</DemoText></template></turbo-stream><turbo-stream action="append" target="demo-http-stream-list"><template><DemoText id="demo-http-stream-item">Second sibling</DemoText></template></turbo-stream>`;
+    const requests: RecordedRequest[] = [];
+    const proof = await createDemoLiveCableRuntime({
+      createSocket: () => new FakeActionCableSocket(),
+      fetch: async (url, request) => {
+        requests.push({ request, url });
+        if (url === documentUrl || url === frameUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => (url === documentUrl ? document : frame),
+            url,
+          };
+        }
+        if (url === streamUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(TURBO_STREAM_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => stream,
+            url,
+          };
+        }
+        throw new Error("unexpected demo request");
+      },
+      origin: "http://demo.example:3000",
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(createElement(DemoLiveCablePanel, { proof }));
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
+      });
+      const streamLink = renderer?.root.findByProps({ accessibilityRole: "link" });
+
+      await act(async () => {
+        streamLink?.props.onPress();
+        await nextTurn();
+        await nextTurn();
+      });
+
+      const streamRequest = unabortedRequests(requests).find(
+        (request) => request.url === streamUrl,
+      );
+      expect(streamRequest).toMatchObject({
+        request: {
+          headers: {
+            Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+            "X-Turbo-Request-Id": "demo-live-http-stream-1",
+          },
+          method: "GET",
+        },
+        url: streamUrl,
+      });
+      const message = proof.session.tree.getElementById("demo-http-stream-message-value");
+      const item = proof.session.tree.getElementById("demo-http-stream-item");
+      expect(message ? nodeTextContent(message) : undefined).toBe("Rendered from XML partial");
+      expect(item ? nodeTextContent(item) : undefined).toBe("Second sibling");
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
+  });
+
+  test("cancels a pending HTTP Stream link when its host runtime is disposed", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream";
+    const document = `<Gallery id="demo-document"><DemoDocumentLink id="demo-http-stream-link" href="/api/expo_turbo/demo/stream" data-turbo-stream=""><DemoText>Apply sibling Rails HTTP Stream response</DemoText></DemoDocumentLink><Gallery id="demo-http-stream-message"><DemoText id="demo-http-stream-message-value">Waiting for a Rails HTTP Stream response</DemoText></Gallery><Gallery id="demo-http-stream-list"></Gallery></Gallery>`;
+    const stream = `<turbo-stream action="update" target="demo-http-stream-message"><template><DemoText id="demo-http-stream-message-value">Rendered too late</DemoText></template></turbo-stream><turbo-stream action="append" target="demo-http-stream-list"><template><DemoText id="demo-http-stream-item">Too late</DemoText></template></turbo-stream>`;
+    const requests: RecordedRequest[] = [];
+    let resolveStreamResponse: ((response: DemoLiveCableFetchResponse) => void) | undefined;
+    const proof = await createDemoLiveCableRuntime({
+      createSocket: () => new FakeActionCableSocket(),
+      fetch: async (url, request) => {
+        requests.push({ request, url });
+        if (url === documentUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => document,
+            url,
+          };
+        }
+        if (url === streamUrl) {
+          return new Promise<DemoLiveCableFetchResponse>((resolve) => {
+            resolveStreamResponse = resolve;
+          });
+        }
+        throw new Error("unexpected demo request");
+      },
+      origin: "http://demo.example:3000",
+    });
+
+    const submission = proof.formLinks.submit("id:demo-http-stream-link", streamUrl);
+    await nextTurn();
+    const streamRequest = requests.find((request) => request.url === streamUrl);
+
+    try {
+      expect(streamRequest?.request.signal?.aborted).toBe(false);
+      proof.dispose();
+      expect(streamRequest?.request.signal?.aborted).toBe(true);
+      expect((await submission).status).toBe("canceled");
+
+      resolveStreamResponse?.({
+        headers: {
+          forEach(callback: (value: string, name: string) => void): void {
+            callback(TURBO_STREAM_MIME_TYPE, "Content-Type");
+          },
+        },
+        redirected: false,
+        status: 200,
+        text: async () => stream,
+        url: streamUrl,
+      });
+      await nextTurn();
+
+      const message = proof.session.tree.getElementById("demo-http-stream-message-value");
+      expect(message ? nodeTextContent(message) : undefined).toBe(
+        "Waiting for a Rails HTTP Stream response",
+      );
+      expect(proof.session.tree.getElementById("demo-http-stream-item")).toBeUndefined();
+    } finally {
+      proof.dispose();
+    }
   });
 
   test("restarts the host-owned runtime once after an iOS background transition", async () => {

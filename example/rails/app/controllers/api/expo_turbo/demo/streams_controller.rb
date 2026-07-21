@@ -5,11 +5,11 @@ module Api
         def show
           render_expo_turbo_stream(
             expo_turbo_stream.update(
-              "demo-stream-message",
-              partial: "demo/streams/message",
+              "demo-http-stream-message",
+              partial: "demo/streams/http_message",
               locals: {message: "Rendered from XML partial"}
             ),
-            expo_turbo_stream.append("demo-stream-list", '<DemoText id="demo-stream-item">Second sibling</DemoText>')
+            expo_turbo_stream.append("demo-http-stream-list", '<DemoText id="demo-http-stream-item">Second sibling</DemoText>')
           )
         end
       end

@@ -13,6 +13,10 @@ import {
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
   ExpoTurboError,
+  FormLinkSubmissionController,
+  FormSubmissionController,
+  FormSubmissionLifecycle,
+  type FormSubmissionHandle,
   FrameControllerRegistry,
   FrameReconnectReconciler,
   FrameRequestLoader,
@@ -67,7 +71,9 @@ export interface DemoLiveCableRuntime {
   broadcastRefresh(): Promise<void>;
   clearError(): void;
   readonly cableUrl: string;
+  readonly documentController: DocumentVisitController;
   readonly documentUrl: string;
+  readonly formLinks: FormLinkSubmissionController;
   readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
   readonly streamSources: CableStreamSourceRegistry;
@@ -175,6 +181,23 @@ export async function createDemoLiveCableRuntime(
       next: () => `demo-live-frame-${++frameRequestId}`,
     }),
   );
+  const formSubmissionLifecycle = new FormSubmissionLifecycle();
+  const activeFormSubmissions = new Set<FormSubmissionHandle>();
+  const unsubscribeFormSubmissionStart = formSubmissionLifecycle.subscribe("submit-start", (event) => {
+    activeFormSubmissions.add(event.detail.formSubmission);
+  });
+  const unsubscribeFormSubmissionEnd = formSubmissionLifecycle.subscribe("submit-end", (event) => {
+    activeFormSubmissions.delete(event.detail.formSubmission);
+  });
+  const formController = new FormSubmissionController(session, documentFetch, {
+    frameControllers: frames,
+    refresh,
+    submissionLifecycle: formSubmissionLifecycle,
+  });
+  let formLinkRequestId = 0;
+  const formLinks = new FormLinkSubmissionController(session, formController, {
+    next: () => `demo-live-http-stream-${++formLinkRequestId}`,
+  });
   let sources: CableStreamSourceRegistry | undefined;
   const sourceConnections = Object.freeze({
     get connectionSnapshot() {
@@ -232,11 +255,17 @@ export async function createDemoLiveCableRuntime(
     clearError(): void {
       reportError(undefined);
     },
+    documentController: visits,
     documentUrl: endpoints.documentUrl,
+    formLinks,
     frames,
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      for (const submission of activeFormSubmissions) submission.stop();
+      activeFormSubmissions.clear();
+      unsubscribeFormSubmissionStart();
+      unsubscribeFormSubmissionEnd();
       reconnectRefresh.dispose();
       streamSources.dispose();
       frames.dispose();
@@ -283,6 +312,8 @@ export function DemoLiveCableRuntimeProvider({
   useDemoLiveCableRuntimeOwner(proof);
   return (
     <ExpoTurboProvider
+      documentController={proof.documentController}
+      formLinks={proof.formLinks}
       registry={DEMO_REGISTRY}
       renderError={({ error }) => (
         <Text selectable style={{ color: "#a62525" }}>
@@ -343,7 +374,7 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its fixed local controls broadcast either a replace or ordinary refresh Stream; refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, Forms, auth, heartbeat, network policy, or client retry.
+          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, server-owned Frame form, auth, heartbeat, network policy, or client retry.
         </Text>
         <ExpoTurboRoot />
         <Pressable

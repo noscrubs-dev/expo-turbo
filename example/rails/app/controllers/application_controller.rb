@@ -5,6 +5,7 @@ class ApplicationController < ActionController::API
   expo_turbo_template_capabilities(
     components: {
       "DemoForm" => {},
+      "DemoDocumentLink" => {},
       "DemoFormInput" => {},
       "DemoFormSubmitter" => {},
       "Gallery" => {},
