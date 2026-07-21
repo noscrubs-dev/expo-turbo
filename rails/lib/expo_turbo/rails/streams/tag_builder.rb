@@ -35,8 +35,9 @@ module ExpoTurbo
         end
         private_constant :XmlRenderableContext
 
-        def initialize(view_context, partial_resolver:)
+        def initialize(view_context, partial_resolver:, fragment_validator: nil)
           @view_context = view_context
+          @fragment_validator = fragment_validator
           @partial_resolver = partial_resolver
         end
 
@@ -250,7 +251,8 @@ module ExpoTurbo
         end
 
         def validate_stream_fragment!(stream)
-          XmlFragments.parse_stream_fragment(stream.to_s)
+          document = XmlFragments.parse_stream_fragment(stream.to_s)
+          @fragment_validator&.call(document)
           stream
         rescue XmlFragments::ParseError
           raise TemplateError, "Expo Turbo Stream output must be well-formed UTF-8 XML without DTDs or processing instructions"

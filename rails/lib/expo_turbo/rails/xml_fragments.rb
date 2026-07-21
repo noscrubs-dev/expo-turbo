@@ -26,7 +26,7 @@ module ExpoTurbo
         ids = {}
 
         document.xpath("//*").each do |element|
-          id = element.attribute_nodes.find { |attribute| attribute.name == "id" && attribute.namespace.nil? }&.value
+          id = literal_attribute_value(element, "id")
           next if id.nil?
 
           if id.match?(ECMASCRIPT_TRIMMED_EMPTY) || ids.key?(id)
@@ -44,7 +44,7 @@ module ExpoTurbo
         validate_fragment_root!(document, "Stream fragment") do |elements|
           elements.present? && elements.all? { |element| literal_element?(element, "turbo-stream") }
         end
-        document
+        validate_fragment_ids!(document)
       end
 
       def parse_frame_fragment(xml, root_name: DEFAULT_FRAGMENT_ROOT)
@@ -52,7 +52,7 @@ module ExpoTurbo
         validate_fragment_root!(document, "Frame fragment") do |elements|
           elements.one? && literal_element?(elements.first, "turbo-frame")
         end
-        document
+        validate_fragment_ids!(document)
       end
 
       def parse_fragment(xml, label, root_name:)
@@ -98,14 +98,28 @@ module ExpoTurbo
       end
 
       def literal_element?(element, name)
-        element.name == name && element.namespace.nil?
+        element.name == name && element.namespace&.prefix.nil?
+      end
+
+      def validate_fragment_ids!(document)
+        document.xpath("//*").each do |element|
+          id = literal_attribute_value(element, "id")
+          raise DocumentIdError, "Expo Turbo fragment ids must be nonblank literal values" if id&.match?(ECMASCRIPT_TRIMMED_EMPTY)
+        end
+
+        document
+      end
+
+      def literal_attribute_value(element, name)
+        element.attribute_nodes.find { |attribute| attribute.name == name && attribute.namespace.nil? }&.value
       end
 
       def error_message(label)
         "Expo Turbo #{label} must be well-formed UTF-8 XML without DTDs or processing instructions"
       end
 
-      private_class_method :parse_fragment, :validate_source!, :parse_xml, :validate_fragment_root!, :literal_element?, :error_message
+      private_class_method :parse_fragment, :validate_source!, :parse_xml, :validate_fragment_root!, :literal_element?,
+        :validate_fragment_ids!, :literal_attribute_value, :error_message
       private_constant :DEFAULT_FRAGMENT_ROOT, :XML_DECLARATION, :XML_ENCODING, :DOCTYPE, :NON_MARKUP, :ECMASCRIPT_TRIMMED_EMPTY
     end
   end

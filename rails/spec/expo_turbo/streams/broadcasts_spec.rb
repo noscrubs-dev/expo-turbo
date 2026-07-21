@@ -259,7 +259,7 @@ RSpec.describe ExpoTurbo::Rails::Streams do
       '<?xml version="1.0"?><turbo-stream action="remove" target="notice"></turbo-stream>',
       '<!DOCTYPE Demo [<!ENTITY secret "not-for-errors">]><turbo-stream action="remove" target="notice"></turbo-stream>',
       '<?build data?><turbo-stream action="remove" target="notice"></turbo-stream>',
-      '<turbo-stream xmlns="urn:expo-test" action="remove" target="notice"></turbo-stream>'
+      '<x:turbo-stream xmlns:x="urn:expo-test" action="remove" target="notice"></x:turbo-stream>'
     ]
 
     invalid_fragments.each do |invalid|
