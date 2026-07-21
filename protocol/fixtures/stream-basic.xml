@@ -1,0 +1,1 @@
+<turbo-stream action="append" target="items"><template><DemoItem id="item-1">One</DemoItem></template></turbo-stream><turbo-stream action="remove" target="stale"></turbo-stream>

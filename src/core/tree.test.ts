@@ -197,5 +197,11 @@ describe("Expo Turbo XML tree", () => {
     expect(() => parseTurboStreamFragment("<DemoText />")).toThrow(
       /only turbo-stream root elements/,
     )
+    expect(() => parseTurboStreamFragment('plain text<turbo-stream action="remove" />')).toThrow(
+      /non-whitespace text/,
+    )
+    expect(() =>
+      parseTurboStreamFragment('&#xA0;&#x2003;<turbo-stream action="remove" />'),
+    ).toThrow(/non-whitespace text/)
   })
 })

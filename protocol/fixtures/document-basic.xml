@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="UTF-8"?><DemoScreen xmlns:demo="urn:expo-turbo:demo" id="screen" data-theme="light"><demo:Card id="summary" title="Welcome">Hello <DemoText id="message">world</DemoText></demo:Card><turbo-frame id="details" src="/details"><DemoText id="details-loading">Loading</DemoText></turbo-frame></DemoScreen>

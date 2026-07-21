@@ -1,0 +1,1 @@
+<!DOCTYPE Demo [<!ENTITY unsafe "not-allowed">]><Demo>&unsafe;</Demo>

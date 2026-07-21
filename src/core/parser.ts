@@ -372,6 +372,12 @@ function parse(xml: string, options: ParseOptions, fragment: boolean): DocumentT
     1,
     state,
   )
+  if (
+    fragment &&
+    document.children.some((node) => node.kind === "text" && /[^\t\n\r ]/.test(node.value))
+  ) {
+    throw parseError("Turbo Stream fragments may not contain non-whitespace text")
+  }
   const roots = document.children.filter((node) => isProtocolElement(node))
   if (!fragment && roots.length !== 1)
     throw parseError("Expo Turbo documents require one root element")
