@@ -108,6 +108,7 @@ import {
 } from "../core/frame-render-lifecycle-internal"
 import type { FrameAutoscrollIntent } from "../core/frame-response-application"
 import { resolveFormSubmissionDestination } from "../core/frames"
+import { type ProtocolDirection, protocolDirection } from "../core/protocol-direction"
 import {
   type ExternalDocumentLinkScheme,
   resolveDocumentLinkAnchor,
@@ -269,6 +270,7 @@ const NavigationContext = createContext<NavigationAdapter | undefined>(undefined
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
+const DirectionContext = createContext<ProtocolDirection | undefined>(undefined)
 const providerDisposableOwners = new WeakMap<object, number>()
 const announcedFormTerminalRevisions = new WeakMap<
   DocumentSession,
@@ -1078,6 +1080,13 @@ export function useDocumentVisitControllerState(
 
 export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
   return useContext(DocumentContext)
+}
+
+export type ExpoTurboDirection = ProtocolDirection
+
+/** The nearest XML `dir` value, or `undefined` when the host should use its default direction. */
+export function useExpoTurboDirection(): ExpoTurboDirection | undefined {
+  return useContext(DirectionContext)
 }
 
 export type ExpoTurboDocumentLinkDelegation =
@@ -1904,7 +1913,9 @@ function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
 
 function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNode {
   const { registry } = useRenderer()
+  const inheritedDirection = useContext(DirectionContext)
   const decoded: DecodedComponent = registry.decode(props.node)
+  const direction = decoded.protocol.direction ?? inheritedDirection
   let children: ReactNode
   if (decoded.definition.children === "text") children = decoded.text ?? ""
   else if (decoded.definition.children === "nodes") children = renderChildren(decoded.children)
@@ -1917,10 +1928,28 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
       ? createElement(component, componentProps)
       : createElement(component, componentProps, children)
   return createElement(
-    ProtocolNodeContext.Provider,
-    { value: props.node.key },
-    createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+    DirectionContext.Provider,
+    { value: direction },
+    createElement(
+      ProtocolNodeContext.Provider,
+      { value: props.node.key },
+      createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+    ),
   )
+}
+
+function ProtocolDirectionBoundary(
+  props: Readonly<{ children?: ReactNode; node: ProtocolElement }>,
+): ReactNode {
+  const inheritedDirection = useContext(DirectionContext)
+  const direction = protocolDirection(props.node) ?? inheritedDirection
+  return createElement(DirectionContext.Provider, { value: direction }, props.children)
+}
+
+function RootProtocolDirectionBoundary(
+  props: Readonly<{ children?: ReactNode; node: ProtocolElement }>,
+): ReactNode {
+  return createElement(ProtocolDirectionBoundary, { node: props.node }, props.children)
 }
 
 interface RegisteredElementBoundaryProps {
@@ -2518,12 +2547,16 @@ function ProtocolElementView(
         revision: props.revision,
       },
       createElement(
-        StateScopeBoundary,
-        {
-          kind: "frame",
-          nodeKey: props.node.key,
-        },
-        rendered,
+        ProtocolDirectionBoundary,
+        { node: props.node },
+        createElement(
+          StateScopeBoundary,
+          {
+            kind: "frame",
+            nodeKey: props.node.key,
+          },
+          rendered,
+        ),
       ),
     )
   }
@@ -2558,7 +2591,14 @@ export function ExpoTurboRoot(): ReactNode {
   const context = useRenderer()
   const { session } = context
   const root = useProtocolNode(session.tree.document.key)
-  if (root?.node.kind !== "document") return null
+  const rootElement =
+    root?.node.kind === "document" ? root.node.children.find(isElement) : undefined
+  const rootElementSnapshot = useProtocolNode(rootElement?.key ?? session.tree.document.key)
+  if (root?.node.kind !== "document" || !rootElement) return null
+  const rootDirectionElement =
+    rootElementSnapshot && isElement(rootElementSnapshot.node)
+      ? rootElementSnapshot.node
+      : rootElement
   const children = createElement(Fragment, null, renderChildren(root.node.children))
   const rendered = context.documentController
     ? createElement(
@@ -2579,23 +2619,27 @@ export function ExpoTurboRoot(): ReactNode {
       nodeKey: root.node.key,
       onError: context.onError,
       renderError: context.renderError,
-      revision: root.revision,
+      revision: `${root.revision}:${rootElementSnapshot?.revision ?? "missing"}`,
     },
     createElement(
-      DocumentRenderBoundary,
-      {
-        document: root.node,
-        generation: session.treeGeneration,
-      },
+      RootProtocolDirectionBoundary,
+      { node: rootDirectionElement },
       createElement(
-        NodeErrorBoundary,
+        DocumentRenderBoundary,
         {
-          nodeKey: root.node.key,
-          onError: context.onError,
-          renderError: context.renderError,
-          revision: root.revision,
+          document: root.node,
+          generation: session.treeGeneration,
         },
-        rendered,
+        createElement(
+          NodeErrorBoundary,
+          {
+            nodeKey: root.node.key,
+            onError: context.onError,
+            renderError: context.renderError,
+            revision: root.revision,
+          },
+          rendered,
+        ),
       ),
     ),
   )

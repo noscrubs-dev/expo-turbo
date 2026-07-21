@@ -54,6 +54,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] **Package surface:** ESM TypeScript package with explicit `core`, `adapters`, `react`, `registry`, and `testing` boundaries.
 - [x] **XML and document tree:** strict namespace-aware document and Turbo Stream-fragment parsing, limits, deterministic XML/tree diagnostics, stable IDs, and structural selectors.
 - [x] **Native rendering:** typed component registries, schema/attribute admission, component actions, scoped state, and a React renderer for registered XML components.
+- [x] **Native XML direction:** validated `dir="ltr|rtl|auto"` inheritance across the document root, registered components, and Frames, exposed through `useExpoTurboDirection()`. The package stays React-only; the example maps that context to React Native layout/text props without changing global device direction.
 - [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents.
 - [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. The Expo example exposes an opt-in native-only Frame-form panel against the standalone Rails host. A controlled renderer test and separate desktop provider/root smoke cover initial Frame loading, server-owned `422` XML, an adapter-followed canonical `303` GET, and replacement-input reset; neither is release-build or physical-device evidence. Multipart and File/Blob uploads are not supported.
 - [x] **Turbo Streams:** built-in and registered custom actions, target/selector dispatch, refresh handling, and identity-safe cleanup.
@@ -76,6 +77,7 @@ The manual **Release candidate** workflow runs only from merged `main`, builds a
 - [x] Strict, namespace-aware XML documents and ordered multi-root Turbo Stream fragment parsing.
 - [x] Pre-parse byte/depth/DOCTYPE/processing-instruction guards plus node, attribute, text, and Stream-action limits.
 - [x] Shared text normalization with inherited `xml:space`, explicit `default` reset, preserved CDATA, collapsed XML whitespace, and deterministic fixture/diagnostic serialization.
+- [x] Shared XML `dir` admission (`ltr`, `rtl`, or `auto`) with root/component/Frame context inheritance, invalid-value rejection, and the React-only `useExpoTurboDirection()` hook. Hosts map direction to their own native layout and text APIs; this is not browser bidi, CSS cascade, or global device-direction behavior.
 - [x] Addressable mixed-content tree with deterministic keys, unique ID lookup, parent links, Frame/source indexes, comments, and CDATA.
 - [x] Case-sensitive XML selector queries for lists, tags, IDs, classes, attributes, combinators, and structural pseudo-selectors without stale-result caching.
 - [x] Typed component/module registry composition, Zod prop admission, explicit attribute codecs, child policies, aliases/deprecations, duplicate ownership errors, and deterministic capabilities.
@@ -221,6 +223,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-21**:
+
+- Changed: Added validated inherited XML `dir` context to the React renderer, including document and Frame boundaries, and exposed it as `useExpoTurboDirection()`.
+- Why: Components and host boundaries needed one explicit native direction signal rather than inferring browser DOM or global device behavior.
+- Impact: Expo's gallery now maps `ltr`/`rtl` to native layout direction and `auto` to host-native text direction. Hosts remain responsible for their component mapping; browser bidi/CSS parity and global `I18nManager` mutation are not claimed.
 
 **2026-07-21**:
 

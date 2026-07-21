@@ -98,6 +98,7 @@ import {
   useComponentAction,
   useDocumentState,
   useExpoTurboDocument,
+  useExpoTurboDirection,
   useExpoTurboDocumentLink,
   useExpoTurboDocumentLinkPrefetch,
   useExpoTurboForm,
@@ -8534,7 +8535,7 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("projects authored disabled link presence through the Expo Pressable", async () => {
+  test("projects authored disabled links and XML direction through Expo primitives", async () => {
     mock.module("react-native", () => ({
       AccessibilityInfo: { announceForAccessibility: () => undefined },
       Alert: { alert: () => undefined },
@@ -8551,7 +8552,11 @@ describe("React protocol renderer", () => {
     const { DEMO_REGISTRY } = await import("./demo-registry")
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><DemoDocumentLink disabled="" href="/disabled"><DemoText>Disabled</DemoText></DemoDocumentLink></Gallery>',
+        `<Gallery dir="rtl">
+          <DemoText>RTL</DemoText>
+          <Gallery dir="auto"><DemoText>Automatic</DemoText></Gallery>
+          <DemoDocumentLink disabled="" href="/disabled"><DemoText>Disabled</DemoText></DemoDocumentLink>
+        </Gallery>`,
         { url: "https://example.test/gallery" },
       ),
     )
@@ -8578,6 +8583,21 @@ describe("React protocol renderer", () => {
     for (const pressable of pressables) {
       expect(pressable.props.accessibilityState).toEqual({ busy: false, disabled: true })
     }
+    const nativeText = renderer.root.findAll((node) => String(node.type) === "native-text")
+    expect(nativeText.find(({ props }) => props.children === "RTL")?.props.style).toMatchObject({
+      writingDirection: "rtl",
+    })
+    expect(nativeText.find(({ props }) => props.children === "Automatic")?.props.style).toMatchObject({
+      writingDirection: "auto",
+    })
+    expect(
+      renderer.root
+        .findAll((node) => String(node.type) === "view")
+        .map(({ props }) => props.style)
+        .flatMap((style) => (Array.isArray(style) ? style : [style]))
+        .map((style) => style?.direction)
+        .filter((direction): direction is string => direction !== undefined),
+    ).toEqual(["rtl", "inherit"])
 
     act(() => renderer.unmount())
   })
@@ -9842,6 +9862,158 @@ describe("React protocol renderer", () => {
       { busy: false, contextFrameId: "inner", frameId: "inner" },
     ])
 
+    act(() => renderer.unmount())
+  })
+
+  test("inherits XML direction through document and Frame boundaries without remounting siblings", () => {
+    const unmounts: string[] = []
+    function DirectionProbe({ label }: { label: string }): ReactNode {
+      const direction = useExpoTurboDirection()
+      useEffect(
+        () => () => {
+          unmounts.push(label)
+        },
+        [label],
+      )
+      return createElement("direction-probe", { direction, label })
+    }
+    function DocumentBoundary(props: ExpoTurboDocumentBoundaryProps): ReactNode {
+      return createElement("document-direction", { direction: useExpoTurboDirection() }, props.children)
+    }
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      return createElement("frame-direction", { direction: useExpoTurboDirection() }, props.children)
+    }
+    const probe = defineComponent({
+      attributes: { label: { codec: stringCodec, prop: "label" } },
+      children: "none",
+      component: DirectionProbe,
+      schema: z.object({ label: z.string() }),
+      tag: "DirectionProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [probe],
+        name: "direction-context-components",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery id="root" dir="rtl">
+          <DirectionProbe id="sibling" label="sibling" />
+          <Gallery id="nested" dir="ltr"><DirectionProbe label="nested" /></Gallery>
+          <turbo-frame id="frame" dir="auto"><DirectionProbe label="frame" /></turbo-frame>
+        </Gallery>`,
+        { url: "https://example.test/direction" },
+      ),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("direction fixture must not fetch")) },
+        { next: () => "direction-document-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("direction fixture Frame must not fetch")) },
+        { next: () => "direction-frame-request" },
+      ),
+    )
+    const renderer = render(session, componentRegistry, {
+      documentComponent: DocumentBoundary,
+      documentController: controller,
+      frameComponent: FrameBoundary,
+      frames,
+    })
+    const hostNode = (type: string) => {
+      const node = renderer.root.findAll((candidate) => String(candidate.type) === type)[0]
+      if (!node) throw new Error(`direction fixture did not render ${type}`)
+      return node
+    }
+    const directions = () =>
+      renderer.root.findAll((node) => String(node.type) === "direction-probe").map(({ props }) => ({
+        direction: props.direction,
+        label: props.label,
+      }))
+
+    expect(hostNode("document-direction").props.direction).toBe("rtl")
+    expect(hostNode("frame-direction").props.direction).toBe("auto")
+    expect(directions()).toEqual([
+      { direction: "rtl", label: "sibling" },
+      { direction: "ltr", label: "nested" },
+      { direction: "auto", label: "frame" },
+    ])
+
+    act(() => session.setAttribute("id:nested", "dir", "auto"))
+    expect(directions()).toEqual([
+      { direction: "rtl", label: "sibling" },
+      { direction: "auto", label: "nested" },
+      { direction: "auto", label: "frame" },
+    ])
+
+    act(() => session.setAttribute("id:root", "dir", "ltr"))
+    expect(hostNode("document-direction").props.direction).toBe("ltr")
+    expect(directions()).toEqual([
+      { direction: "ltr", label: "sibling" },
+      { direction: "auto", label: "nested" },
+      { direction: "auto", label: "frame" },
+    ])
+    expect(unmounts).toEqual([])
+
+    act(() => renderer.unmount())
+  })
+
+  test("fails closed when a Frame has an invalid shared dir value", () => {
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(
+      new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><turbo-frame id="frame" dir="sideways"><DemoText>Hidden</DemoText></turbo-frame></Gallery>',
+        ),
+      ),
+      registryWithCounters(),
+      {
+        onError: (event) => errors.push(event),
+        renderError: ({ error }) => createElement("direction-error", { message: error.message }),
+      },
+    )
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error.message).toContain('Invalid shared dir attribute on "turbo-frame"')
+    expect(
+      renderer.root.findAll((node) => String(node.type) === "direction-error")[0]?.props.message,
+    ).toContain("dir")
+    act(() => renderer.unmount())
+  })
+
+  test("recovers a document after its root dir is repaired", () => {
+    const errors: ExpoTurboRenderError[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery id="root" dir="sideways"><DemoText>Repaired</DemoText></Gallery>'),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      renderError: ({ error }) => createElement("direction-error", { message: error.message }),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "direction-error")).toHaveLength(1)
+
+    act(() => session.setAttribute("id:root", "dir", "rtl"))
+
+    expect(errors).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "direction-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "text")[0]?.props.children).toBe(
+      "Repaired",
+    )
     act(() => renderer.unmount())
   })
 
