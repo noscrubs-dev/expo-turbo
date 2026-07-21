@@ -3,7 +3,6 @@ import {
   markCableStreamSourceErrorReported,
   wasCableStreamSourceErrorReported,
 } from "./cable-stream-source-errors-internal"
-import type { DocumentRefreshRequester } from "./document-refresh-controller"
 import { ExpoTurboError, StateError, SubscriptionError } from "./errors"
 import type { DocumentSession } from "./session"
 import {
@@ -39,6 +38,21 @@ export interface CableStreamSourceConnectionSnapshot {
 
 export type CableStreamSourceConnectionListener = () => void
 
+/**
+ * One redacted recovery handoff after an Action Cable server-directed
+ * reconnect. `sourceKeys` identify only logical source nodes that were active
+ * in that reconnect cycle; they never contain the Cable identifier or message.
+ */
+export interface CableReconnectRequest {
+  readonly baseUrl: string
+  readonly scroll: "preserve"
+  readonly sourceKeys: readonly string[]
+}
+
+export interface CableReconnectRequester {
+  request(request: CableReconnectRequest): void
+}
+
 export interface CableStreamSourceCollection {
   retain(source: ProtocolElement): CableStreamSourceRelease
 }
@@ -52,11 +66,11 @@ export interface CableStreamSourceRegistryOptions {
   readonly onError: (error: ExpoTurboError) => void
   readonly onMessage?: (report: StreamDispatchReport) => void
   /**
-   * Optional canonical current-document reconciliation after an adapter has
-   * re-confirmed a server-directed reconnect. This is separate from Stream
-   * `refresh` handling so hosts can keep that protocol feature disabled.
+   * Optional source-aware reconciliation after an adapter has re-confirmed a
+   * server-directed reconnect. This remains separate from Stream `refresh`
+   * handling so hosts can keep that protocol feature disabled.
    */
-  readonly reconnectRefresh?: DocumentRefreshRequester
+  readonly reconnectRefresh?: CableReconnectRequester
   readonly streamOptions?: StreamDispatchOptions
 }
 
@@ -165,7 +179,7 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
   private readonly messages: QueuedMessage[] = []
   private readonly onError: (error: ExpoTurboError) => void
   private readonly onMessage: ((report: StreamDispatchReport) => void) | undefined
-  private readonly reconnectRefresh: DocumentRefreshRequester | undefined
+  private readonly reconnectRefresh: CableReconnectRequester | undefined
   private reconnectCycle = 0
   private reconciledReconnectCycle = 0
   private readonly reconnectingTransports = new Set<TransportRecord>()
@@ -616,7 +630,13 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
       return
     }
     try {
-      refresh.request(Object.freeze({ baseUrl, scroll: "preserve" }))
+      refresh.request(
+        Object.freeze({
+          baseUrl,
+          scroll: "preserve" as const,
+          sourceKeys: this.reconnectSourceKeys(),
+        }),
+      )
     } catch {
       this.report(
         redactedSubscriptionError("Cable stream source reconnect reconciliation failed", target),
@@ -627,6 +647,18 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
   private beginReconnect(transport: TransportRecord): void {
     if (this.reconnectingTransports.size === 0) this.reconnectCycle += 1
     this.reconnectingTransports.add(transport)
+  }
+
+  private reconnectSourceKeys(): readonly string[] {
+    const keys = new Set<string>()
+    for (const transport of this.reconnectingTransports) {
+      if (!transport.active || !this.hasOwners(transport)) continue
+      for (const source of transport.sources) {
+        if (!source.active || source.transport !== transport) continue
+        keys.add(source.node.key)
+      }
+    }
+    return Object.freeze([...keys].sort())
   }
 
   private forgetReconnect(transport: TransportRecord): void {

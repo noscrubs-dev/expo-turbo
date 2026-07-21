@@ -77,6 +77,32 @@ function harness(documentUrl = "https://example.test/document"): Harness {
 }
 
 describe("Frame controller registry visits", () => {
+  test("finds only the exact mounted connected Frame controller without creating one", async () => {
+    const { registry, session } = harness()
+    const original = session.tree.getElementById("named")
+    if (original?.kind !== "frame") throw new Error("fixture Frame is missing")
+
+    expect(registry.findMounted(original)).toBeUndefined()
+    const controller = registry.get("named")
+    expect(registry.findMounted(original)).toBeUndefined()
+    await controller.connect()
+    expect(registry.findMounted(original)).toBe(controller)
+
+    dispatchTurboStreamFragment(
+      session,
+      '<turbo-stream action="replace" target="named"><template><turbo-frame id="named" /></template></turbo-stream>',
+    )
+    const replacement = session.tree.getElementById("named")
+    if (replacement?.kind !== "frame") throw new Error("replacement Frame is missing")
+    expect(registry.findMounted(original)).toBeUndefined()
+    expect(registry.findMounted(replacement)).toBeUndefined()
+
+    const replacementController = registry.get("named")
+    await replacementController.connect()
+    expect(registry.findMounted(replacement)).toBe(replacementController)
+    registry.dispose()
+  })
+
   test("keeps exact connected autofocus valid across unrelated Frame mutations", async () => {
     const { registry, session } = harness()
     const controller = registry.get("named")
