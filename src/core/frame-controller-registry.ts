@@ -28,6 +28,11 @@ export interface FrameControllerCollection {
   visit(url: string, options: FrameVisitOptions): Promise<FrameVisitResult>
 }
 
+/** A non-creating lookup for a currently mounted exact Frame node. */
+export interface MountedFrameControllerLookup {
+  findMounted(frame: ProtocolElement): FrameController | undefined
+}
+
 export interface FrameVisitOptions extends ResolveFrameTargetOptions {
   /** `null` explicitly masks destination-Frame action inheritance. */
   readonly action?: VisitAction | null
@@ -72,7 +77,9 @@ function exactVisitAction(value: string | undefined): VisitAction | undefined {
   return value === "advance" || value === "replace" || value === "restore" ? value : undefined
 }
 
-export class FrameControllerRegistry implements FrameControllerCollection {
+export class FrameControllerRegistry
+  implements FrameControllerCollection, MountedFrameControllerLookup
+{
   private readonly controllers = new Map<string, FrameControllerRecord>()
 
   constructor(
@@ -138,6 +145,16 @@ export class FrameControllerRegistry implements FrameControllerCollection {
     })
     this.controllers.set(frameId, record)
     return controller
+  }
+
+  findMounted(frame: ProtocolElement): FrameController | undefined {
+    if (frame.kind !== "frame") return undefined
+    const frameId = attributeValue(frame, "id")
+    if (!frameId || this.session.tree.getElementById(frameId) !== frame) return undefined
+    const current = this.controllers.get(frameId)
+    return current?.node === frame && current.controller.state.connected
+      ? current.controller
+      : undefined
   }
 
   delete(frameId: string, controller?: FrameController): void {

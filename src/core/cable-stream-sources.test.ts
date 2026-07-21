@@ -272,6 +272,55 @@ describe("Cable stream source registry", () => {
     refresh.dispose()
   })
 
+  test("hands the reconnect reconciler frozen active source keys without Cable credentials", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <turbo-cable-stream-source
+            id="first"
+            channel="Turbo::StreamsChannel"
+            signed-stream-name="signed-secret-first"
+          />
+          <turbo-cable-stream-source
+            id="second"
+            channel="Turbo::StreamsChannel"
+            signed-stream-name="signed-secret-second"
+          />
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const cable = new FakeCable()
+    const requests: unknown[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh: { request: (request) => requests.push(request) },
+    })
+    registry.retain(source(document, "first"))
+    registry.retain(source(document, "second"))
+    const first = cable.records[0]
+    const second = cable.records[1]
+    if (!first || !second) throw new Error("Missing Cable subscriptions")
+
+    first.callbacks.connected(false)
+    second.callbacks.connected(false)
+    first.callbacks.disconnected(true)
+    second.callbacks.disconnected(true)
+    first.callbacks.connected(true)
+
+    expect(requests).toEqual([
+      {
+        baseUrl: "https://example.test/current",
+        scroll: "preserve",
+        sourceKeys: ["id:first", "id:second"],
+      },
+    ])
+    expect(Object.isFrozen(requests[0])).toBe(true)
+    const request = requests[0] as { sourceKeys?: unknown }
+    expect(Object.isFrozen(request.sourceKeys)).toBe(true)
+    expect(JSON.stringify(requests)).not.toContain("signed-secret")
+  })
+
   test("redacts a reconnect reconciliation failure", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
