@@ -30,7 +30,7 @@ import { REGISTRY_CAPABILITY_SMOKE } from "./registry-smoke";
 
 const DEMO_LIVE_RAILS_ORIGIN = process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN;
 
-function CompatibilityGallery() {
+export function DemoCompatibilityGallery() {
   const runtime = useDemoRuntime();
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
@@ -156,6 +156,7 @@ function CompatibilityGallery() {
         </Text>
       </Pressable>
       <Pressable
+        accessibilityLabel="Refresh current document and reset root scroll"
         accessibilityRole="button"
         onPress={() =>
           dispatchTurboStreamFragment(
@@ -172,7 +173,7 @@ function CompatibilityGallery() {
         })}
       >
         <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
-          Refresh current document
+          Refresh current document and reset root scroll
         </Text>
       </Pressable>
       <Pressable
@@ -227,7 +228,7 @@ export function DemoRouteScreen() {
         routeKey={route.key}
         runtime={runtime}
       >
-        <CompatibilityGallery />
+        <DemoCompatibilityGallery />
       </DemoRouterRouteOwner>
     </>
   );

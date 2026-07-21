@@ -1,4 +1,4 @@
-import type { ClockAdapter, FetchAdapter, TurboResponse } from "expo-turbo/adapters";
+import type { ClockAdapter, FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
 import {
   DocumentHistory,
   type DocumentHistoryHostAdapter,
@@ -42,6 +42,33 @@ const CANONICAL_PREVIEW_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
 </Gallery>`;
 
+const REFRESH_SCENARIO_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="refresh-ready-document" title="Refresh Stream is ready" style-tokens="tone:info space:comfortable surface:elevated">
+    <DemoText>Scroll to the gallery control below, then dispatch one default Refresh Stream.</DemoText>
+  </DemoCard>
+  <DemoCard id="refresh-scroll-marker-one" title="Root-scroll marker one" style-tokens="space:comfortable">
+    <DemoText>This scenario intentionally leaves the host control below the document content.</DemoText>
+  </DemoCard>
+  <DemoCard id="refresh-scroll-marker-two" title="Root-scroll marker two" style-tokens="space:comfortable">
+    <DemoText>The reset belongs only to the owning gallery ScrollView.</DemoText>
+  </DemoCard>
+  <DemoCard id="refresh-scroll-marker-three" title="Root-scroll marker three" style-tokens="space:comfortable">
+    <DemoText>Nested scroll regions and anchor restoration are separate host contracts.</DemoText>
+  </DemoCard>
+  <DemoCard id="refresh-scroll-marker-four" title="Root-scroll marker four" style-tokens="space:comfortable">
+    <DemoText>The next document response has distinct XML so the commit is visible.</DemoText>
+  </DemoCard>
+  <DemoCard id="refresh-scroll-marker-five" title="Root-scroll marker five" style-tokens="space:comfortable">
+    <DemoText>Use the host control after scrolling here to prove the one-shot reset.</DemoText>
+  </DemoCard>
+</Gallery>`;
+
+const REFRESHED_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="refresh-completed-document" title="Refresh Stream committed" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The canonical XML replaced the scenario and reset the owning root ScrollView after React acknowledged this document.</DemoText>
+  </DemoCard>
+</Gallery>`;
+
 const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 export const DEMO_CLOCK: ClockAdapter = {
@@ -50,11 +77,18 @@ export const DEMO_CLOCK: ClockAdapter = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 };
 
+export interface DemoFixtureFetchAdapter extends FetchAdapter {
+  armRefreshScenario(url: string): () => void;
+}
+
 export function createDemoFixtureFetchAdapter(
   clock: ClockAdapter = DEMO_CLOCK,
-): FetchAdapter {
-  return {
-    async fetch(request): Promise<TurboResponse> {
+): DemoFixtureFetchAdapter {
+  let refreshScenarioArm = 0;
+  let refreshScenarioPending: number | undefined;
+
+  return Object.freeze({
+    async fetch(request: TurboRequest): Promise<TurboResponse> {
       const url = new URL(request.url);
       let xml: string;
       if (url.pathname === "/demo") {
@@ -63,12 +97,15 @@ export function createDemoFixtureFetchAdapter(
         xml =
           request.headers["X-Sec-Purpose"] === "prefetch"
             ? CACHED_PREVIEW_DOCUMENT
-            : await new Promise<string>((resolve) => {
-                clock.setTimeout(
-                  () => resolve(CANONICAL_PREVIEW_DOCUMENT),
-                  PREVIEW_REVALIDATION_DELAY_MS,
-                );
-              });
+            : await delayedFixtureXml(
+                clock,
+                request.signal,
+                CANONICAL_PREVIEW_DOCUMENT,
+                PREVIEW_REVALIDATION_DELAY_MS,
+              );
+      } else if (url.pathname === "/demo/linked" && url.search === "?refresh=scroll") {
+        xml = refreshScenarioPending === undefined ? REFRESH_SCENARIO_DOCUMENT : REFRESHED_DOCUMENT;
+        refreshScenarioPending = undefined;
       } else {
         xml = LINKED_DOCUMENT;
       }
@@ -80,7 +117,54 @@ export function createDemoFixtureFetchAdapter(
         url: request.url,
       };
     },
-  };
+    armRefreshScenario(source: string): () => void {
+      const url = new URL(source);
+      if (url.pathname !== "/demo/linked" || url.search !== "?refresh=scroll") {
+        return () => undefined;
+      }
+      const arm = ++refreshScenarioArm;
+      refreshScenarioPending = arm;
+      return () => {
+        if (refreshScenarioPending === arm) refreshScenarioPending = undefined;
+      };
+    },
+  });
+}
+
+function delayedFixtureXml(
+  clock: ClockAdapter,
+  signal: AbortSignal | undefined,
+  xml: string,
+  delayMs: number,
+): Promise<string> {
+  if (signal?.aborted) return Promise.reject(demoFixtureAbortError());
+
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let handle: unknown;
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      if (handle !== undefined) clock.clearTimeout(handle);
+      cleanup();
+      reject(demoFixtureAbortError());
+    };
+
+    signal?.addEventListener("abort", abort, { once: true });
+    handle = clock.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(xml);
+    }, delayMs);
+  });
+}
+
+function demoFixtureAbortError(): Error {
+  const error = new Error("Demo fixture request was aborted");
+  error.name = "AbortError";
+  return error;
 }
 
 export interface DemoDocumentRuntime {
@@ -118,6 +202,7 @@ export function createDemoDocumentRuntime(
   session: DocumentSession,
   historyHost: DocumentHistoryHostAdapter,
   fetchAdapter: FetchAdapter = createDemoFixtureFetchAdapter(),
+  clock: ClockAdapter = DEMO_CLOCK,
 ): DemoDocumentRuntime {
   let requestId = 0;
   let restorationIdentifier = 0;
@@ -142,7 +227,7 @@ export function createDemoDocumentRuntime(
     fetchAdapter,
     { next: () => `demo-document-${++requestId}` },
   );
-  const controller = new DocumentVisitController(loader, DEMO_CLOCK, {
+  const controller = new DocumentVisitController(loader, clock, {
     history,
     snapshotCache,
     visitLifecycle,
