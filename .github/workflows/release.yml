@@ -200,13 +200,14 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
-      - name: Verify the release-environment OIDC subject without exposing a token
+      - name: Verify GitHub OIDC identity claims without exposing a token
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
+          const audience = "https://expo-turbo.invalid/release-candidate"
           const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)
-          url.searchParams.set("audience", "https://expo-turbo.invalid/release-candidate")
+          url.searchParams.set("audience", audience)
           const response = await fetch(url, {
             headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
           })
@@ -214,9 +215,15 @@ jobs:
           const { value } = await response.json()
           const [, payload] = value.split(".")
           const claim = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
-          const expected = `repo:${process.env.GITHUB_REPOSITORY}:environment:release`
-          if (claim.sub !== expected) throw new Error("OIDC subject did not bind the release environment")
-          console.log(`Verified OIDC subject: ${claim.sub}`)
+          if (
+            claim.aud !== audience ||
+            claim.repository !== process.env.GITHUB_REPOSITORY ||
+            claim.ref !== "refs/heads/main" ||
+            claim.environment !== "release"
+          ) {
+            throw new Error("OIDC token did not bind the expected repository, main ref, and release environment")
+          }
+          console.log(`Verified OIDC identity: ${claim.repository} ${claim.ref} environment:${claim.environment}`)
           NODE
       - name: Record the paired artifact manifest
         shell: bash
