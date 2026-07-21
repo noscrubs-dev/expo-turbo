@@ -26,6 +26,8 @@ RSpec.describe "standalone demo host" do
     expect(response.body.dup.force_encoding(Encoding::UTF_8)).to be_valid_encoding
     expect(document.root.name).to eq("Gallery")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
+    expect(document.at_xpath("//DemoText[@id='demo-stream-message']")&.text)
+      .to eq("Waiting for a public Action Cable broadcast")
     source = document.at_xpath("//turbo-cable-stream-source[@id='demo-stream-source']")
     expect(source&.[]("channel")).to eq("Turbo::StreamsChannel")
     expect(::Turbo::StreamsChannel.verified_stream_name(source["signed-stream-name"])).to eq("demo-stream:expo")
@@ -46,20 +48,21 @@ RSpec.describe "standalone demo host" do
     expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
   end
 
-  it "broadcasts public XML only to the Expo stream namespace" do
+  it "broadcasts a public XML Stream through the Expo Action Cable namespace" do
     adapter = ActionCable.server.pubsub
-    payload = '<turbo-stream xmlns:Demo="urn:expo-demo" action="update" target="demo-stream-message"><template><Demo:Text>Broadcast</Demo:Text></template></turbo-stream>'
 
     adapter.clear
-    ExpoTurbo::Rails::Streams.broadcast_to("demo-stream", content: payload)
+    post "/api/expo_turbo/demo/broadcast"
 
     messages = adapter.broadcasts("demo-stream:expo").map { |message| ActiveSupport::JSON.decode(message) }
     stream = ExpoTurbo::Rails::Testing.parse_stream_fragment(messages.fetch(0)).at_xpath("/expo-turbo-test-root/turbo-stream")
 
+    expect(response).to have_http_status(:no_content)
     expect(messages).to have_attributes(size: 1)
-    expect(stream["action"]).to eq("update")
+    expect(stream["action"]).to eq("replace")
     expect(stream["target"]).to eq("demo-stream-message")
-    expect(stream.at_xpath("./template/Demo:Text", "Demo" => "urn:expo-demo")&.text).to eq("Broadcast")
+    expect(stream.at_xpath("./template/DemoText[@id='demo-stream-message']")&.text)
+      .to eq("Broadcast from the standalone Rails demo")
     expect(adapter.broadcasts("demo-stream")).to be_empty
   ensure
     adapter&.clear

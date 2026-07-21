@@ -11,6 +11,7 @@ Rails.application.routes.draw do
         resource :document, only: :show, defaults: {format: :expo_turbo}
         resource :frame, only: :show, defaults: {format: :expo_turbo}
         resource :stream, only: :show, defaults: {format: :turbo_stream}
+        resource :broadcast, only: :create if Rails.env.local?
       end
     end
   end
