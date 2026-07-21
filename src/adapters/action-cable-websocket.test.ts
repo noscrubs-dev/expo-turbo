@@ -89,12 +89,16 @@ function callbackEvents(events: string[], name: string): CableCallbacks {
 
 function createAdapter() {
   const errors: SubscriptionError[] = []
-  const socketCalls: { protocols: readonly string[]; url: string }[] = []
+  const socketCalls: {
+    headers: Readonly<Record<string, string>> | undefined
+    protocols: readonly string[]
+    url: string
+  }[] = []
   const sockets: FakeSocket[] = []
   const adapter = new ActionCableV1WebSocketAdapter({
-    createSocket(url, protocols) {
+    createSocket(url, protocols, headers) {
       const socket = new FakeSocket()
-      socketCalls.push({ protocols, url })
+      socketCalls.push({ headers, protocols, url })
       sockets.push(socket)
       return socket
     },
@@ -133,7 +137,11 @@ describe("Action Cable v1 WebSocket adapter", () => {
 
     expect(sockets).toHaveLength(1)
     expect(socketCalls).toEqual([
-      { protocols: [ACTION_CABLE_V1_JSON_PROTOCOL], url: "wss://cable.example.test/cable" },
+      {
+        headers: undefined,
+        protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
+        url: "wss://cable.example.test/cable",
+      },
     ])
     expect(sockets[0]?.sent).toEqual([])
 
@@ -172,6 +180,80 @@ describe("Action Cable v1 WebSocket adapter", () => {
       "second:received:update",
       "third:received:update",
     ])
+  })
+
+  test("passes a frozen header snapshot to every host-created socket without changing the URL", () => {
+    const sourceHeaders = { Authorization: "Bearer signed-secret", "X-Install-Id": "install-1" }
+    const headers: (Readonly<Record<string, string>> | undefined)[] = []
+    const urls: string[] = []
+    const sockets: FakeSocket[] = []
+    const adapter = new ActionCableV1WebSocketAdapter({
+      createSocket(url, _protocols, socketHeaders) {
+        urls.push(url)
+        headers.push(socketHeaders)
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      headers: sourceHeaders,
+      onError: () => undefined,
+      url: "wss://cable.example.test/cable",
+    })
+    sourceHeaders.Authorization = "Bearer changed-after-construction"
+
+    adapter.subscribe("identifier", callbackEvents([], "one"))
+    welcome(socketAt(sockets, 0))
+    socketAt(sockets, 0).emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}')
+
+    expect(headers).toHaveLength(2)
+    expect(headers[0]).toBe(headers[1])
+    expect(headers[0]).toEqual({
+      Authorization: "Bearer signed-secret",
+      "X-Install-Id": "install-1",
+    })
+    expect(headers[0]).not.toBe(sourceHeaders)
+    expect(Object.isFrozen(headers[0])).toBe(true)
+    expect(urls).toEqual(["wss://cable.example.test/cable", "wss://cable.example.test/cable"])
+  })
+
+  test("rejects unsafe headers and redacts their values from constructor and socket failures", () => {
+    const invalidHeaders = [
+      ["not an object", []],
+      ["invalid name", { "X-Bad\nName": "value" }],
+      ["invalid value", { Authorization: "Bearer signed-secret\nnext" }],
+      ["duplicate name", { Authorization: "first", authorization: "second" }],
+      [
+        "accessor",
+        Object.defineProperty({}, "Authorization", {
+          enumerable: true,
+          get: () => "Bearer signed-secret",
+        }),
+      ],
+    ] as const
+
+    for (const [_name, headers] of invalidHeaders) {
+      expect(
+        () =>
+          new ActionCableV1WebSocketAdapter({
+            createSocket: () => new FakeSocket(),
+            headers: headers as never,
+            onError: () => undefined,
+            url: "wss://cable.example.test/cable",
+          }),
+      ).toThrow(new SubscriptionError("Action Cable WebSocket headers are invalid"))
+    }
+
+    const adapter = new ActionCableV1WebSocketAdapter({
+      createSocket(_url, _protocols, headers) {
+        throw new Error(headers?.Authorization)
+      },
+      headers: { Authorization: "Bearer signed-secret" },
+      onError: () => undefined,
+      url: "wss://cable.example.test/cable",
+    })
+    expect(() => adapter.subscribe("identifier", callbackEvents([], "one"))).toThrow(
+      new SubscriptionError("Action Cable WebSocket connection failed"),
+    )
   })
 
   test("reserves one pending socket across a reentrant factory and closes a socket created after disposal", () => {
