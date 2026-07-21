@@ -435,6 +435,7 @@ function DemoFormSubmitterComponent(props: {
   const requestId = useRef(0);
   return (
     <Pressable
+      accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={control.accessibilityState}
       disabled={control.disabled}
@@ -443,7 +444,7 @@ function DemoFormSubmitterComponent(props: {
         if (!formBinding.shouldInterceptSubmission({ submitter })) return;
         void formBinding
           .submit({
-            protocol: { requestId: `demo-form-${++requestId.current}` },
+            protocol: { requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}` },
             submitter,
           })
           .catch(() => undefined);

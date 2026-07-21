@@ -20,10 +20,14 @@ module Api
           return head :unsupported_media_type unless request.media_type == URL_ENCODED_MEDIA_TYPE
 
           first_name = params.expect(profile: [:first_name]).fetch(:first_name)
+          commit = params.expect(:commit)
           return head :bad_request unless valid_first_name?(first_name)
+          return head :bad_request unless ["save", "no-content"].include?(commit)
 
           error = validation_error(first_name)
           return render_form(first_name:, error:, status: :unprocessable_content) if error
+
+          return head :no_content if commit == "no-content"
 
           redirect_to api_expo_turbo_demo_form_path, status: :see_other
         end
