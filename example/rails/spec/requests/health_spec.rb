@@ -144,6 +144,47 @@ RSpec.describe "standalone demo host" do
       .to eq("Frame validation failed")
   end
 
+  it "serves the nested refresh-morph Frame endpoints only to their matching Frames" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/morph/outer", headers: {"Turbo-Frame" => "morph-outer"}
+
+    outer = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(outer.name).to eq("turbo-frame")
+    expect(outer["id"]).to eq("morph-outer")
+    expect(outer["src"]).to eq("/api/expo_turbo/demo/morph/outer")
+    expect(outer["refresh"]).to eq("morph")
+    expect(outer.at_xpath("./Gallery[@id='morph-shell']/DemoText[@id='morph-outer-version']")&.text)
+      .to eq("Outer Frame response")
+    inner = outer.at_xpath("./Gallery[@id='morph-shell']/turbo-frame[@id='morph-inner']")
+    expect(inner&.[]("src")).to eq("/api/expo_turbo/demo/morph/inner")
+    expect(inner&.[]("refresh")).to eq("morph")
+    expect(inner&.at_xpath("./DemoText[@id='morph-inner-stale']")&.text)
+      .to eq("This nested response is intentionally ignored before its own reload")
+
+    get "/api/expo_turbo/demo/morph/inner", headers: {"Turbo-Frame" => "morph-inner"}
+
+    inner = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(inner.name).to eq("turbo-frame")
+    expect(inner["id"]).to eq("morph-inner")
+    expect(inner["src"]).to eq("/api/expo_turbo/demo/morph/inner")
+    expect(inner["refresh"]).to eq("morph")
+    expect(inner.at_xpath("./DemoText[@id='morph-inner-version']")&.text).to eq("Inner Frame response")
+
+    get "/api/expo_turbo/demo/morph/outer"
+    expect(response).to have_http_status(:bad_request)
+
+    get "/api/expo_turbo/demo/morph/inner", headers: {"Turbo-Frame" => "morph-outer"}
+    expect(response).to have_http_status(:bad_request)
+  end
+
   it "serves the canonical Rails Frame form only to its matching Frame" do
     host! "localhost"
     get "/api/expo_turbo/demo/form", headers: {"Turbo-Frame" => "demo-form-frame"}

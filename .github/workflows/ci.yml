@@ -119,7 +119,7 @@ jobs:
       - run: bun run build
       - run: bun install --frozen-lockfile
         working-directory: example/expo
-      - name: Smoke Rails Action Cable WebSocket and Frame form
+      - name: Smoke Rails Action Cable, Frame form, and nested Frame morph
         working-directory: example/rails
         run: |
           set -eu
@@ -143,7 +143,8 @@ jobs:
                 cd ../expo
                 EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test \
                   src/demo-live-cable.redis-smoke.test.ts \
-                  src/demo-live-form.rails-smoke.test.ts
+                  src/demo-live-form.rails-smoke.test.ts \
+                  src/demo-live-morph.rails-smoke.test.tsx
               )
               exit $?
             fi

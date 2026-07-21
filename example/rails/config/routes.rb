@@ -11,6 +11,8 @@ Rails.application.routes.draw do
         resource :document, only: :show, defaults: {format: :expo_turbo}
         resource :frame, only: :show, defaults: {format: :expo_turbo}
         resource :form, only: %i[show create], defaults: {format: :expo_turbo}
+        get "morph/outer", to: "morph_frames#outer", defaults: {format: :expo_turbo}
+        get "morph/inner", to: "morph_frames#inner", defaults: {format: :expo_turbo}
         resource :stream, only: :show, defaults: {format: :turbo_stream}
         resource :broadcast, only: :create if Rails.env.local?
       end
