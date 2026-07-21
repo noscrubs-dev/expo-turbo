@@ -100,6 +100,8 @@ const GALLERY_URL = "https://example.test/demo";
 const LINKED_URL = "https://example.test/demo/linked";
 const LINKED_QUERY_URL = "https://example.test/demo/linked?source=deep-link&tag=a&tag=b";
 const LINKED_REPLACEMENT_QUERY_URL = "https://example.test/demo/linked?source=changed";
+const GALLERY_QUERY_LINKED_URL =
+  "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
 
 function routeParams(
   url: string,
@@ -433,6 +435,77 @@ describe("demo app runtime ownership", () => {
 
     expect(nativeFocuses).toEqual(["First name", "Autofocused Frame field"]);
     expect(runtime.focus.getFocusedId()).toBe("id:frame-autofocus-name");
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("visits the gallery query fixture through the exact Router history URL", async () => {
+    const runtime = createDemoRuntime();
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery query fixture did not render");
+    const queryLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Open a query-bearing same-origin document and retain repeated and empty values through native history.",
+            ),
+        ).length > 0,
+      );
+    if (!queryLink) throw new Error("gallery query fixture link was not rendered");
+
+    await act(async () => {
+      queryLink.props.onPress();
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(GALLERY_QUERY_LINKED_URL);
+    expect(runtime.session.tree.getElementById("linked-document")).toBeDefined();
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_QUERY_LINKED_URL);
+    expect(navigation.state.routes).toHaveLength(2);
+    expect(navigation.state.routes[1]?.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
+      "demo",
+      "linked",
+    ]);
+    expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
+      GALLERY_QUERY_LINKED_URL,
+    );
 
     await act(async () => {
       renderer?.unmount();

@@ -19,8 +19,8 @@ import { DEMO_DOCUMENT } from "./demo-registry";
 let demoHistoryRuntime = 0;
 
 const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
-  <DemoCard id="linked-document" title="Document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
-    <DemoText>The app-owned native link used the host-injected document controller and replaced this session from XML.</DemoText>
+  <DemoCard id="linked-document" title="Query-bearing document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
+    <DemoText>The app-owned native link retained source=gallery, repeated tag values, and an empty query value through the host-injected document controller and Router history.</DemoText>
   </DemoCard>
   <DemoDocumentLink href="/demo" data-turbo-action="restore">
     <DemoText>Restore the compatibility gallery from the document cache.</DemoText>

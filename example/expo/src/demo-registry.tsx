@@ -533,8 +533,8 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="get" label="Confirm and submit immutable request" name="commit" value="preview" />
     </DemoForm>
   </DemoCard>
-  <DemoDocumentLink href="/demo/linked">
-    <DemoText>Open a same-origin document through the app-owned native link.</DemoText>
+  <DemoDocumentLink href="/demo/linked?source=gallery&amp;tag=a&amp;tag=b&amp;empty=">
+    <DemoText>Open a query-bearing same-origin document and retain repeated and empty values through native history.</DemoText>
   </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked" data-turbo-action="replace">
     <DemoText>Replace this Router entry with the linked document.</DemoText>
