@@ -4,14 +4,21 @@ import {
   type CableAdapter,
   type CableCallbacks,
   type CableSubscription,
+  type ClockAdapter,
   decodeActionCableV1Frame,
+  type TurboRequest,
+  type TurboResponse,
 } from "../adapters"
 import {
   type CableStreamSourceConnectionSnapshot,
   CableStreamSourceRegistry,
 } from "./cable-stream-sources"
+import { DocumentRequestLoader } from "./document-loader"
+import { DocumentRefreshController } from "./document-refresh-controller"
+import { DocumentVisitController } from "./document-visit-controller"
 import { StateError, SubscriptionError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
+import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 import { DocumentSession } from "./session"
 import { StreamLifecycle } from "./stream-lifecycle"
 import { attributeValue, isElement, type ProtocolElement } from "./tree"
@@ -45,6 +52,37 @@ class FakeCable implements CableAdapter {
         return this.unsubscribeResult
       },
     } as CableSubscription
+  }
+}
+
+interface TimerRecord {
+  readonly callback: () => void
+  cleared: boolean
+  readonly handle: object
+}
+
+class ManualClock implements ClockAdapter {
+  readonly timers: TimerRecord[] = []
+
+  clearTimeout(handle: unknown): void {
+    const timer = this.timers.find((candidate) => candidate.handle === handle)
+    if (timer) timer.cleared = true
+  }
+
+  now(): number {
+    return 0
+  }
+
+  setTimeout(callback: () => void, _delayMs: number): unknown {
+    const handle = Object.freeze({})
+    this.timers.push({ callback, cleared: false, handle })
+    return handle
+  }
+
+  fire(index: number): void {
+    const timer = this.timers[index]
+    if (!timer) throw new Error(`Missing timer ${index}`)
+    if (!timer.cleared) timer.callback()
   }
 }
 
@@ -165,6 +203,199 @@ describe("Cable stream source registry", () => {
     expect(snapshots[7]).toBe(released)
     unsubscribe()
     expect(errors).toEqual([])
+  })
+
+  test("reconciles once after active server-directed reconfirmation", async () => {
+    const url = "https://example.test/current"
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+        <turbo-cable-stream-source id="first" channel="FirstChannel" />
+        <turbo-cable-stream-source id="second" channel="SecondChannel" />
+      </Gallery>`,
+        { url },
+      ),
+    )
+    const cable = new FakeCable()
+    const clock = new ManualClock()
+    const refreshes: Array<readonly [string, string | undefined]> = []
+    const refresh = new DocumentRefreshController(
+      document,
+      {
+        refreshCurrent: async (baseUrl, _method, scroll) => {
+          refreshes.push([baseUrl, scroll])
+          return undefined
+        },
+      },
+      clock,
+    )
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh: refresh,
+    })
+    const releaseFirst = registry.retain(source(document, "first"))
+    const releaseSecond = registry.retain(source(document, "second"))
+    const first = cable.records[0]
+    const second = cable.records[1]
+    if (!first || !second) throw new Error("Missing Cable subscriptions")
+
+    first.callbacks.connected(false)
+    second.callbacks.connected(false)
+    first.callbacks.connected(true)
+    expect(clock.timers).toHaveLength(0)
+
+    first.callbacks.disconnected(true)
+    second.callbacks.disconnected(true)
+    first.callbacks.connected(true)
+    first.callbacks.connected(true)
+    second.callbacks.connected(true)
+
+    expect(clock.timers).toHaveLength(1)
+    clock.fire(0)
+    expect(refreshes).toEqual([[url, "preserve"]])
+
+    second.callbacks.disconnected(false)
+    second.callbacks.connected(true)
+    expect(clock.timers).toHaveLength(1)
+
+    first.callbacks.disconnected(true)
+    releaseFirst()
+    await flushRelease()
+    first.callbacks.connected(true)
+    expect(clock.timers).toHaveLength(1)
+
+    releaseSecond()
+    await flushRelease()
+    refresh.dispose()
+  })
+
+  test("redacts a reconnect reconciliation failure", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const cable = new FakeCable()
+    const errors: Error[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => errors.push(error),
+      reconnectRefresh: {
+        request: () => {
+          throw new Error("secret reconciliation details")
+        },
+      },
+    })
+    registry.retain(source(document, "source"))
+    const record = cable.records[0]
+    if (!record) throw new Error("Missing Cable subscription")
+
+    record.callbacks.connected(false)
+    record.callbacks.disconnected(true)
+    record.callbacks.connected(true)
+
+    expect(errors).toEqual([
+      new SubscriptionError("Cable stream source reconnect reconciliation failed", {
+        target: "id:source",
+      }),
+    ])
+    expect(errors[0]?.cause).toBeUndefined()
+  })
+
+  test("drops a scheduled reconnect refresh when a newer visit owns the document", async () => {
+    const currentUrl = "https://example.test/current"
+    const nextUrl = "https://example.test/next"
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const clock = new ManualClock()
+    const requests: TurboRequest[] = []
+    let resolveVisit: ((response: TurboResponse) => void) | undefined
+    const loader = new DocumentRequestLoader(
+      document,
+      {
+        fetch: (request) => {
+          requests.push(request)
+          return new Promise<TurboResponse>((resolve) => {
+            resolveVisit = resolve
+          })
+        },
+      },
+      { next: () => "request-1" },
+    )
+    const visits = new DocumentVisitController(loader, clock)
+    const refresh = new DocumentRefreshController(document, visits, clock)
+    const cable = new FakeCable()
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh: refresh,
+    })
+    registry.retain(source(document, "source"))
+    const record = cable.records[0]
+    if (!record) throw new Error("Missing Cable subscription")
+
+    record.callbacks.connected(false)
+    record.callbacks.disconnected(true)
+    record.callbacks.connected(true)
+    expect(clock.timers).toHaveLength(1)
+
+    const visit = visits.visit(nextUrl)
+    await Promise.resolve()
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ method: "GET", url: nextUrl })
+    clock.fire(0)
+    expect(requests).toHaveLength(1)
+
+    const resolve = resolveVisit
+    if (!resolve) throw new Error("Missing active document visit")
+    resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => "<Gallery/>",
+      url: nextUrl,
+    })
+    await visit
+    registry.dispose()
+    refresh.dispose()
+  })
+
+  test("does not reconcile a reconfirmation superseded by a connection observer", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const cable = new FakeCable()
+    const requests: unknown[] = []
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: () => undefined,
+      reconnectRefresh: { request: (request) => requests.push(request) },
+    })
+    let supersedeConfirmation = false
+    registry.subscribeConnection(() => {
+      if (!supersedeConfirmation) return
+      if (registry.connectionSnapshot.sources[0]?.state !== "connected") return
+      supersedeConfirmation = false
+      cable.records[0]?.callbacks.disconnected(true)
+    })
+    registry.retain(source(document, "source"))
+    const record = cable.records[0]
+    if (!record) throw new Error("Missing Cable subscription")
+
+    record.callbacks.connected(false)
+    supersedeConfirmation = true
+    record.callbacks.disconnected(true)
+    record.callbacks.connected(true)
+
+    expect(registry.connectionSnapshot.sources).toEqual([
+      { nodeKey: "id:source", state: "reconnecting" },
+    ])
+    expect(requests).toEqual([])
   })
 
   test("rebinds connection state and ignores stale transport callbacks", async () => {
