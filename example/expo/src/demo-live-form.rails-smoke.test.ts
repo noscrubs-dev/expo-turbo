@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 
-import { expect, test } from "bun:test"
+import { expect, mock, test } from "bun:test"
 import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters"
 import {
   attributeValue,
@@ -8,10 +8,41 @@ import {
   DocumentSession,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
+  FrameControllerRegistry,
   FrameRequestLoader,
   nodeTextContent,
   parseExpoTurboDocument,
 } from "expo-turbo/core"
+import { createElement } from "react"
+import { act, create, type ReactTestRenderer } from "react-test-renderer"
+
+interface PressableProps {
+  readonly accessibilityRole?: string
+  readonly onPress?: () => void
+}
+
+let latestPressable: PressableProps | undefined
+
+mock.module("react-native", () => ({
+  AccessibilityInfo: { announceForAccessibility: () => undefined },
+  Alert: { alert: () => undefined },
+  FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
+  Linking: { openURL: async () => undefined },
+  Platform: { OS: "web" },
+  Pressable: (props: PressableProps) => {
+    latestPressable = props
+    return createElement("pressable", props)
+  },
+  ScrollView: (props: Readonly<Record<string, unknown>>) => createElement("scroll-view", props),
+  Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
+  TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
+  View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
+}))
+
+const { ExpoTurboProvider, ExpoTurboRoot } = await import("expo-turbo/react")
+const { DemoFocusProvider, DemoFocusRegistry } = await import("./demo-focus")
+const { DEMO_REGISTRY } = await import("./demo-registry")
+const { DEMO_STYLE_ADAPTER } = await import("./demo-style-runtime")
 
 const origin = process.env.EXPO_TURBO_DEMO_ORIGIN
 const liveTest = origin ? test : test.skip
@@ -19,33 +50,63 @@ const FORM_PATH = "/api/expo_turbo/demo/form"
 const FRAME_ID = "demo-form-frame"
 const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html"
 
+const globalWithAct = globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT: boolean
+}
+globalWithAct.IS_REACT_ACT_ENVIRONMENT = true
+
+interface PendingFetch {
+  readonly request: TurboRequest
+  readonly resolve: (response: TurboResponse) => void
+}
+
+async function fetchResponse(request: TurboRequest): Promise<TurboResponse> {
+  const headers = {
+    ...request.headers,
+    ...(request.body ? { "Content-Type": request.body.contentType } : {}),
+  }
+  const response = await globalThis.fetch(request.url, {
+    ...(request.body ? { body: request.body.value } : {}),
+    headers,
+    method: request.method,
+    ...(request.signal ? { signal: request.signal } : {}),
+  } as RequestInit)
+  const responseHeaders: Record<string, string> = {}
+  response.headers.forEach((value, name) => {
+    responseHeaders[name] = value
+  })
+  return Object.freeze({
+    headers: Object.freeze(responseHeaders),
+    redirected: response.redirected,
+    status: response.status,
+    text: () => response.text(),
+    url: response.url,
+  })
+}
+
 function createFetchAdapter(requests: TurboRequest[]): FetchAdapter {
   return Object.freeze({
     async fetch(request: TurboRequest): Promise<TurboResponse> {
       requests.push(request)
-      const headers = {
-        ...request.headers,
-        ...(request.body ? { "Content-Type": request.body.contentType } : {}),
-      }
-      const response = await globalThis.fetch(request.url, {
-        ...(request.body ? { body: request.body.value } : {}),
-        headers,
-        method: request.method,
-        ...(request.signal ? { signal: request.signal } : {}),
-      } as RequestInit)
-      const responseHeaders: Record<string, string> = {}
-      response.headers.forEach((value, name) => {
-        responseHeaders[name] = value
-      })
-      return Object.freeze({
-        headers: Object.freeze(responseHeaders),
-        redirected: response.redirected,
-        status: response.status,
-        text: () => response.text(),
-        url: response.url,
+      return fetchResponse(request)
+    },
+  })
+}
+
+function createControlledFetchAdapter(pending: PendingFetch[]): FetchAdapter {
+  return Object.freeze({
+    fetch(request: TurboRequest): Promise<TurboResponse> {
+      return new Promise<TurboResponse>((resolve) => {
+        pending.push(Object.freeze({ request, resolve }))
       })
     },
   })
+}
+
+function takePending(pending: PendingFetch[], message: string): PendingFetch {
+  const next = pending.shift()
+  if (!next) throw new Error(message)
+  return next
 }
 
 liveTest(
@@ -158,3 +219,168 @@ liveTest(
     expect(session.tree.getElementById("demo-form-error")).toBeUndefined()
   },
 )
+
+liveTest("renders and submits the real Rails Frame form through the Expo provider", async () => {
+  if (!origin) throw new Error("EXPO_TURBO_DEMO_ORIGIN is required for the Rails form smoke")
+
+  const formUrl = new URL(FORM_PATH, new URL(origin).origin).toString()
+  const pending: PendingFetch[] = []
+  const fetch = createControlledFetchAdapter(pending)
+  const session = new DocumentSession(
+    parseExpoTurboDocument(
+      `<Gallery id="rails-form-provider-smoke"><turbo-frame id="${FRAME_ID}" src="${formUrl}"><DemoText id="demo-form-loading">Loading</DemoText></turbo-frame></Gallery>`,
+      { url: formUrl },
+    ),
+  )
+  const frameLoader = new FrameRequestLoader(session, fetch, {
+    next: () => "rails-form-provider-frame",
+  })
+  const frames = new FrameControllerRegistry(session, frameLoader)
+  const focus = new DemoFocusRegistry()
+  const formController = new FormSubmissionController(session, fetch, {
+    frameControllers: frames,
+  })
+  const submit = formController.submit.bind(formController)
+  let submission: Promise<unknown> | undefined
+  formController.submit = (...args) => {
+    const result = submit(...args)
+    submission = result
+    return result
+  }
+  const forms = new DocumentFormControls(session, {
+    focus,
+    formSemantics: DEMO_REGISTRY,
+    submissionController: formController,
+  })
+  let renderer: ReactTestRenderer | undefined
+  const submitter = () => {
+    if (!latestPressable?.onPress) throw new Error("The Rails form submitter did not render")
+    return latestPressable
+  }
+
+  try {
+    latestPressable = undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          DemoFocusProvider,
+          { focus },
+          createElement(
+            ExpoTurboProvider,
+            {
+              forms,
+              frames,
+              registry: DEMO_REGISTRY,
+              session,
+              styles: DEMO_STYLE_ADAPTER,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock: (element) =>
+            element.type === "text-input"
+              ? {
+                  blur: () => undefined,
+                  focus: () => undefined,
+                }
+              : {},
+        },
+      )
+    })
+
+    const initial = takePending(pending, "The mounted Frame did not request the Rails form")
+    expect(initial.request).toMatchObject({
+      headers: { Accept: EXPO_TURBO_MIME_TYPE, "Turbo-Frame": FRAME_ID },
+      method: "GET",
+      url: formUrl,
+    })
+    const initialResponse = await fetchResponse(initial.request)
+    await act(async () => {
+      initial.resolve(initialResponse)
+      await Promise.resolve()
+    })
+    await frames.get(FRAME_ID).loaded
+    expect(session.tree.getElementById("demo-form")?.kind).toBe("element")
+    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("")
+    expect(submitter().accessibilityRole).toBe("button")
+
+    await act(async () => {
+      renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("invalid")
+      await Promise.resolve()
+    })
+    submission = undefined
+    act(() => {
+      submitter().onPress?.()
+    })
+    const invalidSubmission = submission
+    if (!invalidSubmission) throw new Error("The rendered submitter did not create a submission")
+    const invalid = takePending(pending, "The rendered submitter did not start a Rails request")
+    expect(invalid.request).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "profile%5Bfirst_name%5D=invalid&commit=save",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    const invalidResponse = await fetchResponse(invalid.request)
+    await act(async () => {
+      invalid.resolve(invalidResponse)
+      await Promise.resolve()
+    })
+    await invalidSubmission
+    expect(session.tree.getElementById("demo-form-error")).toBeDefined()
+    expect(renderer?.root.findByProps({ accessibilityLabel: "Form ready" })).toBeDefined()
+    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe(
+      "invalid",
+    )
+    expect(JSON.stringify(renderer?.toJSON())).toContain("This demo name is unavailable")
+
+    await act(async () => {
+      renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("Ada")
+      await Promise.resolve()
+    })
+    submission = undefined
+    act(() => {
+      submitter().onPress?.()
+    })
+    const validSubmission = submission
+    if (!validSubmission) throw new Error("The replacement submitter did not create a submission")
+    const valid = takePending(pending, "The replacement form did not start a Rails request")
+    expect(valid.request).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "profile%5Bfirst_name%5D=Ada&commit=save",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    const validResponse = await fetchResponse(valid.request)
+    await act(async () => {
+      valid.resolve(validResponse)
+      await Promise.resolve()
+    })
+    await validSubmission
+    expect(pending).toHaveLength(0)
+    expect(session.tree.getElementById("demo-form-error")).toBeUndefined()
+    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("")
+  } finally {
+    await act(async () => {
+      renderer?.unmount()
+      await Promise.resolve()
+    })
+    forms.dispose()
+    frames.dispose()
+    focus.dispose()
+    latestPressable = undefined
+  }
+})
