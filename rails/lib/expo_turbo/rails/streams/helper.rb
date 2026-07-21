@@ -4,6 +4,9 @@ module ExpoTurbo
   module Rails
     module Streams
       module Helper
+        RESERVED_STREAM_SOURCE_ATTRIBUTES = %w[channel signed-stream-name data-channel data-signed-stream-name].freeze
+        RESERVED_STREAM_SOURCE_DATA_ATTRIBUTES = %w[channel signed-stream-name].freeze
+
         def expo_turbo_stream
           TagBuilder.new(
             self,
@@ -13,9 +16,16 @@ module ExpoTurbo
         end
 
         def expo_turbo_stream_from(*streamables, **attributes)
-          if attributes.keys.any? do |key|
-               %w[channel signed-stream-name data-channel data-signed-stream-name].include?(key.to_s)
-             end
+          reserved_data_attribute = attributes
+            .select { |key, _| key.to_s == "data" }
+            .values
+            .grep(Hash)
+            .any? do |data|
+              data.keys.any? do |key|
+                RESERVED_STREAM_SOURCE_DATA_ATTRIBUTES.include?(key.to_s.tr("_", "-"))
+              end
+            end
+          if attributes.keys.any? { |key| RESERVED_STREAM_SOURCE_ATTRIBUTES.include?(key.to_s) } || reserved_data_attribute
             raise ArgumentError, "Expo Turbo stream sources reserve channel and signed stream name attributes"
           end
 

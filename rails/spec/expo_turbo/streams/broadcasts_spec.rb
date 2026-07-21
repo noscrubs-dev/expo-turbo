@@ -51,11 +51,22 @@ RSpec.describe ExpoTurbo::Rails::Streams do
   end
 
   it "signs and broadcasts the same Expo-only stream" do
-    source = controller_class.new.view_context.expo_turbo_stream_from("", "room", id: "room-source").to_s
+    source = controller_class.new.view_context.expo_turbo_stream_from(
+      "",
+      "room",
+      id: "room-source",
+      class: "source",
+      data: {room_name: "room #1"}
+    ).to_s
     signed_name = source[/signed-stream-name="([^"]+)"/, 1]
     content = '<turbo-stream xmlns:Demo="urn:expo-demo" action="append" target="messages"><template><Demo:Item id="message-1"/></template></turbo-stream>'
 
-    expect(source).to include('channel="Turbo::StreamsChannel"', 'id="room-source"')
+    expect(source).to include(
+      'channel="Turbo::StreamsChannel"',
+      'id="room-source"',
+      'class="source"',
+      'data-room-name="room #1"'
+    )
     expect(::Turbo::StreamsChannel.verified_stream_name(signed_name)).to eq("room:expo")
 
     described_class.broadcast_to("", "room", content: content)
@@ -278,6 +289,14 @@ RSpec.describe ExpoTurbo::Rails::Streams do
 
   it "does not allow a source to override its signed standard-channel descriptor" do
     context = controller_class.new.view_context
+    reserved_data_keys = [
+      :channel,
+      "channel",
+      :signed_stream_name,
+      "signed_stream_name",
+      :"signed-stream-name",
+      "signed-stream-name"
+    ]
 
     [
       {channel: "PrivateChannel"},
@@ -289,6 +308,13 @@ RSpec.describe ExpoTurbo::Rails::Streams do
     ].each do |attributes|
       expect { context.expo_turbo_stream_from("room", **attributes) }
         .to raise_error(ArgumentError, /reserve channel and signed stream name/)
+    end
+
+    reserved_data_keys.each do |key|
+      [{data: {key => "forged"}}, {"data" => {key => "forged"}}].each do |attributes|
+        expect { context.expo_turbo_stream_from("room", **attributes) }
+          .to raise_error(ArgumentError, /reserve channel and signed stream name/)
+      end
     end
   end
 
