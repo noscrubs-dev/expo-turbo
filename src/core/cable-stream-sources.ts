@@ -3,6 +3,7 @@ import {
   markCableStreamSourceErrorReported,
   wasCableStreamSourceErrorReported,
 } from "./cable-stream-source-errors-internal"
+import type { DocumentRefreshRequester } from "./document-refresh-controller"
 import { ExpoTurboError, StateError, SubscriptionError } from "./errors"
 import type { DocumentSession } from "./session"
 import {
@@ -50,6 +51,12 @@ export interface ObservableCableStreamSourceCollection extends CableStreamSource
 export interface CableStreamSourceRegistryOptions {
   readonly onError: (error: ExpoTurboError) => void
   readonly onMessage?: (report: StreamDispatchReport) => void
+  /**
+   * Optional canonical current-document reconciliation after an adapter has
+   * re-confirmed a server-directed reconnect. This is separate from Stream
+   * `refresh` handling so hosts can keep that protocol feature disabled.
+   */
+  readonly reconnectRefresh?: DocumentRefreshRequester
   readonly streamOptions?: StreamDispatchOptions
 }
 
@@ -158,6 +165,10 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
   private readonly messages: QueuedMessage[] = []
   private readonly onError: (error: ExpoTurboError) => void
   private readonly onMessage: ((report: StreamDispatchReport) => void) | undefined
+  private readonly reconnectRefresh: DocumentRefreshRequester | undefined
+  private reconnectCycle = 0
+  private reconciledReconnectCycle = 0
+  private readonly reconnectingTransports = new Set<TransportRecord>()
   private readonly sources = new Map<ProtocolElement, SourceRecord>()
   private readonly streamOptions: StreamDispatchOptions
   private readonly transports = new Map<string, TransportRecord>()
@@ -176,8 +187,17 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
     if (options.onMessage !== undefined && typeof options.onMessage !== "function") {
       throw new StateError("Cable stream source message observer must be a function")
     }
+    if (
+      options.reconnectRefresh !== undefined &&
+      (typeof options.reconnectRefresh !== "object" ||
+        options.reconnectRefresh === null ||
+        typeof options.reconnectRefresh.request !== "function")
+    ) {
+      throw new StateError("Cable stream source reconnect refresh must provide a request method")
+    }
     this.onError = options.onError
     this.onMessage = options.onMessage
+    this.reconnectRefresh = options.reconnectRefresh
     this.streamOptions = Object.freeze({ ...(options.streamOptions ?? {}) })
   }
 
@@ -316,7 +336,8 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
     this.transports.set(transport.identifier, transport)
     this.setTransportConnectionState(transport, "connecting")
     const callbacks: CableCallbacks = {
-      connected: () => this.setTransportConnectionState(transport, "connected"),
+      connected: (reconnected) =>
+        this.setTransportConnectionState(transport, "connected", reconnected),
       disconnected: (willAttemptReconnect) =>
         this.setTransportConnectionState(
           transport,
@@ -521,6 +542,7 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
 
   private deactivateTransport(transport: TransportRecord): void {
     if (!transport.active) return
+    this.forgetReconnect(transport)
     transport.active = false
     if (this.transports.get(transport.identifier) === transport) {
       this.transports.delete(transport.identifier)
@@ -540,8 +562,19 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
   private setTransportConnectionState(
     transport: TransportRecord,
     state: CableSubscriptionState,
+    reconnected = false,
   ): void {
     if (!this.active || !transport.active || !this.hasOwners(transport)) return
+    const wasReconnecting = this.reconnectingTransports.has(transport)
+    if (state === "reconnecting" && transport.state !== "reconnecting") {
+      this.beginReconnect(transport)
+    }
+    const reconnectCycle = this.reconnectCycle
+    const shouldRefresh =
+      state === "connected" &&
+      reconnected &&
+      wasReconnecting &&
+      this.reconciledReconnectCycle !== reconnectCycle
     transport.state = state
     let changed = false
     for (const source of transport.sources) {
@@ -552,6 +585,52 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
       changed = true
     }
     if (changed) this.publishConnectionSnapshot()
+    if (
+      shouldRefresh &&
+      this.active &&
+      transport.active &&
+      this.hasOwners(transport) &&
+      transport.state === "connected" &&
+      this.reconnectingTransports.has(transport) &&
+      this.reconnectCycle === reconnectCycle &&
+      this.reconciledReconnectCycle !== reconnectCycle
+    ) {
+      this.reconciledReconnectCycle = reconnectCycle
+      this.refreshAfterReconnect(transport)
+    }
+    if (transport.state !== "reconnecting") this.forgetReconnect(transport)
+  }
+
+  private refreshAfterReconnect(transport: TransportRecord): void {
+    const refresh = this.reconnectRefresh
+    if (!refresh) return
+    const target = this.sourceTarget(transport)
+    const baseUrl = this.session.tree.document.url
+    if (!baseUrl) {
+      this.report(
+        redactedSubscriptionError(
+          "Cable stream source reconnect reconciliation requires an active document URL",
+          target,
+        ),
+      )
+      return
+    }
+    try {
+      refresh.request(Object.freeze({ baseUrl, scroll: "preserve" }))
+    } catch {
+      this.report(
+        redactedSubscriptionError("Cable stream source reconnect reconciliation failed", target),
+      )
+    }
+  }
+
+  private beginReconnect(transport: TransportRecord): void {
+    if (this.reconnectingTransports.size === 0) this.reconnectCycle += 1
+    this.reconnectingTransports.add(transport)
+  }
+
+  private forgetReconnect(transport: TransportRecord): void {
+    this.reconnectingTransports.delete(transport)
   }
 
   private publishConnectionSnapshot(): void {
