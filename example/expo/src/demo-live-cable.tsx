@@ -3,9 +3,6 @@ import {
   resolveActionCableEndpoint,
   type ActionCableWebSocket,
   type ActionCableWebSocketAdapterOptions,
-  type FetchAdapter,
-  type TurboRequest,
-  type TurboResponse,
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
@@ -23,6 +20,17 @@ import { Pressable, Text, View } from "react-native";
 
 import { DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
+import {
+  createDemoLiveFetchAdapter,
+  nativeDemoLiveFetch,
+  type DemoLiveFetch,
+} from "./demo-live-transport";
+
+export type {
+  DemoLiveFetch as DemoLiveCableFetch,
+  DemoLiveFetchRequest as DemoLiveCableFetchRequest,
+  DemoLiveFetchResponse as DemoLiveCableFetchResponse,
+} from "./demo-live-transport";
 
 const BROADCAST_PATH = "/api/expo_turbo/demo/broadcast";
 const DOCUMENT_PATH = "/api/expo_turbo/demo/document";
@@ -30,31 +38,9 @@ const CABLE_PATH = "/cable";
 const LOADING_DOCUMENT = `<Gallery id="demo-live-loading"><DemoText id="demo-live-loading-message">Loading the standalone Rails demo</DemoText></Gallery>`;
 const liveRuntimeOwners = new WeakMap<DemoLiveCableRuntime, number>();
 
-export interface DemoLiveCableFetchRequest {
-  readonly body?: string | Uint8Array;
-  readonly headers: Readonly<Record<string, string>>;
-  readonly method: string;
-  readonly signal?: AbortSignal;
-}
-
-export interface DemoLiveCableFetchResponse {
-  readonly headers: Readonly<{
-    forEach(callback: (value: string, name: string) => void): void;
-  }>;
-  readonly redirected: boolean;
-  readonly status: number;
-  readonly url: string;
-  text(): Promise<string>;
-}
-
-export type DemoLiveCableFetch = (
-  url: string,
-  request: DemoLiveCableFetchRequest,
-) => Promise<DemoLiveCableFetchResponse>;
-
 export interface DemoLiveCableRuntimeOptions {
   readonly createSocket?: ActionCableWebSocketAdapterOptions["createSocket"];
-  readonly fetch?: DemoLiveCableFetch;
+  readonly fetch?: DemoLiveFetch;
   readonly origin: string;
 }
 
@@ -79,37 +65,6 @@ function asDisplayError(error: unknown): Error {
   return error instanceof ExpoTurboError
     ? error
     : new StateError("The standalone Rails demo is unavailable");
-}
-
-function createNativeFetchAdapter(fetch: DemoLiveCableFetch): FetchAdapter {
-  return Object.freeze({
-    async fetch(request: TurboRequest): Promise<TurboResponse> {
-      const response = await fetch(request.url, {
-        ...(request.body ? { body: request.body.value } : {}),
-        headers: request.headers,
-        method: request.method,
-        ...(request.signal ? { signal: request.signal } : {}),
-      });
-      const headers: Record<string, string> = {};
-      response.headers.forEach((value, name) => {
-        headers[name] = value;
-      });
-      return Object.freeze({
-        headers: Object.freeze(headers),
-        redirected: response.redirected,
-        status: response.status,
-        text: () => response.text(),
-        url: response.url,
-      });
-    },
-  });
-}
-
-function nativeFetch(url: string, request: DemoLiveCableFetchRequest): Promise<DemoLiveCableFetchResponse> {
-  if (typeof globalThis.fetch !== "function") {
-    return Promise.reject(new StateError("The native Fetch API is unavailable"));
-  }
-  return globalThis.fetch(url, request as RequestInit);
 }
 
 function nativeSocket(
@@ -140,11 +95,11 @@ export async function createDemoLiveCableRuntime(
     throw new StateError("Standalone Rails demo options are invalid");
   }
   const endpoints = resolveDemoLiveCableEndpoints(options.origin);
-  const fetch = options.fetch ?? nativeFetch;
+  const fetch = options.fetch ?? nativeDemoLiveFetch;
   if (typeof fetch !== "function") {
     throw new StateError("Standalone Rails demo fetch is invalid");
   }
-  const documentFetch = createNativeFetchAdapter(fetch);
+  const documentFetch = createDemoLiveFetchAdapter(fetch);
   const session = new DocumentSession(
     parseExpoTurboDocument(LOADING_DOCUMENT, { url: endpoints.documentUrl }),
   );
