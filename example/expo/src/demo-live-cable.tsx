@@ -7,13 +7,15 @@ import {
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
-  DocumentReconnectReconciler,
   DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
   DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
   ExpoTurboError,
+  FrameControllerRegistry,
+  FrameReconnectReconciler,
+  FrameRequestLoader,
   parseExpoTurboDocument,
   RequestError,
   StateError,
@@ -65,6 +67,7 @@ export interface DemoLiveCableRuntime {
   clearError(): void;
   readonly cableUrl: string;
   readonly documentUrl: string;
+  readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
   readonly streamSources: CableStreamSourceRegistry;
   subscribeErrors(listener: (error: Error | undefined) => void): () => void;
@@ -132,9 +135,32 @@ export async function createDemoLiveCableRuntime(
   const refresh = new DocumentRefreshController(session, visits, clock, {
     onError: reportError,
   });
-  const reconnectRefresh = new DocumentReconnectReconciler(refresh, visits, {
-    onError: reportError,
+  let frameRequestId = 0;
+  const frames = new FrameControllerRegistry(
+    session,
+    new FrameRequestLoader(session, documentFetch, {
+      next: () => `demo-live-frame-${++frameRequestId}`,
+    }),
+  );
+  let sources: CableStreamSourceRegistry | undefined;
+  const sourceConnections = Object.freeze({
+    get connectionSnapshot() {
+      if (!sources) throw new StateError("Standalone Rails Cable sources are unavailable");
+      return sources.connectionSnapshot;
+    },
+    subscribeConnection(listener: () => void): () => void {
+      if (!sources) throw new StateError("Standalone Rails Cable sources are unavailable");
+      return sources.subscribeConnection(listener);
+    },
   });
+  const reconnectRefresh = new FrameReconnectReconciler(
+    session,
+    sourceConnections,
+    frames,
+    refresh,
+    visits,
+    { onError: reportError },
+  );
   const cable = new ActionCableV1WebSocketAdapter({
     createSocket: options.createSocket ?? nativeSocket,
     onError: reportError,
@@ -148,6 +174,7 @@ export async function createDemoLiveCableRuntime(
     },
     reconnectRefresh,
   });
+  sources = streamSources;
   let disposed = false;
 
   return Object.freeze({
@@ -167,11 +194,13 @@ export async function createDemoLiveCableRuntime(
       reportError(undefined);
     },
     documentUrl: endpoints.documentUrl,
+    frames,
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      streamSources.dispose();
       reconnectRefresh.dispose();
+      streamSources.dispose();
+      frames.dispose();
       refresh.dispose();
       visits.cancel();
       cable.dispose();
@@ -221,6 +250,7 @@ export function DemoLiveCableRuntimeProvider({
           {error.name}: {error.message}
         </Text>
       )}
+      frames={proof.frames}
       session={proof.session}
       streamSources={proof.streamSources}
       styles={DEMO_STYLE_ADAPTER}
@@ -265,7 +295,7 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and subscribes to its public demo stream. It has no user document navigation, Forms, Frames, auth, heartbeat, background policy, or client retry. Incoming refresh Streams remain unsupported; after an explicit server reconnect is re-confirmed, it performs one scroll-preserving canonical document GET.
+          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. It has no user document navigation, Forms, auth, heartbeat, background policy, or client retry. Incoming refresh Streams remain unsupported; after an explicit server reconnect is re-confirmed, it reloads that active Frame through its canonical GET.
         </Text>
         <ExpoTurboRoot />
         <Pressable

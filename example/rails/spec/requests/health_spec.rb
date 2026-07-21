@@ -27,11 +27,9 @@ RSpec.describe "standalone demo host" do
     expect(response.body.dup.force_encoding(Encoding::UTF_8)).to be_valid_encoding
     expect(document.root.name).to eq("Gallery")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
-    expect(document.at_xpath("//DemoText[@id='demo-stream-message']")&.text)
-      .to eq("Waiting for a public Action Cable broadcast")
-    source = document.at_xpath("//turbo-cable-stream-source[@id='demo-stream-source']")
-    expect(source&.[]("channel")).to eq("Turbo::StreamsChannel")
-    expect(::Turbo::StreamsChannel.verified_stream_name(source["signed-stream-name"])).to eq("demo-stream:expo")
+    frame = document.at_xpath("//turbo-frame[@id='demo-frame']")
+    expect(frame&.[]("src")).to eq("/api/expo_turbo/demo/frame")
+    expect(document.at_xpath("//turbo-cable-stream-source")).to be_nil
   end
 
   it "serves standard sibling Stream fragments from confined XML partials" do
@@ -94,8 +92,12 @@ RSpec.describe "standalone demo host" do
     expect(response.headers["Vary"]).to eq("Turbo-Frame")
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-frame")
-    expect(frame.at_xpath("./DemoText[@id='demo-frame-message']")&.text)
+    expect(frame.at_xpath("./DemoText[@id='demo-stream-message']")&.text)
       .to eq("Rendered from an XML Frame")
+    source = frame.at_xpath("./turbo-cable-stream-source[@id='demo-stream-source']")
+    expect(source&.[]("channel")).to eq("Turbo::StreamsChannel")
+    expect(::Turbo::StreamsChannel.verified_stream_name(source["signed-stream-name"]))
+      .to eq("demo-stream:expo")
   end
 
   it "returns authoritative XML Frame validation errors" do
@@ -108,7 +110,7 @@ RSpec.describe "standalone demo host" do
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-frame")
-    expect(frame.at_xpath("./DemoText[@id='demo-frame-message']")&.text)
+    expect(frame.at_xpath("./DemoText[@id='demo-stream-message']")&.text)
       .to eq("Frame validation failed")
   end
 
