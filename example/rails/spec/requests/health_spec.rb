@@ -160,6 +160,8 @@ RSpec.describe "standalone demo host" do
       .to eq("/api/expo_turbo/demo/form")
     expect(frame.at_xpath(".//DemoFormInput[@id='demo-form-first-name']")&.[]("value")).to eq("")
     expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-submit']")&.[]("value")).to eq("save")
+    expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-complete']")&.[]("value"))
+      .to eq("no-content")
 
     get "/api/expo_turbo/demo/form"
     expect(response).to have_http_status(:bad_request)
@@ -171,7 +173,7 @@ RSpec.describe "standalone demo host" do
   it "returns an authoritative XML Frame for invalid URL-encoded form input" do
     host! "localhost"
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: "invalid"}},
+      params: {commit: "no-content", profile: {first_name: "invalid"}},
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
 
     frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
@@ -190,7 +192,7 @@ RSpec.describe "standalone demo host" do
   it "redirects valid form submissions to the fixed canonical Frame GET" do
     host! "localhost"
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: "Ada"}},
+      params: {commit: "save", profile: {first_name: "Ada"}},
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
 
     expect(response).to have_http_status(:see_other)
@@ -198,45 +200,67 @@ RSpec.describe "standalone demo host" do
     expect(response.body).to be_empty
   end
 
+  it "keeps a valid Frame form unchanged for the explicit no-content submitter" do
+    host! "localhost"
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "no-content", profile: {first_name: "Ada"}},
+      headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+
+    expect(response).to have_http_status(:no_content)
+    expect(response.headers["Location"]).to be_nil
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(response.body).to be_empty
+  end
+
   it "rejects unsupported or malformed form input without a JSON fallback" do
     host! "localhost"
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: "Ada"}},
+      params: {commit: "save", profile: {first_name: "Ada"}},
       headers: {"Content-Type" => "application/json", "Turbo-Frame" => "demo-form-frame"}
     expect(response).to have_http_status(:unsupported_media_type)
     expect(response.media_type).not_to eq(ExpoTurbo::Rails::MIME_TYPE)
 
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: {forged: "value"}}},
+      params: {profile: {first_name: "Ada"}},
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
     expect(response).to have_http_status(:bad_request)
 
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: "a" * 121}},
+      params: {commit: "save", profile: {first_name: {forged: "value"}}},
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
     expect(response).to have_http_status(:bad_request)
 
     post "/api/expo_turbo/demo/form",
-      params: "profile%5Bfirst_name%5D=invalid%00bad",
+      params: {commit: "save", profile: {first_name: "a" * 121}},
+      headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+    expect(response).to have_http_status(:bad_request)
+
+    post "/api/expo_turbo/demo/form",
+      params: "commit=save&profile%5Bfirst_name%5D=invalid%00bad",
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
     expect(response).to have_http_status(:bad_request)
     expect(response.media_type).not_to eq("application/json")
     expect(response.body).to be_empty
 
     post "/api/expo_turbo/demo/form",
-      params: "profile%5Bfirst_name%5D=invalid%FFbad",
+      params: "commit=save&profile%5Bfirst_name%5D=invalid%FFbad",
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
     expect(response).to have_http_status(:bad_request)
     expect(response.media_type).not_to eq("application/json")
     expect(response.body).to be_empty
     expect(response.headers["Vary"]).to eq("Turbo-Frame")
+
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "other", profile: {first_name: "Ada"}},
+      headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+    expect(response).to have_http_status(:bad_request)
   end
 
   it "escapes server-invalid submitted text instead of admitting XML" do
     host! "localhost"
     submitted = "invalid<DemoText id='forged'>not a component</DemoText>"
     post "/api/expo_turbo/demo/form",
-      params: {profile: {first_name: submitted}},
+      params: {commit: "save", profile: {first_name: submitted}},
       headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
 
     frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root

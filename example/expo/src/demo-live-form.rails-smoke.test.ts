@@ -17,11 +17,10 @@ import { createElement } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
 
 interface PressableProps {
+  readonly accessibilityLabel?: string
   readonly accessibilityRole?: string
   readonly onPress?: () => void
 }
-
-let latestPressable: PressableProps | undefined
 
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
@@ -30,10 +29,7 @@ mock.module("react-native", () => ({
   FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
   Linking: { openURL: async () => undefined },
   Platform: { OS: "web" },
-  Pressable: (props: PressableProps) => {
-    latestPressable = props
-    return createElement("pressable", props)
-  },
+  Pressable: (props: PressableProps) => createElement("pressable", props),
   ScrollView: (props: Readonly<Record<string, unknown>>) => createElement("scroll-view", props),
   Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
   TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
@@ -111,7 +107,7 @@ function takePending(pending: PendingFetch[], message: string): PendingFetch {
 }
 
 liveTest(
-  "submits a real Rails Frame form through authoritative 422 XML and a canonical 303 GET",
+  "submits a real Rails Frame form through authoritative 422 XML, 204, and a canonical 303 GET",
   async () => {
     if (!origin) throw new Error("EXPO_TURBO_DEMO_ORIGIN is required for the Rails form smoke")
 
@@ -149,9 +145,14 @@ liveTest(
       name: "profile[first_name]",
       value: "invalid",
     })
+    const invalidSubmitter = invalid.register("id:demo-form-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
 
     await expect(
-      invalid.submit({ protocol: { requestId: "rails-form-invalid" } }),
+      invalid.submit({ protocol: { requestId: "rails-form-invalid" }, submitter: invalidSubmitter.selection }),
     ).resolves.toMatchObject({
       application: "frame",
       classification: "client-error",
@@ -164,7 +165,7 @@ liveTest(
     expect(requests.shift()).toMatchObject({
       body: {
         contentType: "application/x-www-form-urlencoded;charset=UTF-8",
-        value: "profile%5Bfirst_name%5D=invalid",
+        value: "profile%5Bfirst_name%5D=invalid&commit=save",
       },
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
@@ -181,15 +182,61 @@ liveTest(
       throw new Error("Rails validation response did not include its error element")
     expect(nodeTextContent(invalidError)).toBe("This demo name is unavailable")
 
-    const valid = forms.controlsFor("id:demo-form")
-    valid.register("id:demo-form-first-name", {
+    const noContent = forms.controlsFor("id:demo-form")
+    noContent.register("id:demo-form-first-name", {
       kind: "value",
       name: "profile[first_name]",
       value: "Ada",
     })
+    const noContentSubmitter = noContent.register("id:demo-form-complete", {
+      kind: "submitter",
+      name: "commit",
+      value: "no-content",
+    })
+    const frameBeforeNoContent = session.tree.getElementById(FRAME_ID)
+    if (!frameBeforeNoContent) throw new Error("Rails no-content response has no active Frame")
+    const childrenBeforeNoContent = frameBeforeNoContent.children
+    const revisionBeforeNoContent = session.revision
 
     await expect(
-      valid.submit({ protocol: { requestId: "rails-form-valid" } }),
+      noContent.submit({
+        protocol: { requestId: "rails-form-no-content" },
+        submitter: noContentSubmitter.selection,
+      }),
+    ).resolves.toMatchObject({
+      application: "empty",
+      classification: "success",
+      destination: { frameId: FRAME_ID, kind: "frame" },
+      redirected: false,
+      responseStatus: 204,
+      responseUrl: formUrl,
+      status: "empty",
+    })
+    expect(requests.shift()).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "profile%5Bfirst_name%5D=Ada&commit=no-content",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    expect(session.tree.getElementById(FRAME_ID)).toBe(frameBeforeNoContent)
+    expect(frameBeforeNoContent.children).toBe(childrenBeforeNoContent)
+    expect(session.revision).toBe(revisionBeforeNoContent)
+    expect(noContent.isDisposed).toBe(false)
+
+    const validSubmitter = noContent.register("id:demo-form-submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+
+    await expect(
+      noContent.submit({ protocol: { requestId: "rails-form-valid" }, submitter: validSubmitter.selection }),
     ).resolves.toMatchObject({
       application: "frame",
       classification: "success",
@@ -202,7 +249,7 @@ liveTest(
     expect(requests.shift()).toMatchObject({
       body: {
         contentType: "application/x-www-form-urlencoded;charset=UTF-8",
-        value: "profile%5Bfirst_name%5D=Ada",
+        value: "profile%5Bfirst_name%5D=Ada&commit=save",
       },
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
@@ -254,13 +301,13 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     submissionController: formController,
   })
   let renderer: ReactTestRenderer | undefined
-  const submitter = () => {
-    if (!latestPressable?.onPress) throw new Error("The Rails form submitter did not render")
-    return latestPressable
+  const submitter = (label: string) => {
+    const rendered = renderer?.root.findByProps({ accessibilityLabel: label })
+    if (!rendered?.props.onPress) throw new Error(`The ${label} submitter did not render`)
+    return rendered.props as PressableProps
   }
 
   try {
-    latestPressable = undefined
     act(() => {
       renderer = create(
         createElement(
@@ -304,7 +351,47 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     await frames.get(FRAME_ID).loaded
     expect(session.tree.getElementById("demo-form")?.kind).toBe("element")
     expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("")
-    expect(submitter().accessibilityRole).toBe("button")
+    expect(submitter("Save first name").accessibilityRole).toBe("button")
+
+    await act(async () => {
+      renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("Ada")
+      await Promise.resolve()
+    })
+    const frameBeforeNoContent = session.tree.getElementById(FRAME_ID)
+    if (!frameBeforeNoContent) throw new Error("The mounted Rails Frame is missing")
+    const childrenBeforeNoContent = frameBeforeNoContent.children
+    const revisionBeforeNoContent = session.revision
+    submission = undefined
+    act(() => {
+      submitter("Complete without replacing Frame").onPress?.()
+    })
+    const noContentSubmission = submission
+    if (!noContentSubmission) throw new Error("The no-content submitter did not create a submission")
+    const noContent = takePending(pending, "The no-content submitter did not start a Rails request")
+    expect(noContent.request).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "profile%5Bfirst_name%5D=Ada&commit=no-content",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    const noContentResponse = await fetchResponse(noContent.request)
+    await act(async () => {
+      noContent.resolve(noContentResponse)
+      await Promise.resolve()
+    })
+    await noContentSubmission
+    expect(session.tree.getElementById(FRAME_ID)).toBe(frameBeforeNoContent)
+    expect(frameBeforeNoContent.children).toBe(childrenBeforeNoContent)
+    expect(session.revision).toBe(revisionBeforeNoContent)
+    expect(renderer?.root.findByProps({ accessibilityLabel: "Form ready" })).toBeDefined()
+    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("Ada")
+    expect(pending).toHaveLength(0)
 
     await act(async () => {
       renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("invalid")
@@ -312,7 +399,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     })
     submission = undefined
     act(() => {
-      submitter().onPress?.()
+      submitter("Save first name").onPress?.()
     })
     const invalidSubmission = submission
     if (!invalidSubmission) throw new Error("The rendered submitter did not create a submission")
@@ -348,7 +435,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     })
     submission = undefined
     act(() => {
-      submitter().onPress?.()
+      submitter("Save first name").onPress?.()
     })
     const validSubmission = submission
     if (!validSubmission) throw new Error("The replacement submitter did not create a submission")
@@ -382,6 +469,5 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     forms.dispose()
     frames.dispose()
     focus.dispose()
-    latestPressable = undefined
   }
 })

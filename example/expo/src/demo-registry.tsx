@@ -435,6 +435,7 @@ function DemoFormSubmitterComponent(props: {
   const requestId = useRef(0);
   return (
     <Pressable
+      accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={control.accessibilityState}
       disabled={control.disabled}
