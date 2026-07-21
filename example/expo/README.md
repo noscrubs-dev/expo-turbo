@@ -22,6 +22,8 @@ bun run check
 bun run start
 ```
 
+`bun run check` runs lint, types, fixture tests, and static web, iOS, and Android exports. The individual `export:web`, `export:ios`, and `export:android` scripts are available when one platform needs a focused bundle-admission check. Those native exports produce Hermes bytecode and catch Metro/runtime dependency regressions; they are not release-build, simulator, or physical-device evidence.
+
 The example install links its React into the local `file:../..` source checkout so the package and native app resolve one peer instance. Published package consumers use normal peer-dependency resolution and do not need this source-development link.
 
 Start with Expo Go where supported. Release builds and physical iOS/Android evidence remain required before compatibility can be claimed.

@@ -54,6 +54,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] Public-source ESM package with explicit `core`, `adapters`, `react`, `registry`, and `testing` exports.
 - [x] Host-neutral fetch, form-confirmation, form-announcement, navigation, Cable subscription-interface, lifecycle, visibility, focus, bounded same-document `DocumentAnchorScrollAdapter` requests, one-shot `DocumentRefreshScrollAdapter` reset, bounded root-history `DocumentHistoryScrollAdapter` restoration, style, storage, observability, clock, request-ID, and restoration-ID adapter contracts. Concrete Cable socket transport remains pending below.
 - [x] Typed protocol errors, pinned version baselines, and an injected development inspector.
+- [x] Expo example CI bundles web, iOS, and Android exports; the native exports produce Hermes bytecode and catch Metro/runtime dependency drift, but do not substitute for release-build, simulator, or physical-device evidence.
 - [x] Strict, namespace-aware XML documents and ordered multi-root Turbo Stream fragment parsing.
 - [x] Pre-parse byte/depth/DOCTYPE/processing-instruction guards plus node, attribute, text, and Stream-action limits.
 - [x] Shared text normalization with inherited `xml:space`, explicit `default` reset, preserved CDATA, collapsed XML whitespace, and deterministic fixture/diagnostic serialization.
