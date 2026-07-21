@@ -352,7 +352,7 @@ describe("demo app runtime ownership", () => {
         await ended;
       });
 
-      expect(events).toEqual(["submit-start:demo-form-1", "submit-end:response"]);
+      expect(events).toEqual(["submit-start:demo-form-id%3Acollect-form-1", "submit-end:response"]);
       expect(runtime.forms.controlsFor("id:native-form").submissionState.busy).toBeFalse();
     } finally {
       unsubscribeStart();
