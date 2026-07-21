@@ -45,6 +45,8 @@ interface CallbackSnapshot {
 interface SubscriptionRecord {
   active: boolean
   readonly callbacks: CallbackSnapshot
+  connected: boolean
+  reconnectOnConfirm: boolean
 }
 
 interface SubscriptionGroup {
@@ -129,11 +131,12 @@ function isWebSocketUrl(value: string): boolean {
 }
 
 /**
- * A single-lifetime Action Cable v1 JSON transport over one host-owned WebSocket.
+ * A bounded Action Cable v1 JSON transport over one host-owned WebSocket at a time.
  *
  * This deliberately owns no credentials, URL derivation, lifecycle integration,
- * reconnect timing, or resubscription policy. A terminal socket failure requires
- * the host to construct a fresh adapter.
+ * reconnect timing, or retry policy. It only rotates after an explicit valid
+ * server `disconnect` frame requests reconnecting; terminal socket failures
+ * otherwise require the host to construct a fresh adapter.
  */
 export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private active = true
@@ -192,7 +195,12 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       throw adapterError("Action Cable subscription identifier must be nonblank")
     }
 
-    const record: SubscriptionRecord = { active: true, callbacks: callbacksSnapshot(callbacks) }
+    const record: SubscriptionRecord = {
+      active: true,
+      callbacks: callbacksSnapshot(callbacks),
+      connected: false,
+      reconnectOnConfirm: false,
+    }
     let group = this.groups.get(identifier)
     const groupWasNew = group === undefined
     if (!group) {
@@ -220,6 +228,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       this.subscribeGroup(group)
     }
     if (group.confirmed && record.active && group.records.has(record)) {
+      record.connected = true
       this.invoke(record, "connected", false)
     }
 
@@ -360,6 +369,10 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     }
     if (frame.type === "ping") return
     if (frame.type === "disconnect") {
+      if (frame.reconnect) {
+        this.reconnect(connection)
+        return
+      }
       this.terminal("Action Cable WebSocket connection disconnected")
       return
     }
@@ -370,7 +383,11 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       if (group.confirmed) return
       group.confirmed = true
       for (const record of [...group.records]) {
-        if (record.active && group.records.has(record)) this.invoke(record, "connected", false)
+        if (!record.active || !group.records.has(record)) continue
+        const reconnected = record.reconnectOnConfirm
+        record.connected = true
+        record.reconnectOnConfirm = false
+        this.invoke(record, "connected", reconnected)
       }
       return
     }
@@ -442,6 +459,45 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private handleSocketTerminal(connection: SocketConnection, message: string): void {
     if (!this.owns(connection)) return
     this.terminal(message)
+  }
+
+  private reconnect(connection: SocketConnection): void {
+    if (!this.owns(connection)) return
+    const records: Readonly<{ group: SubscriptionGroup; record: SubscriptionRecord }>[] = []
+    for (const group of this.groups.values()) {
+      group.confirmed = false
+      group.subscribed = false
+      for (const record of group.records) {
+        if (!record.active) continue
+        record.reconnectOnConfirm = record.connected
+        record.connected = false
+        this.pendingConnectionRecords.add(record)
+        records.push({ group, record })
+      }
+    }
+
+    this.detachConnection(true)
+    for (const { group, record } of records) {
+      if (
+        record.active &&
+        this.groups.get(group.identifier) === group &&
+        group.records.has(record)
+      ) {
+        this.invoke(record, "disconnected", true)
+      }
+    }
+    if (!this.active || this.terminated || this.groups.size === 0 || this.connection) return
+
+    for (const group of this.groups.values()) {
+      for (const record of group.records) {
+        if (record.active) this.pendingConnectionRecords.add(record)
+      }
+    }
+    try {
+      this.ensureConnection()
+    } catch {
+      // Pending records settle and report the redacted replacement failure in ensureConnection().
+    }
   }
 
   private terminal(message: string): void {

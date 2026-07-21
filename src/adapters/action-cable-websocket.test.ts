@@ -398,7 +398,137 @@ describe("Action Cable v1 WebSocket adapter", () => {
     expect(send.errors).toEqual([new SubscriptionError("Action Cable WebSocket command failed")])
   })
 
-  test("treats a server disconnect, socket close, and socket error as terminal without reconnecting", () => {
+  test("rotates only after a server-directed reconnect and confirms each active record again", () => {
+    const { adapter, errors, sockets } = createAdapter()
+    const events: string[] = []
+    const confirmed = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"confirmed"}'
+    const pending = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"pending"}'
+
+    adapter.subscribe(confirmed, callbackEvents(events, "first"))
+    adapter.subscribe(confirmed, callbackEvents(events, "second"))
+    adapter.subscribe(pending, callbackEvents(events, "pending"))
+    const original = socketAt(sockets, 0)
+    welcome(original)
+    confirmation(original, confirmed)
+    adapter.subscribe(confirmed, callbackEvents(events, "late"))
+    expect(events).toEqual([
+      "first:connected:false",
+      "second:connected:false",
+      "late:connected:false",
+    ])
+
+    original.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}')
+
+    expect(original.closeCalls).toBe(1)
+    expect(sockets).toHaveLength(2)
+    const replacement = socketAt(sockets, 1)
+    expect(events).toEqual([
+      "first:connected:false",
+      "second:connected:false",
+      "late:connected:false",
+      "first:disconnected:true",
+      "second:disconnected:true",
+      "late:disconnected:true",
+      "pending:disconnected:true",
+    ])
+    expect(replacement.sent).toEqual([])
+
+    original.emitMessage(
+      `{"identifier":${JSON.stringify(confirmed)},"message":"late old delivery"}`,
+    )
+    original.emitClose()
+    expect(events).toHaveLength(7)
+    expect(errors).toEqual([])
+
+    welcome(replacement)
+    expect(replacement.sent).toEqual([
+      encodeActionCableSubscribe(confirmed),
+      encodeActionCableSubscribe(pending),
+    ])
+    confirmation(replacement, confirmed)
+    confirmation(replacement, pending)
+
+    expect(events).toEqual([
+      "first:connected:false",
+      "second:connected:false",
+      "late:connected:false",
+      "first:disconnected:true",
+      "second:disconnected:true",
+      "late:disconnected:true",
+      "pending:disconnected:true",
+      "first:connected:true",
+      "second:connected:true",
+      "late:connected:true",
+      "pending:connected:false",
+    ])
+    expect(errors).toEqual([])
+  })
+
+  test("settles a failed server-directed replacement and permits an explicit later subscription", () => {
+    const errors: SubscriptionError[] = []
+    const events: string[] = []
+    const sockets: FakeSocket[] = []
+    let attempts = 0
+    const adapter = new ActionCableV1WebSocketAdapter({
+      createSocket() {
+        attempts += 1
+        if (attempts === 2) throw new Error("signed-secret")
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      onError(error) {
+        errors.push(error)
+      },
+      url: "wss://cable.example.test/cable",
+    })
+
+    adapter.subscribe("identifier", callbackEvents(events, "one"))
+    const original = socketAt(sockets, 0)
+    welcome(original)
+    confirmation(original, "identifier")
+    original.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}')
+
+    expect(events).toEqual([
+      "one:connected:false",
+      "one:disconnected:true",
+      "one:disconnected:false",
+    ])
+    expect(errors).toEqual([new SubscriptionError("Action Cable WebSocket connection failed")])
+    expect(original.closeCalls).toBe(1)
+
+    adapter.subscribe("retry", callbackEvents(events, "retry"))
+    expect(sockets).toHaveLength(2)
+  })
+
+  test("does not recreate a socket when a reconnect callback removes its final subscription", () => {
+    const { adapter, errors, sockets } = createAdapter()
+    const events: string[] = []
+    let subscription: { unsubscribe(): void } | undefined
+    subscription = adapter.subscribe("identifier", {
+      connected(reconnected) {
+        events.push(`connected:${reconnected}`)
+      },
+      disconnected(willAttemptReconnect) {
+        events.push(`disconnected:${willAttemptReconnect}`)
+        if (willAttemptReconnect) subscription?.unsubscribe()
+      },
+      received: () => undefined,
+      rejected: () => undefined,
+    })
+    const original = socketAt(sockets, 0)
+    welcome(original)
+    confirmation(original, "identifier")
+
+    original.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}')
+
+    expect(events).toEqual(["connected:false", "disconnected:true"])
+    expect(sockets).toHaveLength(1)
+    expect(original.closeCalls).toBe(1)
+    expect(errors).toEqual([])
+  })
+
+  test("treats a server disconnect without reconnect, socket close, and socket error as terminal", () => {
     for (const terminal of ["disconnect", "close", "error"] as const) {
       const { adapter, errors, sockets } = createAdapter()
       const events: string[] = []
@@ -407,7 +537,7 @@ describe("Action Cable v1 WebSocket adapter", () => {
 
       switch (terminal) {
         case "disconnect":
-          sockets[0]?.emitMessage('{"type":"disconnect","reason":"restart","reconnect":true}')
+          sockets[0]?.emitMessage('{"type":"disconnect","reason":"shutdown","reconnect":false}')
           break
         case "close":
           sockets[0]?.emitClose()
