@@ -26,6 +26,7 @@ let latestPressable: PressableProps | undefined
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
   Alert: { alert: () => undefined },
+  AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
   FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
   Linking: { openURL: async () => undefined },
   Platform: { OS: "web" },
