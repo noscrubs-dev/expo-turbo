@@ -11,6 +11,7 @@ import { ExpoTurboRoot } from "expo-turbo/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Pressable,
+  Platform,
   ScrollView,
   Text,
   useWindowDimensions,
@@ -19,10 +20,13 @@ import {
 
 import type { DemoRouterNavigation } from "./demo-router-history";
 import { DemoRouterRouteOwner } from "./demo-router-route-owner";
+import { DemoLiveCableProof } from "./demo-live-cable";
 import { useDemoRuntime } from "./demo-runtime";
 import { DEMO_ROOT_VISIBILITY_CONTAINER_ID } from "./demo-visibility";
 import { PROTOCOL_SMOKE } from "./protocol-smoke";
 import { REGISTRY_CAPABILITY_SMOKE } from "./registry-smoke";
+
+const DEMO_LIVE_CABLE_ORIGIN = process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN;
 
 function CompatibilityGallery() {
   const runtime = useDemoRuntime();
@@ -122,6 +126,9 @@ function CompatibilityGallery() {
         </Text>
       </View>
       <ExpoTurboRoot />
+      {Platform.OS !== "web" && DEMO_LIVE_CABLE_ORIGIN ? (
+        <DemoLiveCableProof origin={DEMO_LIVE_CABLE_ORIGIN} />
+      ) : null}
       <Pressable
         accessibilityRole="button"
         onPress={() =>
