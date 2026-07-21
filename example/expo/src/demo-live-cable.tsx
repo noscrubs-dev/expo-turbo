@@ -3,11 +3,15 @@ import {
   resolveActionCableEndpoint,
   type ActionCableWebSocket,
   type ActionCableWebSocketAdapterOptions,
+  type ClockAdapter,
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
+  DocumentReconnectReconciler,
+  DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
+  DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
   ExpoTurboError,
   parseExpoTurboDocument,
@@ -37,8 +41,14 @@ const DOCUMENT_PATH = "/api/expo_turbo/demo/document";
 const CABLE_PATH = "/cable";
 const LOADING_DOCUMENT = `<Gallery id="demo-live-loading"><DemoText id="demo-live-loading-message">Loading the standalone Rails demo</DemoText></Gallery>`;
 const liveRuntimeOwners = new WeakMap<DemoLiveCableRuntime, number>();
+const nativeClock: ClockAdapter = {
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  now: Date.now,
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+};
 
 export interface DemoLiveCableRuntimeOptions {
+  readonly clock?: ClockAdapter;
   readonly createSocket?: ActionCableWebSocketAdapterOptions["createSocket"];
   readonly fetch?: DemoLiveFetch;
   readonly origin: string;
@@ -99,12 +109,14 @@ export async function createDemoLiveCableRuntime(
   if (typeof fetch !== "function") {
     throw new StateError("Standalone Rails demo fetch is invalid");
   }
+  const clock = options.clock ?? nativeClock;
   const documentFetch = createDemoLiveFetchAdapter(fetch);
   const session = new DocumentSession(
     parseExpoTurboDocument(LOADING_DOCUMENT, { url: endpoints.documentUrl }),
   );
+  let documentRequestId = 0;
   const loader = new DocumentRequestLoader(session, documentFetch, {
-    next: () => "demo-live-document-1",
+    next: () => `demo-live-document-${++documentRequestId}`,
   });
   const result = await loader.load(endpoints.documentUrl);
   if (result.status !== "committed") {
@@ -116,6 +128,13 @@ export async function createDemoLiveCableRuntime(
     error = nextError;
     for (const listener of [...errorListeners]) listener(error);
   };
+  const visits = new DocumentVisitController(loader, clock);
+  const refresh = new DocumentRefreshController(session, visits, clock, {
+    onError: reportError,
+  });
+  const reconnectRefresh = new DocumentReconnectReconciler(refresh, visits, {
+    onError: reportError,
+  });
   const cable = new ActionCableV1WebSocketAdapter({
     createSocket: options.createSocket ?? nativeSocket,
     onError: reportError,
@@ -127,6 +146,7 @@ export async function createDemoLiveCableRuntime(
       const failed = report.actions.find((action) => action.status === "error");
       if (failed?.error) reportError(failed.error);
     },
+    reconnectRefresh,
   });
   let disposed = false;
 
@@ -151,6 +171,9 @@ export async function createDemoLiveCableRuntime(
       if (disposed) return;
       disposed = true;
       streamSources.dispose();
+      reconnectRefresh.dispose();
+      refresh.dispose();
+      visits.cancel();
       cable.dispose();
       errorListeners.clear();
       error = undefined;
@@ -242,7 +265,7 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and subscribes to its public demo stream. It is a static Stream subscriber with no document navigation, Forms, Frames, refresh, auth, heartbeat, background policy, or client retry; it only honors an explicit server reconnect instruction.
+          This native-only panel loads the sibling Rails XML document and subscribes to its public demo stream. It has no user document navigation, Forms, Frames, auth, heartbeat, background policy, or client retry. Incoming refresh Streams remain unsupported; after an explicit server reconnect is re-confirmed, it performs one scroll-preserving canonical document GET.
         </Text>
         <ExpoTurboRoot />
         <Pressable
