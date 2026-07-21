@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 
-import type { CableAdapter, CableCallbacks, CableSubscription } from "../adapters"
+import {
+  type CableAdapter,
+  type CableCallbacks,
+  type CableSubscription,
+  decodeActionCableV1Frame,
+} from "../adapters"
 import {
   type CableStreamSourceConnectionSnapshot,
   CableStreamSourceRegistry,
@@ -720,6 +725,37 @@ describe("Cable stream source registry", () => {
     expect(errors[0]?.message).toBe("Cable stream message dispatch failed")
     expect(errors[0]?.cause).toBeUndefined()
     expect((errors[0] as SubscriptionError).context).toEqual({ target: "id:first" })
+  })
+
+  test("routes a decoded Action Cable delivery through the active subscription callback", () => {
+    const document = session(`<Gallery>
+      <Status id="status">old</Status>
+      <turbo-cable-stream-source id="source" channel="DemoChannel" />
+    </Gallery>`)
+    const cable = new FakeCable()
+    const registry = new CableStreamSourceRegistry(document, cable, {
+      onError: (error) => {
+        throw error
+      },
+    })
+    registry.retain(source(document, "source"))
+    const identifier = cable.records[0]?.identifier
+    const received = cable.records[0]?.callbacks.received
+    if (!identifier || !received) throw new Error("Missing Cable subscription")
+
+    const frame = decodeActionCableV1Frame(
+      JSON.stringify({
+        identifier,
+        message:
+          '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
+      }),
+    )
+    if (!("identifier" in frame && "message" in frame)) {
+      throw new Error("Expected Action Cable delivery frame")
+    }
+    received(frame.message)
+
+    expect(text(document, "status")).toBe("fresh")
   })
 
   test("serializes reentrant delivery across distinct subscriptions", () => {

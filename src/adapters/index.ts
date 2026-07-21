@@ -8,6 +8,7 @@ export type {
   DocumentHistoryTraversalSource,
   DocumentHistoryTraversalUnsubscribe,
 } from "../core/document-history-traversal"
+export * from "./action-cable-wire"
 export * from "./styles"
 
 export type Unsubscribe = () => void
