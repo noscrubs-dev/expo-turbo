@@ -49,7 +49,20 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) before proposing changes.
 
 A checked item is implemented and covered by the public test suite in the current source snapshot. It does not imply complete Turbo compatibility; the package remains pre-release until the full conformance and physical-device gates pass.
 
-### Available now
+### At a glance
+
+- [x] **Package surface:** ESM TypeScript package with explicit `core`, `adapters`, `react`, `registry`, and `testing` boundaries.
+- [x] **XML and document tree:** strict namespace-aware document and Turbo Stream-fragment parsing, limits, deterministic XML/tree diagnostics, stable IDs, and structural selectors.
+- [x] **Native rendering:** typed component registries, schema/attribute admission, component actions, scoped state, and a React renderer for registered XML components.
+- [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents.
+- [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. Multipart and File/Blob uploads are not supported.
+- [x] **Turbo Streams:** built-in and registered custom actions, target/selector dispatch, refresh handling, and identity-safe cleanup.
+- [x] **Rails foundation:** a route-free Engine, Expo Turbo XML rendering, Frame/Stream helpers, template-capability validation, and tests against `turbo-rails` 2.0.10 and 2.0.23.
+- [x] **Cross-runtime contract:** source-only shared XML fixtures exercise the TypeScript package and Rails gem against the same protocol manifest.
+- [x] **Examples and bundle checks:** independently installed Expo and Rails examples; Expo checks export web, iOS, and Android bundles. Native exports catch bundle drift, not release-build or physical-device behavior.
+- [ ] **Still required for a production release:** concrete Action Cable transport/authentication, protected Channels and Redis demo delivery, complete conformance coverage, physical-device/accessibility evidence, and npm/RubyGems publication.
+
+### Detailed implemented surface
 
 - [x] Public-source ESM package with explicit `core`, `adapters`, `react`, `registry`, and `testing` exports.
 - [x] Host-neutral fetch, form-confirmation, form-announcement, navigation, Cable subscription-interface, lifecycle, visibility, focus, bounded same-document `DocumentAnchorScrollAdapter` requests, one-shot `DocumentRefreshScrollAdapter` reset, bounded root-history `DocumentHistoryScrollAdapter` restoration, style, storage, observability, clock, request-ID, and restoration-ID adapter contracts. Concrete Cable socket transport remains pending below.
