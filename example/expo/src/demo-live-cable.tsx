@@ -242,7 +242,7 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and subscribes to its public demo stream. It is a static Stream subscriber with no document navigation, Forms, Frames, refresh, auth, reconnect, heartbeat, or background policy.
+          This native-only panel loads the sibling Rails XML document and subscribes to its public demo stream. It is a static Stream subscriber with no document navigation, Forms, Frames, refresh, auth, heartbeat, background policy, or client retry; it only honors an explicit server reconnect instruction.
         </Text>
         <ExpoTurboRoot />
         <Pressable
