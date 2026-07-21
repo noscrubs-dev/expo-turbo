@@ -57,7 +57,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents.
 - [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. Multipart and File/Blob uploads are not supported.
 - [x] **Turbo Streams:** built-in and registered custom actions, target/selector dispatch, refresh handling, and identity-safe cleanup.
-- [x] **Action Cable transport foundation:** strict `actioncable-v1-json` codec, a pure same-origin endpoint resolver, and an injected one-socket WebSocket adapter. The adapter preserves opaque identifiers, waits for `welcome` and per-identifier confirmation, routes exact string Stream deliveries, and fails terminally without reconnecting. The standalone examples contain an opt-in native-only anonymous proof that GETs the Rails XML document, subscribes to its signed public demo Stream, and POSTs one XML Stream broadcast; the Rails example also proves that its host-owned broadcast reaches that Expo namespace through Redis-backed Action Cable. The package adapter owns no credentials, heartbeat, reconnect, device lifecycle, browser/device origin policy, Redis connection configuration, or physical-device proof.
+- [x] **Action Cable transport foundation:** strict `actioncable-v1-json` codec, a pure same-origin endpoint resolver, and an injected one-socket WebSocket adapter. The adapter preserves opaque identifiers, waits for `welcome` and per-identifier confirmation, routes exact string Stream deliveries, and fails terminally without reconnecting. A desktop CI smoke now GETs the Rails XML document, retains its signed public Stream source through the public registry and adapter, completes a real `/cable` WebSocket handshake, POSTs one Redis-backed XML Stream broadcast, then emits the exact unsubscribe command and closes the socket. The package adapter owns no credentials, heartbeat, reconnect, device lifecycle, browser/device origin policy, Redis connection configuration, or physical-device proof.
 - [x] **Rails foundation:** a route-free Engine, Expo Turbo XML rendering, Frame/Stream helpers, template-capability validation, and tests against `turbo-rails` 2.0.10 and 2.0.23.
 - [x] **Cross-runtime contract:** source-only shared XML fixtures exercise the TypeScript package and Rails gem against the same protocol manifest.
 - [x] **Examples and bundle checks:** independently installed Expo and Rails examples; Expo checks export web, iOS, and Android bundles. Native exports catch bundle drift, not release-build or physical-device behavior.
@@ -219,6 +219,10 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 ## Changelog
 
 **2026-07-21**:
+
+- Changed: Added a desktop CI smoke from the public Cable registry and WebSocket adapter through the standalone Rails `/cable` endpoint and Redis-backed XML Stream broadcast.
+- Why: The previous controlled adapter and Rails Redis checks did not prove their real endpoint-to-client chain together.
+- Impact: CI now verifies `welcome`, confirmation, one XML replacement, an exact outbound unsubscribe command, and socket closure on Bun. This is not native-device, authentication, reconnect, or protected-channel evidence.
 
 - Changed: The standalone Rails demo now uses Redis-backed Action Cable in development and tests its public Expo XML Stream broadcast through a real subscriber.
 - Why: The existing in-memory adapter could not verify broker delivery or namespace isolation.
