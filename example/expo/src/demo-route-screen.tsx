@@ -68,6 +68,18 @@ export function DemoCompatibilityGallery() {
       }),
     [runtime.documentRefreshScroll],
   );
+  useLayoutEffect(
+    () =>
+      runtime.documentAnchorScroll.registerContainer({
+        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: true, x, y }),
+      }),
+    [runtime.documentAnchorScroll],
+  );
+  useLayoutEffect(
+    () => () => runtime.documentAnchorScroll.setDocumentOffset(undefined),
+    [runtime.documentAnchorScroll],
+  );
   useEffect(() => {
     remeasure();
   }, [remeasure, window.height, window.width]);
@@ -127,7 +139,14 @@ export function DemoCompatibilityGallery() {
           Registry capability: {REGISTRY_CAPABILITY_SMOKE}
         </Text>
       </View>
-      <ExpoTurboRoot />
+      <View
+        collapsable={false}
+        onLayout={(event) =>
+          runtime.documentAnchorScroll.setDocumentOffset(event.nativeEvent.layout.y)
+        }
+      >
+        <ExpoTurboRoot />
+      </View>
       {Platform.OS !== "web" && DEMO_LIVE_RAILS_ORIGIN ? (
         <>
           <DemoLiveCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />

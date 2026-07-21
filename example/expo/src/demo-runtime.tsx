@@ -28,6 +28,10 @@ import {
   DemoFrameAutoscrollProvider,
   DemoVisibilityProvider,
 } from "./demo-boundaries";
+import {
+  DemoDocumentAnchorScrollProvider,
+  DemoDocumentAnchorScrollRegistry,
+} from "./demo-document-anchor-scroll";
 import { DemoDocumentRefreshScrollRegistry } from "./demo-document-refresh-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import {
@@ -50,6 +54,7 @@ type DemoActionRuntime = ReturnType<typeof createDemoActionRuntime>;
 
 export interface DemoRuntime {
   readonly actionRuntime: DemoActionRuntime;
+  readonly documentAnchorScroll: DemoDocumentAnchorScrollRegistry;
   readonly documentRuntime: DemoDocumentRuntime;
   readonly documentRefreshScroll: DemoDocumentRefreshScrollRegistry;
   readonly frameAutoscroll: DemoFrameAutoscrollRegistry;
@@ -120,6 +125,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     clock,
   );
   const actionRuntime = createDemoActionRuntime();
+  const documentAnchorScroll = new DemoDocumentAnchorScrollRegistry();
   const documentRefreshScroll = new DemoDocumentRefreshScrollRegistry();
   const focus = new DemoFocusRegistry();
   const frameAutoscroll = new DemoFrameAutoscrollRegistry();
@@ -168,6 +174,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
 
   return Object.freeze({
     actionRuntime,
+    documentAnchorScroll,
     documentRuntime,
     documentRefreshScroll,
     frameAutoscroll,
@@ -188,6 +195,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
       unsubscribeTraversal();
       navigation.dispose();
       forms.dispose();
+      documentAnchorScroll.dispose();
       documentRefreshScroll.dispose();
       focus.dispose();
       frameAutoscroll.dispose();
@@ -233,38 +241,41 @@ export function DemoRuntimeProvider({
   return (
     <DemoRuntimeContext.Provider value={runtime}>
       <DemoFocusProvider focus={runtime.focus}>
-        <DemoVisibilityProvider visibility={runtime.visibility}>
-          <DemoFrameAutoscrollProvider frameAutoscroll={runtime.frameAutoscroll}>
-            <ExpoTurboProvider
-              actions={runtime.actionRuntime.actions}
-              autofocus={runtime.focus}
-              documentComponent={DemoDocumentBoundary}
-              documentController={runtime.documentRuntime.controller}
-              documentHistoryScroll={runtime.documentRefreshScroll}
-              documentPreloader={runtime.documentRuntime.preloader}
-              documentRefreshScroll={runtime.documentRefreshScroll}
-              frameAutoscroll={runtime.frameAutoscroll}
-              frameComponent={DemoFrameBoundary}
-              formComponent={DemoFormBoundary}
-              formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
-              formLinks={runtime.formLinks}
-              frames={runtime.frames}
-              forms={runtime.forms}
-              navigation={runtime.navigation}
-              registry={DEMO_REGISTRY}
-              renderError={({ error }) => (
-                <Text selectable style={{ color: "#a62525" }}>
-                  {error.name}: {error.message}
-                </Text>
-              )}
-              session={runtime.session}
-              state={runtime.actionRuntime.state}
-              styles={DEMO_STYLE_ADAPTER}
-            >
-              {children}
-            </ExpoTurboProvider>
-          </DemoFrameAutoscrollProvider>
-        </DemoVisibilityProvider>
+        <DemoDocumentAnchorScrollProvider anchorScroll={runtime.documentAnchorScroll}>
+          <DemoVisibilityProvider visibility={runtime.visibility}>
+            <DemoFrameAutoscrollProvider frameAutoscroll={runtime.frameAutoscroll}>
+              <ExpoTurboProvider
+                actions={runtime.actionRuntime.actions}
+                autofocus={runtime.focus}
+                documentAnchorScroll={runtime.documentAnchorScroll}
+                documentComponent={DemoDocumentBoundary}
+                documentController={runtime.documentRuntime.controller}
+                documentHistoryScroll={runtime.documentRefreshScroll}
+                documentPreloader={runtime.documentRuntime.preloader}
+                documentRefreshScroll={runtime.documentRefreshScroll}
+                frameAutoscroll={runtime.frameAutoscroll}
+                frameComponent={DemoFrameBoundary}
+                formComponent={DemoFormBoundary}
+                formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
+                formLinks={runtime.formLinks}
+                frames={runtime.frames}
+                forms={runtime.forms}
+                navigation={runtime.navigation}
+                registry={DEMO_REGISTRY}
+                renderError={({ error }) => (
+                  <Text selectable style={{ color: "#a62525" }}>
+                    {error.name}: {error.message}
+                  </Text>
+                )}
+                session={runtime.session}
+                state={runtime.actionRuntime.state}
+                styles={DEMO_STYLE_ADAPTER}
+              >
+                {children}
+              </ExpoTurboProvider>
+            </DemoFrameAutoscrollProvider>
+          </DemoVisibilityProvider>
+        </DemoDocumentAnchorScrollProvider>
       </DemoFocusProvider>
     </DemoRuntimeContext.Provider>
   );

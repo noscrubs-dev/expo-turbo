@@ -34,6 +34,7 @@ import {
   DEMO_STYLE_TOKENS,
   type DemoStyleToken,
 } from "./demo-styles";
+import { useDemoDocumentAnchorTarget } from "./demo-document-anchor-scroll";
 
 function nativeLayoutDirection(direction: ExpoTurboDirection | undefined): "inherit" | "ltr" | "rtl" {
   return direction === "ltr" || direction === "rtl" ? direction : "inherit";
@@ -206,6 +207,27 @@ const documentLink = defineComponent({
   component: DemoDocumentLinkComponent,
   schema: z.object({ disabled: z.boolean().default(false), href: z.string().trim().min(1) }),
   tag: "DemoDocumentLink",
+});
+
+function DemoAnchorTargetComponent({ children, id }: { children?: ReactNode; id: string }) {
+  const anchorTarget = useDemoDocumentAnchorTarget(id);
+  return (
+    <View
+      collapsable={false}
+      onLayout={anchorTarget.onLayout}
+      testID={`demo-anchor-target-${id}`}
+    >
+      {children}
+    </View>
+  );
+}
+
+const anchorTarget = defineComponent({
+  attributes: { id: { codec: stringCodec, prop: "id" } },
+  children: "nodes",
+  component: DemoAnchorTargetComponent,
+  schema: z.object({ id: z.string().trim().min(1) }),
+  tag: "DemoAnchorTarget",
 });
 
 function DemoActionComponent({ message }: { message: string }) {
@@ -493,6 +515,7 @@ export const DEMO_REGISTRY = createRegistry(
       flatListRegion,
       action,
       documentLink,
+      anchorTarget,
       form,
       formFieldset,
       formLegend,
@@ -541,6 +564,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked?refresh=scroll">
     <DemoText>Open a Refresh Stream scenario and reset the owning root scroll after its canonical update.</DemoText>
+  </DemoDocumentLink>
+  <DemoDocumentLink href="#native-anchor-target">
+    <DemoText>Jump to the registered native anchor target without a request or Router history write.</DemoText>
   </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked" data-turbo-action="replace">
     <DemoText>Replace this Router entry with the linked document.</DemoText>
@@ -601,4 +627,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoText>The static renderer keeps the Frame in the protocol tree and renders its current children.</DemoText>
     </DemoCard>
   </turbo-frame>
+  <DemoAnchorTarget id="native-anchor-target">
+    <DemoCard title="Native anchor target" tone="positive" style-tokens="space:comfortable surface:elevated">
+      <DemoText>The root-only native adapter scrolled here without fetching, visiting, or mutating Router history.</DemoText>
+    </DemoCard>
+  </DemoAnchorTarget>
 </Gallery>`;
