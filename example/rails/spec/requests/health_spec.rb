@@ -47,7 +47,7 @@ RSpec.describe "standalone demo host" do
     expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
   end
 
-  it "delivers a public XML Stream through the Redis-backed Expo Action Cable namespace" do
+  it "delivers fixed public XML replace and refresh Streams through the Redis-backed Expo Action Cable namespace" do
     adapter = ActionCable.server.pubsub
     deliveries = Queue.new
     other_namespace_deliveries = Queue.new
@@ -74,10 +74,30 @@ RSpec.describe "standalone demo host" do
       .to eq("Broadcast from the standalone Rails demo")
     expect { Timeout.timeout(0.1) { deliveries.pop } }.to raise_error(Timeout::Error)
     expect { Timeout.timeout(0.1) { other_namespace_deliveries.pop } }.to raise_error(Timeout::Error)
+
+    post "/api/expo_turbo/demo/broadcast", params: {kind: "refresh"}
+
+    refresh_payload = Timeout.timeout(5) { deliveries.pop }
+    refresh = ExpoTurbo::Rails::Testing.parse_stream_fragment(ActiveSupport::JSON.decode(refresh_payload))
+      .at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:no_content)
+    expect(refresh["action"]).to eq("refresh")
+    expect(refresh.attribute_nodes.map(&:name)).to eq(["action"])
+    expect(refresh.at_xpath("./template")).to be_nil
+    expect { Timeout.timeout(0.1) { deliveries.pop } }.to raise_error(Timeout::Error)
+    expect { Timeout.timeout(0.1) { other_namespace_deliveries.pop } }.to raise_error(Timeout::Error)
   ensure
     adapter&.unsubscribe("demo-stream:expo", expo_callback) if expo_callback
     adapter&.unsubscribe("demo-stream", other_namespace_callback) if other_namespace_callback
     ActionCable.server.restart if adapter
+  end
+
+  it "rejects an unrecognized local broadcast control" do
+    post "/api/expo_turbo/demo/broadcast", params: {kind: "forged"}
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.body).to be_empty
   end
 
   it "serves a matching XML Frame for a native Frame request" do

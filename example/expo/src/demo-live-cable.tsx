@@ -64,6 +64,7 @@ export interface DemoLiveCableEndpoints {
 
 export interface DemoLiveCableRuntime {
   broadcast(): Promise<void>;
+  broadcastRefresh(): Promise<void>;
   clearError(): void;
   readonly cableUrl: string;
   readonly documentUrl: string;
@@ -173,22 +174,28 @@ export async function createDemoLiveCableRuntime(
       if (failed?.error) reportError(failed.error);
     },
     reconnectRefresh,
+    streamOptions: { refresh },
   });
   sources = streamSources;
   let disposed = false;
 
-  return Object.freeze({
-    async broadcast(): Promise<void> {
-      const response = await fetch(endpoints.broadcastUrl, {
-        headers: { Accept: EXPO_TURBO_MIME_TYPE },
-        method: "POST",
+  const broadcast = async (kind: "refresh" | "replace"): Promise<void> => {
+    const broadcastUrl = new URL(endpoints.broadcastUrl);
+    if (kind === "refresh") broadcastUrl.searchParams.set("kind", kind);
+    const response = await fetch(broadcastUrl.toString(), {
+      headers: { Accept: EXPO_TURBO_MIME_TYPE },
+      method: "POST",
+    });
+    if (response.status !== 204) {
+      throw new RequestError("The standalone Rails broadcast request failed", {
+        responseStatus: response.status,
       });
-      if (response.status !== 204) {
-        throw new RequestError("The standalone Rails broadcast request failed", {
-          responseStatus: response.status,
-        });
-      }
-    },
+    }
+  };
+
+  return Object.freeze({
+    broadcast: () => broadcast("replace"),
+    broadcastRefresh: () => broadcast("refresh"),
     cableUrl: endpoints.cableUrl,
     clearError(): void {
       reportError(undefined);
@@ -263,9 +270,18 @@ export function DemoLiveCableRuntimeProvider({
 const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
 
 export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRuntime }>) {
-  const [broadcasting, setBroadcasting] = useState(false);
+  const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
+  const sendBroadcast = (kind: "refresh" | "replace") => {
+    if (broadcasting || !connected) return;
+    setBroadcasting(kind);
+    proof.clearError();
+    setError(undefined);
+    void (kind === "refresh" ? proof.broadcastRefresh() : proof.broadcast())
+      .catch((nextError) => setError(asDisplayError(nextError)))
+      .finally(() => setBroadcasting(undefined));
+  };
 
   useEffect(() => {
     const updateConnection = () => {
@@ -295,35 +311,48 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
           Anonymous Action Cable proof
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. It has no user document navigation, Forms, auth, heartbeat, background policy, or client retry. Incoming refresh Streams remain unsupported; after an explicit server reconnect is re-confirmed, it reloads that active Frame through its canonical GET.
+          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its fixed local controls broadcast either a replace or ordinary refresh Stream; refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. It has no user document navigation, Forms, auth, heartbeat, background policy, or client retry.
         </Text>
         <ExpoTurboRoot />
         <Pressable
+          accessibilityLabel="Broadcast XML replace"
           accessibilityRole="button"
-          disabled={broadcasting || !connected}
-          onPress={() => {
-            if (broadcasting || !connected) return;
-            setBroadcasting(true);
-            proof.clearError();
-            setError(undefined);
-            void proof
-              .broadcast()
-              .catch((nextError) => setError(asDisplayError(nextError)))
-              .finally(() => setBroadcasting(false));
-          }}
+          disabled={broadcasting !== undefined || !connected}
+          onPress={() => sendBroadcast("replace")}
           style={({ pressed }) => ({
             alignItems: "center",
-            backgroundColor: pressed || broadcasting ? "#33556f" : "#285589",
+            backgroundColor: pressed || broadcasting === "replace" ? "#33556f" : "#285589",
             borderRadius: 12,
-            opacity: broadcasting ? 0.65 : 1,
+            opacity: broadcasting !== undefined ? 0.65 : 1,
             padding: 14,
           })}
         >
           <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
-            {broadcasting
+            {broadcasting === "replace"
               ? "Broadcasting…"
               : connected
-                ? "Broadcast XML Stream"
+                ? "Broadcast XML replace"
+                : "Waiting for Action Cable…"}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Refresh canonical document"
+          accessibilityRole="button"
+          disabled={broadcasting !== undefined || !connected}
+          onPress={() => sendBroadcast("refresh")}
+          style={({ pressed }) => ({
+            alignItems: "center",
+            backgroundColor: pressed || broadcasting === "refresh" ? "#254a36" : "#34704d",
+            borderRadius: 12,
+            opacity: broadcasting !== undefined ? 0.65 : 1,
+            padding: 14,
+          })}
+        >
+          <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+            {broadcasting === "refresh"
+              ? "Refreshing…"
+              : connected
+                ? "Refresh canonical document"
                 : "Waiting for Action Cable…"}
           </Text>
         </Pressable>
