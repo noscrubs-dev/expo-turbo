@@ -1,5 +1,12 @@
 <Gallery id="demo-document">
   <DemoText id="welcome">Standalone Rails host</DemoText>
+  <DemoDocumentLink id="demo-http-stream-link" href="/api/expo_turbo/demo/stream" data-turbo-stream="">
+    <DemoText>Apply sibling Rails HTTP Stream response</DemoText>
+  </DemoDocumentLink>
+  <Gallery id="demo-http-stream-message">
+    <DemoText id="demo-http-stream-message-value">Waiting for a Rails HTTP Stream response</DemoText>
+  </Gallery>
+  <Gallery id="demo-http-stream-list"></Gallery>
   <turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame">
     <DemoText id="demo-frame-message">Loading the public Action Cable Frame</DemoText>
   </turbo-frame>

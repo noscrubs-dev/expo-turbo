@@ -27,6 +27,12 @@ RSpec.describe "standalone demo host" do
     expect(response.body.dup.force_encoding(Encoding::UTF_8)).to be_valid_encoding
     expect(document.root.name).to eq("Gallery")
     expect(document.at_xpath("//DemoText[@id='welcome']")&.text).to eq("Standalone Rails host")
+    stream_link = document.at_xpath("//DemoDocumentLink[@id='demo-http-stream-link']")
+    expect(stream_link&.[]("href")).to eq("/api/expo_turbo/demo/stream")
+    expect(stream_link&.[]("data-turbo-stream")).to eq("")
+    expect(document.at_xpath("//Gallery[@id='demo-http-stream-message']/DemoText")&.text)
+      .to eq("Waiting for a Rails HTTP Stream response")
+    expect(document.at_xpath("//Gallery[@id='demo-http-stream-list']")).to be_present
     frame = document.at_xpath("//turbo-frame[@id='demo-frame']")
     expect(frame&.[]("src")).to eq("/api/expo_turbo/demo/frame")
     expect(document.at_xpath("//turbo-cable-stream-source")).to be_nil
@@ -42,9 +48,13 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
     expect(streams.map { |stream| stream["action"] }).to eq(%w[update append])
-    expect(streams.first.at_xpath("./template/DemoText")&.text).to eq("Rendered from XML partial")
+    expect(streams.map { |stream| stream["target"] })
+      .to eq(%w[demo-http-stream-message demo-http-stream-list])
+    expect(streams.first.at_xpath("./template/DemoText[@id='demo-http-stream-message-value']")&.text)
+      .to eq("Rendered from XML partial")
     expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
-    expect(streams.last.at_xpath("./template/DemoText")&.text).to eq("Second sibling")
+    expect(streams.last.at_xpath("./template/DemoText[@id='demo-http-stream-item']")&.text)
+      .to eq("Second sibling")
   end
 
   it "delivers fixed public XML replace and refresh Streams through the Redis-backed Expo Action Cable namespace" do
