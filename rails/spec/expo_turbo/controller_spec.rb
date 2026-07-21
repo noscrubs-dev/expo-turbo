@@ -6,6 +6,14 @@ require "tmpdir"
 require "spec_helper"
 require "expo_turbo/rails/testing"
 
+class ExpoTurboFrameHelperSpecRecord
+  ModelName = Struct.new(:param_key)
+
+  def self.model_name
+    @model_name ||= ModelName.new("demo_record")
+  end
+end
+
 RSpec.describe ExpoTurbo::Rails::Controller do
   let(:controller_class) do
     Class.new(ActionController::API) do
@@ -84,6 +92,55 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
+  it "rejects blank and duplicate literal document IDs without exposing template source" do
+    invalid_templates = [
+      '<Screen id=" "><Text /></Screen>',
+      '<Screen id="&#xFEFF;"><Text /></Screen>',
+      '<Screen><Text id="same"/><Card id="same"/></Screen>',
+      '<Screen><turbo-frame id="same"/><turbo-frame id="same"/></Screen>'
+    ]
+
+    invalid_templates.each do |template|
+      Dir.mktmpdir do |directory|
+        root = File.join(directory, "expo_turbo")
+        FileUtils.mkdir_p(root)
+        File.write(File.join(root, "show.xml.erb"), template)
+        controller_class.expo_turbo_view_root(root)
+
+        expect { render_document }
+          .to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use unique nonblank literal ids") { |error|
+            expect(error.message).not_to include("same", "Text")
+          }
+      end
+    end
+  end
+
+  it "does not treat namespaced id attributes as literal document IDs" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "show.xml.erb"), '<Screen xmlns:meta="urn:metadata"><Text meta:id=""/></Screen>')
+      controller_class.expo_turbo_view_root(root)
+
+      status, = render_document
+
+      expect(status).to eq(200)
+    end
+  end
+
+  it "keeps literal ID blankness aligned with the native ECMAScript parser" do
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "expo_turbo")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "show.xml.erb"), '<Screen id="&#x85;"/>')
+      controller_class.expo_turbo_view_root(root)
+
+      status, = render_document
+
+      expect(status).to eq(200)
+    end
+  end
+
   it "delegates literal Frame tags to turbo-rails from API view contexts" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create
@@ -101,6 +158,15 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(frame["target"]).to eq("sidebar")
     expect(frame["loading"]).to eq("lazy")
     expect(frame.at_xpath("./DemoText")&.text).to eq("Loaded")
+  end
+
+  it "normalizes model classes to Turbo Frame IDs from API view contexts" do
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create
+    rendered = controller.view_context.expo_turbo_frame_tag(ExpoTurboFrameHelperSpecRecord)
+    frame = Nokogiri::XML(rendered.to_s) { |config| config.strict }.root
+
+    expect(frame["id"]).to eq("new_demo_record")
   end
 
   it "requires self-contained XML Frame fragments without changing preserved text" do

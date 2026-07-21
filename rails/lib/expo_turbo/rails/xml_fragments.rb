@@ -8,14 +8,35 @@ module ExpoTurbo
       XML_ENCODING = /\bencoding\s*=\s*["'](?<encoding>[^"']+)["']/i
       DOCTYPE = /<!DOCTYPE(?:\s|>)/i
       NON_MARKUP = /<!\[CDATA\[.*?\]\]>|<!--.*?-->|<\?.*?\?>/m
+      ECMASCRIPT_TRIMMED_EMPTY = /\A[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*\z/u
 
       class ParseError < StandardError
+      end
+
+      class DocumentIdError < ParseError
       end
 
       module_function
 
       def parse_document(xml)
         parse_xml(validate_source!(xml, "document", allow_declaration: true), "document")
+      end
+
+      def validate_document_ids!(document)
+        ids = {}
+
+        document.xpath("//*").each do |element|
+          id = element.attribute_nodes.find { |attribute| attribute.name == "id" && attribute.namespace.nil? }&.value
+          next if id.nil?
+
+          if id.match?(ECMASCRIPT_TRIMMED_EMPTY) || ids.key?(id)
+            raise DocumentIdError, "Expo Turbo document ids must be unique nonblank literal values"
+          end
+
+          ids[id] = true
+        end
+
+        document
       end
 
       def parse_stream_fragment(xml, root_name: DEFAULT_FRAGMENT_ROOT)
@@ -85,7 +106,7 @@ module ExpoTurbo
       end
 
       private_class_method :parse_fragment, :validate_source!, :parse_xml, :validate_fragment_root!, :literal_element?, :error_message
-      private_constant :DEFAULT_FRAGMENT_ROOT, :XML_DECLARATION, :XML_ENCODING, :DOCTYPE, :NON_MARKUP
+      private_constant :DEFAULT_FRAGMENT_ROOT, :XML_DECLARATION, :XML_ENCODING, :DOCTYPE, :NON_MARKUP, :ECMASCRIPT_TRIMMED_EMPTY
     end
   end
 end
