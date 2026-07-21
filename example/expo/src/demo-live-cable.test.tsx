@@ -7,6 +7,7 @@ import {
   encodeActionCableUnsubscribe,
   type ActionCableWebSocket,
   type ActionCableWebSocketEventType,
+  type ClockAdapter,
 } from "expo-turbo/adapters";
 import { EXPO_TURBO_MIME_TYPE, nodeTextContent } from "expo-turbo/core";
 import { createElement, StrictMode } from "react";
@@ -89,6 +90,38 @@ class FakeActionCableSocket implements ActionCableWebSocket {
 
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+interface TimerRecord {
+  readonly callback: () => void;
+  cleared: boolean;
+  readonly delayMs: number;
+  readonly handle: object;
+}
+
+class ManualClock implements ClockAdapter {
+  readonly timers: TimerRecord[] = [];
+
+  clearTimeout(handle: unknown): void {
+    const timer = this.timers.find((candidate) => candidate.handle === handle);
+    if (timer) timer.cleared = true;
+  }
+
+  now(): number {
+    return 0;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): unknown {
+    const handle = Object.freeze({});
+    this.timers.push({ callback, cleared: false, delayMs, handle });
+    return handle;
+  }
+
+  fire(index: number): void {
+    const timer = this.timers[index];
+    if (!timer) throw new Error(`Missing timer ${index}`);
+    if (!timer.cleared) timer.callback();
+  }
+}
+
 describe("standalone Rails Action Cable proof", () => {
   test("waits for confirmation, applies XML Streams, and releases its socket", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
@@ -99,14 +132,18 @@ describe("standalone Rails Action Cable proof", () => {
       channel: "Turbo::StreamsChannel",
       signed_stream_name: signedStreamName,
     });
-    const document = `<Gallery id="demo-document"><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>`;
+    const initialDocument = `<Gallery id="demo-document"><DemoText id="demo-document-state">Initial canonical document</DemoText><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>`;
+    const refreshedDocument = `<Gallery id="demo-document"><DemoText id="demo-document-state">Refreshed canonical document</DemoText><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText id="demo-frame-loading">Loading the public Action Cable Frame</DemoText></turbo-frame></Gallery>`;
     const frame = `<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Waiting for a public Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="${signedStreamName}" /></turbo-frame>`;
     const requests: RecordedRequest[] = [];
     const sockets: FakeActionCableSocket[] = [];
     const socketCalls: Readonly<{ protocols: readonly string[]; url: string }>[] = [];
+    const clock = new ManualClock();
+    let documentRequests = 0;
     const fetch = async (url: string, request: DemoLiveCableFetchRequest) => {
       requests.push({ request, url });
       if (url === documentUrl) {
+        documentRequests += 1;
         return {
           headers: {
             forEach(callback: (value: string, name: string) => void): void {
@@ -115,7 +152,8 @@ describe("standalone Rails Action Cable proof", () => {
           },
           redirected: false,
           status: 200,
-          text: async () => document,
+          text: async () =>
+            documentRequests === 1 ? initialDocument : refreshedDocument,
           url,
         };
       }
@@ -132,7 +170,7 @@ describe("standalone Rails Action Cable proof", () => {
           url,
         };
       }
-      if (url === broadcastUrl) {
+      if (url === broadcastUrl || url === `${broadcastUrl}?kind=refresh`) {
         return {
           headers: { forEach: () => undefined },
           redirected: false,
@@ -152,6 +190,7 @@ describe("standalone Rails Action Cable proof", () => {
       },
       fetch,
       origin: "http://demo.example:3000",
+      clock,
     });
     let renderer: ReactTestRenderer | undefined;
     const errors: (Error | undefined)[] = [];
@@ -199,9 +238,13 @@ describe("standalone Rails Action Cable proof", () => {
         },
         url: frameUrl,
       });
-      const broadcastButton = () => renderer?.root.findByProps({ accessibilityRole: "button" });
-      expect(broadcastButton()?.props.disabled).toBe(true);
-      broadcastButton()?.props.onPress();
+      const replaceButton = () =>
+        renderer?.root.findByProps({ accessibilityLabel: "Broadcast XML replace" });
+      const refreshButton = () =>
+        renderer?.root.findByProps({ accessibilityLabel: "Refresh canonical document" });
+      expect(replaceButton()?.props.disabled).toBe(true);
+      expect(refreshButton()?.props.disabled).toBe(true);
+      replaceButton()?.props.onPress();
       expect(requests).toHaveLength(3);
 
       await act(async () => {
@@ -219,11 +262,23 @@ describe("standalone Rails Action Cable proof", () => {
         await Promise.resolve();
       });
 
-      expect(broadcastButton()?.props.disabled).toBe(false);
+      expect(replaceButton()?.props.disabled).toBe(false);
+      expect(refreshButton()?.props.disabled).toBe(false);
       const message = proof.session.tree.getElementById("demo-stream-message");
       expect(message ? nodeTextContent(message) : undefined).toBe(
         "Broadcast from the standalone Rails demo",
       );
+
+      await act(async () => {
+        refreshButton()?.props.onPress();
+        await Promise.resolve();
+      });
+      const broadcastRequests = unabortedRequests(requests);
+      expect(broadcastRequests).toHaveLength(3);
+      expect(broadcastRequests[2]).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
+        url: `${broadcastUrl}?kind=refresh`,
+      });
 
       await act(async () => {
         socket.emitMessage(
@@ -231,24 +286,32 @@ describe("standalone Rails Action Cable proof", () => {
         );
         await Promise.resolve();
       });
-      expect(errors.at(-1)?.message).toBe(
-        "Turbo Stream refresh requires a document refresh controller",
-      );
-      expect(JSON.stringify(renderer?.toJSON())).toContain(
-        "Turbo Stream refresh requires a document refresh controller",
-      );
-      expect(requests).toHaveLength(3);
+      expect(clock.timers).toHaveLength(1);
+      expect(clock.timers[0]?.delayMs).toBe(150);
+      expect(unabortedRequests(requests)).toHaveLength(3);
 
       await act(async () => {
-        broadcastButton()?.props.onPress();
+        clock.fire(0);
         await Promise.resolve();
+        await nextTurn();
       });
-      const requestsAfterBroadcast = unabortedRequests(requests);
-      expect(requestsAfterBroadcast).toHaveLength(3);
-      expect(requestsAfterBroadcast[2]).toMatchObject({
-        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
-        url: broadcastUrl,
+      const refreshedRequests = unabortedRequests(requests);
+      const refreshedDocumentRequest = refreshedRequests.findLast(
+        (request) => request.url === documentUrl,
+      );
+      expect(refreshedDocumentRequest).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "GET" },
+        url: documentUrl,
       });
+      expect(refreshedDocumentRequest?.request.headers["Turbo-Frame"]).toBeUndefined();
+      expect(refreshedDocumentRequest?.request.headers["X-Turbo-Request-Id"]).toBe(
+        "demo-live-document-2",
+      );
+      const documentState = proof.session.tree.getElementById("demo-document-state");
+      expect(documentState ? nodeTextContent(documentState) : undefined).toBe(
+        "Refreshed canonical document",
+      );
+      expect(errors.at(-1)).toBeUndefined();
     } finally {
       await act(async () => {
         renderer?.unmount();

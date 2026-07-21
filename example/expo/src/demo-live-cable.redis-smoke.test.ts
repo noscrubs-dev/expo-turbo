@@ -10,14 +10,17 @@ import {
   type ActionCableWebSocket,
   type ActionCableWebSocketAdapterOptions,
   type ActionCableWebSocketEventType,
+  type ClockAdapter,
   type FetchAdapter,
   type TurboRequest,
   type TurboResponse,
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
+  DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
+  DocumentVisitController,
   EXPO_TURBO_MIME_TYPE,
   FrameControllerRegistry,
   FrameRequestLoader,
@@ -48,9 +51,10 @@ async function waitFor(
   }
 }
 
-function createFetchAdapter(): FetchAdapter {
+function createFetchAdapter(requests?: TurboRequest[]): FetchAdapter {
   return Object.freeze({
     async fetch(request: TurboRequest): Promise<TurboResponse> {
+      requests?.push(request);
       const response = await globalThis.fetch(request.url, {
         ...(request.body ? { body: request.body.value } : {}),
         headers: request.headers,
@@ -83,8 +87,10 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
   const session = new DocumentSession(
     parseExpoTurboDocument('<Gallery id="smoke-loading" />', { url: documentUrl }),
   );
-  const loader = new DocumentRequestLoader(session, createFetchAdapter(), {
-    next: () => "redis-websocket-smoke-document",
+  const documentRequests: TurboRequest[] = [];
+  let documentRequestId = 0;
+  const loader = new DocumentRequestLoader(session, createFetchAdapter(documentRequests), {
+    next: () => `redis-websocket-smoke-document-${++documentRequestId}`,
   });
   const frames = new FrameControllerRegistry(
     session,
@@ -93,6 +99,15 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
     }),
   );
   const errors: Error[] = [];
+  const clock: ClockAdapter = {
+    clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    now: Date.now,
+    setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  };
+  const visits = new DocumentVisitController(loader, clock);
+  const refresh = new DocumentRefreshController(session, visits, clock, {
+    onError: (error) => errors.push(error),
+  });
   const commands: string[] = [];
   const socketCalls: { protocols: readonly string[]; url: string }[] = [];
   let closeCalls = 0;
@@ -138,6 +153,7 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
     onMessage: () => {
       deliveredMessages += 1;
     },
+    streamOptions: { refresh },
   });
   let identifier: string | undefined;
   let release: (() => void) | undefined;
@@ -189,10 +205,36 @@ liveTest("delivers a Redis-backed Rails Stream through a real Action Cable WebSo
     );
     expect(deliveredMessages).toBe(1);
     expect(errors).toEqual([]);
+
+    const refreshResponse = await globalThis.fetch(`${broadcastUrl}?kind=refresh`, {
+      headers: { Accept: EXPO_TURBO_MIME_TYPE },
+      method: "POST",
+    });
+    expect(refreshResponse.status).toBe(204);
+
+    await waitFor(
+      "canonical document refresh",
+      () => documentRequests.filter((request) => request.url === documentUrl).length === 2,
+      errors,
+    );
+    const refreshedDocumentRequest = documentRequests.at(-1);
+    expect(refreshedDocumentRequest).toMatchObject({
+      headers: { Accept: EXPO_TURBO_MIME_TYPE },
+      method: "GET",
+      url: documentUrl,
+    });
+    expect(refreshedDocumentRequest?.headers["Turbo-Frame"]).toBeUndefined();
+    expect(refreshedDocumentRequest?.headers["X-Turbo-Request-Id"]).toBe(
+      "redis-websocket-smoke-document-2",
+    );
+    expect(deliveredMessages).toBe(2);
+    expect(errors).toEqual([]);
   } finally {
     release?.();
     await Promise.resolve();
     streamSources.dispose();
+    refresh.dispose();
+    visits.cancel();
     frames.dispose();
     cable.dispose();
   }
