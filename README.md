@@ -229,6 +229,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-22**:
 
+- Changed: Added a visible query-bearing ordinary document link to the standalone Expo gallery. It advances to `/demo/linked?source=gallery&tag=a&tag=b&empty=` and the linked fixture identifies the repeated/empty query scenario.
+- Why: The Router bridge already preserved managed query URLs in focused tests, but the native gallery had no direct iOS scenario for it.
+- Impact: iOS Simulator/Expo Go can now confirm that the exact canonical URL reaches both the document session and opaque Router history metadata. Generic host route-query mapping, Android interaction, physical-device, and release-build evidence remain separate gates.
+
+**2026-07-22**:
+
 - Changed: Direct outer Frame reload-morph now retains eligible nested Frame wrappers/current children, ignores stale nested response payloads, and cascades each child reload only after the outer renderer acknowledgement and final identity/ancestor recheck.
 - Why: Turbo's nested Frame refresh-morph behavior must preserve the mounted nested boundary instead of applying an outer response's stale child content, while still letting that child reconcile from its own canonical source.
 - Impact: Core tests cover lifecycle-configured and lifecycle-free cascades; the standalone Rails `morph/outer` → `morph/inner` panel has an iOS Simulator/Expo Go proof. Android, physical-device, and release-build confirmation remain later gates.
