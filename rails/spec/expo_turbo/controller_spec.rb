@@ -269,6 +269,19 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
+  it "normalizes Rack's binary Turbo-Frame header" do
+    controller = controller_with_request("HTTP_TURBO_FRAME" => "details".b)
+
+    expect(controller.request.get_header("HTTP_TURBO_FRAME").encoding).to eq(Encoding::ASCII_8BIT)
+
+    frame_id = controller.expo_turbo_frame_request_id
+    expect(frame_id).to eq("details")
+    expect(frame_id.encoding).to eq(Encoding::UTF_8)
+
+    controller.request.set_header("HTTP_TURBO_FRAME", "\xFF".b)
+    expect(controller.expo_turbo_frame_request_id).to be_nil
+  end
+
   it "exposes only valid Frame request headers without including HTML Frame layout behavior" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_TURBO_FRAME" => "details")

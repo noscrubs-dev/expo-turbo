@@ -4,6 +4,9 @@ class ApplicationController < ActionController::API
   expo_turbo_view_root Rails.root.join("app/views/expo_turbo")
   expo_turbo_template_capabilities(
     components: {
+      "DemoForm" => {},
+      "DemoFormInput" => {},
+      "DemoFormSubmitter" => {},
       "Gallery" => {},
       "DemoText" => {}
     }
