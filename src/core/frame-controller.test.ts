@@ -328,6 +328,169 @@ describe("Frame controller", () => {
     releaseRenderer()
   })
 
+  test("cascades an acknowledged outer morph reload to its retained nested Frame", async () => {
+    const pending: PendingRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="outer" src="/outer" refresh="morph" loading="lazy"><DemoPanel id="shell"><turbo-frame id="inner" src="/inner" refresh="morph" loading="lazy"><Before id="inner-content" /><turbo-frame id="leaf" src="/leaf" refresh="morph" loading="lazy"><LeafBefore id="leaf-content" /></turbo-frame></turbo-frame></DemoPanel></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const outerFrame = session.tree.getElementById("outer")
+    const innerFrame = session.tree.getElementById("inner")
+    const innerContent = session.tree.getElementById("inner-content")
+    const leafFrame = session.tree.getElementById("leaf")
+    const leafContent = session.tree.getElementById("leaf-content")
+    if (
+      outerFrame?.kind !== "frame" ||
+      innerFrame?.kind !== "frame" ||
+      !innerContent ||
+      leafFrame?.kind !== "frame" ||
+      !leafContent
+    ) {
+      throw new Error("Frame fixture is missing")
+    }
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("frame-render", (event) => {
+      events.push(`render:${event.detail.frameId}`)
+      return undefined
+    })
+    lifecycle.subscribe("frame-load", (event) => {
+      events.push(`load:${event.detail.frameId}`)
+      return undefined
+    })
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => {
+            pending.push({ request, resolve })
+          }),
+      },
+      { next: () => `nested-${pending.length + 1}` },
+      { frameLifecycle: lifecycle },
+    )
+    const registry = new FrameControllerRegistry(session, loader)
+    const outer = registry.get("outer")
+    const inner = registry.get("inner")
+    const leaf = registry.get("leaf")
+    const releaseOuter = retainFrameRenderer(session, outerFrame)
+    const releaseInner = retainFrameRenderer(session, innerFrame)
+    const releaseLeaf = retainFrameRenderer(session, leafFrame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    let outerAcknowledgement: ReturnType<typeof acknowledgeFrameRender> | undefined
+    let outerPrepared!: () => void
+    const outerPreparedPromise = new Promise<void>((resolve) => {
+      outerPrepared = resolve
+    })
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      const currentOuter = session.tree.getElementById("outer")
+      if (currentOuter?.kind === "frame") {
+        const acknowledgement = acknowledgeFrameRender(
+          session,
+          currentOuter,
+          "outer",
+          session.revision,
+        )
+        if (acknowledgement) {
+          outerAcknowledgement = acknowledgement
+          outerPrepared()
+          return
+        }
+      }
+      const currentInner = session.tree.getElementById("inner")
+      if (currentInner?.kind === "frame") {
+        const acknowledgement = acknowledgeFrameRender(
+          session,
+          currentInner,
+          "inner",
+          session.revision,
+        )
+        if (acknowledgement) {
+          acknowledgement.finish()
+          return
+        }
+      }
+      const currentLeaf = session.tree.getElementById("leaf")
+      if (currentLeaf?.kind === "frame") {
+        acknowledgeFrameRender(session, currentLeaf, "leaf", session.revision)?.finish()
+      }
+    })
+
+    await outer.connect()
+    await inner.connect()
+    await leaf.connect()
+    const reloaded = outer.reload()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/outer")
+    pending[0]?.resolve(
+      response(
+        '<turbo-frame id="outer"><DemoPanel id="shell" tone="incoming"><turbo-frame id="inner" src="/inner" refresh="morph" loading="lazy"><Ignored id="inner-content" /><turbo-frame id="leaf" src="/leaf" refresh="morph" loading="lazy"><IgnoredLeaf id="leaf-content" /></turbo-frame></turbo-frame></DemoPanel></turbo-frame>',
+        { url: "https://example.test/outer" },
+      ),
+    )
+
+    await outerPreparedPromise
+    expect(pending).toHaveLength(1)
+    expect(session.tree.getElementById("inner")).toBe(innerFrame)
+    expect(session.tree.getElementById("inner-content")).toBe(innerContent)
+    expect(session.tree.getElementById("leaf")).toBe(leafFrame)
+    expect(session.tree.getElementById("leaf-content")).toBe(leafContent)
+    expect(innerContent.tagName).toBe("Before")
+
+    outerAcknowledgement?.finish()
+    expect(await reloaded).toMatchObject({ frameId: "outer", status: "completed" })
+    expect(pending).toHaveLength(2)
+    expect(pending[1]?.request.url).toBe("https://example.test/inner")
+    expect(events).toEqual(["render:outer", "load:outer"])
+
+    pending[1]?.resolve(
+      response(
+        '<turbo-frame id="inner"><Before id="inner-content" tone="after" /><turbo-frame id="leaf" src="/leaf" refresh="morph" loading="lazy"><IgnoredLeaf id="leaf-content" /></turbo-frame></turbo-frame>',
+        { url: "https://example.test/inner" },
+      ),
+    )
+    expect(await inner.loaded).toMatchObject({ frameId: "inner", status: "completed" })
+    expect(session.tree.getElementById("inner")).toBe(innerFrame)
+    expect(session.tree.getElementById("inner-content")).toBe(innerContent)
+    expect(attributeValue(innerContent, "tone")).toBe("after")
+    expect(pending).toHaveLength(3)
+    expect(pending[2]?.request.url).toBe("https://example.test/leaf")
+    expect(session.tree.getElementById("leaf")).toBe(leafFrame)
+    expect(session.tree.getElementById("leaf-content")).toBe(leafContent)
+    expect(events).toEqual(["render:outer", "load:outer", "render:inner", "load:inner"])
+
+    pending[2]?.resolve(
+      response(
+        '<turbo-frame id="leaf"><LeafBefore id="leaf-content" tone="after" /></turbo-frame>',
+        {
+          url: "https://example.test/leaf",
+        },
+      ),
+    )
+    expect(await leaf.loaded).toMatchObject({ frameId: "leaf", status: "completed" })
+    expect(session.tree.getElementById("leaf")).toBe(leafFrame)
+    expect(session.tree.getElementById("leaf-content")).toBe(leafContent)
+    expect(attributeValue(leafContent, "tone")).toBe("after")
+    expect(events).toEqual([
+      "render:outer",
+      "load:outer",
+      "render:inner",
+      "load:inner",
+      "render:leaf",
+      "load:leaf",
+    ])
+
+    unsubscribe()
+    releaseLeaf()
+    releaseInner()
+    releaseOuter()
+    registry.dispose()
+  })
+
   test("keeps non-exact refresh values on the ordinary replacement path", async () => {
     for (const refresh of ["Morph", "MORPH", " morph"]) {
       const { controller, pending, session } = harness(`src="/frame" refresh="${refresh}"`)

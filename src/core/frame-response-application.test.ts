@@ -366,6 +366,82 @@ describe("prepared Frame mutations", () => {
     expect(replacedDisposals).toBe(1)
   })
 
+  test("retains eligible nested morph Frames untouched for their own post-render reload", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="outer" src="/outer" refresh="morph"><DemoPanel id="shell" tone="before"><turbo-frame id="inner" src="/inner" refresh="morph"><Before id="inner-content" /></turbo-frame></DemoPanel></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const outer = session.tree.getElementById("outer")
+    const shell = session.tree.getElementById("shell")
+    const inner = session.tree.getElementById("inner")
+    const content = session.tree.getElementById("inner-content")
+    if (outer?.kind !== "frame" || !shell || inner?.kind !== "frame" || !content) {
+      throw new Error("invalid fixture")
+    }
+
+    const prepared = prepareFrameResponse(
+      "outer",
+      '<turbo-frame id="outer"><DemoPanel id="shell" tone="incoming"><turbo-frame id="inner" src="https://example.test/inner" refresh="morph"><Incoming id="inner-content" /></turbo-frame></DemoPanel></turbo-frame>',
+    )
+    const retained = commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, outer, prepared, { renderMethod: "morph" }),
+    )
+
+    expect(retained).toEqual([inner])
+    expect(session.tree.getElementById("outer")).toBe(outer)
+    expect(session.tree.getElementById("shell")).toBe(shell)
+    expect(session.tree.getElementById("inner")).toBe(inner)
+    expect(session.tree.getElementById("inner-content")).toBe(content)
+    expect(attributeValue(shell, "tone")).toBe("incoming")
+    expect(attributeValue(inner, "src")).toBe("/inner")
+    expect(attributeValue(inner, "refresh")).toBe("morph")
+    expect(content.tagName).toBe("Before")
+  })
+
+  test("retains an omitted eligible nested morph Frame but not a source mismatch", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="outer" src="/outer" refresh="morph"><DemoPanel id="shell"><turbo-frame id="inner" src="/inner" refresh="morph"><Before id="inner-content" /></turbo-frame><After id="after" /></DemoPanel></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const outer = session.tree.getElementById("outer")
+    const inner = session.tree.getElementById("inner")
+    if (outer?.kind !== "frame" || inner?.kind !== "frame") throw new Error("invalid fixture")
+
+    const omitted = prepareFrameResponse(
+      "outer",
+      '<turbo-frame id="outer"><DemoPanel id="shell"><After id="after" tone="incoming" /></DemoPanel></turbo-frame>',
+    )
+    const retained = commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, outer, omitted, { renderMethod: "morph" }),
+    )
+
+    expect(retained).toEqual([inner])
+    expect(session.tree.getElementById("inner")).toBe(inner)
+    expect(session.tree.getElementById("inner-content")?.kind).toBe("element")
+
+    const mismatch = prepareFrameResponse(
+      "outer",
+      '<turbo-frame id="outer"><DemoPanel id="shell"><turbo-frame id="inner" src="/other" refresh="morph"><Incoming id="inner-content" /></turbo-frame><After id="after" tone="second" /></DemoPanel></turbo-frame>',
+    )
+    const replaced = commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, outer, mismatch, { renderMethod: "morph" }),
+    )
+    const nextInner = session.tree.getElementById("inner")
+
+    expect(replaced).toEqual([])
+    expect(nextInner).not.toBe(inner)
+    expect(nextInner?.kind).toBe("frame")
+    expect(attributeValue(nextInner as Exclude<typeof nextInner, undefined>, "src")).toBe("/other")
+    expect(session.tree.getElementById("inner-content")?.tagName).toBe("Incoming")
+  })
+
   test("rejects a permanent Frame morph response wrapper without structural replacement", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

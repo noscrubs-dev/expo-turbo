@@ -234,23 +234,22 @@ export function prepareFrameMutation(
 export function commitPreparedFrameMutation(
   session: DocumentSession,
   mutation: PreparedFrameMutation,
-): void {
+): readonly ProtocolElement[] {
   const state = preparedFrameMutations.get(mutation)
   if (!state) throw new StateError("Prepared Frame mutation is invalid")
   assertPreparedFrameMutationCurrent(session, mutation)
   preparedFrameMutations.delete(mutation)
 
+  let nestedFrames: readonly ProtocolElement[] = Object.freeze([])
   session.mutate((tree) => {
-    const changed =
+    const morph =
       state.renderMethod === "morph"
-        ? [...morphFrameRefreshChildren(tree, state.activeFrame, state.responseFrame)]
-        : [
-            ...replaceFrameChildrenPreservingPermanents(
-              tree,
-              state.activeFrame,
-              state.responseFrame,
-            ),
-          ]
+        ? morphFrameRefreshChildren(tree, state.activeFrame, state.responseFrame)
+        : undefined
+    const changed = morph
+      ? [...morph.changed]
+      : [...replaceFrameChildrenPreservingPermanents(tree, state.activeFrame, state.responseFrame)]
+    if (morph) nestedFrames = morph.nestedFrames
     if (state.finalUrl) tree.setAttribute(state.activeFrame, "src", state.finalUrl)
     if (state.documentUrl !== undefined && tree.document.url !== state.documentUrl) {
       tree.retargetDocumentUrl(state.documentUrl)
@@ -258,6 +257,7 @@ export function commitPreparedFrameMutation(
     }
     return changed
   })
+  return nestedFrames
 }
 
 export function assertPreparedFrameMutationCurrent(
