@@ -39,10 +39,11 @@
     "postinstall": "node scripts/link-react-peer.mjs",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
+    "test": "bun test --isolate",
     "export:android": "expo export --platform android",
     "export:ios": "expo export --platform ios",
     "export:web": "expo export --platform web",
     "export:all": "bun run export:web && bun run export:ios && bun run export:android",
-    "check": "bun run lint && bun run typecheck && bun test && bun run export:all"
+    "check": "bun run lint && bun run typecheck && bun run test && bun run export:all"
   }
 }

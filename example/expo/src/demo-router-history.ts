@@ -62,9 +62,14 @@ export interface DemoRouterHistoryBridgeOptions {
 
 interface DemoRouterAttachment {
   active: boolean;
+  reconcileActive: boolean;
   readonly navigation: DemoRouterNavigation;
   readonly routeKey: string;
   unsubscribe: (() => void) | undefined;
+}
+
+export interface DemoRouterAttachmentOptions {
+  readonly deferReconciliation?: boolean;
 }
 
 type DemoRouterErrorListener = (error: Error | undefined) => void;
@@ -425,7 +430,11 @@ export class DemoRouterHistoryBridge
     this.openExternalUrl = options.openExternal;
   }
 
-  attach(navigation: DemoRouterNavigation, routeKey: string): DocumentHistoryTraversalUnsubscribe {
+  attach(
+    navigation: DemoRouterNavigation,
+    routeKey: string,
+    options: DemoRouterAttachmentOptions = {},
+  ): DocumentHistoryTraversalUnsubscribe {
     if (this.terminal) throw new StateError("Demo Router history failed closed");
     if (typeof routeKey !== "string" || routeKey.trim() === "") {
       throw new StateError("Demo Router history attachment requires a route key");
@@ -442,6 +451,7 @@ export class DemoRouterHistoryBridge
     this.detach(this.attachment);
     const attachment: DemoRouterAttachment = {
       active: true,
+      reconcileActive: !options.deferReconciliation,
       navigation,
       routeKey,
       unsubscribe: undefined,
@@ -492,6 +502,10 @@ export class DemoRouterHistoryBridge
 
   reconcile(): void {
     if (this.terminal) throw new StateError("Demo Router history failed closed");
+    if (!this.attachment?.active) {
+      throw new StateError("Demo Router history is not attached");
+    }
+    this.attachment.reconcileActive = true;
     this.reconcileAttachment(true);
   }
 
@@ -648,8 +662,16 @@ export class DemoRouterHistoryBridge
   }
 
   private handleState(attachment: DemoRouterAttachment): void {
-    if (this.attachment !== attachment || !attachment.active || this.writeActive) return;
+    if (
+      this.attachment !== attachment ||
+      !attachment.active ||
+      !attachment.reconcileActive ||
+      this.writeActive
+    ) {
+      return;
+    }
     try {
+      if (routeState(attachment.navigation).route.key !== attachment.routeKey) return;
       this.reconcileAttachment(true);
     } catch (error) {
       this.reportError(
@@ -675,7 +697,7 @@ export class DemoRouterHistoryBridge
   private reconcileAttachment(throwOnMalformed: boolean): void {
     const attachment = this.attachment;
     const current = this.currentEntry();
-    if (!attachment?.active || !current) return;
+    if (!attachment?.active || !attachment.reconcileActive || !current) return;
     let focused: Readonly<{ route: DemoRouterRoute; state: DemoRouterState }>;
     try {
       focused = routeState(attachment.navigation);
