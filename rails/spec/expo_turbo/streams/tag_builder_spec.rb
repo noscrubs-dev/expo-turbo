@@ -67,10 +67,6 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     controller_class.new.expo_turbo_stream
   end
 
-  def upstream_stream
-    ::Turbo::Streams::TagBuilder.new(controller_class.new.view_context)
-  end
-
   it "emits canonical built-in target and selector Stream tags" do
     expect(stream.append("items", "<DemoItem id=\"appended\"/>").to_s)
       .to eq('<turbo-stream action="append" target="items"><template><DemoItem id="appended"/></template></turbo-stream>')
@@ -102,6 +98,43 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     expect(stream.remove_all(".item").to_s).to eq('<turbo-stream action="remove" targets=".item"></turbo-stream>')
   end
 
+  it "normalizes record-compatible target and selector actions to the Turbo 8.0.23 baseline" do
+    target_actions = %i[append prepend before after replace update]
+    selector_actions = %i[append_all prepend_all before_all after_all replace_all update_all]
+    record = ExpoTurboTagBuilderSpecRecord.new(7, "XML only")
+
+    [[ExpoTurboTagBuilderSpecRecord, "new_demo_record"], [record, "demo_record_7"]].each do |target, expected|
+      target_actions.each do |action|
+        stream_element = ExpoTurbo::Rails::Testing.parse_stream_fragment(
+          stream.public_send(action, target, "<DemoItem/>").to_s
+        ).root.element_children.first
+
+        expect(stream_element["target"]).to eq(expected)
+        expect(stream_element["targets"]).to be_nil
+      end
+      stream_element = ExpoTurbo::Rails::Testing.parse_stream_fragment(stream.remove(target).to_s).root.element_children.first
+      expect(stream_element["target"]).to eq(expected)
+      expect(stream_element["targets"]).to be_nil
+
+      selector_actions.each do |action|
+        stream_element = ExpoTurbo::Rails::Testing.parse_stream_fragment(
+          stream.public_send(action, target, "<DemoItem/>").to_s
+        ).root.element_children.first
+
+        expect(stream_element["target"]).to be_nil
+        expect(stream_element["targets"]).to eq("##{expected}")
+      end
+      stream_element = ExpoTurbo::Rails::Testing.parse_stream_fragment(stream.remove_all(target).to_s).root.element_children.first
+      expect(stream_element["target"]).to be_nil
+      expect(stream_element["targets"]).to eq("##{expected}")
+    end
+
+    expect(stream.remove([ExpoTurboTagBuilderSpecRecord, :special]).to_s)
+      .to eq('<turbo-stream action="remove" target="special_demo_record"></turbo-stream>')
+    expect(stream.remove_all([record, :special]).to_s)
+      .to eq('<turbo-stream action="remove" targets="#special_demo_record_7"></turbo-stream>')
+  end
+
   it "keeps an explicit refresh request ID authoritative" do
     ::Turbo.with_request_id("ambient-request") do
       expect(stream.refresh.to_s)
@@ -111,9 +144,14 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
     end
 
     expect(stream.refresh(request_id: "").to_s)
-      .to eq(upstream_stream.refresh(request_id: "").to_s)
+      .to eq('<turbo-stream action="refresh"></turbo-stream>')
     expect(stream.refresh(request_id: false).to_s)
-      .to eq(upstream_stream.refresh(request_id: false).to_s)
+      .to eq('<turbo-stream action="refresh"></turbo-stream>')
+    expect(stream.refresh(request_id: "", method: "morph", scroll: "preserve").to_s)
+      .to eq('<turbo-stream method="morph" scroll="preserve" action="refresh"></turbo-stream>')
+    ::Turbo.with_request_id("") do
+      expect(stream.refresh.to_s).to eq('<turbo-stream action="refresh"></turbo-stream>')
+    end
 
     expect { stream.refresh(**{"request-id" => "forged"}) }
       .to raise_error(ArgumentError, /request_id must be provided/)

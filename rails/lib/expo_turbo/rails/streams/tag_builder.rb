@@ -106,9 +106,8 @@ module ExpoTurbo
           reject_request_id!(attributes)
           reject_layout!(layout)
 
-          if request_id.equal?(REQUEST_ID_UNSET)
-            validate_stream_fragment!(turbo_stream_refresh_tag(**attributes))
-          elsif request_id.nil?
+          request_id = ::Turbo.current_request_id if request_id.equal?(REQUEST_ID_UNSET)
+          if request_id.blank?
             validate_stream_fragment!(turbo_stream_action_tag(:refresh, **attributes))
           else
             validate_stream_fragment!(turbo_stream_refresh_tag(request_id:, **attributes))
@@ -122,7 +121,7 @@ module ExpoTurbo
           validate_stream_fragment!(
             turbo_stream_action_tag(
               action,
-              target: target,
+              target: normalized_target(target),
               template: template_for(action, target, content_from_attributes(content, attributes), partial:, layout:, locals:, &block),
               method: method,
               **attributes
@@ -135,7 +134,7 @@ module ExpoTurbo
           validate_stream_fragment!(
             turbo_stream_action_tag(
               action,
-              targets: targets,
+              targets: normalized_target(targets, selector: true),
               template: template_for(action, nil, content_from_attributes(content, attributes), partial:, layout:, locals:, &block),
               method: method,
               **attributes
@@ -248,6 +247,13 @@ module ExpoTurbo
 
         def ensure_present!(value, name)
           raise ArgumentError, "#{name} must be present" if value.blank?
+        end
+
+        def normalized_target(value, selector: false)
+          values = Array.wrap(value)
+          return value unless values.any? { |candidate| candidate.respond_to?(:to_key) || candidate.is_a?(Class) }
+
+          "#{"#" if selector}#{::ActionView::RecordIdentifier.dom_id(*values)}"
         end
 
         def validate_stream_fragment!(stream)
