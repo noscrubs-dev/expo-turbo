@@ -55,7 +55,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] **XML and document tree:** strict namespace-aware document and Turbo Stream-fragment parsing, limits, deterministic XML/tree diagnostics, stable IDs, and structural selectors.
 - [x] **Native rendering:** typed component registries, schema/attribute admission, component actions, scoped state, and a React renderer for registered XML components.
 - [x] **Visits, links, and Frames:** same-origin document/Frame loading, bounded history/cache/preload behavior, link activation, Frame targeting/lifecycle, and selected native focus/scroll equivalents.
-- [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. A desktop CI smoke submits a real standalone-Rails matching Frame form through server-owned `422` XML and an adapter-followed canonical `303` GET; it is not native-device evidence. Multipart and File/Blob uploads are not supported.
+- [x] **Forms:** registered string-valued native controls, constraint-validation hooks, URL-encoded and bounded `text/plain` planning, submission lifecycle, and authoritative XML/Stream/redirect/empty response handling. Desktop CI covers both the core controller and a rendered `ExpoTurboProvider`/`ExpoTurboRoot` form against the real standalone Rails host: server-owned `422` XML and an adapter-followed canonical `303` GET. It is not native-device evidence. Multipart and File/Blob uploads are not supported.
 - [x] **Turbo Streams:** built-in and registered custom actions, target/selector dispatch, refresh handling, and identity-safe cleanup.
 - [x] **Action Cable transport foundation:** strict `actioncable-v1-json` codec, a pure same-origin endpoint resolver, and an injected one-socket WebSocket adapter. The adapter preserves opaque identifiers, waits for `welcome` and per-identifier confirmation, routes exact string Stream deliveries, and fails terminally without reconnecting. A desktop CI smoke now GETs the Rails XML document, retains its signed public Stream source through the public registry and adapter, completes a real `/cable` WebSocket handshake, POSTs one Redis-backed XML Stream broadcast, then emits the exact unsubscribe command and closes the socket. The package adapter owns no credentials, heartbeat, reconnect, device lifecycle, browser/device origin policy, Redis connection configuration, or physical-device proof.
 - [x] **Rails foundation:** a route-free Engine, Expo Turbo XML rendering, Frame/Stream helpers, template-capability validation, and tests against `turbo-rails` 2.0.10 and 2.0.23.
@@ -219,6 +219,10 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 ## Changelog
 
 **2026-07-21**:
+
+- Changed: Added a provider-rendered desktop smoke for the real standalone-Rails Frame form. It mounts `ExpoTurboProvider`/`ExpoTurboRoot`, drives the rendered `TextInput` and submitter through the canonical Rails request, renders the server-owned `422` error, then follows the `303` response and verifies the replacement input resets.
+- Why: The existing core smoke proved the request/response controller but not React registration, rendered control activation, or Frame replacement.
+- Impact: CI now covers both public form layers against Rails without placing the form in the deliberately static live-Cable panel. It remains desktop-only and is not native-device evidence.
 
 - Changed: Added a desktop CI smoke for a real standalone-Rails Frame form: canonical GET, server-rendered matching `422` XML, and an adapter-followed `303` back to the canonical Frame URL.
 - Why: Fixture and core tests did not prove the public form controller against an actual Rails request/response boundary.
