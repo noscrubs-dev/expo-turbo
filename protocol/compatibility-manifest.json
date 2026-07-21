@@ -1,0 +1,189 @@
+{
+  "manifestVersion": 1,
+  "protocolVersion": "0.1",
+  "baselines": {
+    "turbo": "8.0.23",
+    "turboRails": {
+      "minimum": "2.0.10",
+      "target": "2.0.23"
+    },
+    "rails": "8.1.3"
+  },
+  "fixtures": [
+    {
+      "id": "document-basic",
+      "envelope": "document",
+      "file": "fixtures/document-basic.xml",
+      "expect": {
+        "outcome": "accepted",
+        "normalized": {
+          "nodes": [
+            {
+              "kind": "element",
+              "qname": "DemoScreen",
+              "namespace": null,
+              "attributes": [
+                ["data-theme", null, "light"],
+                ["id", null, "screen"]
+              ],
+              "children": [
+                {
+                  "kind": "element",
+                  "qname": "demo:Card",
+                  "namespace": "urn:expo-turbo:demo",
+                  "attributes": [
+                    ["id", null, "summary"],
+                    ["title", null, "Welcome"]
+                  ],
+                  "children": [
+                    {
+                      "kind": "text",
+                      "value": "Hello ",
+                      "cdata": false
+                    },
+                    {
+                      "kind": "element",
+                      "qname": "DemoText",
+                      "namespace": null,
+                      "attributes": [
+                        ["id", null, "message"]
+                      ],
+                      "children": [
+                        {
+                          "kind": "text",
+                          "value": "world",
+                          "cdata": false
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "kind": "element",
+                  "qname": "turbo-frame",
+                  "namespace": null,
+                  "attributes": [
+                    ["id", null, "details"],
+                    ["src", null, "/details"]
+                  ],
+                  "children": [
+                    {
+                      "kind": "element",
+                      "qname": "DemoText",
+                      "namespace": null,
+                      "attributes": [
+                        ["id", null, "details-loading"]
+                      ],
+                      "children": [
+                        {
+                          "kind": "text",
+                          "value": "Loading",
+                          "cdata": false
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "provenance": {
+        "kind": "authored"
+      }
+    },
+    {
+      "id": "stream-basic",
+      "envelope": "stream-fragment",
+      "file": "fixtures/stream-basic.xml",
+      "expect": {
+        "outcome": "accepted",
+        "normalized": {
+          "nodes": [
+            {
+              "kind": "element",
+              "qname": "turbo-stream",
+              "namespace": null,
+              "attributes": [
+                ["action", null, "append"],
+                ["target", null, "items"]
+              ],
+              "children": [
+                {
+                  "kind": "element",
+                  "qname": "template",
+                  "namespace": null,
+                  "attributes": [],
+                  "children": [
+                    {
+                      "kind": "element",
+                      "qname": "DemoItem",
+                      "namespace": null,
+                      "attributes": [
+                        ["id", null, "item-1"]
+                      ],
+                      "children": [
+                        {
+                          "kind": "text",
+                          "value": "One",
+                          "cdata": false
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "kind": "element",
+              "qname": "turbo-stream",
+              "namespace": null,
+              "attributes": [
+                ["action", null, "remove"],
+                ["target", null, "stale"]
+              ],
+              "children": []
+            }
+          ]
+        }
+      },
+      "provenance": {
+        "kind": "authored"
+      }
+    },
+    {
+      "id": "unsafe-doctype",
+      "envelope": "document",
+      "file": "fixtures/unsafe-doctype.xml",
+      "expect": {
+        "outcome": "rejected"
+      },
+      "provenance": {
+        "kind": "authored"
+      }
+    },
+    {
+      "id": "stream-non-whitespace",
+      "envelope": "stream-fragment",
+      "file": "fixtures/stream-non-whitespace.xml",
+      "expect": {
+        "outcome": "rejected"
+      },
+      "provenance": {
+        "kind": "authored"
+      }
+    },
+    {
+      "id": "stream-non-xml-whitespace",
+      "envelope": "stream-fragment",
+      "file": "fixtures/stream-non-xml-whitespace.xml",
+      "expect": {
+        "outcome": "rejected"
+      },
+      "provenance": {
+        "kind": "authored"
+      }
+    }
+  ]
+}

@@ -76,6 +76,7 @@ RSpec.describe ExpoTurbo::Rails::Testing do
     inputs = [
       "<?xml version=\"1.0\" encoding=\"UTF-8\"?><turbo-stream action=\"remove\" target=\"notice\"/>",
       "plain text<turbo-stream action=\"remove\" target=\"notice\"/>",
+      "&#xA0;&#x2003;<turbo-stream action=\"remove\" target=\"notice\"/>",
       "<DemoText/>",
       "<x:turbo-stream xmlns:x=\"urn:expo-test\" action=\"remove\" target=\"notice\"/>",
       "<turbo-stream action=\"remove\" target=\"notice\">"

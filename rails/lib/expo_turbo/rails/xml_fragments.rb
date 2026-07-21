@@ -93,7 +93,7 @@ module ExpoTurbo
       def validate_fragment_root!(document, label)
         root = document.root
         valid_elements = yield(root.element_children)
-        non_whitespace_text = root.children.any? { |node| node.text? && node.text.strip.present? }
+        non_whitespace_text = root.children.any? { |node| node.text? && node.text.match?(/[^\t\n\r ]/) }
         raise ParseError, error_message(label) unless valid_elements && !non_whitespace_text
       end
 

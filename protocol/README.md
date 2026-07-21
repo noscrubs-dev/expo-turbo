@@ -1,6 +1,23 @@
 # Protocol
 
-Shared compatibility manifests and cross-language fixtures will live here. The package remains pre-release and does not yet claim complete Turbo compatibility.
+`compatibility-manifest.json` is the source-only cross-language contract for the
+public TypeScript package and Rails gem. It pins the protocol and upstream
+baselines, records fixture provenance, and describes each fixture's document or
+Stream-fragment envelope plus its expected outcome.
+
+The initial `fixtures/` set intentionally stays small: it proves one namespaced
+document, a sibling Stream fragment emitted by the Rails helper, and unsafe
+DOCTYPE/non-XML-whitespace Stream-text rejections. TypeScript and Ruby tests
+load the same manifest and XML bytes, normalize accepted trees to the declared
+language-neutral AST, and
+exercise the declared rejection. Fixture readers are test-only; neither package
+ships protocol sources as runtime assets.
+
+Document fixture normalization represents its sole document root; sibling Stream
+fixture normalization represents its sibling Stream elements. XML comments and
+envelope-level XML whitespace are not part of either normalized envelope.
+
+The package remains pre-release and does not yet claim complete Turbo compatibility.
 
 ## State references
 

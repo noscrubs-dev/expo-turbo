@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add a source-only protocol compatibility manifest and shared XML fixtures. The TypeScript package and Rails gem now assert the same protocol/baseline constants, normalized document and sibling-Stream trees, unsafe XML/Stream rejection, and Rails helper output without bundling fixture readers into either runtime artifact. Stream fragments now reject all text outside sibling Stream elements except XML whitespace (`space`, tab, CR, and LF) on both runtimes.
+
 - Run the standalone Expo example's static web, iOS, and Android bundle exports in its required check. Native exports now catch Metro/Hermes dependency drift in CI without claiming release-build or physical-device validation.
 
 - Normalize Expo Stream record/class target coercion and blank refresh request-ID handling to the Turbo 8.0.23 baseline across the supported `turbo-rails` 2.0.10 and 2.0.23 matrix.
