@@ -181,6 +181,9 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
       },
       url: formUrl,
     });
+    expect(invalid.request.headers["X-Turbo-Request-Id"]).not.toBe(
+      noContent.request.headers["X-Turbo-Request-Id"],
+    );
     await act(async () => {
       invalid.resolve(
         response(formXml("invalid", "This demo name is unavailable"), {
