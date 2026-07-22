@@ -72,7 +72,7 @@ function response(
 }
 
 function formXml(firstName: string, error?: string): string {
-  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm></turbo-frame>`;
+  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt" /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm></turbo-frame>`;
 }
 
 function takePending(pending: PendingFetch[], message: string): PendingFetch {
@@ -126,6 +126,39 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     });
     await proof.frames.get(FRAME_ID).loaded;
     expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("");
+    expect(
+      renderer?.root.findByProps({
+        accessibilityLabel: "Sample attachment: expo-turbo-upload.txt",
+      }),
+    ).toBeDefined();
+
+    act(() => {
+      submitter("Upload sample attachment").onPress?.();
+    });
+    const upload = takePending(pending, "The rendered form did not submit its multipart attachment");
+    expect(upload).toMatchObject({
+      request: {
+        headers: {
+          Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+          "Turbo-Frame": FRAME_ID,
+        },
+        method: "POST",
+      },
+      url: formUrl,
+    });
+    expect(upload.request.headers["Content-Type"]).toBeUndefined();
+    if (!(upload.request.body instanceof FormData)) {
+      throw new Error("The multipart request did not reach the host as FormData");
+    }
+    expect(upload.request.body.get("commit")).toBe("upload");
+    const attachment = upload.request.body.get("profile[attachment]");
+    if (!(attachment instanceof Blob)) throw new Error("The multipart request omitted its Blob");
+    expect(await attachment.text()).toBe("Expo Turbo native multipart upload\n");
+    expect((attachment as Blob & { name?: string }).name).toBe("expo-turbo-upload.txt");
+    await act(async () => {
+      upload.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
+      await Promise.resolve();
+    });
 
     await act(async () => {
       renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("Ada");
@@ -158,7 +191,7 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     expect(proof.session.tree.getElementById(FRAME_ID)).toBe(frameBeforeNoContent);
     expect(frameBeforeNoContent.children).toBe(childrenBeforeNoContent);
     expect(proof.session.revision).toBe(revisionBeforeNoContent);
-    expect(renderer?.root.findByProps({ accessibilityLabel: "Form ready" })).toBeDefined();
+    expect(renderer?.root.findAllByProps({ accessibilityLabel: "Form ready" }).length).toBeGreaterThan(0);
     expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("Ada");
 
     await act(async () => {

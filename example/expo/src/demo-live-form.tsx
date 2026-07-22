@@ -165,7 +165,9 @@ export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRunti
         This native-only panel loads one canonical Rails Frame form. Validation stays server-owned:
         submit an unavailable name to render matching 422 XML, complete a valid name without
         replacing this Frame, save it to follow the canonical redirect, or use the narrowly scoped
-        text/plain submitter for the same Rails-owned response path.
+        text/plain submitter for the same Rails-owned response path. It also sends one bounded,
+        host-owned Blob through multipart FormData; the Rails demo accepts only its fixed filename,
+        media type, and bytes.
       </Text>
       <DemoLiveFormRuntimeProvider proof={proof}>
         <ExpoTurboRoot />

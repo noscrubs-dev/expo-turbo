@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { TurboRequest, TurboResponse } from "../adapters"
+import { isTurboMultipartBody, type TurboRequest, type TurboResponse } from "../adapters"
 import { RequestError } from "./errors"
 import { CancellableEvent } from "./events"
 import {
@@ -200,6 +200,89 @@ describe("request lifecycle", () => {
       ).rejects.toBeInstanceOf(RequestError)
       expect(fetches).toBe(0)
     }
+  })
+
+  test("clones bounded multipart payloads and rejects forged byte accounting", async () => {
+    const attachment = {
+      blob: new Blob(["native upload"], { type: "text/plain" }),
+      filename: "upload.txt",
+    }
+    const entries = [
+      { name: "profile[attachment]", value: attachment },
+      { name: "commit", value: "upload" },
+    ]
+    const byteLength =
+      new TextEncoder().encode("profile[attachment]").byteLength +
+      new TextEncoder().encode(attachment.filename).byteLength +
+      attachment.blob.size +
+      new TextEncoder().encode("commit").byteLength +
+      new TextEncoder().encode("upload").byteLength
+    const requestWithMultipart = Object.freeze({
+      body: { value: { byteLength, entries, kind: "multipart" as const } },
+      ...request(),
+      method: "POST",
+    })
+    const lifecycle = new RequestLifecycle()
+    lifecycle.subscribe("before-fetch-request", (event) => {
+      const body = event.detail.request.body?.value
+      if (!isTurboMultipartBody(body)) throw new Error("multipart payload was not cloned")
+      expect(body).not.toBe(requestWithMultipart.body.value)
+      expect(body.entries).not.toBe(entries)
+      entries.push({ name: "late", value: "ignored" })
+    })
+    let fetched: TurboRequest | undefined
+    const result = await fetchWithRequestLifecycle({
+      admission: admission({
+        allowBody: true,
+        allowedMethods: ["POST"],
+        maxBodyBytes: byteLength,
+      }),
+      context: { kind: "document", purpose: "load", requestId: "request-1" },
+      fetchAdapter: {
+        async fetch(candidate) {
+          fetched = candidate
+          return response(candidate.url)
+        },
+      },
+      lifecycle,
+      request: requestWithMultipart,
+    })
+
+    expect(result.status).toBe("response")
+    const body = fetched?.body?.value
+    if (!isTurboMultipartBody(body)) throw new Error("multipart payload was not fetched")
+    expect(body.entries).toEqual([
+      { name: "profile[attachment]", value: attachment },
+      { name: "commit", value: "upload" },
+    ])
+    expect(Object.isFrozen(body.entries)).toBe(true)
+
+    const forgedLifecycle = new RequestLifecycle()
+    forgedLifecycle.subscribe("before-fetch-request", (event) => {
+      event.detail.request.setBody({
+        value: { byteLength: 0, entries: body.entries, kind: "multipart" },
+      })
+    })
+    let forgedFetches = 0
+    await expect(
+      fetchWithRequestLifecycle({
+        admission: admission({
+          allowBody: true,
+          allowedMethods: ["POST"],
+          maxBodyBytes: byteLength,
+        }),
+        context: { kind: "document", purpose: "load", requestId: "request-1" },
+        fetchAdapter: {
+          async fetch() {
+            forgedFetches += 1
+            return response()
+          },
+        },
+        lifecycle: forgedLifecycle,
+        request: requestWithMultipart,
+      }),
+    ).rejects.toBeInstanceOf(RequestError)
+    expect(forgedFetches).toBe(0)
   })
 
   test("dispatches redacted non-abort fetch errors and excludes aborted work", async () => {

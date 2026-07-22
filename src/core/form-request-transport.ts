@@ -1,10 +1,16 @@
-import type { FetchAdapter, TurboRequest, TurboResponse } from "../adapters"
+import {
+  type FetchAdapter,
+  isTurboMultipartBody,
+  type TurboRequest,
+  type TurboResponse,
+} from "../adapters"
 import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
 import {
   FORM_TEXT_PLAIN,
   FORM_URL_ENCODED,
   type FormRequestPlan,
   type FormSubmissionMethod,
+  MAX_FORM_MULTIPART_BODY_BYTES,
   MAX_FORM_TEXT_PLAIN_BODY_BYTES,
 } from "./form-request"
 import {
@@ -211,7 +217,9 @@ export async function executeAdmittedFormRequest(
           },
           allowBody: true,
           allowedMethods: [...METHODS],
-          maxBodyBytes: MAX_FORM_TEXT_PLAIN_BODY_BYTES,
+          maxBodyBytes: isTurboMultipartBody(plan.request.body?.value)
+            ? MAX_FORM_MULTIPART_BODY_BYTES
+            : MAX_FORM_TEXT_PLAIN_BODY_BYTES,
           protectedHeaders: Object.keys(plan.request.headers).filter(
             (name) => name.toLowerCase() !== "accept",
           ),
@@ -360,6 +368,12 @@ function admitLifecycleFormRequest(request: TurboRequest): void {
   }
   if (request.method !== "GET" && !accepted.has(TURBO_STREAM_MIME_TYPE)) {
     throw new RequestError("Unsafe form requests must accept Turbo Streams", {
+      method: request.method,
+    })
+  }
+  if (request.body && isTurboMultipartBody(request.body.value)) {
+    if (request.body.contentType === undefined) return
+    throw new RequestError("Multipart form requests must not set a Content-Type header", {
       method: request.method,
     })
   }

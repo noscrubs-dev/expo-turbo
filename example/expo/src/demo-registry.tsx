@@ -9,7 +9,7 @@ import {
   tokenListCodec,
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { z } from "zod";
 
@@ -353,12 +353,17 @@ const formLegend = defineComponent({
 const form = defineComponent({
   attributes: {
     action: { codec: stringCodec, prop: "action" },
+    enctype: { codec: stringCodec, prop: "enctype" },
     method: { codec: stringCodec, prop: "method" },
   },
   children: "nodes",
   component: DemoFormComponent,
   formOwner: true,
-  schema: z.object({ action: z.string().optional(), method: z.string().optional() }),
+  schema: z.object({
+    action: z.string().optional(),
+    enctype: z.string().optional(),
+    method: z.string().optional(),
+  }),
   tag: "DemoForm",
 });
 
@@ -444,6 +449,58 @@ const formInput = defineComponent({
   tag: "DemoFormInput",
 });
 
+const DEMO_UPLOAD_CONTENT = "Expo Turbo native multipart upload\n";
+
+function DemoFormFileComponent({
+  filename,
+  label,
+  name,
+}: {
+  filename: string;
+  label: string;
+  name: string;
+}) {
+  const attachment = useMemo(
+    () => ({
+      blob: new Blob([DEMO_UPLOAD_CONTENT], { type: "text/plain" }),
+      filename,
+    }),
+    [filename],
+  );
+  const control = useExpoTurboFormControl({
+    entries: [{ name, value: attachment }],
+    kind: "entries",
+  });
+  return (
+    <View
+      accessibilityLabel={`${label}: ${filename}`}
+      accessibilityState={control.accessibilityState}
+      style={{ gap: 4, opacity: control.disabled ? 0.55 : 1 }}
+    >
+      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+      <Text selectable style={{ color: "#172230", fontSize: 14 }}>
+        Ready: {filename}
+      </Text>
+    </View>
+  );
+}
+
+const formFile = defineComponent({
+  attributes: {
+    filename: { codec: stringCodec, prop: "filename" },
+    label: { codec: stringCodec, prop: "label" },
+    name: { codec: stringCodec, prop: "name" },
+  },
+  children: "none",
+  component: DemoFormFileComponent,
+  schema: z.object({
+    filename: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+  }),
+  tag: "DemoFormFile",
+});
+
 function DemoFormSubmitterComponent(props: {
   formaction?: string;
   formenctype?: string;
@@ -523,6 +580,7 @@ export const DEMO_REGISTRY = createRegistry(
       formFieldset,
       formLegend,
       formInput,
+      formFile,
       formSubmitter,
     ],
     name: "demo-primitives",

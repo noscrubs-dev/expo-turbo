@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import { isTurboMultipartBody } from "../adapters"
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
 import { FormSubmissionController } from "./form-submission-controller"
 import { assertActiveFormSubmissionProposal } from "./form-submission-proposal"
@@ -14,6 +15,7 @@ import {
   type FormSelectItem,
   type FormSelectOption,
   MAX_FORM_CONTROL_ENTRIES_PER_CONTROL,
+  type SuccessfulFormEntry,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE, TURBO_STREAM_MIME_TYPE } from "./protocol-request"
@@ -292,7 +294,10 @@ describe("native form control registry", () => {
     })
     expect(planned.entries).toEqual(collected)
     expect(Array.from(new URL(planned.request.url).searchParams.entries())).toEqual(
-      collected.map(({ name, value }) => [name, value]),
+      collected.map(({ name, value }) => {
+        if (typeof value !== "string") throw new Error("entry-list fixture must remain string-only")
+        return [name, value]
+      }),
     )
 
     const updated = [{ name: "replacement[first]", value: "one" }]
@@ -312,6 +317,42 @@ describe("native form control registry", () => {
       firstInvalid: { message: "Choose another value", nodeKey: "id:first" },
       valid: false,
     })
+  })
+
+  test("collects a host-owned Blob entry only into a multipart request plan", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery><DemoForm id="form" action="/upload" enctype="multipart/form-data" method="post"><DemoInput id="attachment" /><DemoButton id="submit" /></DemoForm></Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+    const attachment = {
+      blob: new Blob(["native fixture"], { type: "text/plain" }),
+      filename: "native-fixture.txt",
+    }
+    const source: SuccessfulFormEntry[] = [{ name: "profile[attachment]", value: attachment }]
+    registry.register("id:attachment", { entries: source, kind: "entries" })
+    const submitter = registry.register("id:submit", {
+      kind: "submitter",
+      name: "commit",
+      value: "upload",
+    })
+
+    source.push({ name: "late", value: "ignored" })
+    const entries = registry.successfulEntries({ submitter: submitter.selection })
+    expect(entries).toEqual([
+      { name: "profile[attachment]", value: attachment },
+      { name: "commit", value: "upload" },
+    ])
+    const planned = registry.requestPlan({
+      protocol: { requestId: "multipart-entry-list" },
+      submitter: submitter.selection,
+    })
+    const body = planned.request.body?.value
+    if (!isTurboMultipartBody(body)) throw new Error("multipart request was not planned")
+    expect(body.entries).toEqual(entries)
+    expect(Object.isFrozen(body.entries[0]?.value)).toBe(true)
   })
 
   test("bounds one multi-name entry-list snapshot and keeps the previous value after rejection", () => {

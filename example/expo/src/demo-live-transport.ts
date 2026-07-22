@@ -1,8 +1,13 @@
-import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
+import {
+  isTurboMultipartBody,
+  type FetchAdapter,
+  type TurboRequest,
+  type TurboResponse,
+} from "expo-turbo/adapters";
 import { StateError } from "expo-turbo/core";
 
 export interface DemoLiveFetchRequest {
-  readonly body?: string | Uint8Array;
+  readonly body?: string | Uint8Array | FormData;
   readonly headers: Readonly<Record<string, string>>;
   readonly method: string;
   readonly signal?: AbortSignal;
@@ -23,14 +28,32 @@ export type DemoLiveFetch = (
   request: DemoLiveFetchRequest,
 ) => Promise<DemoLiveFetchResponse>;
 
+function requestBody(request: TurboRequest): string | Uint8Array | FormData | undefined {
+  const body = request.body;
+  if (!body) return undefined;
+  if (!isTurboMultipartBody(body.value)) return body.value;
+  const formData = new FormData();
+  for (const entry of body.value.entries) {
+    if (typeof entry.value === "string") {
+      formData.append(entry.name, entry.value);
+    } else {
+      formData.append(entry.name, entry.value.blob, entry.value.filename);
+    }
+  }
+  return formData;
+}
+
 export function createDemoLiveFetchAdapter(fetch: DemoLiveFetch): FetchAdapter {
   return Object.freeze({
     async fetch(request: TurboRequest): Promise<TurboResponse> {
+      const body = requestBody(request);
       const response = await fetch(request.url, {
-        ...(request.body ? { body: request.body.value } : {}),
+        ...(body !== undefined ? { body } : {}),
         headers: {
           ...request.headers,
-          ...(request.body ? { "Content-Type": request.body.contentType } : {}),
+          ...(request.body && !isTurboMultipartBody(request.body.value)
+            ? { "Content-Type": request.body.contentType }
+            : {}),
         },
         method: request.method,
         ...(request.signal ? { signal: request.signal } : {}),

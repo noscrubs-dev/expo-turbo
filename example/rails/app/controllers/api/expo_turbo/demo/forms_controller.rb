@@ -7,8 +7,13 @@ module Api
         FRAME_ID = "demo-form-frame"
         MAX_FIRST_NAME_BYTES = 120
         MAX_TEXT_PLAIN_BODY_BYTES = 1_048_576
+        MAX_UPLOAD_BYTES = 64 * 1024
+        MULTIPART_MEDIA_TYPE = "multipart/form-data"
         TEXT_PLAIN_MEDIA_TYPE = "text/plain"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
+        UPLOAD_CONTENT = "Expo Turbo native multipart upload\n"
+        UPLOAD_FILENAME = "expo-turbo-upload.txt"
+        UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8"].freeze
         TEXT_PLAIN_FORM = /\Aprofile\[first_name\]=(?<first_name>[^\r\n]*)\r\ncommit=(?<commit>save)\r\n\z/
 
         rescue_from ActionController::BadRequest, ActionController::ParameterMissing, with: :render_bad_form_request
@@ -20,6 +25,7 @@ module Api
         end
 
         def create
+          return submit_upload if request.media_type == MULTIPART_MEDIA_TYPE
           return head :unsupported_media_type unless [URL_ENCODED_MEDIA_TYPE, TEXT_PLAIN_MEDIA_TYPE].include?(request.media_type)
 
           submitted = submitted_form
@@ -64,6 +70,33 @@ module Api
           when TEXT_PLAIN_MEDIA_TYPE
             parse_text_plain_form
           end
+        end
+
+        def submit_upload
+          submitted = submitted_upload
+          return head :bad_request unless submitted
+          return head :bad_request unless submitted.fetch(:commit) == "upload"
+          return head :bad_request unless exact_demo_upload?(submitted.fetch(:attachment))
+
+          redirect_to api_expo_turbo_demo_form_path, status: :see_other
+        end
+
+        def submitted_upload
+          {
+            attachment: params.expect(profile: [:attachment]).fetch(:attachment),
+            commit: params.expect(:commit)
+          }
+        end
+
+        def exact_demo_upload?(attachment)
+          return false unless attachment.is_a?(ActionDispatch::Http::UploadedFile)
+          return false unless attachment.original_filename == UPLOAD_FILENAME
+          return false unless UPLOAD_MEDIA_TYPES.include?(attachment.content_type)
+          return false unless attachment.size.is_a?(Integer) && attachment.size.between?(0, MAX_UPLOAD_BYTES)
+
+          body = attachment.read
+          attachment.rewind
+          body == UPLOAD_CONTENT
         end
 
         def parse_text_plain_form

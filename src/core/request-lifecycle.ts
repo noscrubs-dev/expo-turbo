@@ -1,4 +1,12 @@
-import type { FetchAdapter, TurboRequest, TurboRequestBody, TurboResponse } from "../adapters"
+import {
+  type FetchAdapter,
+  isTurboMultipartBody,
+  type TurboMultipartBody,
+  type TurboMultipartFile,
+  type TurboRequest,
+  type TurboRequestBody,
+  type TurboResponse,
+} from "../adapters"
 import { ExpoTurboError, type ExpoTurboErrorContext, PropsError, RequestError } from "./errors"
 import { CancellableEvent, PausableEvent } from "./events"
 
@@ -328,6 +336,7 @@ export async function fetchWithRequestLifecycle(
 ): Promise<RequestLifecycleFetchResult> {
   const context = Object.freeze({ ...options.context }) as RequestLifecycleContext
   const mutation = new RequestMutation(options.request)
+  const original = mutation.snapshot()
   const beforeRequest = new BeforeFetchRequestEvent(context, mutation)
   const requestDispatch = dispatchWithAbort(
     options.lifecycle,
@@ -340,7 +349,7 @@ export async function fetchWithRequestLifecycle(
     return Object.freeze({ request: options.request, status: "canceled" })
   }
 
-  const request = admitLifecycleRequest(mutation.snapshot(), options.request, options.admission)
+  const request = admitLifecycleRequest(mutation.snapshot(), original, options.admission)
   if (request.signal?.aborted) return Object.freeze({ request, status: "canceled" })
   if (options.beforeFetch) {
     let proceed: boolean | undefined
@@ -440,8 +449,9 @@ function admitLifecycleRequest(
     throw new RequestError("Request lifecycle GET requests cannot include a body", { method })
   }
   if (body && admission.maxBodyBytes !== undefined && !sameBody(body, cloneBody(original.body))) {
-    const size =
-      typeof body.value === "string"
+    const size = isTurboMultipartBody(body.value)
+      ? body.value.byteLength
+      : typeof body.value === "string"
         ? new TextEncoder().encode(body.value).byteLength
         : body.value.byteLength
     if (size > admission.maxBodyBytes) {
@@ -464,11 +474,28 @@ function sameBody(
 ): boolean {
   if (left === undefined || right === undefined) return left === right
   if (left.contentType !== right.contentType) return false
-  if (typeof left.value === "string" || typeof right.value === "string") {
-    return left.value === right.value
+  const leftValue = left.value
+  const rightValue = right.value
+  if (isTurboMultipartBody(leftValue) || isTurboMultipartBody(rightValue)) {
+    if (!isTurboMultipartBody(leftValue) || !isTurboMultipartBody(rightValue)) return false
+    if (leftValue.byteLength !== rightValue.byteLength) return false
+    if (leftValue.entries.length !== rightValue.entries.length) return false
+    return leftValue.entries.every((entry, index) => {
+      const other = rightValue.entries[index]
+      if (!other || entry.name !== other.name || typeof entry.value !== typeof other.value) {
+        return false
+      }
+      if (typeof entry.value === "string" || typeof other.value === "string") {
+        return entry.value === other.value
+      }
+      return entry.value.blob === other.value.blob && entry.value.filename === other.value.filename
+    })
   }
-  if (left.value.byteLength !== right.value.byteLength) return false
-  return left.value.every((value, index) => value === right.value[index])
+  if (typeof leftValue === "string" || typeof rightValue === "string") {
+    return leftValue === rightValue
+  }
+  if (leftValue.byteLength !== rightValue.byteLength) return false
+  return leftValue.every((value, index) => value === rightValue[index])
 }
 
 async function dispatchWithAbort(
@@ -601,6 +628,12 @@ function cloneBody(body: TurboRequestBody | undefined): TurboRequestBody | undef
   if (contentType !== undefined) {
     headerValue(contentType)
   }
+  if (isTurboMultipartBody(value)) {
+    return Object.freeze({
+      ...(typeof contentType === "string" ? { contentType } : {}),
+      value: cloneMultipartBody(value),
+    })
+  }
   if (typeof value !== "string" && !(value instanceof Uint8Array)) {
     throw new RequestError("Request lifecycle body value must be text or bytes")
   }
@@ -608,6 +641,108 @@ function cloneBody(body: TurboRequestBody | undefined): TurboRequestBody | undef
     ...(typeof contentType === "string" ? { contentType } : {}),
     value: typeof value === "string" ? value : value.slice(),
   })
+}
+
+function cloneMultipartBody(value: unknown): TurboMultipartBody {
+  if (!isTurboMultipartBody(value)) {
+    throw new RequestError("Request lifecycle multipart body is invalid")
+  }
+  let entries: unknown
+  let byteLength: unknown
+  try {
+    entries = value.entries
+    byteLength = value.byteLength
+  } catch {
+    throw new RequestError("Request lifecycle multipart body could not be read")
+  }
+  if (
+    !Array.isArray(entries) ||
+    typeof byteLength !== "number" ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0
+  ) {
+    throw new RequestError("Request lifecycle multipart body is invalid")
+  }
+  const copied: TurboMultipartBody["entries"][number][] = []
+  let actualByteLength = 0
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RequestError("Request lifecycle multipart entries are invalid")
+    }
+    let keys: string[]
+    let name: unknown
+    let entryValue: unknown
+    try {
+      keys = Object.keys(entry)
+      name = (entry as { readonly name?: unknown }).name
+      entryValue = (entry as { readonly value?: unknown }).value
+    } catch {
+      throw new RequestError("Request lifecycle multipart entry could not be read")
+    }
+    if (keys.some((key) => key !== "name" && key !== "value") || typeof name !== "string") {
+      throw new RequestError("Request lifecycle multipart entries are invalid")
+    }
+    actualByteLength += new TextEncoder().encode(name).byteLength
+    if (typeof entryValue === "string") {
+      actualByteLength += new TextEncoder().encode(entryValue).byteLength
+      copied.push(Object.freeze({ name, value: entryValue }))
+      continue
+    }
+    const file = cloneMultipartFile(entryValue)
+    actualByteLength += new TextEncoder().encode(file.filename).byteLength + file.blob.size
+    copied.push(Object.freeze({ name, value: file }))
+  }
+  if (actualByteLength !== byteLength) {
+    throw new RequestError("Request lifecycle multipart body byte length is invalid")
+  }
+  return Object.freeze({
+    byteLength,
+    entries: Object.freeze(copied),
+    kind: "multipart",
+  })
+}
+
+function cloneMultipartFile(value: unknown): TurboMultipartFile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RequestError("Request lifecycle multipart file is invalid")
+  }
+  let keys: string[]
+  let blob: unknown
+  let filename: unknown
+  try {
+    keys = Object.keys(value)
+    blob = (value as TurboMultipartFile).blob
+    filename = (value as TurboMultipartFile).filename
+  } catch {
+    throw new RequestError("Request lifecycle multipart file could not be read")
+  }
+  if (
+    keys.some((key) => key !== "blob" && key !== "filename") ||
+    !blob ||
+    typeof blob !== "object" ||
+    typeof filename !== "string" ||
+    filename === "" ||
+    /\p{Cc}/u.test(filename)
+  ) {
+    throw new RequestError("Request lifecycle multipart file is invalid")
+  }
+  let size: unknown
+  let type: unknown
+  try {
+    size = (blob as Blob).size
+    type = (blob as Blob).type
+  } catch {
+    throw new RequestError("Request lifecycle multipart file could not be read")
+  }
+  if (
+    typeof size !== "number" ||
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    typeof type !== "string"
+  ) {
+    throw new RequestError("Request lifecycle multipart file is invalid")
+  }
+  return Object.freeze({ blob: blob as Blob, filename })
 }
 
 function cloneHeaders(value: unknown, message: string): Readonly<Record<string, string>> {

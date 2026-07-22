@@ -1,4 +1,9 @@
-import type { TurboRequest, TurboRequestBody } from "../adapters"
+import type {
+  TurboMultipartBody,
+  TurboMultipartFile,
+  TurboRequest,
+  TurboRequestBody,
+} from "../adapters"
 import { RequestError, TargetError } from "./errors"
 import { admitFormRequestPlan } from "./form-request-plan"
 import type { SuccessfulFormEntry } from "./forms"
@@ -8,6 +13,9 @@ export const FORM_URL_ENCODED = "application/x-www-form-urlencoded" as const
 export const FORM_TEXT_PLAIN = "text/plain" as const
 export const FORM_MULTIPART = "multipart/form-data" as const
 export const MAX_FORM_REQUEST_ENTRIES = 1_024
+export const MAX_FORM_FILE_BYTES = 10 * 1_024 * 1_024
+export const MAX_FORM_FILE_NAME_BYTES = 255
+export const MAX_FORM_MULTIPART_BODY_BYTES = 20 * 1_024 * 1_024
 export const MAX_FORM_TEXT_PLAIN_BODY_BYTES = 1_048_576
 
 export type FormSubmissionEncoding =
@@ -230,9 +238,61 @@ function normalizedLineBreaks(
   return Object.freeze({ utf8Bytes, value: normalized })
 }
 
+function admittedFormFile(value: unknown): TurboMultipartFile {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    redactedArrayCheck(value, "Form file entry could not be read")
+  ) {
+    throw new RequestError("Form file entries must provide a Blob and filename")
+  }
+  let keys: string[]
+  let blob: unknown
+  let filename: unknown
+  try {
+    keys = Object.keys(value)
+    blob = (value as TurboMultipartFile).blob
+    filename = (value as TurboMultipartFile).filename
+  } catch {
+    throw new RequestError("Form file entry could not be read")
+  }
+  if (keys.some((key) => key !== "blob" && key !== "filename")) {
+    throw new RequestError("Form file entries contain unsupported fields")
+  }
+  if (!blob || typeof blob !== "object") {
+    throw new RequestError("Form file entries must provide a Blob")
+  }
+  let size: unknown
+  let type: unknown
+  try {
+    size = (blob as Blob).size
+    type = (blob as Blob).type
+  } catch {
+    throw new RequestError("Form file Blob metadata could not be read")
+  }
+  if (
+    typeof size !== "number" ||
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    typeof type !== "string"
+  ) {
+    throw new RequestError("Form file entries must provide a Blob")
+  }
+  if (
+    typeof filename !== "string" ||
+    filename === "" ||
+    /\p{Cc}/u.test(filename) ||
+    utf8ByteLength(filename) > MAX_FORM_FILE_NAME_BYTES
+  ) {
+    throw new RequestError("Form file entry filename is invalid")
+  }
+  return Object.freeze({ blob: blob as Blob, filename })
+}
+
 function admittedEntries(
   entries: readonly SuccessfulFormEntry[],
   maximumTextPlainBodyBytes?: number,
+  allowFiles = false,
 ): readonly SuccessfulFormEntry[] {
   if (redactedArrayCheck(entries, "Form request entries could not be read") !== true) {
     throw new RequestError("Form request entries must be an array")
@@ -278,8 +338,8 @@ function admittedEntries(
     } catch {
       throw new RequestError("Form request entry could not be read")
     }
-    if (typeof name !== "string" || typeof value !== "string") {
-      throw new RequestError("Form request entries must contain string names and values")
+    if (typeof name !== "string") {
+      throw new RequestError("Form request entry names must be strings")
     }
     const availableBytes =
       maximumTextPlainBodyBytes === undefined
@@ -289,12 +349,24 @@ function admittedEntries(
       throw new RequestError("Text form request body limit exceeded")
     }
     const admittedName = normalizedLineBreaks(name, availableBytes)
-    const admittedValue = normalizedLineBreaks(value, availableBytes - admittedName.utf8Bytes)
-    textPlainBodyBytes += admittedName.utf8Bytes + admittedValue.utf8Bytes + 3
+    if (typeof value === "string") {
+      const admittedValue = normalizedLineBreaks(value, availableBytes - admittedName.utf8Bytes)
+      textPlainBodyBytes += admittedName.utf8Bytes + admittedValue.utf8Bytes + 3
+      admitted.push(
+        Object.freeze({
+          name: admittedName.value,
+          value: admittedValue.value,
+        }),
+      )
+      continue
+    }
+    if (!allowFiles) {
+      throw new RequestError("File form entries require multipart form encoding")
+    }
     admitted.push(
       Object.freeze({
         name: admittedName.value,
-        value: admittedValue.value,
+        value: admittedFormFile(value),
       }),
     )
   }
@@ -314,7 +386,12 @@ function validateSubmitterEntry(
       : maximumTextPlainBodyBytes - 3
   const name = normalizedLineBreaks(submitter.name, availableBytes)
   const value = normalizedLineBreaks(submitter.value ?? "", availableBytes - name.utf8Bytes)
-  if (!entry || entry.name !== name.value || entry.value !== value.value) {
+  if (
+    !entry ||
+    entry.name !== name.value ||
+    typeof entry.value !== "string" ||
+    entry.value !== value.value
+  ) {
     throw new RequestError("Activated named submitter must match the final successful entry")
   }
 }
@@ -332,8 +409,8 @@ function effectiveMethod(
   } else if (submitter?.method !== undefined && submitter.method !== "") {
     candidate = submitter.method
   } else {
-    const entry = entries.find((item) => item.name === "_method")
-    candidate = entry ? entry.value : source
+    const entry = entries.find((item) => item.name === "_method" && typeof item.value === "string")
+    candidate = entry && typeof entry.value === "string" ? entry.value : source
   }
 
   const method = canonicalMethod(candidate)
@@ -366,9 +443,20 @@ function railsEntries(
   return Object.freeze(normalized)
 }
 
+function stringEntries(entries: readonly SuccessfulFormEntry[]): readonly SuccessfulFormEntry[] {
+  if (entries.some((entry) => typeof entry.value !== "string")) {
+    throw new RequestError("File form entries require multipart form encoding")
+  }
+  return entries
+}
+
 function urlEncodedBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBody {
   const parameters = new URLSearchParams()
-  for (const entry of entries) parameters.append(entry.name, entry.value)
+  for (const entry of stringEntries(entries)) {
+    if (typeof entry.value !== "string")
+      throw new RequestError("Form request entry value is invalid")
+    parameters.append(entry.name, entry.value)
+  }
   return Object.freeze({
     contentType: `${FORM_URL_ENCODED};charset=UTF-8`,
     value: parameters.toString(),
@@ -401,7 +489,9 @@ function utf8ByteLength(value: string): number {
 function textPlainBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBody {
   const records: string[] = []
   let bytes = 0
-  for (const entry of entries) {
+  for (const entry of stringEntries(entries)) {
+    if (typeof entry.value !== "string")
+      throw new RequestError("Form request entry value is invalid")
     bytes += utf8ByteLength(entry.name) + utf8ByteLength(entry.value) + 3
     if (bytes > MAX_FORM_TEXT_PLAIN_BODY_BYTES) {
       throw new RequestError("Text form request body limit exceeded")
@@ -412,6 +502,38 @@ function textPlainBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBod
     contentType: FORM_TEXT_PLAIN,
     value: records.join(""),
   })
+}
+
+function multipartBody(entries: readonly SuccessfulFormEntry[]): TurboRequestBody {
+  let byteLength = 0
+  for (const entry of entries) {
+    byteLength += utf8ByteLength(entry.name)
+    if (typeof entry.value === "string") {
+      byteLength += utf8ByteLength(entry.value)
+    } else {
+      const file = admittedFormFile(entry.value)
+      if (file.blob.size > MAX_FORM_FILE_BYTES) {
+        throw new RequestError("Form file entry exceeds the configured size limit")
+      }
+      byteLength += utf8ByteLength(file.filename) + file.blob.size
+    }
+    if (byteLength > MAX_FORM_MULTIPART_BODY_BYTES) {
+      throw new RequestError("Multipart form request body limit exceeded")
+    }
+  }
+  const body: TurboMultipartBody = Object.freeze({
+    byteLength,
+    entries: Object.freeze(
+      entries.map((entry) =>
+        Object.freeze({
+          name: entry.name,
+          value: typeof entry.value === "string" ? entry.value : admittedFormFile(entry.value),
+        }),
+      ),
+    ),
+    kind: "multipart",
+  })
+  return Object.freeze({ value: body })
 }
 
 function requestSignal(value: unknown): AbortSignal | undefined {
@@ -476,8 +598,8 @@ function protocolOptions(value: unknown): FormRequestProtocolOptions {
 
 /**
  * Builds one immutable transport plan from raw form/submitter attributes and
- * successful string entries. Fetch ownership, multipart uploads, constraint
- * validation, pending UI, and response handling remain separate session work.
+ * successful string/File entries. Fetch ownership, constraint validation,
+ * pending UI, and response handling remain separate session work.
  */
 export function buildFormRequest(options: BuildFormRequestOptions): FormRequestPlan {
   if (
@@ -518,6 +640,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   const admitted = admittedEntries(
     requestOption(options, "entries") as readonly SuccessfulFormEntry[],
     maximumTextPlainBodyBytes,
+    source !== "GET" && encoding === FORM_MULTIPART,
   )
   validateSubmitterEntry(submitter, admitted, maximumTextPlainBodyBytes)
   const effective =
@@ -547,7 +670,11 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
   let request: TurboRequest
   if (source === "GET") {
     url.search = ""
-    for (const entry of requestEntries) url.searchParams.append(entry.name, entry.value)
+    for (const entry of stringEntries(requestEntries)) {
+      if (typeof entry.value !== "string")
+        throw new RequestError("Form request entry value is invalid")
+      url.searchParams.append(entry.name, entry.value)
+    }
     request = Object.freeze({
       headers,
       method: source,
@@ -555,18 +682,17 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
       url: url.toString(),
     })
   } else {
-    if (encoding === FORM_MULTIPART) {
-      throw new RequestError("Multipart form requests require an upload adapter", {
-        method: effective,
-      })
-    }
     if (encoding === FORM_TEXT_PLAIN && unsafeTransport === "rails" && effective !== "POST") {
       throw new RequestError("Text form method overrides require URL-encoded or multipart data", {
         method: effective,
       })
     }
     const body =
-      encoding === FORM_TEXT_PLAIN ? textPlainBody(requestEntries) : urlEncodedBody(requestEntries)
+      encoding === FORM_MULTIPART
+        ? multipartBody(requestEntries)
+        : encoding === FORM_TEXT_PLAIN
+          ? textPlainBody(requestEntries)
+          : urlEncodedBody(requestEntries)
     request = Object.freeze({
       body,
       headers,

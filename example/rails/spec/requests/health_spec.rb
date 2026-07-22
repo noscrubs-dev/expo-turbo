@@ -3,6 +3,7 @@
 require "rails_helper"
 require "expo_turbo/rails/testing"
 require "timeout"
+require "tempfile"
 
 RSpec.describe "standalone demo host" do
   it "boots the sibling gem without adding routes" do
@@ -203,6 +204,11 @@ RSpec.describe "standalone demo host" do
     expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-submit']")&.[]("value")).to eq("save")
     expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-complete']")&.[]("value"))
       .to eq("no-content")
+    upload_form = frame.at_xpath("./DemoForm[@id='demo-upload-form']")
+    expect(upload_form&.[]("enctype")).to eq("multipart/form-data")
+    upload = upload_form&.at_xpath("./DemoFormFile[@id='demo-form-attachment']")
+    expect(upload&.[]("name")).to eq("profile[attachment]")
+    expect(upload&.[]("filename")).to eq("expo-turbo-upload.txt")
 
     get "/api/expo_turbo/demo/form"
     expect(response).to have_http_status(:bad_request)
@@ -278,6 +284,58 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:see_other)
     expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
     expect(response.body).to be_empty
+  end
+
+  it "accepts only the bounded fixed native multipart upload" do
+    host! "localhost"
+    headers = {"Turbo-Frame" => "demo-form-frame"}
+
+    Tempfile.create(["expo-turbo-upload", ".txt"]) do |file|
+      file.binmode
+      file.write("Expo Turbo native multipart upload\n")
+      file.rewind
+
+      post "/api/expo_turbo/demo/form",
+        params: {
+          commit: "upload",
+          profile: {
+            attachment: Rack::Test::UploadedFile.new(
+              file.path,
+              "text/plain",
+              true,
+              original_filename: "expo-turbo-upload.txt"
+            )
+          }
+        },
+        headers: headers
+
+      expect(response).to have_http_status(:see_other)
+      expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
+    end
+
+    Tempfile.create(["expo-turbo-upload", ".txt"]) do |file|
+      file.binmode
+      file.write("forged")
+      file.rewind
+
+      post "/api/expo_turbo/demo/form",
+        params: {
+          commit: "upload",
+          profile: {
+            attachment: Rack::Test::UploadedFile.new(
+              file.path,
+              "text/plain",
+              true,
+              original_filename: "expo-turbo-upload.txt"
+            )
+          }
+        },
+        headers: headers
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.body).to be_empty
+      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    end
   end
 
   it "keeps a valid Frame form unchanged for the explicit no-content submitter" do
