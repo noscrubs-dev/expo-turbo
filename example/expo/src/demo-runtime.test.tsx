@@ -1216,6 +1216,14 @@ describe("demo app runtime ownership", () => {
       routePath: "demo",
     },
     {
+      anchor: "nested-native-anchor-target",
+      destinationUrl: GALLERY_URL,
+      name: "nested container",
+      rawUrl: "exp://127.0.0.1:8081/--/demo#nested-native-anchor-target",
+      routeParams: { [DEMO_ROUTER_PATH_PARAM]: ["demo"] },
+      routePath: "demo",
+    },
+    {
       anchor: "generic-native-anchor-target",
       destinationUrl: GENERIC_ROUTE_URL,
       name: "nested query",
