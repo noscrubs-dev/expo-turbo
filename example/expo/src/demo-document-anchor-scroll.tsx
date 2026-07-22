@@ -12,6 +12,10 @@ import type { LayoutChangeEvent } from "react-native";
 
 export interface DemoDocumentAnchorScrollContainer {
   readonly isAvailable: () => boolean;
+  readonly measure?: (
+    listener: (x: number, y: number, width: number, height: number) => void,
+  ) => void;
+  readonly reveal?: (container: DemoDocumentAnchorScrollContainer) => void;
   readonly scrollTo: (position: Readonly<{ x: number; y: number }>) => void;
 }
 
@@ -78,6 +82,9 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     if (typeof container.isAvailable !== "function" || typeof container.scrollTo !== "function") {
       throw new TypeError("Demo nested anchor scroll container is incomplete");
     }
+    if (container.measure !== undefined && typeof container.measure !== "function") {
+      throw new TypeError("Demo nested anchor scroll container is incomplete");
+    }
     const existing = this.nestedContainers.get(id);
     if (existing && existing !== container) {
       throw new Error(`Demo nested anchor scroll container ${id} is already registered`);
@@ -120,11 +127,11 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
 
   scrollTo(id: string, alignment: "start"): undefined {
     if (alignment !== "start") return undefined;
-    this.scrollToTarget(id);
+    this.scrollToTarget(id, false);
     return undefined;
   }
 
-  /** Retains one exact Expo Go link request until the root and target finish native layout. */
+  /** Retains one exact Expo Go link request until its containers and target finish native layout. */
   requestDeferredAnchor(id: string): void {
     if (this.disposed || id.trim() === "") return;
     this.pendingDeferredTarget = id;
@@ -166,10 +173,10 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
 
   private flushDeferredAnchor(): void {
     const targetId = this.pendingDeferredTarget;
-    if (targetId) this.scrollToTarget(targetId);
+    if (targetId) this.scrollToTarget(targetId, true);
   }
 
-  private scrollToTarget(id: string): boolean {
+  private scrollToTarget(id: string, revealNested = true): boolean {
     if (this.disposed) return false;
     const container = this.container;
     const ownership = this.targets.get(id);
@@ -178,6 +185,10 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       const nestedContainer = this.nestedContainers.get(ownership.containerId);
       const targetOffset = target?.getOffset();
       if (!nestedContainer?.isAvailable() || !isNonNegativeFinite(targetOffset)) return false;
+      if (revealNested) {
+        if (!container?.isAvailable() || !container.reveal || !nestedContainer.measure) return false;
+        container.reveal(nestedContainer);
+      }
       nestedContainer.scrollTo({ x: 0, y: targetOffset });
       return true;
     }

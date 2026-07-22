@@ -116,4 +116,29 @@ describe("DemoDocumentAnchorScrollRegistry", () => {
     expect(rootCalls).toEqual([]);
     expect(nestedCalls).toEqual([{ x: 0, y: 320 }]);
   });
+
+  test("holds a deferred nested target until its root reveal owner is registered", () => {
+    const registry = new DemoDocumentAnchorScrollRegistry();
+    const reveals: number[] = [];
+    const nestedCalls: Readonly<{ x: number; y: number }>[] = [];
+    registry.requestDeferredAnchor("section");
+    registry.registerNestedContainer("nested", {
+      isAvailable: () => true,
+      measure: (listener) => listener(0, 600, 320, 160),
+      scrollTo: (position) => nestedCalls.push(position),
+    });
+    registry.registerTarget("section", { getOffset: () => 320 }, "nested");
+
+    expect(reveals).toEqual([]);
+    expect(nestedCalls).toEqual([]);
+
+    registry.registerContainer({
+      isAvailable: () => true,
+      reveal: (container) => container.measure?.((_x, y) => reveals.push(y)),
+      scrollTo: () => undefined,
+    });
+
+    expect(reveals).toEqual([600]);
+    expect(nestedCalls).toEqual([{ x: 0, y: 320 }]);
+  });
 });
