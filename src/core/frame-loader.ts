@@ -25,10 +25,12 @@ import {
 } from "./frame-history"
 import { registerFrameCommitProtection } from "./frame-history-internal"
 import {
+  BeforeFrameMorphEvent,
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
   executeFrameVisitControlReload,
+  FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   type FrameLifecycle,
   type FrameMissingEvent,
@@ -722,6 +724,17 @@ export class FrameRequestLoader {
                 )
                 renderPreparedFrameMutation(prepared, beforeFrameRenderer)
                 assertPreparedFrameMutationCurrent(this.session, mutation)
+                if (responseRenderMethod === "morph" && this.frameLifecycle) {
+                  this.frameLifecycle[FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](
+                    new BeforeFrameMorphEvent({
+                      currentFrame: frame,
+                      frameId,
+                      newFrame: prepared.responseFrame,
+                      url: candidate.url,
+                    }),
+                  )
+                  assertPreparedFrameMutationCurrent(this.session, mutation)
+                }
                 if (historyPlan) {
                   commitFrameHistoryPlan(historyPlan, this.session, frame, candidate)
                 }
