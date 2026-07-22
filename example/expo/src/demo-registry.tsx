@@ -446,6 +446,7 @@ const formInput = defineComponent({
 
 function DemoFormSubmitterComponent(props: {
   formaction?: string;
+  formenctype?: string;
   formmethod?: string;
   label: string;
   name: string;
@@ -488,6 +489,7 @@ function DemoFormSubmitterComponent(props: {
 const formSubmitter = defineComponent({
   attributes: {
     formaction: { codec: stringCodec, prop: "formaction" },
+    formenctype: { codec: stringCodec, prop: "formenctype" },
     formmethod: { codec: stringCodec, prop: "formmethod" },
     label: { codec: stringCodec, prop: "label" },
     name: { codec: stringCodec, prop: "name" },
@@ -497,6 +499,7 @@ const formSubmitter = defineComponent({
   component: DemoFormSubmitterComponent,
   schema: z.object({
     formaction: z.string().optional(),
+    formenctype: z.string().optional(),
     formmethod: z.string().optional(),
     label: z.string(),
     name: z.string(),

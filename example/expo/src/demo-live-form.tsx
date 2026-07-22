@@ -164,7 +164,8 @@ export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRunti
       <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
         This native-only panel loads one canonical Rails Frame form. Validation stays server-owned:
         submit an unavailable name to render matching 422 XML, complete a valid name without
-        replacing this Frame, or save it to follow the canonical redirect back to this Frame.
+        replacing this Frame, save it to follow the canonical redirect, or use the narrowly scoped
+        text/plain submitter for the same Rails-owned response path.
       </Text>
       <DemoLiveFormRuntimeProvider proof={proof}>
         <ExpoTurboRoot />

@@ -182,6 +182,48 @@ liveTest(
       throw new Error("Rails validation response did not include its error element")
     expect(nodeTextContent(invalidError)).toBe("This demo name is unavailable")
 
+    const textPlain = forms.controlsFor("id:demo-form")
+    textPlain.register("id:demo-form-first-name", {
+      kind: "value",
+      name: "profile[first_name]",
+      value: "invalid",
+    })
+    const textPlainSubmitter = textPlain.register("id:demo-form-text-plain", {
+      kind: "submitter",
+      name: "commit",
+      value: "save",
+    })
+
+    await expect(
+      textPlain.submit({
+        protocol: { requestId: "rails-form-text-plain-invalid" },
+        submitter: textPlainSubmitter.selection,
+      }),
+    ).resolves.toMatchObject({
+      application: "frame",
+      classification: "client-error",
+      destination: { frameId: FRAME_ID, kind: "frame" },
+      redirected: false,
+      responseStatus: 422,
+      responseUrl: formUrl,
+      status: "applied",
+    })
+    expect(requests.shift()).toMatchObject({
+      body: {
+        contentType: "text/plain",
+        value: "profile[first_name]=invalid\r\ncommit=save\r\n",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    const textPlainError = session.tree.getElementById("demo-form-error")
+    if (!textPlainError) throw new Error("Rails text/plain validation response did not include its error")
+    expect(nodeTextContent(textPlainError)).toBe("This demo name is unavailable")
+
     const noContent = forms.controlsFor("id:demo-form")
     noContent.register("id:demo-form-first-name", {
       kind: "value",

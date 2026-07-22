@@ -230,6 +230,45 @@ RSpec.describe "standalone demo host" do
       .to eq("This demo name is unavailable")
   end
 
+  it "accepts only the standalone text/plain form profile" do
+    host! "localhost"
+    headers = {"Content-Type" => "text/plain", "Turbo-Frame" => "demo-form-frame"}
+
+    post "/api/expo_turbo/demo/form",
+      params: "profile[first_name]=invalid\r\ncommit=save\r\n",
+      headers: headers
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(frame.at_xpath(".//DemoFormInput[@id='demo-form-first-name']")&.[]("value")).to eq("invalid")
+    expect(frame.at_xpath(".//DemoText[@id='demo-form-error']")&.text)
+      .to eq("This demo name is unavailable")
+
+    post "/api/expo_turbo/demo/form",
+      params: "profile[first_name]=Ada\r\ncommit=save\r\n",
+      headers: headers
+
+    expect(response).to have_http_status(:see_other)
+    expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
+
+    [
+      "profile[first_name]=Ada\r\ncommit=save",
+      "commit=save\r\nprofile[first_name]=Ada\r\n",
+      "profile[first_name]=Ada\r\ncommit=save\r\nextra=value\r\n",
+      "profile[first_name]=Ada\r\ncommit=delete\r\n",
+      "profile[first_name]=Ada\r\ncommit=no-content\r\n",
+      "profile[first_name]=Ada\r\ncommit=save\r\n\xFF".b
+    ].each do |body|
+      post "/api/expo_turbo/demo/form", params: body, headers: headers
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.body).to be_empty
+      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    end
+  end
+
   it "redirects valid form submissions to the fixed canonical Frame GET" do
     host! "localhost"
     post "/api/expo_turbo/demo/form",
