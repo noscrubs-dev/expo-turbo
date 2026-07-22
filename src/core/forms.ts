@@ -105,6 +105,7 @@ export type FormControlDescriptor =
       readonly values: readonly string[]
     })
   | (ValidatableFormControlBase & {
+      readonly defaultSelection?: "first-enabled"
       readonly kind: "select"
       readonly options: readonly FormSelectItem[]
     })
@@ -133,6 +134,7 @@ type NormalizedFormSelectItem = NormalizedFormSelectOption | NormalizedFormSelec
 type NormalizedFormControlDescriptor =
   | Exclude<FormControlDescriptor, { readonly kind: "select" }>
   | (ValidatableFormControlBase & {
+      readonly defaultSelection?: "first-enabled"
       readonly kind: "select"
       readonly options: readonly NormalizedFormSelectItem[]
     })
@@ -707,6 +709,12 @@ function normalizeDescriptor(
       })
     }
     case "select": {
+      const defaultSelection = descriptor.defaultSelection
+      if (defaultSelection !== undefined && defaultSelection !== "first-enabled") {
+        throw new PropsError("Select form control default selection is unsupported", {
+          target: nodeKey,
+        })
+      }
       if (!Array.isArray(descriptor.options)) {
         throw new PropsError("Select form control options must be an array", {
           target: nodeKey,
@@ -792,6 +800,7 @@ function normalizeDescriptor(
       const selectValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
+        ...(defaultSelection !== undefined ? { defaultSelection } : {}),
         kind: "select",
         options: Object.freeze(options),
         ...(selectValidity ? { validity: selectValidity } : {}),
@@ -1312,17 +1321,35 @@ export class FormControlRegistry {
             entries.push(Object.freeze({ name: descriptor.name, value }))
           }
           return
-        case "select":
+        case "select": {
+          let hasSelectedOption = false
+          let firstEnabledOption: NormalizedFormSelectOption | undefined
           for (const item of descriptor.options) {
             const options = item.kind === "group" ? item.options : [item]
-            if (item.kind === "group" && item.disabled) continue
             for (const option of options) {
+              if (option.selected) hasSelectedOption = true
+              if (
+                firstEnabledOption === undefined &&
+                !option.disabled &&
+                !(item.kind === "group" && item.disabled)
+              ) {
+                firstEnabledOption = option
+              }
+              if (item.kind === "group" && item.disabled) continue
               if (option.selected && !option.disabled) {
                 entries.push(Object.freeze({ name: descriptor.name, value: option.value }))
               }
             }
           }
+          if (
+            descriptor.defaultSelection === "first-enabled" &&
+            !hasSelectedOption &&
+            firstEnabledOption
+          ) {
+            entries.push(Object.freeze({ name: descriptor.name, value: firstEnabledOption.value }))
+          }
           return
+        }
         case "submitter":
           entries.push(Object.freeze({ name: descriptor.name, value: descriptor.value ?? "" }))
           return

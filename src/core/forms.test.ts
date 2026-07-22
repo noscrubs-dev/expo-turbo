@@ -1631,6 +1631,48 @@ describe("native form control registry", () => {
     ])
   })
 
+  test("optionally defaults a single-choice select to its first enabled option", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+
+    registry.register("id:first", {
+      defaultSelection: "first-enabled",
+      kind: "select",
+      name: "plan",
+      options: [
+        { disabled: true, kind: "option", selected: false, value: "disabled" },
+        {
+          disabled: true,
+          kind: "group",
+          options: [{ kind: "option", selected: false, value: "disabled-group" }],
+        },
+        {
+          kind: "group",
+          options: [
+            { kind: "option", selected: false, textContent: "  Basic\n plan " },
+            { kind: "option", selected: false, value: "pro" },
+          ],
+        },
+      ],
+    })
+    registry.register("id:second", {
+      defaultSelection: "first-enabled",
+      kind: "select",
+      name: "disabled_selection",
+      options: [
+        { disabled: true, kind: "option", selected: true, value: "selected-disabled" },
+        { kind: "option", selected: false, value: "must-not-default" },
+      ],
+    })
+    registry.register("id:checked", {
+      kind: "select",
+      name: "explicit_empty",
+      options: [{ kind: "option", selected: false, value: "must-remain-empty" }],
+    })
+
+    expect(registry.successfulEntries()).toEqual([{ name: "plan", value: "Basic plan" }])
+  })
+
   test("requires headless controls to re-register after explicit owner changes", () => {
     const session = externalFormFixture()
     const registry = registryFor(session)
@@ -2025,6 +2067,12 @@ describe("native form control registry", () => {
         kind: "select",
         name: "choice",
         options: [{ kind: "option", selected: true, textContent: 1, value: "one" }],
+      },
+      {
+        defaultSelection: "last-enabled",
+        kind: "select",
+        name: "choice",
+        options: [],
       },
       {
         kind: "select",
