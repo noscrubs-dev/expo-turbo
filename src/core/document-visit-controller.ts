@@ -30,7 +30,7 @@ import {
   isDocumentContentTypeError,
   isDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
-import type { DocumentPrefetchCache } from "./document-prefetch-cache"
+import type { DocumentPrefetchCache, DocumentPrefetchLease } from "./document-prefetch-cache"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
   dispatchDocumentLoad,
@@ -61,7 +61,6 @@ import {
   requestLifecycleDefaultHandlingPrevented,
   settleRequestOperation,
 } from "./request-lifecycle"
-import type { DocumentTree } from "./tree"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
@@ -268,6 +267,7 @@ type DocumentSnapshotPreviewLifecycleOptions = DocumentSnapshotPreviewOptions &
 export class DocumentVisitController {
   private attemptEpoch = 0
   private readonly errorListeners = new Set<DocumentVisitErrorListener>()
+  private canceledPrefetchAttemptEpoch: number | undefined
   private readonly history: DocumentHistory | undefined
   private readonly listeners = new Set<DocumentVisitListener>()
   private readonly onObserverError: ((error: AggregateError) => void) | undefined
@@ -279,6 +279,8 @@ export class DocumentVisitController {
   private pendingDocumentRender:
     | Readonly<{ epoch: number; prepared: PreparedDocumentRender }>
     | undefined
+  private pendingPrefetchCancel: (() => void) | undefined
+  private pendingPrefetchAttemptEpoch: number | undefined
   private progressHandle: unknown
   private progressVisible = false
   private previewContinuationEpoch: number | undefined
@@ -688,7 +690,17 @@ export class DocumentVisitController {
   }
 
   cancel(): void {
-    if (this.status !== "started") return
+    if (this.status !== "started") {
+      const pendingPrefetchAttemptEpoch = this.pendingPrefetchAttemptEpoch
+      if (pendingPrefetchAttemptEpoch === undefined) return
+      this.pendingPrefetchAttemptEpoch = undefined
+      this.canceledPrefetchAttemptEpoch = pendingPrefetchAttemptEpoch
+      this.attemptEpoch += 1
+      const cancelPrefetch = this.pendingPrefetchCancel
+      this.pendingPrefetchCancel = undefined
+      cancelPrefetch?.()
+      return
+    }
     const epoch = this.visitEpoch
     const continuationPending = this.previewContinuationEpoch === epoch
     const pendingDocumentRender =
@@ -941,7 +953,7 @@ export class DocumentVisitController {
   private async startPrefetchedVisit(
     source: string,
     navigation: NavigationAdapter | undefined,
-    prefetched: Promise<DocumentTree | undefined>,
+    prefetched: DocumentPrefetchLease,
     historyPlan: DocumentVisitHistoryPlan | undefined,
     action: Extract<VisitAction, "advance" | "replace">,
     attemptEpoch: number,
@@ -949,11 +961,21 @@ export class DocumentVisitController {
     treeGeneration: number,
     direction: DocumentVisitDirection,
   ): Promise<DocumentVisitResult> {
+    this.pendingPrefetchAttemptEpoch = attemptEpoch
+    this.pendingPrefetchCancel = prefetched.cancel
     let epoch: number | undefined
     let render: PreparedDocumentRender | undefined
     let report: ReturnType<DocumentRequestLoader["restoreSnapshot"]>
     try {
-      const tree = await prefetched
+      const tree = await prefetched.promise
+      if (this.canceledPrefetchAttemptEpoch === attemptEpoch) {
+        this.canceledPrefetchAttemptEpoch = undefined
+        return Object.freeze({ source: "prefetch", status: "canceled", url: source })
+      }
+      if (this.pendingPrefetchAttemptEpoch === attemptEpoch) {
+        this.pendingPrefetchAttemptEpoch = undefined
+        this.pendingPrefetchCancel = undefined
+      }
       if (!tree) {
         this.assertAttemptEpoch(attemptEpoch)
         this.assertDocumentClaimSerial(documentClaimSerial)
@@ -1030,6 +1052,14 @@ export class DocumentVisitController {
         },
       } as DocumentSnapshotRestoreLifecycleOptions)
     } catch (error) {
+      if (this.canceledPrefetchAttemptEpoch === attemptEpoch) {
+        this.canceledPrefetchAttemptEpoch = undefined
+        return Object.freeze({ source: "prefetch", status: "canceled", url: source })
+      }
+      if (this.pendingPrefetchAttemptEpoch === attemptEpoch) {
+        this.pendingPrefetchAttemptEpoch = undefined
+        this.pendingPrefetchCancel = undefined
+      }
       const reported =
         error instanceof Error ? error : new StateError("Document prefetched visit failed")
       if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {

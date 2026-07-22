@@ -5621,6 +5621,35 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("cancels an activated in-flight press-in response without waiting for transport", async () => {
+    const pending = deferred<TurboResponse>()
+    const requests: TurboRequest[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      (request) => {
+        requests.push(request)
+        return pending.promise
+      },
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      harness.commitPrefetch("/next")
+      visit = harness.activation("/next")()
+      harness.controller.cancel()
+    })
+
+    await expect(visit).resolves.toMatchObject({ source: "prefetch", status: "canceled" })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.signal?.aborted).toBe(true)
+    expect(harness.session.revision).toBe(0)
+    act(() => harness.renderer.unmount())
+  })
+
   test("releases an abandoned press-in prefetch without caching or reporting a late failure", async () => {
     const pending = deferred<TurboResponse>()
     const errors: ExpoTurboRenderError[] = []

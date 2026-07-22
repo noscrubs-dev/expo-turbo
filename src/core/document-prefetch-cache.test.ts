@@ -16,7 +16,7 @@ describe("DocumentPrefetchCache", () => {
     cache.put(url, tree(url, "cached"))
     now = 10_099
 
-    expect((await cache.take(url))?.getElementById("cached")).toBeDefined()
+    expect((await cache.take(url)?.promise)?.getElementById("cached")).toBeDefined()
     expect(cache.take(url)).toBeUndefined()
   })
 

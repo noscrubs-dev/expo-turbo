@@ -207,6 +207,7 @@ export class DocumentPreloader {
             this.prefetchCache.putPending(
               active.url,
               active.promise.then(() => active.state.prefetchTree),
+              () => this.cancelActive(active),
             )
           } else {
             active.state.durable = true
@@ -255,6 +256,12 @@ export class DocumentPreloader {
       canceled.push(preload)
     }
     for (const preload of canceled) preload.controller.abort()
+  }
+
+  private cancelActive(active: ActiveDocumentPreload): void {
+    if (this.active.get(active.url) !== active || active.state.cacheCommitProtected) return
+    this.active.delete(active.url)
+    active.controller.abort()
   }
 
   private begin(source: string, durable: boolean): ActiveDocumentPreload {

@@ -555,7 +555,7 @@ describe("document preloader", () => {
     )
 
     await expect(lease.promise).resolves.toMatchObject({ status: "cached" })
-    expect((await prefetched)?.getElementById("next")).toBeDefined()
+    expect((await prefetched?.promise)?.getElementById("next")).toBeDefined()
     expect(snapshotCache.has("https://example.test/app/next")).toBe(false)
   })
 

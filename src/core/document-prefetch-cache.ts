@@ -4,9 +4,15 @@ import { DocumentTree } from "./tree"
 export const DOCUMENT_PREFETCH_CACHE_TTL_MS = 10_000
 
 interface DocumentPrefetchEntry {
+  readonly cancel: () => void
   readonly expiresAt: number
   readonly promise: Promise<DocumentTree | undefined>
   readonly url: string
+}
+
+export interface DocumentPrefetchLease {
+  cancel(): void
+  readonly promise: Promise<DocumentTree | undefined>
 }
 
 function prefetchKey(value: string): string {
@@ -47,13 +53,16 @@ export class DocumentPrefetchCache {
     this.entry = undefined
   }
 
-  take(url: string): Promise<DocumentTree | undefined> | undefined {
+  take(url: string): DocumentPrefetchLease | undefined {
     const key = prefetchKey(url)
     const entry = this.entry
     if (!entry || entry.url !== key) return undefined
     this.entry = undefined
     if (entry.expiresAt <= this.now()) return undefined
-    return entry.promise.then((tree) => tree?.clone())
+    return Object.freeze({
+      cancel: entry.cancel,
+      promise: entry.promise.then((tree) => tree?.clone()),
+    })
   }
 
   put(url: string, tree: DocumentTree): void {
@@ -69,12 +78,20 @@ export class DocumentPrefetchCache {
     this.putPending(key, Promise.resolve(snapshot))
   }
 
-  putPending(url: string, promise: Promise<DocumentTree | undefined>): void {
+  putPending(
+    url: string,
+    promise: Promise<DocumentTree | undefined>,
+    cancel: () => void = () => undefined,
+  ): void {
     const key = prefetchKey(url)
     if (!promise || typeof promise.then !== "function") {
       throw new PropsError("Document prefetch cache entries must be promises")
     }
+    if (typeof cancel !== "function") {
+      throw new PropsError("Document prefetch cache cancellation must be a function")
+    }
     this.entry = Object.freeze({
+      cancel,
       expiresAt: this.now() + this.ttlMs,
       promise,
       url: key,

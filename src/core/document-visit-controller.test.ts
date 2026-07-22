@@ -272,6 +272,34 @@ describe("Document visit controller", () => {
     await second
   })
 
+  test("cancels a visit while its committed prefetch response is still pending", async () => {
+    let resolvePrefetch: ((tree: DocumentTree) => void) | undefined
+    const prefetchCache = new DocumentPrefetchCache()
+    prefetchCache.putPending(
+      "https://example.test/next",
+      new Promise((resolve) => {
+        resolvePrefetch = resolve
+      }),
+    )
+    const current = harness({ prefetchCache })
+
+    const visiting = current.controller.visit("/next")
+    current.controller.cancel()
+    resolvePrefetch?.(
+      parseExpoTurboDocument('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visiting).toEqual({
+      source: "prefetch",
+      status: "canceled",
+      url: "https://example.test/next",
+    })
+    expect(current.session.tree.getElementById("late")).toBeUndefined()
+    expect(current.pending).toHaveLength(0)
+  })
+
   test("lets before-visit prevent work before history, cache, request, or state ownership", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     const snapshotCache = new ReentrantSnapshotCache()
