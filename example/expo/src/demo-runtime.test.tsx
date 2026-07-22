@@ -879,9 +879,11 @@ describe("demo app runtime ownership", () => {
   });
 
   test("activates same-document and loaded cross-document Frame anchors", async () => {
+    const [clock, timers] = createFixtureClock();
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];
     const runtime = createDemoRuntime({
+      clock,
       documentFetch: {
         fetch(request) {
           requests.push(request);
@@ -989,6 +991,7 @@ describe("demo app runtime ownership", () => {
     if (!crossDocumentFrameAnchorLink) {
       throw new Error("Cross-document Frame anchor link was not rendered");
     }
+    const frameController = runtime.frames.get("link-frame");
 
     await act(async () => {
       anchorLink.props.onPress();
@@ -1012,8 +1015,35 @@ describe("demo app runtime ownership", () => {
       await nextTurn();
     });
 
+    expect(runtime.session.tree.getElementById("frame-preload-preview")).toBeDefined();
+    expect(runtime.session.tree.getElementById("frame-linked-fragment-target")).toBeUndefined();
+    expect(frameController.state).toMatchObject({
+      busy: true,
+      complete: false,
+      previewVisible: true,
+      status: "loading",
+    });
+    expect(scrolls.at(-1)).toEqual({ x: 0, y: 720 });
+    const canonicalTimer = timers[0];
+    if (!canonicalTimer) throw new Error("Frame preview canonical revalidation did not delay");
+    expect(canonicalTimer.delayMs).toBe(1_500);
+
+    await act(async () => {
+      canonicalTimer.callback();
+      await frameController.loaded;
+      await nextTurn();
+      await nextTurn();
+    });
+
     expect(scrolls.at(-1)).toEqual({ x: 0, y: 880 });
     expect(runtime.session.tree.getElementById("frame-linked-fragment-target")).toBeDefined();
+    expect(runtime.session.tree.getElementById("frame-preload-preview")).toBeUndefined();
+    expect(frameController.state).toMatchObject({
+      busy: false,
+      complete: true,
+      previewVisible: false,
+      status: "completed",
+    });
     expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
     expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
 

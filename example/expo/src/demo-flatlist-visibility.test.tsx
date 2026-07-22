@@ -99,6 +99,7 @@ const FRAME_STATE: FrameControllerSnapshot = Object.freeze({
   frameId: "flatlist-lazy-frame",
   hasBeenLoaded: false,
   loading: "lazy",
+  previewVisible: false,
   revision: 0,
   status: "idle",
 });

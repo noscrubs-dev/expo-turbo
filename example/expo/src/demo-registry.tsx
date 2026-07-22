@@ -972,7 +972,7 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       </DemoDocumentLink>
       <DemoDocumentLink
         data-turbo-preload=""
-        href="/demo/frame-linked#frame-linked-fragment-target"
+        href="/demo/frame-linked?preview=automatic#frame-linked-fragment-target"
       >
         <DemoText>Use the preloaded Frame response, then jump to its fragment target.</DemoText>
       </DemoDocumentLink>
