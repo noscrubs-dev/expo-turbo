@@ -1,7 +1,20 @@
-name: Release candidate
+name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Build a non-publishing candidate or publish an approved frozen candidate
+        required: true
+        default: candidate
+        type: choice
+        options:
+          - candidate
+          - publish
+      candidate_run_id:
+        description: Successful Release candidate workflow run ID required for stable publication
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -9,6 +22,7 @@ permissions:
 jobs:
   admission:
     name: Candidate admission
+    if: ${{ inputs.operation == 'candidate' }}
     runs-on: ubuntu-latest
     steps:
       - name: Require the merged main branch
@@ -19,6 +33,7 @@ jobs:
 
   typescript-artifact:
     name: TypeScript artifact
+    if: ${{ inputs.operation == 'candidate' }}
     needs: admission
     runs-on: ubuntu-latest
     steps:
@@ -62,6 +77,7 @@ jobs:
 
   ruby-gem:
     name: Ruby gem (${{ matrix.turbo_rails }})
+    if: ${{ inputs.operation == 'candidate' }}
     needs: admission
     runs-on: ubuntu-latest
     strategy:
@@ -130,6 +146,7 @@ jobs:
 
   expo-example:
     name: Expo example
+    if: ${{ inputs.operation == 'candidate' }}
     needs: admission
     runs-on: ubuntu-latest
     steps:
@@ -150,6 +167,7 @@ jobs:
 
   rails-example:
     name: Rails example
+    if: ${{ inputs.operation == 'candidate' }}
     needs: admission
     runs-on: ubuntu-latest
     services:
@@ -180,6 +198,7 @@ jobs:
 
   manifest:
     name: Candidate manifest
+    if: ${{ inputs.operation == 'candidate' }}
     needs: [typescript-artifact, ruby-gem, expo-example, rails-example]
     runs-on: ubuntu-latest
     environment: release
@@ -229,10 +248,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          package_name="$(node -p 'require("./package.json").name')"
           package_version="$(node -p 'require("./package.json").version')"
+          gem_name="$(ruby -e 'spec = Gem::Specification.load("rails/expo_turbo-rails.gemspec"); print spec.name')"
           gem_version="$(ruby -Irails/lib -rexpo_turbo/rails/version -e 'print ExpoTurbo::Rails::VERSION')"
           test "$package_version" = "$gem_version"
-          export package_version gem_version
+          export package_name package_version gem_name gem_version
           node --input-type=module <<'NODE'
           import { createHash } from "node:crypto"
           import { readdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -248,6 +269,10 @@ jobs:
           const gem = artifact("artifacts/ruby-gem", ".gem")
           const manifest = {
             commit: process.env.GITHUB_SHA,
+            repository: process.env.GITHUB_REPOSITORY,
+            workflowRunId: Number(process.env.GITHUB_RUN_ID),
+            package: { name: process.env.package_name, version: process.env.package_version },
+            gem: { name: process.env.gem_name, version: process.env.gem_version },
             packageVersion: process.env.package_version,
             gemVersion: process.env.gem_version,
             artifacts: [
@@ -271,3 +296,224 @@ jobs:
             SHA256SUMS
           if-no-files-found: error
           retention-days: 30
+
+  stable-publication:
+    name: Stable publication
+    if: ${{ inputs.operation == 'publish' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1
+        with:
+          ruby-version: "3.3.8"
+      - name: Verify the successful candidate run belongs to this main commit
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const candidateRunId = Number(process.env.CANDIDATE_RUN_ID)
+          if (!Number.isSafeInteger(candidateRunId) || candidateRunId < 1) {
+            throw new Error("A positive candidate_run_id is required for stable publication")
+          }
+          const response = await fetch(
+            `${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${candidateRunId}`,
+            {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+              },
+            },
+          )
+          if (!response.ok) throw new Error(`Candidate run lookup failed: ${response.status}`)
+          const run = await response.json()
+          if (
+            run.conclusion !== "success" ||
+            run.event !== "workflow_dispatch" ||
+            run.head_branch !== "main" ||
+            run.head_sha !== process.env.GITHUB_SHA ||
+            run.path !== ".github/workflows/release.yml"
+          ) {
+            throw new Error("Candidate run is not a successful release.yml run for this exact main commit")
+          }
+          NODE
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+          name: release-candidate
+          path: release-candidate
+      - name: Verify the frozen pair and expose only validated artifact paths
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          (
+            cd release-candidate
+            sha256sum --check SHA256SUMS
+          )
+          node <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from "node:fs"
+          import { join } from "node:path"
+
+          const manifest = JSON.parse(readFileSync("release-candidate/release-candidate.json", "utf8"))
+          const candidateRunId = Number(process.env.CANDIDATE_RUN_ID)
+          const expectedRepository = process.env.GITHUB_REPOSITORY
+          const expectedCommit = process.env.GITHUB_SHA
+          const packageName = manifest.package?.name
+          const packageVersion = manifest.package?.version
+          const gemName = manifest.gem?.name
+          const gemVersion = manifest.gem?.version
+          if (
+            manifest.repository !== expectedRepository ||
+            manifest.workflowRunId !== candidateRunId ||
+            manifest.commit !== expectedCommit ||
+            packageName !== "expo-turbo" ||
+            gemName !== "expo_turbo-rails" ||
+            packageVersion !== gemVersion ||
+            packageVersion !== manifest.packageVersion ||
+            gemVersion !== manifest.gemVersion ||
+            !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion)
+          ) {
+            throw new Error("Candidate manifest does not describe this exact Expo Turbo release")
+          }
+          const npmArtifact = join("release-candidate", "artifacts/npm-tarball", `${packageName}-${packageVersion}.tgz`)
+          const gemArtifact = join("release-candidate", "artifacts/ruby-gem", `${gemName}-${gemVersion}.gem`)
+          const expectedArtifacts = new Set([npmArtifact.slice("release-candidate/".length), gemArtifact.slice("release-candidate/".length)])
+          if (
+            !Array.isArray(manifest.artifacts) ||
+            manifest.artifacts.length !== 2 ||
+            manifest.artifacts.some(({ file, sha256 }) => !expectedArtifacts.has(file) || !/^[a-f0-9]{64}$/.test(sha256)) ||
+            !existsSync(npmArtifact) ||
+            !existsSync(gemArtifact)
+          ) {
+            throw new Error("Candidate artifacts do not match the manifest")
+          }
+          appendFileSync(
+            process.env.GITHUB_ENV,
+            [
+              `NPM_ARTIFACT=${npmArtifact}`,
+              `GEM_ARTIFACT=${gemArtifact}`,
+              `NPM_NAME=${packageName}`,
+              `GEM_NAME=${gemName}`,
+              `PACKAGE_VERSION=${packageVersion}`,
+              `GEM_VERSION=${gemVersion}`,
+              `RELEASE_TAG=v${packageVersion}`,
+            ].join("\n") + "\n",
+          )
+          NODE
+      - name: Require both exact versions to be unpublished
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const npmResponse = await fetch(
+            `https://registry.npmjs.org/${encodeURIComponent(process.env.NPM_NAME)}/${encodeURIComponent(process.env.PACKAGE_VERSION)}`,
+          )
+          if (npmResponse.status !== 404) {
+            throw new Error(`npm ${process.env.NPM_NAME}@${process.env.PACKAGE_VERSION} is already present or unavailable: ${npmResponse.status}`)
+          }
+          const gemResponse = await fetch(
+            `https://rubygems.org/api/v1/versions/${encodeURIComponent(process.env.GEM_NAME)}.json`,
+          )
+          if (gemResponse.status !== 404) {
+            if (!gemResponse.ok) {
+              throw new Error(`RubyGems version lookup failed: ${gemResponse.status}`)
+            }
+            const versions = await gemResponse.json()
+            if (versions.some((version) => version.number === process.env.GEM_VERSION)) {
+              throw new Error(`RubyGems ${process.env.GEM_NAME} ${process.env.GEM_VERSION} is already present`)
+            }
+          }
+          NODE
+      - name: Require the source tag and GitHub release to be unused
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Git tag $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists" >&2
+            exit 1
+          fi
+      - name: Configure RubyGems trusted-publisher credentials
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      - name: Publish the exact frozen npm and RubyGems bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm publish "$NPM_ARTIFACT" --access public
+          gem push "$GEM_ARTIFACT"
+      - name: Verify registry downloads match the frozen checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          import { createHash } from "node:crypto"
+          import { readFileSync } from "node:fs"
+
+          const expectedChecksums = new Map(
+            readFileSync("release-candidate/SHA256SUMS", "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => line.split(/  +/))
+              .map(([sha256, file]) => [file, sha256]),
+          )
+          const checksum = (body) => createHash("sha256").update(body).digest("hex")
+          const eventually = async (url) => {
+            let response
+            for (let attempt = 0; attempt < 10; attempt += 1) {
+              response = await fetch(url)
+              if (response.ok) return response
+              await new Promise((resolve) => setTimeout(resolve, 2000))
+            }
+            throw new Error(`Published artifact was unavailable: ${response?.status ?? "network"}`)
+          }
+          const metadata = await eventually(
+            `https://registry.npmjs.org/${encodeURIComponent(process.env.NPM_NAME)}/${encodeURIComponent(process.env.PACKAGE_VERSION)}`,
+          )
+          const npm = await metadata.json()
+          const npmTarball = await eventually(npm.dist?.tarball)
+          const npmExpected = expectedChecksums.get(`artifacts/npm-tarball/${process.env.NPM_NAME}-${process.env.PACKAGE_VERSION}.tgz`)
+          if (checksum(Buffer.from(await npmTarball.arrayBuffer())) !== npmExpected) {
+            throw new Error("Published npm tarball does not match the frozen candidate")
+          }
+          const gem = await eventually(
+            `https://rubygems.org/downloads/${process.env.GEM_NAME}-${process.env.GEM_VERSION}.gem`,
+          )
+          const gemExpected = expectedChecksums.get(`artifacts/ruby-gem/${process.env.GEM_NAME}-${process.env.GEM_VERSION}.gem`)
+          if (checksum(Buffer.from(await gem.arrayBuffer())) !== gemExpected) {
+            throw new Error("Published RubyGems artifact does not match the frozen candidate")
+          }
+          NODE
+      - name: Create the immutable source tag and GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "$NPM_ARTIFACT" \
+            "$GEM_ARTIFACT" \
+            release-candidate/release-candidate.json \
+            release-candidate/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Expo Turbo $PACKAGE_VERSION" \
+            --notes "Stable publication of the frozen candidate from workflow run ${{ inputs.candidate_run_id }}."
