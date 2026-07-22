@@ -35,12 +35,31 @@ export function DemoCompatibilityGallery() {
   const runtime = useDemoRuntime();
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
+  const autofocusScrollContainerCleanup = useRef<(() => void) | undefined>(undefined);
   const scrollX = useRef(0);
   const scrollY = useRef(0);
+  const setScrollView = useCallback(
+    (node: ScrollView | null) => {
+      autofocusScrollContainerCleanup.current?.();
+      autofocusScrollContainerCleanup.current = undefined;
+      scrollView.current = node;
+      if (!node) return;
+      autofocusScrollContainerCleanup.current = runtime.autofocusScroll.registerContainer({
+        getScrollY: () => scrollY.current,
+        isAvailable: () => Boolean(node.getNativeScrollRef?.()),
+        measure: (listener) => {
+          node.getNativeScrollRef?.()?.measureInWindow(listener);
+        },
+        scrollTo: (options) => node.scrollTo(options),
+      });
+    },
+    [runtime.autofocusScroll],
+  );
   const remeasure = useCallback(() => {
+    runtime.autofocusScroll.remeasure();
     runtime.visibility.remeasureAll();
     runtime.frameAutoscroll.remeasure();
-  }, [runtime.frameAutoscroll, runtime.visibility]);
+  }, [runtime.autofocusScroll, runtime.frameAutoscroll, runtime.visibility]);
   useLayoutEffect(
     () =>
       runtime.visibility.registerContainer(DEMO_ROOT_VISIBILITY_CONTAINER_ID, (listener) => {
@@ -81,6 +100,10 @@ export function DemoCompatibilityGallery() {
     () => () => runtime.documentAnchorScroll.setDocumentOffset(undefined),
     [runtime.documentAnchorScroll],
   );
+  useLayoutEffect(
+    () => () => autofocusScrollContainerCleanup.current?.(),
+    [runtime.autofocusScroll],
+  );
   useEffect(() => {
     remeasure();
   }, [remeasure, window.height, window.width]);
@@ -90,6 +113,7 @@ export function DemoCompatibilityGallery() {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
       onContentSizeChange={() => {
+        runtime.autofocusScroll.remeasure();
         runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();
       }}
@@ -104,10 +128,11 @@ export function DemoCompatibilityGallery() {
             scrollPosition: { x: scrollX.current, y: scrollY.current },
           });
         }
+        runtime.autofocusScroll.remeasure();
         runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();
       }}
-      ref={scrollView}
+      ref={setScrollView}
       scrollEventThrottle={32}
     >
       <View style={{ gap: 8 }}>

@@ -15,6 +15,7 @@ import { z } from "zod"
 
 import {
   type AutofocusAdapter,
+  type AutofocusScrollAdapter,
   type CableAdapter,
   defineStyleAdapter,
   type DocumentAnchorScrollAdapter,
@@ -190,6 +191,7 @@ function render(
   registry: ExpoTurboProviderProps["registry"],
   options: Readonly<{
     autofocus?: AutofocusAdapter
+    autofocusScroll?: AutofocusScrollAdapter
     documentAnchorScroll?: DocumentAnchorScrollAdapter
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
@@ -10242,6 +10244,13 @@ describe("React protocol renderer", () => {
         <DocumentFocusTarget id="later" focus-key="later" focusable="" autofocus="false" />
       </Gallery>`,
     )
+    const scrolls: string[] = []
+    const autofocusScroll: AutofocusScrollAdapter = {
+      canScroll: (nodeKey) => fixture.mounted.has(nodeKey),
+      scrollTo: (nodeKey) => {
+        scrolls.push(nodeKey)
+      },
+    }
     let first: ReactTestRenderer | undefined
     let second: ReactTestRenderer | undefined
     act(() => {
@@ -10253,6 +10262,7 @@ describe("React protocol renderer", () => {
             ExpoTurboProvider,
             {
               autofocus: fixture.autofocus,
+              autofocusScroll,
               registry: fixture.registry,
               session: fixture.session,
             },
@@ -10267,6 +10277,7 @@ describe("React protocol renderer", () => {
           ExpoTurboProvider,
           {
             autofocus: fixture.autofocus,
+            autofocusScroll,
             registry: fixture.registry,
             session: fixture.session,
           },
@@ -10277,6 +10288,7 @@ describe("React protocol renderer", () => {
 
     expect(fixture.mounted).toEqual(new Set(["id:available", "id:later"]))
     expect(fixture.focused).toEqual(["id:available"])
+    expect(scrolls).toEqual(["id:available"])
 
     act(() => second?.unmount())
     act(() => first?.unmount())
@@ -10408,6 +10420,7 @@ describe("React protocol renderer", () => {
   test("preserves the first standalone Stream autofocus intent across a batched later message", () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     let focusedId: string | undefined
+    const scrolls: string[] = []
     const autofocus: AutofocusAdapter = {
       ...fixture.autofocus,
       focus: (nodeKey) => {
@@ -10416,7 +10429,15 @@ describe("React protocol renderer", () => {
       },
       getFocusedId: () => focusedId,
     }
-    const renderer = render(fixture.session, fixture.registry, { autofocus })
+    const renderer = render(fixture.session, fixture.registry, {
+      autofocus,
+      autofocusScroll: {
+        canScroll: (nodeKey) => fixture.mounted.has(nodeKey),
+        scrollTo: (nodeKey) => {
+          scrolls.push(nodeKey)
+        },
+      },
+    })
 
     act(() => {
       dispatchTurboStreamFragment(
@@ -10435,6 +10456,7 @@ describe("React protocol renderer", () => {
 
     expect(fixture.mounted).toEqual(new Set(["id:first", "id:later", "id:unrelated"]))
     expect(fixture.focused).toEqual(["id:first"])
+    expect(scrolls).toEqual(["id:first"])
 
     act(() => renderer.unmount())
   })
@@ -10574,6 +10596,64 @@ describe("React protocol renderer", () => {
             ExpoTurboProvider,
             {
               autofocus,
+              onError: (event) => errors.push(event),
+              registry: registryWithCounters(),
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        )
+        await Promise.resolve()
+      })
+      if (!renderer) throw new Error("renderer was not created")
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.error).toBeInstanceOf(StateError)
+      expect(String(errors[0]?.error)).not.toContain("secret")
+      expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+      act(() => renderer?.unmount())
+    }
+  })
+
+  test("redacts autofocus scroll failures after retaining the focused committed document", async () => {
+    for (const autofocusScroll of [
+      {
+        canScroll() {
+          throw new Error("secret scroll availability failure")
+        },
+        scrollTo: () => undefined,
+      },
+      {
+        canScroll: (() => "secret nonboolean result") as unknown as () => boolean,
+        scrollTo: () => undefined,
+      },
+      {
+        canScroll: () => true,
+        scrollTo() {
+          throw new Error("secret scroll failure")
+        },
+      },
+      {
+        canScroll: () => true,
+        scrollTo: (() => Promise.reject(new Error("secret scroll thenable"))) as unknown as () => void,
+      },
+    ] satisfies AutofocusScrollAdapter[]) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoText id="candidate" autofocus="">After</DemoText></Gallery>',
+          { url: "https://example.test/document" },
+        ),
+      )
+      const errors: ExpoTurboRenderError[] = []
+      let renderer: ReactTestRenderer | undefined
+      await act(async () => {
+        renderer = create(
+          createElement(
+            ExpoTurboProvider,
+            {
+              autofocus: { canFocus: () => true, focus: () => undefined },
+              autofocusScroll,
               onError: (event) => errors.push(event),
               registry: registryWithCounters(),
               session,
@@ -11035,6 +11115,12 @@ describe("React protocol renderer", () => {
           events.push(`focus:${nodeKey}`)
         },
       },
+      autofocusScroll: {
+        canScroll: (nodeKey) => nodeKey === "id:focus",
+        scrollTo: (nodeKey) => {
+          events.push(`autofocus-scroll:${nodeKey}`)
+        },
+      },
       frameAutoscroll: {
         canScroll: (frameId) => frameId === "frame",
         scrollTo: ({ behavior, block, frameId }) => {
@@ -11063,6 +11149,7 @@ describe("React protocol renderer", () => {
       "child-layout",
       "scroll:frame:center:smooth",
       "focus:id:focus",
+      "autofocus-scroll:id:focus",
       "render",
       "load",
     ])

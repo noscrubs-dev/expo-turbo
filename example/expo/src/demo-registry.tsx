@@ -26,6 +26,7 @@ import {
   useExpoTurboFormControl,
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
+import { useDemoAutofocusScrollTarget } from "./demo-autofocus-scroll";
 import { DemoFlatListRegion, DemoNestedScrollRegion } from "./demo-boundaries";
 import { pickDemoTextUpload, type DemoPickedTextUpload } from "./demo-document-picker";
 import { useDemoFocusHandle } from "./demo-focus";
@@ -460,6 +461,7 @@ function DemoFormInputComponent({
     ...(required ? { validity } : {}),
   });
   const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
+  const autofocusScroll = useDemoAutofocusScrollTarget(control.nodeKey, inputRef);
   return (
     <View style={{ direction: nativeLayoutDirection(direction), gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
       <Text style={{ color: "#435160", fontSize: 13, writingDirection: direction ?? "auto" }}>{label}</Text>
@@ -471,6 +473,7 @@ function DemoFormInputComponent({
         onBlur={focusHandlers.onBlur}
         onChangeText={setCurrent}
         onFocus={focusHandlers.onFocus}
+        onLayout={autofocusScroll.onLayout}
         ref={inputRef}
         style={{
           backgroundColor: "white",
@@ -930,6 +933,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked?refresh=scroll">
     <DemoText>Open a Refresh Stream scenario and reset the owning root scroll after its canonical update.</DemoText>
+  </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/linked?autofocus=scroll">
+    <DemoText>Open the root autofocus-scroll proof and focus the measured native field below the viewport.</DemoText>
   </DemoDocumentLink>
   <DemoDocumentLink href="#native-anchor-target">
     <DemoText>Jump to the registered native anchor target without a request or Router history write.</DemoText>

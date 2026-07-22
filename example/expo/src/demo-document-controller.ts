@@ -75,6 +75,41 @@ const HISTORY_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
 </Gallery>`;
 
+const AUTOFOCUS_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="autofocus-scroll-proof" title="Root autofocus-scroll proof" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The document owns one autofocus candidate below a measured root viewport. The example asks its explicit root ScrollView adapter to reveal that focused native field.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-one" title="Measured spacer one" style-tokens="space:comfortable">
+    <DemoText>These ordinary cards keep the target below the initial viewport without relying on virtualized or inferred scroll containers.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-two" title="Measured spacer two" style-tokens="space:comfortable">
+    <DemoText>The adapter compares exact window-coordinate rectangles for this root ScrollView and the registered input.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-three" title="Measured spacer three" style-tokens="space:comfortable">
+    <DemoText>It requests nearest-edge scrolling only after the renderer has successfully focused the candidate.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-four" title="Measured spacer four" style-tokens="space:comfortable">
+    <DemoText>Missing geometry is retained as one pending example-host request until the root and input measurements arrive.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-five" title="Measured spacer five" style-tokens="space:comfortable">
+    <DemoText>No generic node discovery, nested scroll routing, virtualizer behavior, or physical completion promise is implied.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-six" title="Measured spacer six" style-tokens="space:comfortable">
+    <DemoText>The root container is registered directly from the gallery ScrollView ref before renderer layout effects run.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-spacer-seven" title="Measured spacer seven" style-tokens="space:comfortable">
+    <DemoText>This gives the iOS harness an observable offscreen autofocus target without changing ordinary Frame autoscroll behavior.</DemoText>
+  </DemoCard>
+  <DemoCard id="autofocus-scroll-target-card" title="Measured autofocus target" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoForm id="root-autofocus-scroll-form">
+      <DemoFormInput id="root-autofocus-scroll-target" autofocus="" label="Root autofocus scroll target" name="proof[target]" value="Focused and revealed" />
+    </DemoForm>
+  </DemoCard>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
 const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 export const DEMO_CLOCK: ClockAdapter = {
@@ -114,6 +149,8 @@ export function createDemoFixtureFetchAdapter(
         refreshScenarioPending = undefined;
       } else if (url.pathname === "/demo/linked" && url.search === "?history=scroll") {
         xml = HISTORY_SCROLL_DOCUMENT;
+      } else if (url.pathname === "/demo/linked" && url.search === "?autofocus=scroll") {
+        xml = AUTOFOCUS_SCROLL_DOCUMENT;
       } else {
         xml = LINKED_DOCUMENT;
       }
