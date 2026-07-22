@@ -96,6 +96,19 @@ export * from "./frame-loader"
 export * from "./frame-reconnect-reconciler"
 export * from "./frames"
 export * from "./inspector"
+export {
+  type BeforeMorphAttributeEvent,
+  type BeforeMorphAttributeEventDetail,
+  type BeforeMorphElementEvent,
+  type BeforeMorphElementEventDetail,
+  type MorphAttributeMutationType,
+  type MorphElementEvent,
+  type MorphElementEventDetail,
+  MorphLifecycle,
+  type MorphLifecycleEvent,
+  type MorphLifecycleEventMap,
+  type MorphLifecycleOptions,
+} from "./morph-lifecycle"
 export * from "./parser"
 export * from "./recent-request-ids"
 export {
