@@ -9,7 +9,7 @@ import {
   tokenListCodec,
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { z } from "zod";
 
@@ -26,6 +26,7 @@ import {
 } from "expo-turbo/react";
 import { recordGreeting } from "./demo-actions";
 import { DemoFlatListRegion, DemoNestedScrollRegion } from "./demo-boundaries";
+import { pickDemoTextUpload, type DemoPickedTextUpload } from "./demo-document-picker";
 import { useDemoFocusHandle } from "./demo-focus";
 import { useDemoComponentStyle } from "./demo-style-runtime";
 import {
@@ -460,27 +461,75 @@ function DemoFormFileComponent({
   label: string;
   name: string;
 }) {
-  const attachment = useMemo(
+  const mounted = useRef(true);
+  const [picked, setPicked] = useState<DemoPickedTextUpload>();
+  const [pickerError, setPickerError] = useState<string>();
+  const [selecting, setSelecting] = useState(false);
+  const fallbackAttachment = useMemo(
     () => ({
       blob: new Blob([DEMO_UPLOAD_CONTENT], { type: "text/plain" }),
       filename,
     }),
     [filename],
   );
+  const attachment = picked?.attachment ?? fallbackAttachment;
   const control = useExpoTurboFormControl({
     entries: [{ name, value: attachment }],
     kind: "entries",
   });
+  const disabled = control.disabled || selecting;
+  const selectedFilename = attachment.filename;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const chooseFile = () => {
+    if (disabled) return;
+    setPickerError(undefined);
+    setSelecting(true);
+    void pickDemoTextUpload()
+      .then((next) => {
+        if (next && mounted.current) setPicked(next);
+      })
+      .catch((error: unknown) => {
+        if (!mounted.current) return;
+        setPickerError(error instanceof Error ? error.message : "Unable to select a text file");
+      })
+      .finally(() => {
+        if (mounted.current) setSelecting(false);
+      });
+  };
+
   return (
     <View
-      accessibilityLabel={`${label}: ${filename}`}
+      accessibilityLabel={`${label}: ${selectedFilename}`}
       accessibilityState={control.accessibilityState}
-      style={{ gap: 4, opacity: control.disabled ? 0.55 : 1 }}
+      style={{ gap: 4, opacity: disabled ? 0.55 : 1 }}
     >
       <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
       <Text selectable style={{ color: "#172230", fontSize: 14 }}>
-        Ready: {filename}
+        {picked ? "Selected" : "Ready"}: {selectedFilename}
       </Text>
+      <Pressable
+        accessibilityLabel={`Choose ${label}`}
+        accessibilityRole="button"
+        accessibilityState={{ busy: selecting, disabled }}
+        disabled={disabled}
+        onPress={chooseFile}
+        style={{ alignSelf: "flex-start", opacity: disabled ? 0.55 : 1 }}
+      >
+        <Text style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}>
+          {selecting ? "Opening Files…" : "Choose a text file"}
+        </Text>
+      </Pressable>
+      {pickerError ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
+          {pickerError}
+        </Text>
+      ) : null}
     </View>
   );
 }

@@ -13,6 +13,20 @@ interface PressableProps {
   readonly onPress?: () => void;
 }
 
+let pickerResult: unknown = Object.freeze({ assets: Object.freeze([]), canceled: true });
+
+mock.module("expo-document-picker", () => ({
+  getDocumentAsync: async () => pickerResult,
+}));
+
+mock.module("expo-file-system", () => ({
+  File: class ExpoFile extends Blob {
+    constructor(_uri: string) {
+      super(["picked from Files\n"], { type: "text/plain" });
+    }
+  },
+}));
+
 mock.module("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => undefined },
   Alert: { alert: () => undefined },
@@ -132,6 +146,29 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
       }),
     ).toBeDefined();
 
+    const pickedAttachment = new Blob(["picked from Files\n"], { type: "text/plain" });
+    pickerResult = Object.freeze({
+      assets: Object.freeze([
+        Object.freeze({
+          file: pickedAttachment,
+          lastModified: 0,
+          mimeType: "text/plain",
+          name: "picked-notes.txt",
+          size: pickedAttachment.size,
+          uri: "file:///cache/picked-notes.txt",
+        }),
+      ]),
+      canceled: false,
+    });
+    await act(async () => {
+      renderer?.root.findByProps({ accessibilityLabel: "Choose Sample attachment" }).props.onPress?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      renderer?.root.findByProps({ accessibilityLabel: "Sample attachment: picked-notes.txt" }),
+    ).toBeDefined();
+
     act(() => {
       submitter("Upload sample attachment").onPress?.();
     });
@@ -153,8 +190,8 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     expect(upload.request.body.get("commit")).toBe("upload");
     const attachment = upload.request.body.get("profile[attachment]");
     if (!(attachment instanceof Blob)) throw new Error("The multipart request omitted its Blob");
-    expect(await attachment.text()).toBe("Expo Turbo native multipart upload\n");
-    expect((attachment as Blob & { name?: string }).name).toBe("expo-turbo-upload.txt");
+    expect(await attachment.text()).toBe("picked from Files\n");
+    expect((attachment as Blob & { name?: string }).name).toBe("picked-notes.txt");
     await act(async () => {
       upload.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
       await Promise.resolve();
