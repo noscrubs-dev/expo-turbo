@@ -48,6 +48,7 @@ import {
   DocumentReloadEvent,
   type DocumentReloadEventDetail,
   type DocumentRenderMethod,
+  type DocumentVisitDirection,
   type DocumentVisitLifecycle,
   VisitEvent,
 } from "./document-visit-lifecycle"
@@ -107,7 +108,11 @@ interface AdmittedDocumentVisitControllerOptions {
 
 export interface DocumentVisitOptions {
   readonly action?: VisitAction
+  /** Defaults to Turbo's `forward`, `none`, or `back` mapping for the selected action. */
+  readonly direction?: DocumentVisitDirection
   readonly navigation?: NavigationAdapter
+  /** Explicit restore-only host snapshot consumed after the committed tree is acknowledged. */
+  readonly restorationData?: DocumentRestorationData
 }
 
 export type DocumentVisitDelegation =
@@ -192,6 +197,58 @@ interface DocumentPreviewContinuation {
   readonly url: string
 }
 
+interface DocumentVisitPresentation {
+  readonly direction: DocumentVisitDirection
+  readonly restorationScroll?: DocumentScrollPosition
+}
+
+function defaultVisitDirection(action: VisitAction): DocumentVisitDirection {
+  if (action === "advance") return "forward"
+  if (action === "replace") return "none"
+  return "back"
+}
+
+function admitVisitPresentation(
+  options: DocumentVisitOptions,
+  action: VisitAction,
+): DocumentVisitPresentation {
+  const direction = options.direction ?? defaultVisitDirection(action)
+  if (direction !== "back" && direction !== "forward" && direction !== "none") {
+    throw new PropsError("Document visit direction is invalid")
+  }
+  const restorationData = options.restorationData
+  if (restorationData === undefined) return Object.freeze({ direction })
+  if (action !== "restore") {
+    throw new PropsError("Document restoration data requires a restore visit")
+  }
+  if (
+    typeof restorationData !== "object" ||
+    restorationData === null ||
+    Array.isArray(restorationData) ||
+    Object.keys(restorationData).some((key) => key !== "scrollPosition")
+  ) {
+    throw new PropsError("Document restoration data is invalid")
+  }
+  const position = restorationData.scrollPosition
+  if (position === undefined) return Object.freeze({ direction })
+  if (
+    typeof position !== "object" ||
+    position === null ||
+    Array.isArray(position) ||
+    Object.keys(position).some((key) => key !== "x" && key !== "y") ||
+    typeof position.x !== "number" ||
+    !Number.isFinite(position.x) ||
+    typeof position.y !== "number" ||
+    !Number.isFinite(position.y)
+  ) {
+    throw new PropsError("Document restore scroll position is invalid")
+  }
+  return Object.freeze({
+    direction,
+    restorationScroll: Object.freeze({ x: position.x, y: position.y }),
+  })
+}
+
 type DocumentSnapshotRestoreLifecycleOptions = DocumentSnapshotRestoreOptions &
   Readonly<{ [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined }>
 type DocumentSnapshotPreviewLifecycleOptions = DocumentSnapshotPreviewOptions &
@@ -253,6 +310,7 @@ export class DocumentVisitController {
     const documentClaimSerial = this.loader.documentClaimSerial
     const treeGeneration = this.loader.treeState.generation
     const action = options.action ?? "advance"
+    let presentation: DocumentVisitPresentation
     if (action !== "advance" && action !== "replace" && action !== "restore") {
       return Promise.reject(new TargetError("Document visit action is unsupported"))
     }
@@ -260,6 +318,7 @@ export class DocumentVisitController {
     let historyPlan: DocumentVisitHistoryPlan | undefined
     let samePathRefresh: SamePathReplaceRefresh | undefined
     try {
+      presentation = admitVisitPresentation(options, action)
       admission = this.loader.classifyTopLevelSource(source)
       if (action === "restore" && admission.url.includes("#")) {
         throw new TargetError("Document restore fragments require anchor restoration support")
@@ -301,6 +360,7 @@ export class DocumentVisitController {
         documentClaimSerial,
         treeGeneration,
         attemptEpoch,
+        presentation,
       )
     }
     const cache = this.snapshotCache
@@ -314,6 +374,7 @@ export class DocumentVisitController {
         attemptEpoch,
         documentClaimSerial,
         treeGeneration,
+        presentation.direction,
       )
     }
     return this.startVisit(
@@ -331,6 +392,7 @@ export class DocumentVisitController {
       undefined,
       samePathRefresh?.renderMethod,
       samePathRefresh?.scroll,
+      presentation.direction,
     )
   }
 
@@ -509,7 +571,7 @@ export class DocumentVisitController {
             this.progressVisible = false
             this.status = "started"
             this.publish()
-            this.notifyVisit(restoredEntry.url, "restore", epoch)
+            this.notifyVisit(restoredEntry.url, "restore", epoch, direction)
           },
         } as DocumentSnapshotRestoreLifecycleOptions)
         if (report.status !== "miss") {
@@ -574,6 +636,9 @@ export class DocumentVisitController {
       documentClaimSerial,
       treeGeneration,
       "restore",
+      undefined,
+      undefined,
+      direction,
     ).then(
       (result) => {
         this.reconcileTraversal(restoredEntry)
@@ -647,6 +712,7 @@ export class DocumentVisitController {
     attemptEpoch: number,
     documentClaimSerial: number,
     treeGeneration: number,
+    direction: DocumentVisitDirection,
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined
     let historyEntry: DocumentHistoryEntry | undefined
@@ -698,7 +764,7 @@ export class DocumentVisitController {
           this.progressVisible = false
           this.status = "started"
           this.publish()
-          this.notifyVisit(source, action, epoch)
+          this.notifyVisit(source, action, epoch, direction)
           return undefined
         },
       } as DocumentSnapshotPreviewLifecycleOptions)
@@ -821,6 +887,12 @@ export class DocumentVisitController {
       undefined,
       undefined,
       continuation,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      direction,
     ).catch((error: unknown) => {
       if (epoch !== this.visitEpoch) return canceled
       throw error
@@ -843,6 +915,7 @@ export class DocumentVisitController {
     documentClaimSerial: number,
     treeGeneration: number,
     attemptEpoch: number,
+    presentation: DocumentVisitPresentation,
   ): Promise<DocumentVisitResult> {
     const restoreEpoch = this.visitEpoch
     const cache = this.snapshotCache
@@ -859,6 +932,11 @@ export class DocumentVisitController {
         undefined,
         documentClaimSerial,
         treeGeneration,
+        undefined,
+        undefined,
+        undefined,
+        presentation.direction,
+        presentation.restorationScroll,
       )
     }
 
@@ -885,6 +963,9 @@ export class DocumentVisitController {
           if (this.visitLifecycle) {
             render = this.trackDocumentRender(
               this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                ...(presentation.restorationScroll
+                  ? { historyScroll: presentation.restorationScroll }
+                  : {}),
                 preview: false,
                 url: source,
               }),
@@ -901,7 +982,7 @@ export class DocumentVisitController {
           this.progressVisible = false
           this.status = "started"
           this.publish()
-          this.notifyVisit(source, "restore", epoch)
+          this.notifyVisit(source, "restore", epoch, presentation.direction)
           return undefined
         },
       } as DocumentSnapshotRestoreLifecycleOptions)
@@ -921,6 +1002,11 @@ export class DocumentVisitController {
           undefined,
           documentClaimSerial,
           treeGeneration,
+          undefined,
+          undefined,
+          undefined,
+          presentation.direction,
+          presentation.restorationScroll,
         )
       }
       if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
@@ -973,6 +1059,8 @@ export class DocumentVisitController {
     eventAction?: VisitAction,
     renderMethod: DocumentRenderMethod = "replace",
     refreshScroll?: "preserve" | "reset",
+    eventDirection?: DocumentVisitDirection,
+    restorationScroll?: DocumentScrollPosition,
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
@@ -1118,12 +1206,14 @@ export class DocumentVisitController {
             continuationHistoryPlan.history.commitProposal(continuationHistoryPlan.proposal)
           }
           if (this.visitLifecycle) {
+            const historyScroll =
+              historyGuard?.kind === "traversal"
+                ? historyGuard.restorationScroll
+                : restorationScroll
             render = this.trackDocumentRender(
               this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
-                ...(historyGuard?.kind === "traversal" &&
-                historyGuard.restorationScroll &&
-                candidate.classification === "success"
-                  ? { historyScroll: historyGuard.restorationScroll }
+                ...(candidate.classification === "success" && historyScroll
+                  ? { historyScroll }
                   : {}),
                 preview: false,
                 renderMethod:
@@ -1164,7 +1254,12 @@ export class DocumentVisitController {
               if (epoch === undefined) {
                 throw new StateError("Document request dispatched without a visit lifecycle")
               }
-              this.notifyVisit(source, eventAction ?? action, epoch)
+              this.notifyVisit(
+                source,
+                eventAction ?? action,
+                epoch,
+                eventDirection ?? defaultVisitDirection(eventAction ?? action),
+              )
               return undefined
             },
           }
@@ -1394,11 +1489,18 @@ export class DocumentVisitController {
     return undefined
   }
 
-  private notifyVisit(url: string, action: VisitAction, epoch: number): void {
+  private notifyVisit(
+    url: string,
+    action: VisitAction,
+    epoch: number,
+    direction: DocumentVisitDirection = defaultVisitDirection(action),
+  ): void {
     if (!this.visitLifecycle || epoch !== this.visitEpoch || this.status !== "started") {
       return
     }
-    this.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](new VisitEvent(url, action))
+    this.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](
+      new VisitEvent(url, action, direction),
+    )
   }
 
   private notifyReload(error: unknown, epoch: number): void {

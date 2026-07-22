@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add explicit document-restore presentation metadata. Every visit lifecycle event now carries a validated `back`/`forward`/`none` direction with Turbo-compatible defaults, and explicit `restore` may supply a finite root scroll position. Cached and successful network restores apply that position after autofocus and before `load` through the existing host scroll adapter; error, empty, stale, headless, and unacknowledged outcomes do not scroll. Root scroll capture/persistence and Frame/nested restoration remain host work.
+
 - Correct the public protocol guide to describe the already-supported bounded Blob/file entry and semantic multipart-body contracts. Core remains picker-, URI-, and boundary-agnostic; the host adapter owns conversion to platform `FormData`.
 
 - Add opt-in browser-style fallback for explicit native single-choice select snapshots. `defaultSelection: "first-enabled"` contributes the first option outside disabled option/group state only when the host snapshot contains no selected option; an explicitly selected disabled option suppresses fallback, selected multi-value snapshots retain their existing entries, and the caller-owned snapshot is never mutated. XML/native-widget discovery remains host-owned.

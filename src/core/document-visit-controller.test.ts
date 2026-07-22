@@ -34,7 +34,14 @@ import {
   type DocumentVisitResult,
 } from "./document-visit-controller"
 import { DocumentVisitLifecycle } from "./document-visit-lifecycle"
-import { ContentTypeError, ParseError, RequestError, StateError, TargetError } from "./errors"
+import {
+  ContentTypeError,
+  ParseError,
+  PropsError,
+  RequestError,
+  StateError,
+  TargetError,
+} from "./errors"
 import { EXPO_TURBO_MIME_TYPE } from "./frame-loader"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -3354,6 +3361,35 @@ describe("Document visit controller", () => {
         expect(current.session.tree).toBe(tree)
       }
     }
+  })
+
+  test("rejects invalid visit direction and restore presentation before ownership", async () => {
+    const history = historyFixture()
+    const current = harness({
+      history: history.history,
+      snapshotCache: new DocumentSnapshotCache(),
+    })
+    const initial = current.controller.state
+    const entry = history.history.current
+
+    for (const options of [
+      { direction: "sideways" },
+      { action: "advance", restorationData: {} },
+      { action: "restore", restorationData: null },
+      { action: "restore", restorationData: { extra: true } },
+      { action: "restore", restorationData: { scrollPosition: { x: Number.NaN, y: 0 } } },
+      { action: "restore", restorationData: { scrollPosition: { x: 0, y: Infinity } } },
+    ]) {
+      await expect(current.controller.visit("/restored", options as never)).rejects.toBeInstanceOf(
+        PropsError,
+      )
+    }
+
+    expect(current.controller.state).toBe(initial)
+    expect(history.history.current).toBe(entry)
+    expect(history.writes).toEqual([])
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
   })
 
   test("captures the latest outgoing truth immediately before an advance commit", async () => {
