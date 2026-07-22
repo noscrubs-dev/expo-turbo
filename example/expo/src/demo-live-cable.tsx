@@ -350,7 +350,9 @@ async function createDemoLiveCableRuntimeFor(
     { onError: reportError },
   );
   const cable = new ActionCableV1WebSocketAdapter({
+    clock,
     createSocket: options.createSocket ?? createNativeActionCableSocket,
+    heartbeat: { now: () => clock.now() },
     onError: reportError,
     url: endpoints.cableUrl,
   });

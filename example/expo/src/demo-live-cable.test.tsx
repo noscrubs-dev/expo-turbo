@@ -2,6 +2,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import {
+  ACTION_CABLE_STALE_THRESHOLD_MS,
   ACTION_CABLE_V1_JSON_PROTOCOL,
   ActionCableV1WebSocketAdapter,
   encodeActionCableSubscribe,
@@ -436,6 +437,11 @@ describe("standalone Rails Action Cable proof", () => {
         await Promise.resolve();
       });
 
+      expect(
+        clock.timers.some(
+          (timer) => !timer.cleared && timer.delayMs === ACTION_CABLE_STALE_THRESHOLD_MS + 1,
+        ),
+      ).toBe(true);
       expect(replaceButton()?.props.disabled).toBe(false);
       expect(refreshButton()?.props.disabled).toBe(false);
       const message = proof.session.tree.getElementById("demo-stream-message");
@@ -460,12 +466,14 @@ describe("standalone Rails Action Cable proof", () => {
         );
         await Promise.resolve();
       });
-      expect(clock.timers).toHaveLength(1);
-      expect(clock.timers[0]?.delayMs).toBe(150);
+      const refreshTimer = clock.timers.findIndex(
+        (timer) => !timer.cleared && timer.delayMs === 150,
+      );
+      expect(refreshTimer).not.toBe(-1);
       expect(unabortedRequests(requests)).toHaveLength(3);
 
       await act(async () => {
-        clock.fire(0);
+        clock.fire(refreshTimer);
         await Promise.resolve();
         await nextTurn();
       });

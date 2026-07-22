@@ -24,6 +24,14 @@ export interface ActionCableWebSocket {
   send(data: string): void
 }
 
+/** Optional stale-connection monitor, separate from host AppState and network policy. */
+export interface ActionCableHeartbeatMonitorOptions {
+  /** Monotonic-enough host time source for deterministic stale-connection checks. */
+  readonly now?: () => number
+  /** Milliseconds without a valid Action Cable message before one socket replacement. */
+  readonly staleThresholdMs?: number
+}
+
 export interface ActionCableWebSocketAdapterOptions {
   /** Optional host clock used to retry subscriptions that have not been confirmed yet. */
   readonly clock?: Pick<ClockAdapter, "clearTimeout" | "setTimeout">
@@ -31,6 +39,8 @@ export interface ActionCableWebSocketAdapterOptions {
     url: string,
     protocols: readonly [typeof ACTION_CABLE_V1_JSON_PROTOCOL],
   ) => ActionCableWebSocket
+  /** Enables one bounded stale-connection replacement when the host opts in. */
+  readonly heartbeat?: ActionCableHeartbeatMonitorOptions
   /** Receives only redacted transport failures; callbacks still receive their terminal state. */
   readonly onError: (error: SubscriptionError) => void
   /** Absolute `ws:` or `wss:` endpoint without URL userinfo, query, or fragment. */
@@ -40,6 +50,9 @@ export interface ActionCableWebSocketAdapterOptions {
 /** Action Cable's official client re-sends an unconfirmed subscription every half second. */
 export const ACTION_CABLE_SUBSCRIPTION_RETRY_MS = 500
 
+/** Action Cable's official client treats a connection as stale after roughly six seconds. */
+export const ACTION_CABLE_STALE_THRESHOLD_MS = 6_000
+
 const nativeSubscriptionRetryClock: Pick<ClockAdapter, "clearTimeout" | "setTimeout"> = {
   clearTimeout(handle) {
     clearTimeout(handle as ReturnType<typeof setTimeout>)
@@ -47,6 +60,11 @@ const nativeSubscriptionRetryClock: Pick<ClockAdapter, "clearTimeout" | "setTime
   setTimeout(callback, delayMs) {
     return setTimeout(callback, delayMs)
   },
+}
+
+interface HeartbeatMonitor {
+  readonly now: () => number
+  readonly staleThresholdMs: number
 }
 
 interface CallbackSnapshot {
@@ -148,10 +166,9 @@ function isWebSocketUrl(value: string): boolean {
  * A bounded Action Cable v1 JSON transport over one host-owned WebSocket at a time.
  *
  * This deliberately owns no credentials, URL derivation, lifecycle integration,
- * heartbeat monitoring, or connection-retry policy. It guarantees each active
- * subscription until confirmed at Action Cable's cadence, but only rotates the
- * socket after an explicit valid server `disconnect` frame requests reconnecting;
- * terminal socket failures otherwise require the host to construct a fresh adapter.
+ * or generic connection-retry policy. It guarantees each active subscription until
+ * confirmed at Action Cable's cadence. An opt-in stale monitor makes one immediate
+ * replacement after six silent seconds; ordinary socket failures remain terminal.
  */
 export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private active = true
@@ -159,6 +176,11 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private creatingConnection = false
   private generation = 0
   private readonly groups = new Map<string, SubscriptionGroup>()
+  private heartbeatHandle: unknown
+  private heartbeatLastMessageAt: number | undefined
+  private heartbeatReconnectConsumed = false
+  private heartbeatTimerGeneration = 0
+  private readonly heartbeat: HeartbeatMonitor | undefined
   private readonly pendingConnectionRecords = new Set<SubscriptionRecord>()
   private terminated = false
   private welcomed = false
@@ -183,11 +205,13 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
 
     let createSocket: ActionCableWebSocketAdapterOptions["createSocket"]
     let clock: ActionCableWebSocketAdapterOptions["clock"]
+    let heartbeatOptions: ActionCableWebSocketAdapterOptions["heartbeat"]
     let onError: ActionCableWebSocketAdapterOptions["onError"]
     let url: string
     try {
       clock = options.clock
       createSocket = options.createSocket
+      heartbeatOptions = options.heartbeat
       onError = options.onError
       url = options.url
     } catch {
@@ -229,7 +253,42 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       })
     }
 
+    let heartbeat: HeartbeatMonitor | undefined
+    if (heartbeatOptions !== undefined) {
+      if (
+        !heartbeatOptions ||
+        (typeof heartbeatOptions !== "object" && typeof heartbeatOptions !== "function") ||
+        Array.isArray(heartbeatOptions)
+      ) {
+        throw adapterError("Action Cable heartbeat monitor is invalid")
+      }
+      let now: ActionCableHeartbeatMonitorOptions["now"]
+      let staleThresholdMs: ActionCableHeartbeatMonitorOptions["staleThresholdMs"]
+      try {
+        now = heartbeatOptions.now
+        staleThresholdMs = heartbeatOptions.staleThresholdMs
+      } catch {
+        throw adapterError("Action Cable heartbeat monitor is invalid")
+      }
+      if (now !== undefined && typeof now !== "function") {
+        throw adapterError("Action Cable heartbeat monitor is invalid")
+      }
+      if (
+        staleThresholdMs !== undefined &&
+        (typeof staleThresholdMs !== "number" ||
+          !Number.isFinite(staleThresholdMs) ||
+          staleThresholdMs <= 0)
+      ) {
+        throw adapterError("Action Cable heartbeat monitor is invalid")
+      }
+      heartbeat = Object.freeze({
+        now: () => (now ?? Date.now).call(heartbeatOptions),
+        staleThresholdMs: staleThresholdMs ?? ACTION_CABLE_STALE_THRESHOLD_MS,
+      })
+    }
+
     this.createSocket = createSocket
+    this.heartbeat = heartbeat
     this.onError = onError
     this.retryClock = retryClock
     this.url = url
@@ -377,6 +436,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
 
   private handleOpen(connection: SocketConnection): void {
     if (!this.owns(connection) || !this.acceptedProtocol(connection)) return
+    this.startHeartbeatMonitor(connection)
   }
 
   private handleMessage(
@@ -396,6 +456,8 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       this.terminal("Action Cable WebSocket message is invalid")
       return
     }
+    this.recordHeartbeatMessage(connection)
+    if (!this.owns(connection)) return
 
     if (!("type" in frame)) {
       const group = this.groups.get(frame.identifier)
@@ -543,6 +605,109 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     }
   }
 
+  private startHeartbeatMonitor(connection: SocketConnection): void {
+    if (!this.heartbeat || !this.owns(connection)) return
+    const now = this.heartbeatNow()
+    if (now === undefined) return
+    this.heartbeatLastMessageAt = now
+    this.scheduleHeartbeatCheck(connection)
+  }
+
+  private recordHeartbeatMessage(connection: SocketConnection): void {
+    if (!this.heartbeat || !this.owns(connection)) return
+    const now = this.heartbeatNow()
+    if (now === undefined) return
+    this.heartbeatReconnectConsumed = false
+    this.heartbeatLastMessageAt = now
+    this.scheduleHeartbeatCheck(connection)
+  }
+
+  private scheduleHeartbeatCheck(connection: SocketConnection): void {
+    const heartbeat = this.heartbeat
+    const lastMessageAt = this.heartbeatLastMessageAt
+    if (!heartbeat || lastMessageAt === undefined || !this.owns(connection)) return
+
+    const now = this.heartbeatNow()
+    if (now === undefined) return
+    const elapsed = Math.max(0, now - lastMessageAt)
+    const delayMs = Math.max(1, heartbeat.staleThresholdMs - elapsed + 1)
+    this.stopHeartbeatTimer()
+    const timerGeneration = ++this.heartbeatTimerGeneration
+    let handle: unknown
+    try {
+      handle = this.retryClock.setTimeout(() => {
+        if (this.heartbeatTimerGeneration !== timerGeneration) return
+        this.heartbeatHandle = undefined
+        this.checkHeartbeat(connection)
+      }, delayMs)
+    } catch {
+      this.terminal("Action Cable heartbeat monitor failed")
+      return
+    }
+    if (this.heartbeatTimerGeneration !== timerGeneration) {
+      try {
+        this.retryClock.clearTimeout(handle)
+      } catch {
+        // A synchronous host timer has already invalidated this handle.
+      }
+      return
+    }
+    this.heartbeatHandle = handle
+  }
+
+  private checkHeartbeat(connection: SocketConnection): void {
+    const heartbeat = this.heartbeat
+    const lastMessageAt = this.heartbeatLastMessageAt
+    if (!heartbeat || lastMessageAt === undefined || !this.owns(connection)) return
+
+    const now = this.heartbeatNow()
+    if (now === undefined) return
+    if (now - lastMessageAt <= heartbeat.staleThresholdMs) {
+      this.scheduleHeartbeatCheck(connection)
+      return
+    }
+    if (this.heartbeatReconnectConsumed) {
+      this.stopHeartbeatMonitor()
+      return
+    }
+    this.heartbeatReconnectConsumed = true
+    this.reconnect(connection)
+  }
+
+  private heartbeatNow(): number | undefined {
+    const heartbeat = this.heartbeat
+    if (!heartbeat) return undefined
+    let now: number
+    try {
+      now = heartbeat.now()
+    } catch {
+      this.terminal("Action Cable heartbeat monitor failed")
+      return undefined
+    }
+    if (!Number.isFinite(now)) {
+      this.terminal("Action Cable heartbeat monitor failed")
+      return undefined
+    }
+    return now
+  }
+
+  private stopHeartbeatMonitor(): void {
+    this.stopHeartbeatTimer()
+    this.heartbeatLastMessageAt = undefined
+  }
+
+  private stopHeartbeatTimer(): void {
+    this.heartbeatTimerGeneration += 1
+    if (this.heartbeatHandle === undefined) return
+    const handle = this.heartbeatHandle
+    this.heartbeatHandle = undefined
+    try {
+      this.retryClock.clearTimeout(handle)
+    } catch {
+      // The adapter has released the heartbeat handle and cannot safely retry its host clock.
+    }
+  }
+
   private unsubscribeRecord(group: SubscriptionGroup, record: SubscriptionRecord): void {
     if (!record.active || !group.records.delete(record)) return
     record.active = false
@@ -623,6 +788,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private closeIdleConnection(): void {
     if (this.groups.size !== 0 || !this.connection) return
     this.detachConnection(true)
+    this.heartbeatReconnectConsumed = false
   }
 
   private drainGroups(): SubscriptionRecord[] {
@@ -662,6 +828,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
 
   private detachConnection(close: boolean): void {
     this.stopSubscriptionGuarantee()
+    this.stopHeartbeatMonitor()
     const connection = this.connection
     this.connection = undefined
     this.welcomed = false
