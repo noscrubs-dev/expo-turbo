@@ -288,7 +288,13 @@ const action = defineComponent({
   tag: "DemoAction",
 });
 
-function DemoStreamMorphProbeComponent({ message }: { message: string }) {
+function DemoStreamMorphProbeComponent({
+  incrementLabel = "Increment HTTP Stream morph counter",
+  message,
+}: {
+  incrementLabel?: string;
+  message: string;
+}) {
   const [count, setCount] = useState(0);
   return (
     <View accessibilityLabel="Rails HTTP Stream morph proof" style={{ gap: 6 }}>
@@ -304,7 +310,7 @@ function DemoStreamMorphProbeComponent({ message }: { message: string }) {
         Local count: {count}
       </Text>
       <Pressable
-        accessibilityLabel="Increment HTTP Stream morph counter"
+        accessibilityLabel={incrementLabel}
         accessibilityRole="button"
         onPress={() => setCount((current) => current + 1)}
         style={({ pressed }) => ({
@@ -321,10 +327,16 @@ function DemoStreamMorphProbeComponent({ message }: { message: string }) {
 }
 
 const streamMorphProbe = defineComponent({
-  attributes: { message: { codec: stringCodec, prop: "message" } },
+  attributes: {
+    "increment-label": { codec: stringCodec, prop: "incrementLabel" },
+    message: { codec: stringCodec, prop: "message" },
+  },
   children: "none",
   component: DemoStreamMorphProbeComponent,
-  schema: z.object({ message: z.string().trim().min(1) }),
+  schema: z.object({
+    incrementLabel: z.string().trim().min(1).optional(),
+    message: z.string().trim().min(1),
+  }),
   tag: "DemoStreamMorphProbe",
 });
 

@@ -4,6 +4,7 @@ module Api
       class StreamsController < ApplicationController
         def show
           return render_morph_stream if params[:mode] == "morph"
+          return render_document_refresh_morph_stream if params[:mode] == "refresh-morph"
           return head :bad_request unless params[:mode].blank?
 
           render_default_stream
@@ -31,6 +32,10 @@ module Api
               locals: {message: "Rendered from Rails Stream morph"}
             )
           )
+        end
+
+        def render_document_refresh_morph_stream
+          render_expo_turbo_stream(expo_turbo_stream.refresh(request_id: nil, method: :morph))
         end
       end
     end

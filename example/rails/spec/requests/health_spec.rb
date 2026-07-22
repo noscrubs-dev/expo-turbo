@@ -63,6 +63,28 @@ RSpec.describe "standalone demo host" do
       .to eq("Second sibling")
   end
 
+  it "serves one ordinary Rails document that admits a bounded current-document morph" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/refresh_morph_document"
+
+    document = ExpoTurbo::Rails::Testing.parse_document(response.body)
+    link = document.at_xpath("//DemoDocumentLink[@id='demo-document-refresh-morph-link']")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(document.root.name).to eq("Gallery")
+    expect(document.root["id"]).to eq("demo-document-refresh-morph")
+    expect(document.at_xpath("//DemoText[@id='demo-document-refresh-morph-response']")&.text)
+      .to start_with("Canonical Rails document rendered at ")
+    expect(link&.[]("href")).to eq("/api/expo_turbo/demo/stream?mode=refresh-morph")
+    expect(link&.[]("data-turbo-stream")).to eq("")
+    probe = document.at_xpath("//DemoStreamMorphProbe[@id='demo-document-refresh-morph-probe']")
+    expect(probe&.[]("message"))
+      .to eq("Local state survives the Rails document refresh")
+    expect(probe&.[]("increment-label")).to eq("Increment document refresh morph counter")
+    expect(document.xpath("//turbo-frame | //turbo-stream | //turbo-cable-stream-source")).to be_empty
+  end
+
   it "serves an exact Rails Stream morph from a confined XML partial" do
     host! "localhost"
     get "/api/expo_turbo/demo/stream", params: {mode: "morph"}
@@ -79,6 +101,21 @@ RSpec.describe "standalone demo host" do
     expect(stream["target"]).to eq("demo-http-stream-morph-probe")
     expect(stream.at_xpath("./template/DemoStreamMorphProbe[@id='demo-http-stream-morph-probe']")&.[]("message"))
       .to eq("Rendered from Rails Stream morph")
+  end
+
+  it "serves a standard request-id-free Refresh Stream morph" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph"}
+
+    stream = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+      .at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
+    expect(stream["action"]).to eq("refresh")
+    expect(stream["method"]).to eq("morph")
+    expect(stream["request-id"]).to be_nil
+    expect(stream.at_xpath("./template")).to be_nil
   end
 
   it "rejects an unknown standalone Rails Stream mode" do
