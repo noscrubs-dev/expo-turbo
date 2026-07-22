@@ -168,6 +168,28 @@ describe("Frame request loader", () => {
           { requestLifecycle: null } as never,
         ),
     ).toThrow(PropsError)
+
+    expect(
+      () =>
+        new FrameRequestLoader(
+          documentSession(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { next: () => "unused" },
+          { preloadBehavior: "preview" },
+        ),
+    ).toThrow("Frame preview behavior requires a preload cache")
+    expect(
+      () =>
+        new FrameRequestLoader(
+          documentSession(),
+          { fetch: async () => Promise.reject(new Error("unused")) },
+          { next: () => "unused" },
+          {
+            preloadBehavior: "unsupported",
+            preloadCache: new FramePreloadCache(),
+          } as never,
+        ),
+    ).toThrow("Frame request loader preload behavior is invalid")
   })
 
   test("sends the protocol request contract and commits handled redirected responses", async () => {

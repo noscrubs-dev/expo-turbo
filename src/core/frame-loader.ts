@@ -175,6 +175,7 @@ export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly frameLifecycle?: FrameLifecycle
   readonly maxRecurseDepth?: number
   readonly preloadCache?: FramePreloadCache
+  readonly preloadBehavior?: "consume" | "preview"
   readonly requestLifecycle?: RequestLifecycle
 }
 
@@ -303,6 +304,7 @@ export class FrameRequestLoader {
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
   private readonly preloadCache: FramePreloadCache | undefined
+  readonly preloadBehavior: "consume" | "preview"
   private readonly requestLifecycle: RequestLifecycle | undefined
   private readonly streamOptions: StreamActionDispatchOptions
 
@@ -317,6 +319,7 @@ export class FrameRequestLoader {
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
+    this.preloadBehavior = options.preloadBehavior ?? "consume"
     if (
       options.preloadCache !== undefined &&
       !(options.preloadCache instanceof FramePreloadCache)
@@ -324,6 +327,12 @@ export class FrameRequestLoader {
       throw new PropsError("Frame request loader preload cache is invalid")
     }
     this.preloadCache = options.preloadCache
+    if (this.preloadBehavior !== "consume" && this.preloadBehavior !== "preview") {
+      throw new PropsError("Frame request loader preload behavior is invalid")
+    }
+    if (this.preloadBehavior === "preview" && !this.preloadCache) {
+      throw new PropsError("Frame preview behavior requires a preload cache")
+    }
     this.ownership = destinationRequestOwnership(session)
     this.streamOptions = Object.freeze({
       ...(options.customActions ? { customActions: options.customActions } : {}),
@@ -735,7 +744,8 @@ export class FrameRequestLoader {
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
-          const responseRenderMethod = recurseDepth === 0 ? renderMethod : "replace"
+          const responseRenderMethod =
+            preloadMode === "require" ? "replace" : recurseDepth === 0 ? renderMethod : "replace"
           const prepared = prepareFrameResponseTree(frameId, document)
           const candidate: FrameTreeCommitCandidate = Object.freeze({
             frameId,
@@ -850,30 +860,39 @@ export class FrameRequestLoader {
           let frameReport: FrameResponseReport
           try {
             const nestedFrames = commitPreparedFrameMutation(this.session, mutation)
-            const streams = await dispatchPreparedFrameResponseStreams(
-              this.session,
-              prepared,
-              this.streamOptions,
-              {
-                shouldContinue: () => Boolean(active.lease && this.ownership.retains(active.lease)),
-              },
-            )
-            frameReport = recordFrameMorphReloadReport(
-              recordFrameAutofocusReport(
-                Object.freeze({
-                  finalUrl: responseUrl,
-                  frameId,
-                  streams,
-                }),
+            if (preloadMode === "require") {
+              frameReport = Object.freeze({
+                finalUrl: responseUrl,
+                frameId,
+                streams: Object.freeze({ actions: Object.freeze([]), interrupted: false }),
+              })
+            } else {
+              const streams = await dispatchPreparedFrameResponseStreams(
+                this.session,
+                prepared,
+                this.streamOptions,
+                {
+                  shouldContinue: () =>
+                    Boolean(active.lease && this.ownership.retains(active.lease)),
+                },
+              )
+              frameReport = recordFrameMorphReloadReport(
+                recordFrameAutofocusReport(
+                  Object.freeze({
+                    finalUrl: responseUrl,
+                    frameId,
+                    streams,
+                  }),
+                  this.session,
+                  frame,
+                  activeFrameAutofocusCandidates(this.session, frame),
+                  frameAutoscrollIntent(this.session, frame, prepared),
+                ),
                 this.session,
                 frame,
-                activeFrameAutofocusCandidates(this.session, frame),
-                frameAutoscrollIntent(this.session, frame, prepared),
-              ),
-              this.session,
-              frame,
-              nestedFrames,
-            )
+                nestedFrames,
+              )
+            }
           } catch (error) {
             if (this.session.revision !== revision) throw new FrameCommitError(candidate)
             throw error
