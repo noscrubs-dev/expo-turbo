@@ -22,6 +22,11 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="linked-document" title="Query-bearing document visit completed" style-tokens="tone:info space:comfortable surface:elevated">
     <DemoText>The app-owned native link retained source=gallery, repeated tag values, and an empty query value through the host-injected document controller and Router history.</DemoText>
   </DemoCard>
+  <DemoAnchorTarget id="linked-native-anchor-target">
+    <DemoCard title="Linked native anchor target" tone="positive" style-tokens="space:comfortable surface:elevated">
+      <DemoText>A cold Expo Go link loaded this document canonically before the root-only native anchor adapter scrolled here.</DemoText>
+    </DemoCard>
+  </DemoAnchorTarget>
   <DemoDocumentLink href="/demo" data-turbo-action="restore">
     <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
   </DemoDocumentLink>

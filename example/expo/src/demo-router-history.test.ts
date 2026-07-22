@@ -508,6 +508,22 @@ describe("demo Expo Router history bridge", () => {
       ),
     ).toBeUndefined();
     managedQuery.detach();
+
+    const coldLinked = harness(
+      { [DEMO_ROUTER_PATH_PARAM]: ["demo", "linked"] },
+      "/demo/linked",
+    );
+    expect(
+      coldLinked.bridge.readInitialExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo/linked#linked-native-anchor-target",
+      ),
+    ).toBe("linked-native-anchor-target");
+    expect(
+      coldLinked.bridge.readInitialExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo#linked-native-anchor-target",
+      ),
+    ).toBeUndefined();
+    coldLinked.detach();
   });
 
   test("repairs one same-document Router metadata loss caused by a raw Expo Go URL event", async () => {

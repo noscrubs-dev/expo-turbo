@@ -963,6 +963,63 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
+  test("loads a cold Expo Go linked document before deferring its exact root anchor", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation(routeParams(LINKED_URL), "/demo/linked");
+    const deferredAnchorRequests: string[] = [];
+    const requestDeferredAnchor = runtime.documentAnchorScroll.requestDeferredAnchor.bind(
+      runtime.documentAnchorScroll,
+    );
+    runtime.documentAnchorScroll.requestDeferredAnchor = (id) => {
+      deferredAnchorRequests.push(id);
+      requestDeferredAnchor(id);
+    };
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            {
+              focused: true,
+              initialUrl:
+                "exp://127.0.0.1:8081/--/demo/linked#linked-native-anchor-target",
+              navigation,
+              routeKey: INITIAL_ROUTE_KEY,
+              runtime,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(requests.map((request) => request.url)).toEqual([LINKED_URL]);
+    expect(deferredAnchorRequests).toEqual(["linked-native-anchor-target"]);
+    expect(runtime.session.tree.document.url).toBe(LINKED_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(LINKED_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("applies repeatable exact Expo Go link events after the gallery root mounts", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];
