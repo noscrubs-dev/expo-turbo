@@ -165,6 +165,16 @@ export interface AutofocusAdapter {
   getFocusedId?(): string | undefined
 }
 
+/**
+ * Host-owned synchronous request to bring one autofocus candidate into the
+ * mounted viewport. The renderer calls this immediately after native focus;
+ * it does not infer scroll containers or wait for physical scroll completion.
+ */
+export interface AutofocusScrollAdapter {
+  canScroll(id: string): boolean
+  scrollTo(id: string): void
+}
+
 export type ScrollAlignment = "start" | "center" | "end" | "nearest"
 
 export interface ScrollAdapter {
@@ -247,6 +257,7 @@ export interface RestorationIdentifierAdapter {
 
 export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly autofocus?: AutofocusAdapter
+  readonly autofocusScroll?: AutofocusScrollAdapter
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
   readonly confirmation?: FormConfirmationAdapter

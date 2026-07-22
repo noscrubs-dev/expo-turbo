@@ -168,6 +168,7 @@ const GALLERY_QUERY_LINKED_URL =
 const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
+const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
 
 interface FixtureTimer {
   readonly callback: () => void;
@@ -602,6 +603,95 @@ describe("demo app runtime ownership", () => {
       renderer?.unmount();
       await Promise.resolve();
     });
+  });
+
+  test("scrolls the gallery root to the focused measured document field", async () => {
+    const runtime = createDemoRuntime();
+    const navigation = new TestNavigation();
+    const scrolls: Readonly<{ animated: boolean; y: number }>[] = [];
+    const unregisterContainer = runtime.autofocusScroll.registerContainer({
+      getScrollY: () => 0,
+      isAvailable: () => true,
+      measure(listener) {
+        listener(0, 0, 390, 844);
+      },
+      scrollTo(options) {
+        scrolls.push(options);
+      },
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") {
+              const props = element.props as Readonly<Record<string, unknown>>;
+              const target = props.accessibilityLabel === "Root autofocus scroll target";
+              return {
+                blur() {},
+                focus() {},
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, target ? 1_200 : 200, 320, 44);
+                },
+              };
+            }
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery autofocus-scroll fixture did not render");
+    const proofLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Open the root autofocus-scroll proof and focus the measured native field below the viewport.",
+            ),
+        ).length > 0,
+      );
+    if (!proofLink) throw new Error("gallery autofocus-scroll proof link was not rendered");
+
+    await act(async () => {
+      proofLink.props.onPress();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(AUTOFOCUS_SCROLL_URL);
+    expect(runtime.session.tree.getElementById("root-autofocus-scroll-target")).toBeDefined();
+    expect(runtime.focus.getFocusedId()).toBe("id:root-autofocus-scroll-target");
+    expect(scrolls).toEqual([{ animated: false, y: 400 }]);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterContainer();
   });
 
   test("activates the gallery's registered same-document anchor without fetching or writing history", async () => {

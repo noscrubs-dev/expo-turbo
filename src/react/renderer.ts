@@ -17,6 +17,7 @@ import {
 
 import type {
   AutofocusAdapter,
+  AutofocusScrollAdapter,
   DocumentAnchorScrollAdapter,
   DocumentAutomaticPreloadPolicy,
   DocumentHistoryScrollAdapter,
@@ -239,6 +240,7 @@ interface ExpoTurboFormContextValue {
 interface RendererContextValue {
   readonly actions: ComponentActionExecutor | undefined
   readonly autofocus: AutofocusAdapter | undefined
+  readonly autofocusScroll: AutofocusScrollAdapter | undefined
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentAnchorScroll: DocumentAnchorScrollAdapter | undefined
   readonly documentAutomaticPreloadPolicy: DocumentAutomaticPreloadPolicy | undefined
@@ -524,6 +526,7 @@ function useAutomaticDocumentPreloadRevision(
 export interface ExpoTurboProviderProps {
   readonly actions?: ComponentActionExecutor
   readonly autofocus?: AutofocusAdapter
+  readonly autofocusScroll?: AutofocusScrollAdapter
   readonly children?: ReactNode
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
@@ -575,6 +578,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     () => ({
       actions: props.actions,
       autofocus: props.autofocus,
+      autofocusScroll: props.autofocusScroll,
       documentComponent: props.documentComponent,
       documentAnchorScroll: props.documentAnchorScroll,
       documentAutomaticPreloadPolicy: props.documentAutomaticPreloadPolicy,
@@ -603,6 +607,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     [
       props.actions,
       props.autofocus,
+      props.autofocusScroll,
       props.documentComponent,
       props.documentAnchorScroll,
       props.documentAutomaticPreloadPolicy,
@@ -2030,6 +2035,7 @@ function AssociatedRegisteredElementBoundary(
 
 interface ConnectedFrameProps {
   readonly autofocus: AutofocusAdapter | undefined
+  readonly autofocusScroll: AutofocusScrollAdapter | undefined
   readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
   readonly frameId: string
@@ -2050,6 +2056,7 @@ function consumeUnexpectedAdapterResult(result: unknown): void {
 
 function focusFirstAvailableCandidate(
   adapter: AutofocusAdapter,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
   candidates: readonly string[],
   scope: "Document" | "Frame" | "Stream",
   frameId?: string,
@@ -2078,12 +2085,47 @@ function focusFirstAvailableCandidate(
       consumeUnexpectedAdapterResult(result)
       throw new StateError(`${scope} autofocus failed`, context)
     }
+    if (scrollAdapter) {
+      applyAutofocusScroll(scrollAdapter, candidate, scope, frameId)
+    }
     return
+  }
+}
+
+function applyAutofocusScroll(
+  adapter: AutofocusScrollAdapter,
+  id: string,
+  scope: "Document" | "Frame" | "Stream",
+  frameId?: string,
+): void {
+  const context = frameId ? { frameId } : {}
+  let available: unknown
+  try {
+    available = adapter.canScroll(id)
+  } catch {
+    throw new StateError(`${scope} autofocus scroll availability check failed`, context)
+  }
+  if (typeof available !== "boolean") {
+    consumeUnexpectedAdapterResult(available)
+    throw new StateError(`${scope} autofocus scroll availability check failed`, context)
+  }
+  if (!available) return
+
+  let result: unknown
+  try {
+    result = adapter.scrollTo(id)
+  } catch {
+    throw new StateError(`${scope} autofocus scroll failed`, context)
+  }
+  if (result !== undefined) {
+    consumeUnexpectedAdapterResult(result)
+    throw new StateError(`${scope} autofocus scroll failed`, context)
   }
 }
 
 function applyAutofocus(
   adapter: AutofocusAdapter,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
   candidates: readonly string[],
   nodeKey: string,
   onError: ((event: ExpoTurboRenderError) => void) | undefined,
@@ -2091,7 +2133,7 @@ function applyAutofocus(
   frameId?: string,
 ): void {
   try {
-    focusFirstAvailableCandidate(adapter, candidates, scope, frameId)
+    focusFirstAvailableCandidate(adapter, scrollAdapter, candidates, scope, frameId)
   } catch (error) {
     const reported = error instanceof Error ? error : new StateError(`${scope} autofocus failed`)
     if (!onError) throw reported
@@ -2110,6 +2152,7 @@ function applyAutofocus(
 
 function applyStandaloneStreamAutofocus(
   adapter: AutofocusAdapter | undefined,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
   candidates: readonly string[] | undefined,
   nodeKey: string,
   onError: ((event: ExpoTurboRenderError) => void) | undefined,
@@ -2127,7 +2170,7 @@ function applyStandaloneStreamAutofocus(
       throw new StateError("Stream autofocus active-focus check failed")
     }
     if (focusedId !== undefined) return
-    applyAutofocus(adapter, candidates, nodeKey, undefined, "Stream")
+    applyAutofocus(adapter, scrollAdapter, candidates, nodeKey, undefined, "Stream")
   } catch (error) {
     const reported = error instanceof Error ? error : new StateError("Stream autofocus failed")
     if (!onError) throw reported
@@ -2342,6 +2385,7 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
       if (effects?.autofocus && props.autofocus) {
         applyAutofocus(
           props.autofocus,
+          props.autofocusScroll,
           effects.autofocus,
           props.node.key,
           props.onError,
@@ -2358,6 +2402,7 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
     controller,
     coordinationRevision,
     props.autofocus,
+    props.autofocusScroll,
     props.frameAutoscroll,
     props.frameId,
     props.node,
@@ -2402,8 +2447,14 @@ interface DocumentRenderBoundaryProps {
 }
 
 function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
-  const { autofocus, documentHistoryScroll, documentRefreshScroll, onError, session } =
-    useRenderer()
+  const {
+    autofocus,
+    autofocusScroll,
+    documentHistoryScroll,
+    documentRefreshScroll,
+    onError,
+    session,
+  } = useRenderer()
   const subscribeRenderLifecycle = useCallback(
     (listener: () => void) => subscribeDocumentRenderLifecycle(session, listener),
     [session],
@@ -2450,7 +2501,14 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     try {
       const candidates = consumeDocumentAutofocus(session, props.document, props.generation)
       if (candidates && autofocus) {
-        applyAutofocus(autofocus, candidates, props.document.key, onError, "Document")
+        applyAutofocus(
+          autofocus,
+          autofocusScroll,
+          candidates,
+          props.document.key,
+          onError,
+          "Document",
+        )
       }
     } catch (error) {
       acknowledgement?.fail()
@@ -2470,6 +2528,7 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     }
   }, [
     autofocus,
+    autofocusScroll,
     coordinationRevision,
     documentHistoryScroll,
     documentRefreshScroll,
@@ -2483,11 +2542,20 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     if (streamAutofocusRevision !== streamAutofocusLifecycleRevision(session)) return
     applyStandaloneStreamAutofocus(
       autofocus,
+      autofocusScroll,
       consumeStandaloneStreamAutofocus(session, revision),
       props.document.key,
       onError,
     )
-  }, [autofocus, onError, props.document.key, revision, session, streamAutofocusRevision])
+  }, [
+    autofocus,
+    autofocusScroll,
+    onError,
+    props.document.key,
+    revision,
+    session,
+    streamAutofocusRevision,
+  ])
   return props.children
 }
 
@@ -2607,6 +2675,7 @@ function ProtocolElementView(
       context.frames && frameId
         ? createElement(ConnectedFrame, {
             autofocus: context.autofocus,
+            autofocusScroll: context.autofocusScroll,
             frameAutoscroll: context.frameAutoscroll,
             frameComponent: context.frameComponent,
             frameId,
