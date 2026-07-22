@@ -209,6 +209,7 @@ RSpec.describe "standalone demo host" do
     upload = upload_form&.at_xpath("./DemoFormFile[@id='demo-form-attachment']")
     expect(upload&.[]("name")).to eq("profile[attachment]")
     expect(upload&.[]("filename")).to eq("expo-turbo-upload.txt")
+    expect(upload_form&.at_xpath("./DemoFormSubmitter[@id='demo-form-upload-retry']")&.[]("value")).to eq("upload-retry")
     consent_form = frame.at_xpath("./DemoForm[@id='demo-consent-form']")
     consent = consent_form&.at_xpath("./DemoFormCheckbox[@id='demo-form-terms']")
     expect(consent&.[]("name")).to eq("profile[terms]")
@@ -386,13 +387,33 @@ RSpec.describe "standalone demo host" do
 
       post "/api/expo_turbo/demo/form",
         params: {
-          commit: "upload",
+          commit: "upload-retry",
           profile: {
             attachment: Rack::Test::UploadedFile.new(
               file.path,
               "text/plain",
               true,
               original_filename: "expo-turbo-upload.txt"
+            )
+          }
+        },
+        headers: headers
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+      frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+      expect(frame.at_xpath(".//DemoFormFile[@id='demo-form-attachment']")&.[]("error"))
+        .to eq("Retry this selected attachment")
+
+      post "/api/expo_turbo/demo/form",
+        params: {
+          commit: "upload",
+          profile: {
+            attachment: Rack::Test::UploadedFile.new(
+              file.path,
+              "text/plain",
+              true,
+              original_filename: "picked-notes.txt"
             )
           }
         },

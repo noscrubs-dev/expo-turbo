@@ -101,7 +101,7 @@ function formXml(
   planSelected: "none" | "starter" | "pro" = "none",
   planError?: string,
 ): string {
-  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm><DemoForm id="demo-consent-form" action="${FORM_PATH}" method="post"><DemoFormCheckbox id="demo-form-terms" label="Accept demo terms" name="profile[terms]" value="accepted"${termsAccepted ? " checked" : ""}${termsError ? ` error="${termsError}"` : ""} /><DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" /></DemoForm><DemoForm id="demo-plan-form" action="${FORM_PATH}" method="post"><DemoFormPlanSelect id="demo-form-plan" label="Demo plan" name="profile[plan]" selected="${planSelected}"${planError ? ` error="${planError}"` : ""} /><DemoFormSubmitter id="demo-form-plan-submit" label="Save plan" name="commit" value="save-plan" /></DemoForm></turbo-frame>`;
+  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /><DemoFormSubmitter id="demo-form-upload-retry" label="Validate selected attachment (return 422)" name="commit" value="upload-retry" /></DemoForm><DemoForm id="demo-consent-form" action="${FORM_PATH}" method="post"><DemoFormCheckbox id="demo-form-terms" label="Accept demo terms" name="profile[terms]" value="accepted"${termsAccepted ? " checked" : ""}${termsError ? ` error="${termsError}"` : ""} /><DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" /></DemoForm><DemoForm id="demo-plan-form" action="${FORM_PATH}" method="post"><DemoFormPlanSelect id="demo-form-plan" label="Demo plan" name="profile[plan]" selected="${planSelected}"${planError ? ` error="${planError}"` : ""} /><DemoFormSubmitter id="demo-form-plan-submit" label="Save plan" name="commit" value="save-plan" /></DemoForm></turbo-frame>`;
 }
 
 function takePending(pending: PendingFetch[], message: string): PendingFetch {
@@ -301,7 +301,7 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     ).toBeDefined();
 
     act(() => {
-      submitter("Upload sample attachment").onPress?.();
+      submitter("Validate selected attachment (return 422)").onPress?.();
     });
     const upload = takePending(pending, "The rendered form did not submit its multipart attachment");
     expect(upload).toMatchObject({
@@ -318,21 +318,21 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     if (!(upload.request.body instanceof FormData)) {
       throw new Error("The multipart request did not reach the host as FormData");
     }
-    expect(upload.request.body.get("commit")).toBe("upload");
+    expect(upload.request.body.get("commit")).toBe("upload-retry");
     const attachment = upload.request.body.get("profile[attachment]");
     if (!(attachment instanceof Blob)) throw new Error("The multipart request omitted its Blob");
     expect(await attachment.text()).toBe("picked from Files\n");
     expect((attachment as Blob & { name?: string }).name).toBe("picked-notes.txt");
     await act(async () => {
       upload.resolve(
-        response(formXml("", undefined, "Upload a UTF-8 text file from 1 to 64 KiB"), {
+        response(formXml("", undefined, "Retry this selected attachment"), {
           status: 422,
           url: formUrl,
         }),
       );
       await Promise.resolve();
     });
-    expect(JSON.stringify(renderer?.toJSON())).toContain("Upload a UTF-8 text file from 1 to 64 KiB");
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Retry this selected attachment");
     expect(
       renderer?.root.findByProps({ accessibilityLabel: "Sample attachment: picked-notes.txt" }),
     ).toBeDefined();

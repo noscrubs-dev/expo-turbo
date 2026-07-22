@@ -54,10 +54,13 @@ export async function pickDemoTextUpload(): Promise<DemoPickedTextUpload | undef
   }
   if (asset.size !== undefined && asset.size !== byteLength) throw pickerError("size changed before upload");
 
-  // Expo File satisfies the Web Blob contract, while the React Native Blob type
-  // used by the transport has additional platform methods. Copying this small,
-  // bounded file yields that exact transport type without retaining a URI.
-  const blob = new Blob([await file.arrayBuffer()], { type: TEXT_PLAIN_MEDIA_TYPE });
+  // The cached Expo File already satisfies the Blob contract used by FormData.
+  // Preserve its native backing rather than constructing a Blob from an
+  // ArrayBuffer: Expo Go intentionally does not support that constructor path.
+  // Expo's File declarations and React Native's fetch declarations model the
+  // shared runtime Blob shape differently. The native File still supplies the
+  // required Blob metadata and is what FormData serializes on device.
+  const blob = file as unknown as Blob;
   return Object.freeze({
     attachment: Object.freeze({ blob, filename: asset.name }),
     byteLength,

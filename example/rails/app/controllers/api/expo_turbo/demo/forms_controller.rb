@@ -12,6 +12,7 @@ module Api
         TEXT_PLAIN_MEDIA_TYPE = "text/plain"
         TERMS_VALIDATION_ERROR = "Accept the demo terms before saving"
         PLAN_VALIDATION_ERROR = "Choose a supported demo plan"
+        UPLOAD_RETRY_VALIDATION_ERROR = "Retry this selected attachment"
         UPLOAD_VALIDATION_ERROR = "Upload a UTF-8 text file from 1 to 64 KiB"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
         UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8", "text/plain; charset=utf-8"].freeze
@@ -78,10 +79,13 @@ module Api
         def submit_upload
           submitted = submitted_upload
           return head :bad_request unless submitted
-          return head :bad_request unless submitted.fetch(:commit) == "upload"
+
+          commit = submitted.fetch(:commit)
+          return head :bad_request unless ["upload", "upload-retry"].include?(commit)
           unless valid_demo_upload?(submitted.fetch(:attachment))
             return render_form(upload_error: UPLOAD_VALIDATION_ERROR, status: :unprocessable_content)
           end
+          return render_form(upload_error: UPLOAD_RETRY_VALIDATION_ERROR, status: :unprocessable_content) if commit == "upload-retry"
 
           redirect_to api_expo_turbo_demo_form_path, status: :see_other
         end
