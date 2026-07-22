@@ -5,10 +5,11 @@ import {
   useNavigationContainerRef,
   useRoute,
 } from "expo-router";
+import * as Linking from "expo-linking";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import { dispatchTurboStreamFragment } from "expo-turbo/core";
 import { ExpoTurboRoot } from "expo-turbo/react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Pressable,
   Platform,
@@ -252,6 +253,15 @@ export function DemoRouteScreen() {
   const [navigationReady, setNavigationReady] = useState(false);
   const route = useRoute();
   const runtime = useDemoRuntime();
+  const initialUrl = useMemo(() => {
+    if (Platform.OS === "web") return undefined;
+    try {
+      const value = Linking.getLinkingURL();
+      return typeof value === "string" ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -271,6 +281,7 @@ export function DemoRouteScreen() {
       <Stack.Screen options={{ title: "Expo Turbo" }} />
       <DemoRouterRouteOwner
         focused={focused && navigationReady}
+        initialUrl={initialUrl}
         navigation={navigation}
         routeKey={route.key}
         runtime={runtime}
