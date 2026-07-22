@@ -20,4 +20,16 @@
     />
     <DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" />
   </DemoForm>
+  <DemoForm id="demo-consent-form" action="/api/expo_turbo/demo/form" method="post">
+    <DemoText id="demo-consent-form-title">Native successful-control consent</DemoText>
+    <DemoFormCheckbox
+      id="demo-form-terms"
+      label="Accept demo terms"
+      name="profile[terms]"
+      value="accepted"
+      <% if terms_accepted %>checked<% end %>
+      <% if terms_error %>error="<%= ERB::Util.html_escape(terms_error) %>"<% end %>
+    />
+    <DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" />
+  </DemoForm>
 <% end %>

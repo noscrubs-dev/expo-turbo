@@ -209,6 +209,13 @@ RSpec.describe "standalone demo host" do
     upload = upload_form&.at_xpath("./DemoFormFile[@id='demo-form-attachment']")
     expect(upload&.[]("name")).to eq("profile[attachment]")
     expect(upload&.[]("filename")).to eq("expo-turbo-upload.txt")
+    consent_form = frame.at_xpath("./DemoForm[@id='demo-consent-form']")
+    consent = consent_form&.at_xpath("./DemoFormCheckbox[@id='demo-form-terms']")
+    expect(consent&.[]("name")).to eq("profile[terms]")
+    expect(consent&.[]("value")).to eq("accepted")
+    expect(consent&.[]("checked")).to be_nil
+    expect(consent_form&.at_xpath("./DemoFormSubmitter[@id='demo-form-consent']")&.[]("value"))
+      .to eq("save-consent")
 
     get "/api/expo_turbo/demo/form"
     expect(response).to have_http_status(:bad_request)
@@ -284,6 +291,40 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:see_other)
     expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
     expect(response.body).to be_empty
+  end
+
+  it "keeps an unchecked native consent control absent and returns matching 422 XML" do
+    host! "localhost"
+    headers = {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+
+    post "/api/expo_turbo/demo/form", params: {commit: "save-consent"}, headers: headers
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(frame["id"]).to eq("demo-form-frame")
+    consent = frame.at_xpath(".//DemoFormCheckbox[@id='demo-form-terms']")
+    expect(consent&.[]("checked")).to be_nil
+    expect(consent&.[]("error")).to eq("Accept the demo terms before saving")
+
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "save-consent", profile: {terms: "accepted"}},
+      headers: headers
+
+    expect(response).to have_http_status(:see_other)
+    expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
+
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "save-consent", profile: {terms: "forged"}},
+      headers: headers
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    consent = frame.at_xpath(".//DemoFormCheckbox[@id='demo-form-terms']")
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(consent&.[]("checked")).to be_nil
+    expect(consent&.[]("error")).to eq("Accept the demo terms before saving")
   end
 
   it "accepts only bounded UTF-8 text/plain native multipart uploads and discards their bytes" do

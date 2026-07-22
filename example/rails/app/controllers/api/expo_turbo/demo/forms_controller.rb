@@ -10,6 +10,7 @@ module Api
         MAX_UPLOAD_BYTES = 64 * 1024
         MULTIPART_MEDIA_TYPE = "multipart/form-data"
         TEXT_PLAIN_MEDIA_TYPE = "text/plain"
+        TERMS_VALIDATION_ERROR = "Accept the demo terms before saving"
         UPLOAD_VALIDATION_ERROR = "Upload a UTF-8 text file from 1 to 64 KiB"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
         UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8", "text/plain; charset=utf-8"].freeze
@@ -26,6 +27,7 @@ module Api
         def create
           return submit_upload if request.media_type == MULTIPART_MEDIA_TYPE
           return head :unsupported_media_type unless [URL_ENCODED_MEDIA_TYPE, TEXT_PLAIN_MEDIA_TYPE].include?(request.media_type)
+          return submit_consent if request.media_type == URL_ENCODED_MEDIA_TYPE && params[:commit] == "save-consent"
 
           submitted = submitted_form
           return head :bad_request unless submitted
@@ -50,8 +52,8 @@ module Api
           head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
         end
 
-        def render_form(first_name: "", error: nil, status: :ok, upload_error: nil)
-          render_expo_turbo "demo/forms/show", locals: {error:, first_name:, upload_error:}, status:
+        def render_form(first_name: "", error: nil, status: :ok, terms_accepted: false, terms_error: nil, upload_error: nil)
+          render_expo_turbo "demo/forms/show", locals: {error:, first_name:, terms_accepted:, terms_error:, upload_error:}, status:
         end
 
         def render_bad_form_request
@@ -82,11 +84,36 @@ module Api
           redirect_to api_expo_turbo_demo_form_path, status: :see_other
         end
 
+        def submit_consent
+          submitted = submitted_consent
+          return head :bad_request unless submitted
+
+          terms_accepted = submitted.fetch(:terms) == "accepted"
+          unless terms_accepted
+            return render_form(terms_error: TERMS_VALIDATION_ERROR, status: :unprocessable_content)
+          end
+
+          redirect_to api_expo_turbo_demo_form_path, status: :see_other
+        end
+
         def submitted_upload
           {
             attachment: params.expect(profile: [:attachment]).fetch(:attachment),
             commit: params.expect(:commit)
           }
+        end
+
+        def submitted_consent
+          return unless params.expect(:commit) == "save-consent"
+
+          profile = params[:profile]
+          return {terms: nil} if profile.nil?
+          return unless profile.is_a?(ActionController::Parameters)
+
+          terms = profile.permit(:terms)[:terms]
+          return unless terms.nil? || terms.is_a?(String)
+
+          {terms:}
         end
 
         def valid_demo_upload?(attachment)

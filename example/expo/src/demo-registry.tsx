@@ -10,6 +10,7 @@ import {
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import * as ReactNative from "react-native";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { z } from "zod";
 
@@ -560,6 +561,107 @@ const formFile = defineComponent({
   tag: "DemoFormFile",
 });
 
+function DemoFormCheckboxComponent({
+  checked,
+  error,
+  label,
+  name,
+  value,
+}: {
+  checked: boolean;
+  error?: string;
+  label: string;
+  name: string;
+  value: string;
+}) {
+  const [current, setCurrent] = useState(checked);
+  const control = useExpoTurboFormControl({
+    checked: current,
+    kind: "checkable",
+    name,
+    value,
+  });
+  return (
+    <View
+      accessibilityHint={error}
+      accessibilityState={{ ...control.accessibilityState, checked: current }}
+      style={{ gap: 4, opacity: control.disabled ? 0.55 : 1 }}
+    >
+      <DemoNativeSwitch
+        accessibilityLabel={label}
+        accessibilityState={{ ...control.accessibilityState, checked: current }}
+        disabled={control.disabled}
+        onValueChange={setCurrent}
+        value={current}
+      />
+      <Text style={{ color: "#172230", fontSize: 14 }}>{label}</Text>
+      {error ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function DemoNativeSwitch({
+  accessibilityLabel,
+  accessibilityState,
+  disabled,
+  onValueChange,
+  value,
+}: {
+  accessibilityLabel: string;
+  accessibilityState: Readonly<{ checked: boolean; disabled: boolean }>;
+  disabled: boolean;
+  onValueChange(value: boolean): void;
+  value: boolean;
+}) {
+  const NativeSwitch = ReactNative.Switch;
+  if (NativeSwitch) {
+    return (
+      <NativeSwitch
+        accessibilityLabel={accessibilityLabel}
+        accessibilityState={accessibilityState}
+        disabled={disabled}
+        onValueChange={onValueChange}
+        value={value}
+      />
+    );
+  }
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="switch"
+      accessibilityState={accessibilityState}
+      disabled={disabled}
+      onPress={() => onValueChange(!value)}
+    >
+      <Text>{value ? "On" : "Off"}</Text>
+    </Pressable>
+  );
+}
+
+const formCheckbox = defineComponent({
+  attributes: {
+    checked: { codec: presenceCodec, prop: "checked" },
+    error: { codec: stringCodec, prop: "error" },
+    label: { codec: stringCodec, prop: "label" },
+    name: { codec: stringCodec, prop: "name" },
+    value: { codec: stringCodec, prop: "value" },
+  },
+  children: "none",
+  component: DemoFormCheckboxComponent,
+  schema: z.object({
+    checked: z.boolean().default(false),
+    error: z.string().trim().min(1).optional(),
+    label: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    value: z.string(),
+  }),
+  tag: "DemoFormCheckbox",
+});
+
 function DemoFormSubmitterComponent(props: {
   formaction?: string;
   formenctype?: string;
@@ -640,6 +742,7 @@ export const DEMO_REGISTRY = createRegistry(
       formLegend,
       formInput,
       formFile,
+      formCheckbox,
       formSubmitter,
     ],
     name: "demo-primitives",

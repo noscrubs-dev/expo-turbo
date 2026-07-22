@@ -13,6 +13,12 @@ interface PressableProps {
   readonly onPress?: () => void;
 }
 
+interface SwitchProps {
+  readonly accessibilityLabel?: string;
+  readonly onValueChange?: (value: boolean) => void;
+  readonly value?: boolean;
+}
+
 let pickerResult: unknown = Object.freeze({ assets: Object.freeze([]), canceled: true });
 
 mock.module("expo-document-picker", () => ({
@@ -36,6 +42,7 @@ mock.module("react-native", () => ({
   Platform: { OS: "web" },
   Pressable: (props: PressableProps) => createElement("pressable", props),
   ScrollView: (props: Readonly<Record<string, unknown>>) => createElement("scroll-view", props),
+  Switch: (props: SwitchProps) => createElement("switch", props),
   Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
   TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
@@ -85,8 +92,14 @@ function response(
   });
 }
 
-function formXml(firstName: string, error?: string, uploadError?: string): string {
-  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm></turbo-frame>`;
+function formXml(
+  firstName: string,
+  error?: string,
+  uploadError?: string,
+  termsAccepted = false,
+  termsError?: string,
+): string {
+  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm><DemoForm id="demo-consent-form" action="${FORM_PATH}" method="post"><DemoFormCheckbox id="demo-form-terms" label="Accept demo terms" name="profile[terms]" value="accepted"${termsAccepted ? " checked" : ""}${termsError ? ` error="${termsError}"` : ""} /><DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" /></DemoForm></turbo-frame>`;
 }
 
 function takePending(pending: PendingFetch[], message: string): PendingFetch {
@@ -145,6 +158,61 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
         accessibilityLabel: "Sample attachment: expo-turbo-upload.txt",
       }),
     ).toBeDefined();
+    expect(renderer?.root.findByProps({ accessibilityLabel: "Accept demo terms" }).props.value).toBe(false);
+
+    act(() => {
+      submitter("Save consent").onPress?.();
+    });
+    const missingConsent = takePending(pending, "The unchecked consent control did not submit");
+    expect(missingConsent).toMatchObject({
+      request: {
+        body: "commit=save-consent",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "Turbo-Frame": FRAME_ID,
+        },
+        method: "POST",
+      },
+      url: formUrl,
+    });
+    await act(async () => {
+      missingConsent.resolve(
+        response(formXml("", undefined, undefined, false, "Accept the demo terms before saving"), {
+          status: 422,
+          url: formUrl,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Accept the demo terms before saving");
+    const consent = renderer?.root.findByProps({ accessibilityLabel: "Accept demo terms" });
+    expect(consent?.props.value).toBe(false);
+
+    await act(async () => {
+      consent?.props.onValueChange?.(true);
+      await Promise.resolve();
+    });
+    expect(renderer?.root.findByProps({ accessibilityLabel: "Accept demo terms" }).props.value).toBe(true);
+    act(() => {
+      submitter("Save consent").onPress?.();
+    });
+    const acceptedConsent = takePending(pending, "The checked consent control did not submit");
+    expect(acceptedConsent).toMatchObject({
+      request: {
+        body: "profile%5Bterms%5D=accepted&commit=save-consent",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "Turbo-Frame": FRAME_ID,
+        },
+        method: "POST",
+      },
+      url: formUrl,
+    });
+    await act(async () => {
+      acceptedConsent.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(renderer?.toJSON())).not.toContain("Accept the demo terms before saving");
 
     const pickedAttachment = new Blob(["picked from Files\n"], { type: "text/plain" });
     pickerResult = Object.freeze({
