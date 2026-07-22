@@ -221,11 +221,12 @@ const documentLink = defineComponent({
 });
 
 function DemoAnchorTargetComponent({ children, id }: { children?: ReactNode; id: string }) {
-  const anchorTarget = useDemoDocumentAnchorTarget(id);
+  const { onLayout, setNativeTarget } = useDemoDocumentAnchorTarget(id);
   return (
     <View
       collapsable={false}
-      onLayout={anchorTarget.onLayout}
+      onLayout={onLayout}
+      ref={setNativeTarget}
       testID={`demo-anchor-target-${id}`}
     >
       {children}
@@ -966,6 +967,17 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoDocumentLink href="/demo/frame-form" data-turbo-method="post" data-turbo-action="advance">
         <DemoText>Submit a generated form and promote this mounted Frame through shared history.</DemoText>
       </DemoDocumentLink>
+      <DemoDocumentLink href="#frame-native-anchor-target">
+        <DemoText>Jump within this Frame to its registered native anchor target.</DemoText>
+      </DemoDocumentLink>
+      <DemoCard title="Frame anchor spacer" style-tokens="space:comfortable">
+        <DemoText>This spacer keeps the Frame-owned target below its activation link.</DemoText>
+      </DemoCard>
+      <DemoAnchorTarget id="frame-native-anchor-target">
+        <DemoCard title="Frame native anchor target" tone="positive" style-tokens="space:comfortable surface:elevated">
+          <DemoText>The link and target share the same current Frame and started no Frame request.</DemoText>
+        </DemoCard>
+      </DemoAnchorTarget>
     </DemoCard>
   </turbo-frame>
   <DemoCard id="nested-visibility-card" title="Nested lazy Frame visibility" style-tokens="tone:info space:compact">

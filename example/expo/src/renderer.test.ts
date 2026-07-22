@@ -7156,7 +7156,7 @@ describe("React protocol renderer", () => {
     act(() => stale.renderer.unmount())
   })
 
-  test("rejects same-document anchors outside the top-level application tree", async () => {
+  test("rejects same-document anchors across Frame scopes and explicit targets", async () => {
     const scrolls: string[] = []
     const harness = renderDocumentLinks(
       `<Gallery>
@@ -7198,6 +7198,57 @@ describe("React protocol renderer", () => {
       await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
     }
     expect(scrolls).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("scrolls a same-document anchor inside its current Frame without a Frame request", async () => {
+    const clicks: string[] = []
+    const requests: TurboRequest[] = []
+    const scrolls: Readonly<{ alignment: string; id: string }>[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="current-frame">
+          <DemoText id="frame-section">Frame section</DemoText>
+          <DocumentLink href="#frame-section" />
+        </turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        throw new Error("same-Frame anchor must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id, alignment) {
+            scrolls.push({ alignment, id })
+          },
+        },
+      }),
+    )
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("#frame-section")()
+    })
+
+    expect(result).toEqual({
+      kind: "anchor",
+      status: "requested",
+      targetId: "frame-section",
+      url: "https://example.test/current#frame-section",
+    })
+    expect(scrolls).toEqual([{ alignment: "start", id: "frame-section" }])
+    expect(clicks).toEqual(["https://example.test/current#frame-section"])
+    expect(requests).toEqual([])
     expect(harness.documentRequestIdCount()).toBe(0)
     act(() => harness.renderer.unmount())
   })
