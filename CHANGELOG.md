@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Correct the public protocol guide to describe the already-supported bounded Blob/file entry and semantic multipart-body contracts. Core remains picker-, URI-, and boundary-agnostic; the host adapter owns conversion to platform `FormData`.
+
 - Add opt-in browser-style fallback for explicit native single-choice select snapshots. `defaultSelection: "first-enabled"` contributes the first option outside disabled option/group state only when the host snapshot contains no selected option; an explicitly selected disabled option suppresses fallback, selected multi-value snapshots retain their existing entries, and the caller-owned snapshot is never mutated. XML/native-widget discovery remains host-owned.
 
 - Extend the standalone Expo Router bridge from two fixed fixture paths to a bounded generic nested path codec below `/demo`. It accepts canonical one-to-eight segment document paths, rejects malformed or unsafe route state, keeps direct query values opaque in managed history metadata, and statically exports a linked `/demo/routes/ios-proof/details` proof route. Focused bridge/runtime coverage and an iPhone 17 Pro Simulator/Expo Go flow prove the exact nested URL and ordered query metadata. Generic direct-deep-link query/fragment mapping, Android interaction, physical-device, and release-build evidence remain pending.
