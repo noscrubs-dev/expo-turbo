@@ -41,6 +41,7 @@ import {
   type DemoFixtureFetchAdapter,
   type DemoDocumentRuntime,
 } from "./demo-document-controller";
+import { DEMO_DOCUMENT_ANNOUNCEMENTS } from "./demo-document-announcement-runtime";
 import { createDemoFrameControllers } from "./demo-frame-controllers";
 import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
 import { DEMO_FORM_ANNOUNCEMENTS } from "./demo-form-announcement-runtime";
@@ -248,6 +249,7 @@ export function DemoRuntimeProvider({
                 actions={runtime.actionRuntime.actions}
                 autofocus={runtime.focus}
                 documentAnchorScroll={runtime.documentAnchorScroll}
+                documentAnnouncements={DEMO_DOCUMENT_ANNOUNCEMENTS}
                 documentComponent={DemoDocumentBoundary}
                 documentController={runtime.documentRuntime.controller}
                 documentHistoryScroll={runtime.documentRefreshScroll}
