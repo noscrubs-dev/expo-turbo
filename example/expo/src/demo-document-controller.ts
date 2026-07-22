@@ -149,6 +149,23 @@ const GENERIC_ROUTE_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="generic-route-document" title="Generic nested Router path reached" tone="positive" style-tokens="space:comfortable surface:elevated">
     <DemoText>The standalone host safely mapped this document's nested /demo/routes/ios-proof/details path into Expo Router catch-all segments while the opaque history entry retained its repeated and empty query values.</DemoText>
   </DemoCard>
+  <DemoCard id="generic-anchor-spacer-one" title="Nested-route anchor spacer one" style-tokens="space:comfortable">
+    <DemoText>The live raw Expo Go proof keeps its registered target below the initial root viewport.</DemoText>
+  </DemoCard>
+  <DemoCard id="generic-anchor-spacer-two" title="Nested-route anchor spacer two" style-tokens="space:comfortable">
+    <DemoText>The destination query remains authoritative while the existing native route receives managed history metadata.</DemoText>
+  </DemoCard>
+  <DemoCard id="generic-anchor-spacer-three" title="Nested-route anchor spacer three" style-tokens="space:comfortable">
+    <DemoText>The canonical document loads through ordinary traversal before the root-only anchor request waits for layout.</DemoText>
+  </DemoCard>
+  <DemoCard id="generic-anchor-spacer-four" title="Nested-route anchor spacer four" style-tokens="space:comfortable">
+    <DemoText>No second Expo Router push is used for this already-created native route.</DemoText>
+  </DemoCard>
+  <DemoAnchorTarget id="generic-native-anchor-target">
+    <DemoCard title="Generic nested native anchor target" tone="positive" style-tokens="space:comfortable surface:elevated">
+      <DemoText>The iOS host restored this query-bearing nested document before scrolling its registered root target.</DemoText>
+    </DemoCard>
+  </DemoAnchorTarget>
   <DemoDocumentLink href="/demo" data-turbo-action="restore">
     <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
   </DemoDocumentLink>
