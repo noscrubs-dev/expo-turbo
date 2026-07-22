@@ -7,7 +7,7 @@ import {
 } from "expo-router";
 import * as Linking from "expo-linking";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
-import { dispatchTurboStreamFragment } from "expo-turbo/core";
+import { dispatchTurboStreamFragment, StateError } from "expo-turbo/core";
 import { ExpoTurboRoot } from "expo-turbo/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -251,6 +251,9 @@ export function DemoRouteScreen() {
   const navigation = useNavigation<DemoRouterNavigation>();
   const navigationContainer = useNavigationContainerRef();
   const [navigationReady, setNavigationReady] = useState(false);
+  const [incomingLink, setIncomingLink] = useState<
+    Readonly<{ sequence: number; url: string }> | undefined
+  >(undefined);
   const route = useRoute();
   const runtime = useDemoRuntime();
   const initialUrl = useMemo(() => {
@@ -276,11 +279,30 @@ export function DemoRouteScreen() {
     };
   }, [navigationContainer]);
 
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      if (typeof url !== "string") return;
+      try {
+        runtime.navigation.handleExpoGoLinkEvent(url);
+      } catch (error) {
+        runtime.navigation.reportError(
+          error instanceof Error ? error : new StateError("Demo Router link handling failed"),
+        );
+      }
+      setIncomingLink((current) =>
+        Object.freeze({ sequence: (current?.sequence ?? 0) + 1, url }),
+      );
+    });
+    return () => subscription.remove();
+  }, [runtime.navigation]);
+
   return (
     <>
       <Stack.Screen options={{ title: "Expo Turbo" }} />
       <DemoRouterRouteOwner
         focused={focused && navigationReady}
+        incomingLink={incomingLink}
         initialUrl={initialUrl}
         navigation={navigation}
         routeKey={route.key}
