@@ -31,9 +31,14 @@ RSpec.describe "standalone demo host" do
     stream_link = document.at_xpath("//DemoDocumentLink[@id='demo-http-stream-link']")
     expect(stream_link&.[]("href")).to eq("/api/expo_turbo/demo/stream")
     expect(stream_link&.[]("data-turbo-stream")).to eq("")
+    morph_stream_link = document.at_xpath("//DemoDocumentLink[@id='demo-http-stream-morph-link']")
+    expect(morph_stream_link&.[]("href")).to eq("/api/expo_turbo/demo/stream?mode=morph")
+    expect(morph_stream_link&.[]("data-turbo-stream")).to eq("")
     expect(document.at_xpath("//Gallery[@id='demo-http-stream-message']/DemoText")&.text)
       .to eq("Waiting for a Rails HTTP Stream response")
     expect(document.at_xpath("//Gallery[@id='demo-http-stream-list']")).to be_present
+    expect(document.at_xpath("//DemoStreamMorphProbe[@id='demo-http-stream-morph-probe']")&.[]("message"))
+      .to eq("Waiting for a Rails Stream morph")
     frame = document.at_xpath("//turbo-frame[@id='demo-frame']")
     expect(frame&.[]("src")).to eq("/api/expo_turbo/demo/frame")
     expect(document.at_xpath("//turbo-cable-stream-source")).to be_nil
@@ -56,6 +61,31 @@ RSpec.describe "standalone demo host" do
     expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
     expect(streams.last.at_xpath("./template/DemoText[@id='demo-http-stream-item']")&.text)
       .to eq("Second sibling")
+  end
+
+  it "serves an exact Rails Stream morph from a confined XML partial" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/stream", params: {mode: "morph"}
+
+    fragment = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+    streams = fragment.xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
+    expect(streams).to have_attributes(length: 1)
+    stream = streams.first
+    expect(stream["action"]).to eq("replace")
+    expect(stream["method"]).to eq("morph")
+    expect(stream["target"]).to eq("demo-http-stream-morph-probe")
+    expect(stream.at_xpath("./template/DemoStreamMorphProbe[@id='demo-http-stream-morph-probe']")&.[]("message"))
+      .to eq("Rendered from Rails Stream morph")
+  end
+
+  it "rejects an unknown standalone Rails Stream mode" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/stream", params: {mode: "unsupported"}
+
+    expect(response).to have_http_status(:bad_request)
   end
 
   it "delivers fixed public XML replace and refresh Streams through the Redis-backed Expo Action Cable namespace" do

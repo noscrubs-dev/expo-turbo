@@ -73,3 +73,51 @@ liveTest("applies the standalone Rails HTTP Stream link through the native gener
     proof.dispose();
   }
 });
+
+liveTest("retains the exact target through the standalone Rails HTTP Stream morph", async () => {
+  if (!origin) throw new Error("EXPO_TURBO_DEMO_ORIGIN is required for the Rails HTTP Stream smoke");
+
+  const streamUrl = new URL(
+    "/api/expo_turbo/demo/stream?mode=morph",
+    new URL(origin).origin,
+  ).toString();
+  const requests: RecordedRequest[] = [];
+  const proof = await createDemoLiveCableRuntime({
+    fetch: async (url, request) => {
+      requests.push({ request, url });
+      return nativeDemoLiveFetch(url, request);
+    },
+    origin,
+  });
+
+  try {
+    const probeBefore = proof.session.tree.getElementById("demo-http-stream-morph-probe");
+    if (!probeBefore) throw new Error("The Rails Stream morph probe is missing");
+
+    await expect(
+      proof.formLinks.submit(
+        "id:demo-http-stream-morph-link",
+        "/api/expo_turbo/demo/stream?mode=morph",
+      ),
+    ).resolves.toMatchObject({
+      application: "stream",
+      destination: { kind: "document" },
+      status: "applied",
+    });
+
+    const streamRequest = requests.find((request) => request.url === streamUrl);
+    expect(streamRequest).toMatchObject({
+      request: {
+        headers: {
+          Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+          "X-Turbo-Request-Id": "demo-live-http-stream-1",
+        },
+        method: "GET",
+      },
+      url: streamUrl,
+    });
+    expect(proof.session.tree.getElementById("demo-http-stream-morph-probe")).toBe(probeBefore);
+  } finally {
+    proof.dispose();
+  }
+});

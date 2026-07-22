@@ -146,6 +146,14 @@ export function isElement(node: ProtocolNode): node is ProtocolElement {
   return !["comment", "document", "text"].includes(node.kind)
 }
 
+function meaningfulMorphRoots(sources: readonly ProtocolNode[]): readonly ProtocolNode[] {
+  return sources.filter(
+    (source) =>
+      source.kind !== "comment" &&
+      (source.kind !== "text" || source.cdata || /[^\t\n\r ]/.test(source.value)),
+  )
+}
+
 export function attributeValue(element: ProtocolElement, name: string): string | undefined {
   return element.attributes.find((attribute) => attribute.name === name)?.value
 }
@@ -732,7 +740,8 @@ export class DocumentTree {
     assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(target)
     const targetId = attributeValue(target, "id")
-    const source = sources.length === 1 ? sources[0] : undefined
+    const roots = meaningfulMorphRoots(sources)
+    const source = roots.length === 1 ? roots[0] : undefined
     if (
       target.kind !== "element" ||
       !targetId ||

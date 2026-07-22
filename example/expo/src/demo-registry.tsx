@@ -148,10 +148,12 @@ const flatListRegion = defineComponent({
 });
 
 function DemoDocumentLinkComponent({
+  accessibilityLabel,
   children,
   disabled,
   href,
 }: {
+  accessibilityLabel?: string;
   children?: ReactNode;
   disabled: boolean;
   href: string;
@@ -164,6 +166,7 @@ function DemoDocumentLinkComponent({
   return (
     <View style={{ gap: 6 }}>
       <Pressable
+        accessibilityLabel={accessibilityLabel}
         accessibilityRole="link"
         accessibilityState={{ busy: pending, disabled: unavailable }}
         disabled={unavailable}
@@ -202,12 +205,17 @@ function DemoDocumentLinkComponent({
 
 const documentLink = defineComponent({
   attributes: {
+    "accessibility-label": { codec: stringCodec, prop: "accessibilityLabel" },
     disabled: { codec: presenceCodec, prop: "disabled" },
     href: { codec: stringCodec, prop: "href" },
   },
   children: "nodes",
   component: DemoDocumentLinkComponent,
-  schema: z.object({ disabled: z.boolean().default(false), href: z.string().trim().min(1) }),
+  schema: z.object({
+    accessibilityLabel: z.string().trim().min(1).optional(),
+    disabled: z.boolean().default(false),
+    href: z.string().trim().min(1),
+  }),
   tag: "DemoDocumentLink",
 });
 
@@ -278,6 +286,46 @@ const action = defineComponent({
   component: DemoActionComponent,
   schema: z.object({ message: z.string() }),
   tag: "DemoAction",
+});
+
+function DemoStreamMorphProbeComponent({ message }: { message: string }) {
+  const [count, setCount] = useState(0);
+  return (
+    <View accessibilityLabel="Rails HTTP Stream morph proof" style={{ gap: 6 }}>
+      <Text accessibilityLabel={message} selectable style={{ color: "#435160", fontSize: 14 }}>
+        {message}
+      </Text>
+      <Text
+        accessibilityLabel={`Local count: ${count}`}
+        selectable
+        style={{ color: "#435160", fontSize: 13 }}
+        testID="demo-http-stream-morph-count"
+      >
+        Local count: {count}
+      </Text>
+      <Pressable
+        accessibilityLabel="Increment HTTP Stream morph counter"
+        accessibilityRole="button"
+        onPress={() => setCount((current) => current + 1)}
+        style={({ pressed }) => ({
+          alignSelf: "flex-start",
+          opacity: pressed ? 0.7 : 1,
+        })}
+      >
+        <Text style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}>
+          Increment local count
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const streamMorphProbe = defineComponent({
+  attributes: { message: { codec: stringCodec, prop: "message" } },
+  children: "none",
+  component: DemoStreamMorphProbeComponent,
+  schema: z.object({ message: z.string().trim().min(1) }),
+  tag: "DemoStreamMorphProbe",
 });
 
 function DemoFormComponent({ children }: { children?: ReactNode }) {
@@ -818,6 +866,7 @@ export const DEMO_REGISTRY = createRegistry(
       action,
       documentLink,
       anchorTarget,
+      streamMorphProbe,
       form,
       formFieldset,
       formLegend,

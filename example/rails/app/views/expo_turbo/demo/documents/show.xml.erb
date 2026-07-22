@@ -3,10 +3,14 @@
   <DemoDocumentLink id="demo-http-stream-link" href="/api/expo_turbo/demo/stream" data-turbo-stream="">
     <DemoText>Apply sibling Rails HTTP Stream response</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink id="demo-http-stream-morph-link" href="/api/expo_turbo/demo/stream?mode=morph" data-turbo-stream="" accessibility-label="Apply state-preserving Rails Stream morph">
+    <DemoText>Apply state-preserving Rails Stream morph</DemoText>
+  </DemoDocumentLink>
   <Gallery id="demo-http-stream-message">
     <DemoText id="demo-http-stream-message-value">Waiting for a Rails HTTP Stream response</DemoText>
   </Gallery>
   <Gallery id="demo-http-stream-list"></Gallery>
+  <DemoStreamMorphProbe id="demo-http-stream-morph-probe" message="Waiting for a Rails Stream morph" />
   <turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame">
     <DemoText id="demo-frame-message">Loading the public Action Cable Frame</DemoText>
   </turbo-frame>
