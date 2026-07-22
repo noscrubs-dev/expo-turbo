@@ -226,7 +226,8 @@ export function DemoLiveDocumentRefreshMorphPanel({
           This native-only panel loads one ordinary Rails XML document. Its Rails-authored Stream
           link returns standard request-id-free refresh morph, then the document refresh controller
           performs one canonical GET. The server timestamp changes while the compatible local counter
-          stays mounted.
+          stays mounted. Its second link echoes the initiating request ID: the status changes from the
+          sibling Stream action, while the matching Refresh Stream suppresses a duplicate document GET.
         </Text>
         <ExpoTurboRoot />
         {error ? (

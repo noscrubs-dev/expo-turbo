@@ -111,3 +111,61 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
     proof.dispose();
   }
 });
+
+liveTest("suppresses the Rails Refresh Stream that echoes its originating request ID", async () => {
+  if (!origin) throw new Error("EXPO_TURBO_DEMO_ORIGIN is required for the Rails refresh-morph smoke");
+
+  const endpoints = resolveDemoLiveDocumentRefreshMorphEndpoints(origin);
+  const streamUrl = new URL(
+    "/api/expo_turbo/demo/stream?mode=refresh-morph-originating",
+    origin,
+  ).toString();
+  const requests: RecordedRequest[] = [];
+  const proof = await createDemoLiveDocumentRefreshMorphRuntime({
+    fetch: async (url, request) => {
+      requests.push({ request, url });
+      return nativeDemoLiveFetch(url, request);
+    },
+    origin,
+  });
+
+  try {
+    const initialResponse = proof.session.tree.getElementById("demo-document-refresh-morph-response");
+    if (!initialResponse) throw new Error("The standalone Rails suppression document is incomplete");
+    const initialResponseText = nodeTextContent(initialResponse);
+
+    await expect(
+      proof.formLinks.submit(
+        "id:demo-document-refresh-morph-suppression-link",
+        "/api/expo_turbo/demo/stream?mode=refresh-morph-originating",
+      ),
+    ).resolves.toMatchObject({
+      application: "stream",
+      destination: { kind: "document" },
+      status: "applied",
+    });
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+
+    const streamRequest = requests.find((request) => request.url === streamUrl);
+    expect(streamRequest).toMatchObject({
+      request: {
+        headers: {
+          Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+          "X-Turbo-Request-Id": "demo-live-document-refresh-morph-link-1",
+        },
+        method: "GET",
+      },
+      url: streamUrl,
+    });
+    expect(requests.filter((request) => request.url === endpoints.documentUrl)).toHaveLength(1);
+    const suppression = proof.session.tree.getElementById("demo-document-refresh-morph-suppression");
+    expect(suppression ? nodeTextContent(suppression) : undefined).toBe(
+      "Rails echoed the originating request ID, so the document Refresh Stream was suppressed.",
+    );
+    const response = proof.session.tree.getElementById("demo-document-refresh-morph-response");
+    expect(response ? nodeTextContent(response) : undefined).toBe(initialResponseText);
+  } finally {
+    proof.dispose();
+  }
+});

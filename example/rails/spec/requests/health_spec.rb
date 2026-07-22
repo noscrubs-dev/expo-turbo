@@ -78,6 +78,11 @@ RSpec.describe "standalone demo host" do
       .to start_with("Canonical Rails document rendered at ")
     expect(link&.[]("href")).to eq("/api/expo_turbo/demo/stream?mode=refresh-morph")
     expect(link&.[]("data-turbo-stream")).to eq("")
+    suppression_link = document.at_xpath("//DemoDocumentLink[@id='demo-document-refresh-morph-suppression-link']")
+    expect(document.at_xpath("//DemoText[@id='demo-document-refresh-morph-suppression']")&.text)
+      .to eq("No originating request-ID refresh has been demonstrated yet.")
+    expect(suppression_link&.[]("href")).to eq("/api/expo_turbo/demo/stream?mode=refresh-morph-originating")
+    expect(suppression_link&.[]("data-turbo-stream")).to eq("")
     probe = document.at_xpath("//DemoStreamMorphProbe[@id='demo-document-refresh-morph-probe']")
     expect(probe&.[]("message"))
       .to eq("Local state survives the Rails document refresh")
@@ -116,6 +121,28 @@ RSpec.describe "standalone demo host" do
     expect(stream["method"]).to eq("morph")
     expect(stream["request-id"]).to be_nil
     expect(stream.at_xpath("./template")).to be_nil
+  end
+
+  it "echoes the originating request ID so native Refresh Stream handling suppresses a duplicate GET" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/stream",
+      params: {mode: "refresh-morph-originating"},
+      headers: {"X-Turbo-Request-Id" => "originating-refresh"}
+
+    streams = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+      .xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
+    expect(streams.map { |stream| stream["action"] }).to eq(%w[replace refresh])
+    expect(streams.first["target"]).to eq("demo-document-refresh-morph-suppression")
+    expect(streams.first.at_xpath("./template/DemoText[@id='demo-document-refresh-morph-suppression']")&.text)
+      .to eq("Rails echoed the originating request ID, so the document Refresh Stream was suppressed.")
+    expect(streams.last["method"]).to eq("morph")
+    expect(streams.last["request-id"]).to eq("originating-refresh")
+
+    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph-originating"}
+    expect(response).to have_http_status(:bad_request)
   end
 
   it "rejects an unknown standalone Rails Stream mode" do
