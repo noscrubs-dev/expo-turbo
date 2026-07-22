@@ -8,6 +8,8 @@ import { stageDocumentRefreshScroll } from "./document-refresh-scroll-internal"
 import { registerDocumentSessionMorpher } from "./document-session-morph-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { DisposalError, StateError, TargetError } from "./errors"
+import { type MorphLifecycle, morphLifecycleOption } from "./morph-lifecycle"
+import { installMorphLifecycle, morphLifecycleDispatchActive } from "./morph-lifecycle-internal"
 import { RecentRequestIds } from "./recent-request-ids"
 import { markSessionCommitError } from "./session-commit-error-internal"
 import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal"
@@ -18,6 +20,7 @@ export type SessionListener = () => void
 export type DisposalHook = () => void
 
 export interface DocumentSessionOptions {
+  readonly morphLifecycle?: MorphLifecycle
   readonly onDisposalError?: (error: DisposalError) => void
 }
 
@@ -52,6 +55,7 @@ export class DocumentSession {
   private readonly disposals = new Map<ProtocolNode, Set<DisposalHook>>()
   private readonly identities = new WeakMap<ProtocolNode, string>()
   private readonly listeners = new Map<string, Set<SessionListener>>()
+  private readonly morphLifecycle: MorphLifecycle | undefined
   private readonly revisionListeners = new Set<SessionListener>()
   private readonly treeStateListeners = new Set<SessionListener>()
   private readonly sessionIdentity = nextSessionIdentity++
@@ -68,7 +72,9 @@ export class DocumentSession {
     private readonly options: DocumentSessionOptions = {},
   ) {
     const autofocus = prepareDocumentAutofocus(tree, this.currentTreeGeneration)
+    this.morphLifecycle = morphLifecycleOption(options, "Document session")
     this.currentTree = tree
+    installMorphLifecycle(tree, this.morphLifecycle)
     this.guardTree(tree)
     stageDocumentAutofocus(this, autofocus)
     registerDocumentSessionMorpher(this, (source) => this.morphCurrentDocument(source))
@@ -163,6 +169,7 @@ export class DocumentSession {
     const generation = this.currentTreeGeneration + 1
     const autofocus = preview ? undefined : prepareDocumentAutofocus(tree, generation)
     this.currentTree = tree
+    installMorphLifecycle(tree, this.morphLifecycle)
     this.guardTree(tree)
     this.currentTreeGeneration = generation
     this.currentTreeState = Object.freeze({ generation, preview })
@@ -248,6 +255,9 @@ export class DocumentSession {
   }
 
   private assertMutationAllowed(): void {
+    if (morphLifecycleDispatchActive(this.currentTree)) {
+      throw new StateError("Document session cannot mutate during a morph lifecycle callback")
+    }
     if (destinationCommitActive(this)) {
       throw new StateError("Document session cannot mutate during a destination commit transaction")
     }

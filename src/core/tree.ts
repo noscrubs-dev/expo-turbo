@@ -1,4 +1,10 @@
 import { ParseError, TargetError } from "./errors"
+import {
+  MORPH_LIFECYCLE_BEFORE_ATTRIBUTE_DISPATCH,
+  MORPH_LIFECYCLE_BEFORE_ELEMENT_DISPATCH,
+  MORPH_LIFECYCLE_ELEMENT_DISPATCH,
+} from "./morph-lifecycle"
+import { dispatchMorphLifecycle, documentTreeMorphLifecycle } from "./morph-lifecycle-internal"
 import { assertDocumentTreeMutationAllowed } from "./tree-mutation-guard"
 
 export interface SourceLocation {
@@ -270,15 +276,22 @@ function isCompatibleDocumentMorphRoot(current: ProtocolElement, source: Protoco
 }
 
 interface MorphClonePlan {
+  readonly anchor?: ProtocolElement
   readonly source: ProtocolNode
   readonly type: "clone"
 }
 
 interface MorphReusePlan {
+  readonly attributes: readonly ProtocolAttribute[]
   readonly children: readonly MorphPlan[]
   readonly current: ProtocolElement
   readonly source: ProtocolElement
   readonly type: "reuse"
+}
+
+interface MorphRetainPlan {
+  readonly current: ProtocolNode
+  readonly type: "retain"
 }
 
 interface MorphPermanentPlan {
@@ -291,7 +304,12 @@ interface MorphFrameReloadPlan {
   readonly type: "frame-reload"
 }
 
-type MorphPlan = MorphClonePlan | MorphFrameReloadPlan | MorphPermanentPlan | MorphReusePlan
+type MorphPlan =
+  | MorphClonePlan
+  | MorphFrameReloadPlan
+  | MorphPermanentPlan
+  | MorphRetainPlan
+  | MorphReusePlan
 
 interface FrameRefreshMorphResult {
   readonly changed: readonly string[]
@@ -308,6 +326,7 @@ interface MorphTransaction {
   readonly attributes: Map<ProtocolElement, readonly ProtocolAttribute[]>
   readonly children: Map<ProtocolParentNode, readonly ProtocolNode[]>
   readonly parents: Map<ProtocolNode, ProtocolParentNode | null>
+  readonly completed: Array<readonly [ProtocolElement, ProtocolElement]>
 }
 
 type StreamChildMorpher = (
@@ -725,6 +744,7 @@ export class DocumentTree {
     }
 
     this.assertMorphSources(parent, sources)
+    this.buildMorphPlans(parent, sources, undefined, false)
     const plans = this.buildMorphPlans(parent, sources)
     return this.commitMorphPlans(parent, plans)
   }
@@ -762,7 +782,15 @@ export class DocumentTree {
     }
 
     this.assertMorphSources(target, source.children)
-    return this.commitMorphPlans(target, this.buildMorphPlans(target, source.children), source)
+    this.buildMorphPlans(target, source.children, undefined, false)
+    if (!this.beforeMorphElement(target, source)) return []
+    const attributes = this.admitMorphAttributes(target, source)
+    return this.commitMorphPlans(
+      target,
+      this.buildMorphPlans(target, source.children),
+      source,
+      attributes,
+    )
   }
 
   /**
@@ -793,6 +821,7 @@ export class DocumentTree {
       outerFrame: frame,
       seenFrames: new Set(),
     }
+    this.buildMorphPlans(frame, responseFrame.children, context, false)
     const changed = this.commitMorphPlans(
       frame,
       this.buildMorphPlans(frame, responseFrame.children, context),
@@ -831,11 +860,15 @@ export class DocumentTree {
     this.assertDocumentMorphApplicationSubtree(sourceRoot)
 
     this.assertMorphSources(currentRoot, sourceRoot.children)
+    this.buildMorphPlans(currentRoot, sourceRoot.children, undefined, false)
+    if (!this.beforeMorphElement(currentRoot, sourceRoot)) return []
+    const attributes = this.admitMorphAttributes(currentRoot, sourceRoot)
     const changed = [
       ...this.commitMorphPlans(
         currentRoot,
         this.buildMorphPlans(currentRoot, sourceRoot.children),
         sourceRoot,
+        attributes,
       ),
     ]
     if (sourceUrl !== undefined && this.document.url !== sourceUrl) {
@@ -985,6 +1018,7 @@ export class DocumentTree {
     parent: ProtocolElement,
     sources: readonly ProtocolNode[],
     frameRefresh?: FrameRefreshMorphContext,
+    dispatchLifecycle = true,
   ): readonly MorphPlan[] {
     const currentById = new Map<string, ProtocolElement>()
     for (const child of parent.children) {
@@ -1022,13 +1056,28 @@ export class DocumentTree {
       if (isElement(source) && source.kind === "element" && current) {
         if (isTurboPermanent(current)) return { current, type: "permanent" } as const
         if (isCompatibleMorphElement(current, source)) {
+          if (dispatchLifecycle && !this.beforeMorphElement(current, source)) {
+            return { current, type: "retain" } as const
+          }
           return {
-            children: this.buildMorphPlans(current, source.children, frameRefresh),
+            attributes: dispatchLifecycle
+              ? this.admitMorphAttributes(current, source)
+              : source.attributes,
+            children: this.buildMorphPlans(
+              current,
+              source.children,
+              frameRefresh,
+              dispatchLifecycle,
+            ),
             current,
             source,
             type: "reuse",
           } as const
         }
+      }
+
+      if (dispatchLifecycle && current && !this.beforeMorphElement(current)) {
+        return { current, type: "retain" } as const
       }
 
       if ((current && hasTurboPermanent(current)) || hasTurboPermanent(source)) {
@@ -1037,30 +1086,112 @@ export class DocumentTree {
         })
       }
       this.assertMorphCloneIds(source, current)
-      return { source, type: "clone" } as const
+      return { ...(current ? { anchor: current } : {}), source, type: "clone" } as const
     })
 
-    if (!frameRefresh) return plans
-
     const missing = parent.children.filter(
-      (current): current is ProtocolElement =>
-        isElement(current) &&
-        !sourceIndexByCurrent.has(current) &&
-        this.shouldReloadNestedFrameWithMorph(current, undefined, frameRefresh),
+      (current) => !sourceIndexByCurrent.has(current as ProtocolElement),
     )
+
     for (const current of missing) {
-      this.recordNestedFrameReload(current, frameRefresh)
-      const currentIndex = parent.children.indexOf(current)
-      const nextCurrent = parent.children
-        .slice(currentIndex + 1)
-        .find(
-          (child): child is ProtocolElement => isElement(child) && sourceIndexByCurrent.has(child),
-        )
-      const sourceIndex = nextCurrent ? sourceIndexByCurrent.get(nextCurrent) : undefined
-      if (sourceIndex === undefined) plans.push({ current, type: "frame-reload" })
-      else plans.splice(sourceIndex, 0, { current, type: "frame-reload" })
+      if (
+        isElement(current) &&
+        frameRefresh &&
+        this.shouldReloadNestedFrameWithMorph(current, undefined, frameRefresh)
+      ) {
+        this.recordNestedFrameReload(current, frameRefresh)
+        this.insertRetainedMorphPlan(parent, plans, sourceIndexByCurrent, current, {
+          current,
+          type: "frame-reload",
+        })
+        continue
+      }
+      if (!dispatchLifecycle || !isElement(current) || this.beforeMorphElement(current)) {
+        continue
+      }
+      this.insertRetainedMorphPlan(parent, plans, sourceIndexByCurrent, current, {
+        current,
+        type: "retain",
+      })
     }
+
     return plans
+  }
+
+  private insertRetainedMorphPlan(
+    parent: ProtocolElement,
+    plans: MorphPlan[],
+    sourceIndexByCurrent: ReadonlyMap<ProtocolElement, number>,
+    current: ProtocolNode,
+    plan: MorphPlan,
+  ): void {
+    const currentIndex = parent.children.indexOf(current)
+    const nextCurrent = parent.children
+      .slice(currentIndex + 1)
+      .find(
+        (child): child is ProtocolElement => isElement(child) && sourceIndexByCurrent.has(child),
+      )
+    const planIndex = nextCurrent
+      ? plans.findIndex((candidate) => this.morphPlanAnchor(candidate) === nextCurrent)
+      : -1
+    if (planIndex === -1) plans.push(plan)
+    else plans.splice(planIndex, 0, plan)
+  }
+
+  private morphPlanAnchor(plan: MorphPlan): ProtocolElement | undefined {
+    if (plan.type === "clone") return plan.anchor
+    return isElement(plan.current) ? plan.current : undefined
+  }
+
+  private beforeMorphElement(current: ProtocolElement, source?: ProtocolElement): boolean {
+    const lifecycle = documentTreeMorphLifecycle(this)
+    if (!lifecycle) return true
+    return dispatchMorphLifecycle(this, () =>
+      lifecycle[MORPH_LIFECYCLE_BEFORE_ELEMENT_DISPATCH](current, source),
+    )
+  }
+
+  private admitMorphAttributes(
+    current: ProtocolElement,
+    source: ProtocolElement,
+  ): readonly ProtocolAttribute[] {
+    const lifecycle = documentTreeMorphLifecycle(this)
+    if (!lifecycle) return source.attributes
+    const admitted = new Map(current.attributes.map((attribute) => [attribute.name, attribute]))
+    const sourceByName = new Map(source.attributes.map((attribute) => [attribute.name, attribute]))
+    for (const attribute of current.attributes) {
+      if (sourceByName.has(attribute.name)) continue
+      const allow = dispatchMorphLifecycle(this, () =>
+        lifecycle[MORPH_LIFECYCLE_BEFORE_ATTRIBUTE_DISPATCH](
+          current,
+          source,
+          attribute.name,
+          "remove",
+        ),
+      )
+      if (allow) admitted.delete(attribute.name)
+    }
+    for (const attribute of source.attributes) {
+      const present = admitted.get(attribute.name)
+      if (present?.value === attribute.value) continue
+      const allow = dispatchMorphLifecycle(this, () =>
+        lifecycle[MORPH_LIFECYCLE_BEFORE_ATTRIBUTE_DISPATCH](
+          current,
+          source,
+          attribute.name,
+          "update",
+        ),
+      )
+      if (allow) admitted.set(attribute.name, attribute)
+    }
+    const sourceOrder = source.attributes.flatMap((attribute) => {
+      const value = admitted.get(attribute.name)
+      return value ? [value] : []
+    })
+    const retained = current.attributes.filter(
+      (attribute) => !sourceByName.has(attribute.name) && admitted.has(attribute.name),
+    )
+    return [...sourceOrder, ...retained]
   }
 
   private shouldReloadNestedFrameWithMorph(
@@ -1236,19 +1367,21 @@ export class DocumentTree {
     parent: ProtocolElement,
     plans: readonly MorphPlan[],
     source?: ProtocolElement,
+    sourceAttributes?: readonly ProtocolAttribute[],
   ): readonly string[] {
     const previousKeys = parent.children.flatMap(subtreeKeys)
     const previousMutationKey = this.mutationKey
     const transaction: MorphTransaction = {
       attributes: new Map(),
       children: new Map(),
+      completed: [],
       parents: new Map(),
     }
 
     try {
       if (source) {
         transaction.attributes.set(parent, parent.attributes)
-        setProtocolElementAttributes(parent, source.attributes)
+        setProtocolElementAttributes(parent, sourceAttributes ?? source.attributes)
       }
       this.applyMorphChildren(parent, plans, transaction)
       this.rebuildIndexes()
@@ -1257,6 +1390,20 @@ export class DocumentTree {
       this.restoreMorphTransaction(transaction)
       this.rebuildIndexes()
       throw error
+    }
+
+    const lifecycle = documentTreeMorphLifecycle(this)
+    if (lifecycle) {
+      for (const [current, incoming] of transaction.completed) {
+        dispatchMorphLifecycle(this, () =>
+          lifecycle[MORPH_LIFECYCLE_ELEMENT_DISPATCH](current, incoming),
+        )
+      }
+      if (source) {
+        dispatchMorphLifecycle(this, () =>
+          lifecycle[MORPH_LIFECYCLE_ELEMENT_DISPATCH](parent, source),
+        )
+      }
     }
 
     return [parent.key, ...previousKeys, ...parent.children.flatMap(subtreeKeys)]
@@ -1268,14 +1415,17 @@ export class DocumentTree {
     transaction: MorphTransaction,
   ): ProtocolNode {
     if (plan.type === "clone") return this.cloneNode(plan.source, parent)
-    if (plan.type === "permanent" || plan.type === "frame-reload") return plan.current
+    if (plan.type === "permanent" || plan.type === "frame-reload" || plan.type === "retain") {
+      return plan.current
+    }
 
     const { current, source } = plan
     if (!transaction.attributes.has(current)) {
       transaction.attributes.set(current, current.attributes)
     }
-    setProtocolElementAttributes(current, source.attributes)
+    setProtocolElementAttributes(current, plan.attributes)
     this.applyMorphChildren(current, plan.children, transaction)
+    transaction.completed.push([current, source])
     return current
   }
 
