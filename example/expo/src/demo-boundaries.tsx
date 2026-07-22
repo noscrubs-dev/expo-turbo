@@ -24,6 +24,10 @@ import {
   View,
 } from "react-native";
 
+import {
+  demoDocumentAnnouncement,
+  demoDocumentLiveRegion,
+} from "./demo-document-announcements";
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
 import { useDemoDocumentAnchorScrollContent } from "./demo-document-anchor-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
@@ -322,9 +326,12 @@ export function DemoDocumentBoundary({
 }: ExpoTurboDocumentBoundaryProps) {
   const anchorScrollContent = useDemoDocumentAnchorScrollContent();
   const markRouteReady = useOptionalDemoRouterRouteReady();
+  const announcement =
+    state.status === "initialized" ? undefined : demoDocumentAnnouncement(state.status);
   const accessibilityLabel = state.previewVisible
     ? `Document visit: ${state.status}, showing cached preview`
     : `Document visit: ${state.status}`;
+  const liveRegion = demoDocumentLiveRegion(Platform.OS, state.status);
 
   useEffect(() => {
     markRouteReady?.();
@@ -358,6 +365,24 @@ export function DemoDocumentBoundary({
           </Text>
         ) : null}
       </View>
+      {Platform.OS === "web" ? (
+        <View
+          style={{
+            height: 1,
+            left: -10000,
+            overflow: "hidden",
+            position: "absolute",
+            width: 1,
+          }}
+        >
+          <View aria-live="polite">
+            <Text>{liveRegion === "polite" ? announcement?.message : ""}</Text>
+          </View>
+          <View aria-live="assertive">
+            <Text>{liveRegion === "assertive" ? announcement?.message : ""}</Text>
+          </View>
+        </View>
+      ) : null}
       <View
         collapsable={false}
         onLayout={anchorScrollContent.onLayout}

@@ -22,6 +22,8 @@ import type {
   DocumentHistoryScrollAdapter,
   DocumentPrefetchPolicy,
   DocumentRefreshScrollAdapter,
+  DocumentVisitAnnouncementAdapter,
+  DocumentVisitAnnouncementEvent,
   FormSubmissionAnnouncementAdapter,
   FormSubmissionAnnouncementEvent,
   FormSubmissionAnnouncementTerminalSnapshot,
@@ -240,6 +242,7 @@ interface RendererContextValue {
   readonly documentComponent: ComponentType<ExpoTurboDocumentBoundaryProps> | undefined
   readonly documentAnchorScroll: DocumentAnchorScrollAdapter | undefined
   readonly documentAutomaticPreloadPolicy: DocumentAutomaticPreloadPolicy | undefined
+  readonly documentAnnouncements: DocumentVisitAnnouncementAdapter | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
   readonly documentPrefetchPolicy: DocumentPrefetchPolicy | undefined
@@ -275,6 +278,10 @@ const providerDisposableOwners = new WeakMap<object, number>()
 const announcedFormTerminalRevisions = new WeakMap<
   DocumentSession,
   WeakMap<ProtocolElement, number>
+>()
+const announcedDocumentVisitStates = new WeakMap<
+  DocumentVisitController,
+  Readonly<{ revision: number; status: DocumentVisitAnnouncementEvent["status"] }>
 >()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
   "action",
@@ -521,6 +528,7 @@ export interface ExpoTurboProviderProps {
   readonly documentComponent?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
   readonly documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
+  readonly documentAnnouncements?: DocumentVisitAnnouncementAdapter
   readonly documentController?: DocumentVisitController
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
@@ -570,6 +578,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentComponent: props.documentComponent,
       documentAnchorScroll: props.documentAnchorScroll,
       documentAutomaticPreloadPolicy: props.documentAutomaticPreloadPolicy,
+      documentAnnouncements: props.documentAnnouncements,
       documentController: props.documentController,
       documentHistoryScroll: props.documentHistoryScroll,
       documentPrefetchPolicy: props.documentPrefetchPolicy,
@@ -597,6 +606,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentComponent,
       props.documentAnchorScroll,
       props.documentAutomaticPreloadPolicy,
+      props.documentAnnouncements,
       props.documentController,
       props.documentHistoryScroll,
       props.documentPrefetchPolicy,
@@ -874,6 +884,31 @@ function reportFormAnnouncementError(
   }
 }
 
+function reportDocumentVisitAnnouncementError(
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+  nodeKey: string,
+  cause: unknown,
+): void {
+  const error =
+    cause instanceof Error ? cause : new RegistryError("Document visit announcement adapter failed")
+  if (!onError) {
+    queueMicrotask(() => {
+      throw error
+    })
+    return
+  }
+  try {
+    onError({ error, nodeKey })
+  } catch (reporterError) {
+    queueMicrotask(() => {
+      throw new AggregateError(
+        [error, reporterError],
+        "Document visit announcement error reporter failed",
+      )
+    })
+  }
+}
+
 function claimFormTerminalAnnouncement(
   session: DocumentSession,
   form: ProtocolElement,
@@ -887,6 +922,17 @@ function claimFormTerminalAnnouncement(
   const announcedRevision = formRevisions.get(form) ?? -1
   if (announcedRevision >= revision) return false
   formRevisions.set(form, revision)
+  return true
+}
+
+function claimDocumentVisitAnnouncement(
+  controller: DocumentVisitController,
+  revision: number,
+  status: DocumentVisitAnnouncementEvent["status"],
+): boolean {
+  const announced = announcedDocumentVisitStates.get(controller)
+  if (announced?.revision === revision || announced?.status === status) return false
+  announcedDocumentVisitStates.set(controller, Object.freeze({ revision, status }))
   return true
 }
 
@@ -2446,7 +2492,13 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
 }
 
 function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
+  const { documentAnnouncements } = useRenderer()
   const state = useDocumentVisitControllerState(props.controller)
+  const announcementBaseline = useRef({
+    controller: props.controller,
+    revision: state.revision,
+    status: state.status,
+  })
   const accessibilityState = useMemo<ExpoTurboDocumentAccessibilityState>(
     () => Object.freeze({ busy: state.busy }),
     [state.busy],
@@ -2455,6 +2507,36 @@ function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
     () => Object.freeze({ accessibilityState, controller: props.controller, state }),
     [accessibilityState, props.controller, state],
   )
+  useEffect(() => {
+    const baseline = announcementBaseline.current
+    announcementBaseline.current = {
+      controller: props.controller,
+      revision: state.revision,
+      status: state.status,
+    }
+    if (
+      baseline.controller !== props.controller ||
+      baseline.revision === state.revision ||
+      baseline.status === state.status ||
+      state.status === "initialized" ||
+      !documentAnnouncements ||
+      props.controller.state !== state
+    ) {
+      return
+    }
+    const event = Object.freeze({ status: state.status }) satisfies DocumentVisitAnnouncementEvent
+    if (!claimDocumentVisitAnnouncement(props.controller, state.revision, event.status)) return
+    try {
+      const delivery = documentAnnouncements.announce(event)
+      if (delivery) {
+        void Promise.resolve(delivery).catch((error: unknown) => {
+          reportDocumentVisitAnnouncementError(props.onError, props.nodeKey, error)
+        })
+      }
+    } catch (error) {
+      reportDocumentVisitAnnouncementError(props.onError, props.nodeKey, error)
+    }
+  }, [documentAnnouncements, props.controller, props.nodeKey, props.onError, state])
   useEffect(
     () =>
       props.controller.subscribeErrors((error) => {

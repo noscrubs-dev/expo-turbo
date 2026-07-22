@@ -20,6 +20,8 @@ import {
   type DocumentAnchorScrollAdapter,
   type DocumentAutomaticPreloadPolicy,
   type DocumentHistoryScrollAdapter,
+  type DocumentVisitAnnouncementAdapter,
+  type DocumentVisitAnnouncementEvent,
   type DocumentPrefetchPolicy,
   type DocumentRefreshScrollAdapter,
   type FormConfirmationAdapter,
@@ -192,6 +194,7 @@ function render(
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     documentHistoryScroll?: DocumentHistoryScrollAdapter
+    documentAnnouncements?: DocumentVisitAnnouncementAdapter
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     documentRefreshScroll?: DocumentRefreshScrollAdapter
     frameAutoscroll?: FrameAutoscrollAdapter
@@ -4730,9 +4733,16 @@ describe("React protocol renderer", () => {
       },
     )
     const errors: ExpoTurboRenderError[] = []
+    const announcements: DocumentVisitAnnouncementEvent[] = []
     const renderer = render(session, componentRegistry, {
       documentComponent: DocumentBoundary,
       documentController: controller,
+      documentAnnouncements: {
+        announce(event) {
+          expect(boundary().status).toBe(event.status)
+          announcements.push(event)
+        },
+      },
       onError: (event) => errors.push(event),
     })
     const boundary = () => renderer.root.findByType("div").props
@@ -4743,6 +4753,7 @@ describe("React protocol renderer", () => {
     expect(Object.isFrozen(boundary().accessibilityState)).toBe(true)
     expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "initialized" })
     expect(stableRenders).toBe(1)
+    expect(announcements).toEqual([])
 
     let visit: Promise<unknown> | undefined
     act(() => {
@@ -4752,6 +4763,8 @@ describe("React protocol renderer", () => {
     expect(boundary().accessibilityState).toEqual({ busy: true })
     expect(renderedProbe()).toMatchObject({ busy: true, instance: 1, status: "started" })
     expect(stableRenders).toBe(1)
+    expect(announcements.map(({ status }) => status)).toEqual(["started"])
+    expect(Object.isFrozen(announcements[0])).toBe(true)
 
     act(() => timers[0]?.callback())
     expect(boundary()).toMatchObject({ progressVisible: true, status: "started" })
@@ -4780,6 +4793,7 @@ describe("React protocol renderer", () => {
     expect(boundaryUnmounts).toEqual([])
     expect(probeUnmounts).toEqual([1])
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
+    expect(announcements.map(({ status }) => status)).toEqual(["started", "completed"])
 
     let failed: Promise<unknown> | undefined
     act(() => {
@@ -4800,10 +4814,135 @@ describe("React protocol renderer", () => {
     expect(stableRenders).toBe(2)
     expect(errors).toHaveLength(1)
     expect(errors[0]).toMatchObject({ nodeKey: "document" })
+    expect(announcements.map(({ status }) => status)).toEqual([
+      "started",
+      "completed",
+      "started",
+      "failed",
+    ])
+
+    let canceled: Promise<unknown> | undefined
+    act(() => {
+      canceled = controller.visit("/canceled")
+      controller.cancel()
+    })
+    await act(async () => {
+      await canceled
+    })
+    expect(announcements.map(({ status }) => status)).toEqual([
+      "started",
+      "completed",
+      "started",
+      "failed",
+      "canceled",
+    ])
 
     act(() => renderer.unmount())
     expect(boundaryUnmounts).toEqual([1])
     expect(probeUnmounts).toEqual([1, 2])
+  })
+
+  test("deduplicates document visit announcements across StrictMode and providers", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+        url: "https://example.test/current",
+      }),
+    )
+    let requestId = 0
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `document-announcement-${++requestId}` },
+      ),
+      { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+    )
+
+    let headless: Promise<unknown> | undefined
+    await act(async () => {
+      headless = controller.visit("/headless")
+      pending[0]?.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: "https://example.test/headless",
+      })
+      await headless?.catch(() => undefined)
+    })
+
+    const errors: ExpoTurboRenderError[] = []
+    const statuses: string[] = []
+    const announcements: DocumentVisitAnnouncementAdapter = {
+      announce({ status }) {
+        statuses.push(status)
+        if (statuses.length === 1) throw new Error("native announcement unavailable")
+        if (statuses.length === 2) return Promise.reject(new Error("async announcement unavailable"))
+      },
+    }
+    const firstRenderer = render(session, registryWithCounters(), {
+      documentAnnouncements: announcements,
+      documentController: controller,
+      onError: (event) => errors.push(event),
+      strict: true,
+    })
+    const secondRenderer = render(session, registryWithCounters(), {
+      documentAnnouncements: announcements,
+      documentController: controller,
+      onError: (event) => errors.push(event),
+      strict: true,
+    })
+
+    expect(statuses).toEqual([])
+
+    let first: Promise<unknown> | undefined
+    act(() => {
+      first = controller.visit("/first")
+    })
+    await act(async () => {
+      pending[1]?.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: "https://example.test/first",
+      })
+      await first?.catch(() => undefined)
+      await Promise.resolve()
+    })
+
+    let second: Promise<unknown> | undefined
+    act(() => {
+      second = controller.visit("/second")
+    })
+    await act(async () => {
+      pending[2]?.resolve({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => "{}",
+        url: "https://example.test/second",
+      })
+      await second?.catch(() => undefined)
+      await Promise.resolve()
+    })
+
+    expect(statuses).toEqual(["started", "failed", "started", "failed"])
+    expect(errors.filter(({ error }) => error.message.includes("announcement unavailable"))).toHaveLength(
+      2,
+    )
+
+    act(() => {
+      firstRenderer.unmount()
+      secondRenderer.unmount()
+    })
   })
 
   test("automatically preloads marked rendered document links through one shared cache", async () => {

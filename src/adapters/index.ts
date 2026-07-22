@@ -1,4 +1,5 @@
 import type { DocumentScrollPosition } from "../core/document-history"
+import type { DocumentVisitStatus } from "../core/document-visit-controller"
 import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-activity"
 import type { ProtocolInspectorAdapter } from "../core/inspector"
 import type { StyleAdapter } from "./styles"
@@ -99,6 +100,17 @@ export interface FormSubmissionAnnouncementEvent {
 /** Host-owned localized and platform-specific delivery for settled native forms. */
 export interface FormSubmissionAnnouncementAdapter {
   announce(event: FormSubmissionAnnouncementEvent): void | Promise<void>
+}
+
+export type DocumentVisitAnnouncementStatus = Exclude<DocumentVisitStatus, "initialized">
+
+export interface DocumentVisitAnnouncementEvent {
+  readonly status: DocumentVisitAnnouncementStatus
+}
+
+/** Host-owned localized and platform-specific delivery for document visit state. */
+export interface DocumentVisitAnnouncementAdapter {
+  announce(event: DocumentVisitAnnouncementEvent): void | Promise<void>
 }
 
 export type VisitAction = "advance" | "replace" | "restore"
@@ -238,6 +250,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly cable: CableAdapter
   readonly clock: ClockAdapter
   readonly confirmation?: FormConfirmationAdapter
+  readonly documentAnnouncements?: DocumentVisitAnnouncementAdapter
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly fetch: FetchAdapter
