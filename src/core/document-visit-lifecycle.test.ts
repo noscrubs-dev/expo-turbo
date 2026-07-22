@@ -268,6 +268,7 @@ describe("document visit lifecycle", () => {
     expect(beforeVisit.defaultPrevented).toBe(true)
     expect(visit.detail).toEqual({
       action: "advance",
+      direction: "forward",
       url: "https://example.test/next",
     })
     expect(Object.isFrozen(visit.detail)).toBe(true)

@@ -3,6 +3,8 @@ import { PropsError, StateError } from "./errors"
 import { CancellableEvent, NotificationEvent } from "./events"
 import { consumeThenableResult } from "./thenable-result"
 
+export type DocumentVisitDirection = "back" | "forward" | "none"
+
 export class LinkClickEvent extends CancellableEvent<
   "click",
   Readonly<{ nodeKey: string; url: string }>
@@ -72,10 +74,18 @@ export class BeforeCacheEvent extends NotificationEvent<"before-cache", undefine
 
 export class VisitEvent extends NotificationEvent<
   "visit",
-  Readonly<{ action: VisitAction; url: string }>
+  Readonly<{ action: VisitAction; direction: DocumentVisitDirection; url: string }>
 > {
-  constructor(url: string, action: VisitAction) {
-    super("visit", Object.freeze({ action, url }))
+  constructor(
+    url: string,
+    action: VisitAction,
+    direction: DocumentVisitDirection = action === "advance"
+      ? "forward"
+      : action === "replace"
+        ? "none"
+        : "back",
+  ) {
+    super("visit", Object.freeze({ action, direction, url }))
   }
 }
 

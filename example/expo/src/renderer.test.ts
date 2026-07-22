@@ -4396,6 +4396,158 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount());
   });
 
+  test("applies explicit restore direction and root scroll after React acknowledgement", async () => {
+    const currentUrl = "https://example.test/current";
+    const restoredUrl = "https://example.test/restored";
+    const history = new DocumentHistory(
+      { next: () => "explicit-restore-entry" },
+      { write: () => undefined },
+    );
+    history.initialize({
+      entry: {
+        restorationIdentifier: "history-current",
+        restorationIndex: 2,
+        url: currentUrl,
+      },
+      kind: "managed",
+    });
+    const snapshotCache = new DocumentSnapshotCache();
+    snapshotCache.put(
+      restoredUrl,
+      parseExpoTurboDocument(
+        '<Gallery><DemoText id="focus" autofocus="">Restored explicitly</DemoText></Gallery>',
+        { url: restoredUrl },
+      ),
+    );
+    const lifecycle = new DocumentVisitLifecycle();
+    const order: string[] = [];
+    lifecycle.subscribe("visit", (event) => {
+      order.push(`visit:${event.detail.action}:${event.detail.direction}`);
+    });
+    lifecycle.subscribe("render", () => {
+      order.push("render");
+    });
+    lifecycle.subscribe("load", () => {
+      order.push("load");
+    });
+    const session = new DocumentSession(
+      parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+        url: currentUrl,
+      }),
+    );
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        { fetch: async () => Promise.reject(new Error("cached restore must not fetch")) },
+        { next: () => "explicit-restore-request" },
+      ),
+      { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+      { history, snapshotCache, visitLifecycle: lifecycle },
+    );
+    const restored: Readonly<{ x: number; y: number }>[] = [];
+    const renderer = render(session, registryWithCounters(), {
+      autofocus: {
+        canFocus: () => true,
+        focus: () => {
+          order.push("focus");
+        },
+      },
+      documentController: controller,
+      documentHistoryScroll: {
+        canRestore: () => true,
+        restore: (position) => {
+          restored.push(position);
+          order.push("scroll");
+        },
+      },
+    });
+
+    await act(async () => {
+      await controller.visit(restoredUrl, {
+        action: "restore",
+        direction: "forward",
+        restorationData: { scrollPosition: { x: 21, y: 55 } },
+      });
+    });
+
+    expect(restored).toEqual([{ x: 21, y: 55 }]);
+    expect(order).toEqual(["visit:restore:forward", "render", "focus", "scroll", "load"]);
+    expect(JSON.stringify(renderer.toJSON())).toContain("Restored explicitly");
+    act(() => renderer.unmount());
+  });
+
+  test("limits explicit restore root scroll to successful network documents", async () => {
+    const currentUrl = "https://example.test/current";
+    const restoredUrl = "https://example.test/restored";
+    for (const status of [200, 422] as const) {
+      const history = new DocumentHistory(
+        { next: () => `explicit-restore-network-entry-${status}` },
+        { write: () => undefined },
+      );
+      history.initialize({
+        entry: {
+          restorationIdentifier: `history-current-${status}`,
+          restorationIndex: 2,
+          url: currentUrl,
+        },
+        kind: "managed",
+      });
+      const lifecycle = new DocumentVisitLifecycle();
+      const directions: string[] = [];
+      lifecycle.subscribe("visit", (event) => {
+        directions.push(event.detail.direction);
+      });
+      const session = new DocumentSession(
+        parseExpoTurboDocument("<Gallery><DemoText>Before</DemoText></Gallery>", {
+          url: currentUrl,
+        }),
+      );
+      const controller = new DocumentVisitController(
+        new DocumentRequestLoader(
+          session,
+          {
+            fetch: async () => ({
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status,
+              text: async () => "<Gallery><DemoText>Restored</DemoText></Gallery>",
+              url: restoredUrl,
+            }),
+          },
+          { next: () => `explicit-restore-network-request-${status}` },
+        ),
+        { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+        { history, snapshotCache: new DocumentSnapshotCache(), visitLifecycle: lifecycle },
+      );
+      const restored: Readonly<{ x: number; y: number }>[] = [];
+      const renderer = render(session, registryWithCounters(), {
+        documentController: controller,
+        documentHistoryScroll: {
+          canRestore: () => true,
+          restore: (position) => {
+            restored.push(position);
+          },
+        },
+      });
+
+      let result: unknown;
+      await act(async () => {
+        result = await controller.visit(restoredUrl, {
+          action: "restore",
+          restorationData: { scrollPosition: { x: 5, y: 8 } },
+        });
+      });
+
+      expect(result).toMatchObject({
+        classification: status === 200 ? "success" : "client-error",
+        status: "committed",
+      });
+      expect(directions).toEqual(["back"]);
+      expect(restored).toEqual(status === 200 ? [{ x: 5, y: 8 }] : []);
+      act(() => renderer.unmount());
+    }
+  });
+
   test("limits root history scroll restoration to successful host traversal documents", async () => {
     const currentUrl = "https://example.test/current";
     const restoredUrl = "https://example.test/restored";
