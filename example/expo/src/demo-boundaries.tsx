@@ -341,7 +341,10 @@ export function DemoDocumentBoundary({
   children,
   state,
 }: ExpoTurboDocumentBoundaryProps) {
-  const anchorScrollContent = useDemoDocumentAnchorScrollContent();
+  const {
+    onLayout: onAnchorScrollContentLayout,
+    setNativeContent,
+  } = useDemoDocumentAnchorScrollContent();
   const markRouteReady = useOptionalDemoRouterRouteReady();
   const announcement =
     state.status === "initialized" ? undefined : demoDocumentAnnouncement(state.status);
@@ -402,7 +405,8 @@ export function DemoDocumentBoundary({
       ) : null}
       <View
         collapsable={false}
-        onLayout={anchorScrollContent.onLayout}
+        onLayout={onAnchorScrollContentLayout}
+        ref={setNativeContent}
         testID="demo-document-anchor-content"
       >
         {children}

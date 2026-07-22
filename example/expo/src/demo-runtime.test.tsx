@@ -878,6 +878,108 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
+  test("activates a registered anchor inside its current Frame without a Frame request", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation();
+    const scrolls: Readonly<{ x: number; y: number }>[] = [];
+    const unregisterScroll = runtime.documentAnchorScroll.registerContainer({
+      isAvailable: () => true,
+      scrollTo(position) {
+        scrolls.push(position);
+      },
+    });
+    runtime.documentAnchorScroll.setDocumentOffset(40);
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              const testID = (element.props as { testID?: string }).testID;
+              return {
+                measureLayout(
+                  _relativeTo: unknown,
+                  onSuccess: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  if (testID === "demo-anchor-target-frame-native-anchor-target") {
+                    onSuccess(0, 720, 320, 40);
+                  }
+                },
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("Frame anchor fixture did not render");
+    const content = renderer.root.findByProps({ testID: "demo-document-anchor-content" });
+    const target = renderer.root.findByProps({
+      testID: "demo-anchor-target-frame-native-anchor-target",
+    });
+    act(() => {
+      content.props.onLayout({ nativeEvent: { layout: { y: 64 } } });
+      target.props.onLayout({ nativeEvent: { layout: { y: 720 } } });
+    });
+    const requestsBeforeAnchor = requests.length;
+    const anchorLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Jump within this Frame to its registered native anchor target.",
+            ),
+        ).length > 0,
+      );
+    if (!anchorLink) throw new Error("Frame anchor link was not rendered");
+
+    await act(async () => {
+      anchorLink.props.onPress();
+      await nextTurn();
+    });
+
+    expect(scrolls).toEqual([{ x: 0, y: 720 }]);
+    expect(requests).toHaveLength(requestsBeforeAnchor);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterScroll();
+  });
+
   test("routes a same-document anchor through its declared nested ScrollView", async () => {
     nativeScrollCalls.length = 0;
     const fixtureFetch = createDemoFixtureFetchAdapter();

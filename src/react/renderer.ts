@@ -317,13 +317,15 @@ function hasProtocolAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
 }
 
-function isTopLevelApplicationElement(node: ProtocolElement): boolean {
-  let current: ProtocolNode | null = node
+function documentAnchorFrameScope(node: ProtocolElement): string | null | undefined {
+  if (node.kind !== "element") return null
+  let current: ProtocolNode | null = node.parent
   while (current && current.kind !== "document") {
-    if (!isElement(current) || current.kind !== "element") return false
+    if (current.kind === "frame") return attributeValue(current, "id") || null
+    if (!isElement(current) || current.kind !== "element") return null
     current = current.parent
   }
-  return current?.kind === "document"
+  return current?.kind === "document" ? undefined : null
 }
 
 function documentLinkCaptureContext(node: ProtocolElement): Readonly<{
@@ -1377,13 +1379,19 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     if (
       anchor &&
       !optedOut &&
-      nearestFrameId === undefined &&
+      nearestFrameId !== null &&
       elementTarget === undefined &&
       actionValue === undefined &&
       !UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))
     ) {
       const target = session.tree.getElementById(anchor.targetId)
-      if (!isTopLevelApplicationElement(node) || !target || !isTopLevelApplicationElement(target)) {
+      const sourceFrameScope = documentAnchorFrameScope(node)
+      const targetFrameScope = target ? documentAnchorFrameScope(target) : null
+      if (
+        sourceFrameScope === null ||
+        sourceFrameScope !== nearestFrameId ||
+        targetFrameScope !== sourceFrameScope
+      ) {
         throw new TargetError("Document link anchor target is unavailable")
       }
       if (!dispatchDocumentVisitLinkClick(documentController, nodeKey, anchor.url)) {
@@ -1420,13 +1428,13 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           confirmedBrowserTarget !== "" &&
           confirmedBrowserTarget !== "_self") ||
         confirmedCaptureContext.optedOut ||
-        confirmedCaptureContext.nearestFrameId !== undefined ||
+        confirmedCaptureContext.nearestFrameId !== sourceFrameScope ||
         confirmedCaptureContext.elementTarget !== undefined ||
         attributeValue(node, "data-turbo-action") !== undefined ||
         UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name)) ||
-        !isTopLevelApplicationElement(node) ||
         !confirmedTarget ||
-        !isTopLevelApplicationElement(confirmedTarget)
+        documentAnchorFrameScope(node) !== sourceFrameScope ||
+        documentAnchorFrameScope(confirmedTarget) !== sourceFrameScope
       ) {
         throw new TargetError("Document link anchor changed before activation")
       }

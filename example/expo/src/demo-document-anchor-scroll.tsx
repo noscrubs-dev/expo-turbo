@@ -8,7 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import type { LayoutChangeEvent } from "react-native";
+import type { LayoutChangeEvent, View } from "react-native";
 
 export interface DemoDocumentAnchorScrollContainer {
   readonly isAvailable: () => boolean;
@@ -21,6 +21,7 @@ export interface DemoDocumentAnchorScrollContainer {
 
 export interface DemoDocumentAnchorScrollTarget {
   readonly getOffset: () => number | undefined;
+  readonly measureOffset?: (relativeTo: View, listener: (offset: number) => void) => boolean;
 }
 
 interface DemoDocumentAnchorScrollTargetOwnership {
@@ -29,6 +30,7 @@ interface DemoDocumentAnchorScrollTargetOwnership {
 }
 
 interface RegisteredDemoDocumentAnchorScrollTarget extends DemoDocumentAnchorScrollTarget {
+  readonly setNativeTarget: (target: View | null) => void;
   readonly setOffset: (offset: number) => void;
 }
 
@@ -36,6 +38,7 @@ interface RegisteredDemoDocumentAnchorScrollTarget extends DemoDocumentAnchorScr
 export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAdapter {
   private container: DemoDocumentAnchorScrollContainer | undefined;
   private disposed = false;
+  private documentContent: View | undefined;
   private documentContentOffset: number | undefined;
   private documentOffset: number | undefined;
   private readonly nestedContainers = new Map<string, DemoDocumentAnchorScrollContainer>();
@@ -46,6 +49,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     if (this.disposed) return;
     this.disposed = true;
     this.container = undefined;
+    this.documentContent = undefined;
     this.documentContentOffset = undefined;
     this.documentOffset = undefined;
     this.nestedContainers.clear();
@@ -171,6 +175,12 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     this.flushDeferredAnchor();
   }
 
+  setDocumentContent(content: View | undefined): void {
+    if (this.disposed) return;
+    this.documentContent = content;
+    this.flushDeferredAnchor();
+  }
+
   private flushDeferredAnchor(): void {
     const targetId = this.pendingDeferredTarget;
     if (targetId) this.scrollToTarget(targetId, true);
@@ -199,6 +209,13 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       this.documentContentOffset === undefined
     ) {
       return false;
+    }
+    if (this.documentContent && target.measureOffset) {
+      const measurementStarted = target.measureOffset(this.documentContent, (targetOffset) => {
+        if (!isNonNegativeFinite(targetOffset)) return;
+        container.scrollTo({ x: 0, y: targetOffset });
+      });
+      if (measurementStarted) return true;
     }
     const targetOffset = target.getOffset();
     if (!isNonNegativeFinite(targetOffset)) return false;
@@ -252,6 +269,7 @@ export function useDemoDocumentAnchorScroll(): DemoDocumentAnchorScrollRegistry 
 }
 
 export function useDemoDocumentAnchorScrollContent(): Readonly<{
+  setNativeContent(node: View | null): void;
   onLayout(event: LayoutChangeEvent): void;
 }> {
   const anchorScroll = useContext(DemoDocumentAnchorScrollContext);
@@ -263,18 +281,39 @@ export function useDemoDocumentAnchorScrollContent(): Readonly<{
     (event: LayoutChangeEvent) => anchorScroll?.setDocumentContentOffset(event.nativeEvent.layout.y),
     [anchorScroll],
   );
-  return useMemo(() => Object.freeze({ onLayout }), [onLayout]);
+  const setNativeContent = useCallback(
+    (node: View | null) => anchorScroll?.setDocumentContent(node ?? undefined),
+    [anchorScroll],
+  );
+  return useMemo(
+    () => Object.freeze({ onLayout, setNativeContent }),
+    [onLayout, setNativeContent],
+  );
 }
 
 export function useDemoDocumentAnchorTarget(id: string): Readonly<{
+  setNativeTarget(node: View | null): void;
   onLayout(event: LayoutChangeEvent): void;
 }> {
   const anchorScroll = useDemoDocumentAnchorScroll();
   const containerId = useContext(DemoDocumentAnchorContainerContext);
   const [target] = useState<RegisteredDemoDocumentAnchorScrollTarget>(() => {
     let offset: number | undefined;
+    let nativeTarget: View | null = null;
     return Object.freeze({
       getOffset: () => offset,
+      measureOffset: (relativeTo: View, listener: (offset: number) => void) => {
+        if (!nativeTarget || typeof nativeTarget.measureLayout !== "function") return false;
+        nativeTarget.measureLayout(
+          relativeTo,
+          (_x, y) => listener(y),
+          () => undefined,
+        );
+        return true;
+      },
+      setNativeTarget: (node: View | null) => {
+        nativeTarget = node;
+      },
       setOffset: (nextOffset: number) => {
         offset = nextOffset;
       },
@@ -291,5 +330,12 @@ export function useDemoDocumentAnchorTarget(id: string): Readonly<{
     },
     [anchorScroll, target],
   );
-  return useMemo(() => Object.freeze({ onLayout }), [onLayout]);
+  const setNativeTarget = useCallback(
+    (node: View | null) => target.setNativeTarget(node),
+    [target],
+  );
+  return useMemo(
+    () => Object.freeze({ onLayout, setNativeTarget }),
+    [onLayout, setNativeTarget],
+  );
 }
