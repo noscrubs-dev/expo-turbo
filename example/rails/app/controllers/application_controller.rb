@@ -11,6 +11,7 @@ class ApplicationController < ActionController::API
       "DemoFormInput" => {},
       "DemoFormPlanSelect" => {},
       "DemoFormSubmitter" => {},
+      "DemoStreamMorphProbe" => {},
       "Gallery" => {},
       "DemoText" => {}
     }

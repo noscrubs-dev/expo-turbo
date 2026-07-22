@@ -260,6 +260,9 @@ export async function createDemoLiveCableRuntime(
   });
   const formController = new FormSubmissionController(session, documentFetch, {
     frameControllers: frames,
+    onActionError: (report) => {
+      if (report.error) reportError(report.error);
+    },
     refresh,
     submissionLifecycle: formSubmissionLifecycle,
   });

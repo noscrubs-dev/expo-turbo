@@ -130,6 +130,22 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
+  test("ignores formatting whitespace around an outer morph root", () => {
+    const document = session('<Gallery><Panel id="probe"><Before /></Panel></Gallery>')
+    const probe = document.tree.getElementById("probe")
+    if (!probe) throw new Error("outer morph probe is missing")
+
+    const report = dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="replace" target="probe" method="morph"><template><Panel id="probe"><After /></Panel>
+</template></turbo-stream>`,
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+    expect(document.tree.getElementById("probe")).toBe(probe)
+    expect(document.tree.getElementById("probe")?.children[0]).toMatchObject({ tagName: "After" })
+  })
+
   test("retains compatible outer morph ownership while reconciling attributes and children", () => {
     const document = session(
       '<Gallery><DemoForm id="form" legacy="remove" tone="muted"><DemoInput id="email" tone="muted"/><DemoText id="copy">Before</DemoText></DemoForm></Gallery>',

@@ -530,6 +530,95 @@ describe("standalone Rails Action Cable proof", () => {
     }
   });
 
+  test("retains local native state through a Rails-authored HTTP Stream morph", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream?mode=morph";
+    const document = `<Gallery id="demo-document"><DemoDocumentLink id="demo-http-stream-morph-link" href="/api/expo_turbo/demo/stream?mode=morph" data-turbo-stream=""><DemoText>Apply state-preserving Rails Stream morph</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-http-stream-morph-probe" message="Waiting for a Rails Stream morph" /></Gallery>`;
+    const stream = '<turbo-stream action="replace" target="demo-http-stream-morph-probe" method="morph"><template><DemoStreamMorphProbe id="demo-http-stream-morph-probe" message="Rendered from Rails Stream morph" /></template></turbo-stream>';
+    const requests: RecordedRequest[] = [];
+    const proof = await createDemoLiveCableRuntime({
+      createSocket: () => new FakeActionCableSocket(),
+      fetch: async (url, request) => {
+        requests.push({ request, url });
+        if (url === documentUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => document,
+            url,
+          };
+        }
+        if (url === streamUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(TURBO_STREAM_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => stream,
+            url,
+          };
+        }
+        throw new Error("unexpected demo request");
+      },
+      origin: "http://demo.example:3000",
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(createElement(DemoLiveCablePanel, { proof }));
+        await nextTurn();
+      });
+      const probeBefore = proof.session.tree.getElementById("demo-http-stream-morph-probe");
+      if (!probeBefore) throw new Error("The initial Rails Stream morph probe is missing");
+      const localCount = () =>
+        renderer?.root.findByProps({ testID: "demo-http-stream-morph-count" }).props.accessibilityLabel;
+
+      act(() => {
+        const increment = renderer?.root.findByProps({
+          accessibilityLabel: "Increment HTTP Stream morph counter",
+        });
+        increment?.props.onPress();
+      });
+      expect(localCount()).toBe("Local count: 1");
+
+      const streamLink = renderer?.root.findByProps({ accessibilityRole: "link" });
+      await act(async () => {
+        streamLink?.props.onPress();
+        await nextTurn();
+        await nextTurn();
+      });
+
+      expect(unabortedRequests(requests).find((request) => request.url === streamUrl)).toMatchObject({
+        request: {
+          headers: {
+            Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+            "X-Turbo-Request-Id": "demo-live-http-stream-1",
+          },
+          method: "GET",
+        },
+        url: streamUrl,
+      });
+      expect(proof.session.tree.getElementById("demo-http-stream-morph-probe")).toBe(probeBefore);
+      expect(JSON.stringify(renderer?.toJSON())).toContain("Rendered from Rails Stream morph");
+      expect(localCount()).toBe("Local count: 1");
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
+  });
+
   test("cancels a pending HTTP Stream link when its host runtime is disposed", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
     const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream";
