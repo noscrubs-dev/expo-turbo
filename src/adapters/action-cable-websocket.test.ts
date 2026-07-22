@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import { SubscriptionError } from "../core/errors"
 import {
+  ACTION_CABLE_SUBSCRIPTION_RETRY_MS,
   ActionCableV1WebSocketAdapter,
   type ActionCableWebSocket,
   type ActionCableWebSocketEventType,
@@ -70,6 +71,34 @@ class FakeSocket implements ActionCableWebSocket {
   }
 }
 
+interface TimerRecord {
+  readonly callback: () => void
+  cleared: boolean
+  readonly delayMs: number
+  readonly handle: object
+}
+
+class ManualClock {
+  readonly timers: TimerRecord[] = []
+
+  clearTimeout(handle: unknown): void {
+    const timer = this.timers.find((candidate) => candidate.handle === handle)
+    if (timer) timer.cleared = true
+  }
+
+  setTimeout(callback: () => void, delayMs: number): unknown {
+    const handle = Object.freeze({})
+    this.timers.push({ callback, cleared: false, delayMs, handle })
+    return handle
+  }
+
+  fire(index: number): void {
+    const timer = this.timers[index]
+    if (!timer) throw new Error("Expected subscription retry timer")
+    if (!timer.cleared) timer.callback()
+  }
+}
+
 function callbackEvents(events: string[], name: string): CableCallbacks {
   return {
     connected(reconnected) {
@@ -88,10 +117,12 @@ function callbackEvents(events: string[], name: string): CableCallbacks {
 }
 
 function createAdapter() {
+  const clock = new ManualClock()
   const errors: SubscriptionError[] = []
   const socketCalls: { protocols: readonly string[]; url: string }[] = []
   const sockets: FakeSocket[] = []
   const adapter = new ActionCableV1WebSocketAdapter({
+    clock,
     createSocket(url, protocols) {
       const socket = new FakeSocket()
       socketCalls.push({ protocols, url })
@@ -103,7 +134,7 @@ function createAdapter() {
     },
     url: "wss://cable.example.test/cable",
   })
-  return { adapter, errors, socketCalls, sockets }
+  return { adapter, clock, errors, socketCalls, sockets }
 }
 
 function welcome(socket: FakeSocket): void {
@@ -172,6 +203,87 @@ describe("Action Cable v1 WebSocket adapter", () => {
       "second:received:update",
       "third:received:update",
     ])
+  })
+
+  test("retries unconfirmed groups at the Action Cable guarantee cadence", () => {
+    const { adapter, clock, sockets } = createAdapter()
+    const identifier = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"guaranteed"}'
+
+    adapter.subscribe(identifier, callbackEvents([], "guaranteed"))
+    const socket = socketAt(sockets, 0)
+    welcome(socket)
+
+    expect(socket.sent).toEqual([encodeActionCableSubscribe(identifier)])
+    expect(clock.timers).toHaveLength(1)
+    expect(clock.timers[0]?.delayMs).toBe(ACTION_CABLE_SUBSCRIPTION_RETRY_MS)
+
+    clock.fire(0)
+
+    expect(socket.sent).toEqual([
+      encodeActionCableSubscribe(identifier),
+      encodeActionCableSubscribe(identifier),
+    ])
+    expect(clock.timers).toHaveLength(2)
+    expect(clock.timers[1]?.delayMs).toBe(ACTION_CABLE_SUBSCRIPTION_RETRY_MS)
+  })
+
+  test("shares one guarantee timer across unconfirmed groups without postponing an earlier retry", () => {
+    const { adapter, clock, sockets } = createAdapter()
+    const first = "first"
+    const second = "second"
+
+    adapter.subscribe(first, callbackEvents([], first))
+    adapter.subscribe(second, callbackEvents([], second))
+    const socket = socketAt(sockets, 0)
+    welcome(socket)
+
+    expect(clock.timers).toHaveLength(1)
+    clock.fire(0)
+    expect(socket.sent).toEqual([
+      encodeActionCableSubscribe(first),
+      encodeActionCableSubscribe(second),
+      encodeActionCableSubscribe(first),
+      encodeActionCableSubscribe(second),
+    ])
+    expect(clock.timers).toHaveLength(2)
+
+    confirmation(socket, first)
+    expect(clock.timers[1]?.cleared).toBe(false)
+    confirmation(socket, second)
+    expect(clock.timers[1]?.cleared).toBe(true)
+  })
+
+  test("stops the subscription guarantee after confirmation, rejection, unsubscribe, and disposal", () => {
+    const confirmed = createAdapter()
+    confirmed.adapter.subscribe("confirmed", callbackEvents([], "confirmed"))
+    welcome(socketAt(confirmed.sockets, 0))
+    confirmation(socketAt(confirmed.sockets, 0), "confirmed")
+    expect(confirmed.clock.timers[0]?.cleared).toBe(true)
+    confirmed.clock.fire(0)
+    expect(confirmed.sockets[0]?.sent).toEqual([encodeActionCableSubscribe("confirmed")])
+
+    const rejected = createAdapter()
+    rejected.adapter.subscribe("rejected", callbackEvents([], "rejected"))
+    welcome(socketAt(rejected.sockets, 0))
+    socketAt(rejected.sockets, 0).emitMessage(
+      '{"identifier":"rejected","type":"reject_subscription"}',
+    )
+    expect(rejected.clock.timers[0]?.cleared).toBe(true)
+
+    const unsubscribed = createAdapter()
+    const subscription = unsubscribed.adapter.subscribe(
+      "unsubscribed",
+      callbackEvents([], "unsubscribed"),
+    )
+    welcome(socketAt(unsubscribed.sockets, 0))
+    subscription.unsubscribe()
+    expect(unsubscribed.clock.timers[0]?.cleared).toBe(true)
+
+    const disposed = createAdapter()
+    disposed.adapter.subscribe("disposed", callbackEvents([], "disposed"))
+    welcome(socketAt(disposed.sockets, 0))
+    disposed.adapter.dispose()
+    expect(disposed.clock.timers[0]?.cleared).toBe(true)
   })
 
   test("reserves one pending socket across a reentrant factory and closes a socket created after disposal", () => {

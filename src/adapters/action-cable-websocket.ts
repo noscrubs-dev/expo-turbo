@@ -5,7 +5,7 @@ import {
   encodeActionCableSubscribe,
   encodeActionCableUnsubscribe,
 } from "./action-cable-wire"
-import type { CableAdapter, CableCallbacks, CableSubscription } from "./index"
+import type { CableAdapter, CableCallbacks, CableSubscription, ClockAdapter } from "./index"
 
 export type ActionCableWebSocketEventType = "close" | "error" | "message" | "open"
 
@@ -25,6 +25,8 @@ export interface ActionCableWebSocket {
 }
 
 export interface ActionCableWebSocketAdapterOptions {
+  /** Optional host clock used to retry subscriptions that have not been confirmed yet. */
+  readonly clock?: Pick<ClockAdapter, "clearTimeout" | "setTimeout">
   readonly createSocket: (
     url: string,
     protocols: readonly [typeof ACTION_CABLE_V1_JSON_PROTOCOL],
@@ -33,6 +35,18 @@ export interface ActionCableWebSocketAdapterOptions {
   readonly onError: (error: SubscriptionError) => void
   /** Absolute `ws:` or `wss:` endpoint without URL userinfo, query, or fragment. */
   readonly url: string
+}
+
+/** Action Cable's official client re-sends an unconfirmed subscription every half second. */
+export const ACTION_CABLE_SUBSCRIPTION_RETRY_MS = 500
+
+const nativeSubscriptionRetryClock: Pick<ClockAdapter, "clearTimeout" | "setTimeout"> = {
+  clearTimeout(handle) {
+    clearTimeout(handle as ReturnType<typeof setTimeout>)
+  },
+  setTimeout(callback, delayMs) {
+    return setTimeout(callback, delayMs)
+  },
 }
 
 interface CallbackSnapshot {
@@ -134,9 +148,10 @@ function isWebSocketUrl(value: string): boolean {
  * A bounded Action Cable v1 JSON transport over one host-owned WebSocket at a time.
  *
  * This deliberately owns no credentials, URL derivation, lifecycle integration,
- * reconnect timing, or retry policy. It only rotates after an explicit valid
- * server `disconnect` frame requests reconnecting; terminal socket failures
- * otherwise require the host to construct a fresh adapter.
+ * heartbeat monitoring, or connection-retry policy. It guarantees each active
+ * subscription until confirmed at Action Cable's cadence, but only rotates the
+ * socket after an explicit valid server `disconnect` frame requests reconnecting;
+ * terminal socket failures otherwise require the host to construct a fresh adapter.
  */
 export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private active = true
@@ -149,6 +164,8 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   private welcomed = false
   private readonly createSocket: ActionCableWebSocketAdapterOptions["createSocket"]
   private readonly onError: ActionCableWebSocketAdapterOptions["onError"]
+  private readonly retryClock: Pick<ClockAdapter, "clearTimeout" | "setTimeout">
+  private subscriptionRetryHandle: unknown
   private readonly url: string
 
   constructor(options: ActionCableWebSocketAdapterOptions) {
@@ -165,9 +182,11 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     if (optionsAreArray) throw adapterError("Action Cable WebSocket adapter options are invalid")
 
     let createSocket: ActionCableWebSocketAdapterOptions["createSocket"]
+    let clock: ActionCableWebSocketAdapterOptions["clock"]
     let onError: ActionCableWebSocketAdapterOptions["onError"]
     let url: string
     try {
+      clock = options.clock
       createSocket = options.createSocket
       onError = options.onError
       url = options.url
@@ -184,8 +203,35 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       throw adapterError("Action Cable WebSocket URL must be an absolute ws or wss URL")
     }
 
+    let retryClock: Pick<ClockAdapter, "clearTimeout" | "setTimeout"> = nativeSubscriptionRetryClock
+    if (clock !== undefined) {
+      if (
+        !clock ||
+        (typeof clock !== "object" && typeof clock !== "function") ||
+        Array.isArray(clock)
+      ) {
+        throw adapterError("Action Cable subscription retry clock is invalid")
+      }
+      let clearTimeout: ClockAdapter["clearTimeout"]
+      let setTimeout: ClockAdapter["setTimeout"]
+      try {
+        clearTimeout = clock.clearTimeout
+        setTimeout = clock.setTimeout
+      } catch {
+        throw adapterError("Action Cable subscription retry clock is invalid")
+      }
+      if (typeof clearTimeout !== "function" || typeof setTimeout !== "function") {
+        throw adapterError("Action Cable subscription retry clock is invalid")
+      }
+      retryClock = Object.freeze({
+        clearTimeout: (handle) => clearTimeout.call(clock, handle),
+        setTimeout: (callback, delayMs) => setTimeout.call(clock, callback, delayMs),
+      })
+    }
+
     this.createSocket = createSocket
     this.onError = onError
+    this.retryClock = retryClock
     this.url = url
   }
 
@@ -245,6 +291,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   dispose(): void {
     if (!this.active) return
     this.active = false
+    this.stopSubscriptionGuarantee()
     const records = this.drainGroups()
     this.pendingConnectionRecords.clear()
     this.detachConnection(true)
@@ -389,6 +436,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
         record.reconnectOnConfirm = false
         this.invoke(record, "connected", reconnected)
       }
+      this.stopSubscriptionGuaranteeIfIdle()
       return
     }
     if (frame.type === "reject_subscription") {
@@ -398,6 +446,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
         this.invoke(record, "rejected")
       }
       group.records.clear()
+      this.stopSubscriptionGuaranteeIfIdle()
       this.closeIdleConnection()
       return
     }
@@ -424,13 +473,73 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
       return
     }
     group.subscribed = true
-    if (
-      !this.send(encodeActionCableSubscribe(group.identifier)) &&
-      !this.terminated &&
-      this.groups.get(group.identifier) === group &&
-      group.records.size > 0
-    ) {
+    if (!this.send(encodeActionCableSubscribe(group.identifier))) {
+      if (
+        !this.terminated &&
+        this.groups.get(group.identifier) === group &&
+        group.records.size > 0
+      ) {
+        group.subscribed = false
+      }
+      return
+    }
+    if (!group.confirmed && this.groups.get(group.identifier) === group && group.records.size > 0) {
+      this.startSubscriptionGuarantee()
+    }
+  }
+
+  private startSubscriptionGuarantee(): void {
+    if (!this.active || this.terminated || !this.welcomed || !this.hasUnconfirmedSubscriptions()) {
+      this.stopSubscriptionGuarantee()
+      return
+    }
+    if (this.subscriptionRetryHandle !== undefined) return
+    try {
+      this.subscriptionRetryHandle = this.retryClock.setTimeout(() => {
+        this.subscriptionRetryHandle = undefined
+        this.retryUnconfirmedSubscriptions()
+      }, ACTION_CABLE_SUBSCRIPTION_RETRY_MS)
+    } catch {
+      this.terminal("Action Cable subscription guarantee failed")
+    }
+  }
+
+  private retryUnconfirmedSubscriptions(): void {
+    if (!this.active || this.terminated || !this.welcomed) return
+    for (const group of [...this.groups.values()]) {
+      if (
+        group.confirmed ||
+        group.records.size === 0 ||
+        this.groups.get(group.identifier) !== group
+      ) {
+        continue
+      }
       group.subscribed = false
+      this.subscribeGroup(group)
+      if (!this.active || this.terminated) return
+    }
+    this.stopSubscriptionGuaranteeIfIdle()
+  }
+
+  private hasUnconfirmedSubscriptions(): boolean {
+    for (const group of this.groups.values()) {
+      if (!group.confirmed && group.records.size > 0) return true
+    }
+    return false
+  }
+
+  private stopSubscriptionGuaranteeIfIdle(): void {
+    if (!this.hasUnconfirmedSubscriptions()) this.stopSubscriptionGuarantee()
+  }
+
+  private stopSubscriptionGuarantee(): void {
+    if (this.subscriptionRetryHandle === undefined) return
+    const handle = this.subscriptionRetryHandle
+    this.subscriptionRetryHandle = undefined
+    try {
+      this.retryClock.clearTimeout(handle)
+    } catch {
+      // The adapter has released the retry handle and cannot safely retry its host clock.
     }
   }
 
@@ -441,6 +550,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     if (group.records.size > 0) return
     if (this.groups.get(group.identifier) === group) this.groups.delete(group.identifier)
     if (group.subscribed && this.welcomed) this.send(encodeActionCableUnsubscribe(group.identifier))
+    this.stopSubscriptionGuaranteeIfIdle()
     this.closeIdleConnection()
   }
 
@@ -551,6 +661,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
   }
 
   private detachConnection(close: boolean): void {
+    this.stopSubscriptionGuarantee()
     const connection = this.connection
     this.connection = undefined
     this.welcomed = false
