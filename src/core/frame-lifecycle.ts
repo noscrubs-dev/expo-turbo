@@ -133,6 +133,23 @@ export class FrameMissingEvent extends CancellableEvent<"frame-missing", FrameMi
 
 export type FrameRenderMethod = "morph" | "replace"
 
+export interface BeforeFrameMorphEventDetail {
+  readonly currentFrame: ProtocolElement
+  readonly frameId: string
+  readonly newFrame: ProtocolElement
+  readonly url: string
+}
+
+export class BeforeFrameMorphEvent extends NotificationEvent<
+  "before-frame-morph",
+  BeforeFrameMorphEventDetail
+> {
+  constructor(detail: BeforeFrameMorphEventDetail) {
+    super("before-frame-morph", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
 export interface FrameRenderContext {
   readonly frameId: string
   readonly newFrame: ProtocolElement
@@ -243,12 +260,14 @@ export class FrameLoadEvent extends NotificationEvent<"frame-load", FrameLoadEve
 }
 
 export type FrameLifecycleEvent =
+  | BeforeFrameMorphEvent
   | BeforeFrameRenderEvent
   | FrameLoadEvent
   | FrameMissingEvent
   | FrameRenderEvent
 
 export interface FrameLifecycleEventMap {
+  readonly "before-frame-morph": BeforeFrameMorphEvent
   readonly "before-frame-render": BeforeFrameRenderEvent
   readonly "frame-load": FrameLoadEvent
   readonly "frame-missing": FrameMissingEvent
@@ -265,6 +284,9 @@ export const FRAME_LIFECYCLE_MISSING_DISPATCH = Symbol(
 )
 export const FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH = Symbol(
   "expo-turbo.frame-lifecycle.before-render-dispatch",
+)
+export const FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH = Symbol(
+  "expo-turbo.frame-lifecycle.before-morph-dispatch",
 )
 export const FRAME_LIFECYCLE_RENDER_DISPATCH = Symbol("expo-turbo.frame-lifecycle.render-dispatch")
 export const FRAME_LIFECYCLE_LOAD_DISPATCH = Symbol("expo-turbo.frame-lifecycle.load-dispatch")
@@ -291,6 +313,7 @@ export class FrameLifecycle {
     listener: FrameLifecycleListener<Type>,
   ): () => void {
     if (
+      type !== "before-frame-morph" &&
       type !== "before-frame-render" &&
       type !== "frame-load" &&
       type !== "frame-missing" &&
@@ -353,6 +376,10 @@ export class FrameLifecycle {
     return event.detail.render
   }
 
+  [FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](event: BeforeFrameMorphEvent): void {
+    this.dispatchNotification("before-frame-morph", event, "Before-frame-morph listener failed")
+  }
+
   [FRAME_LIFECYCLE_RENDER_DISPATCH](event: FrameRenderEvent): void {
     this.dispatchNotification("frame-render", event, "Frame-render listener failed")
   }
@@ -362,8 +389,8 @@ export class FrameLifecycle {
   }
 
   private dispatchNotification(
-    type: "frame-load" | "frame-render",
-    event: FrameLoadEvent | FrameRenderEvent,
+    type: "before-frame-morph" | "frame-load" | "frame-render",
+    event: BeforeFrameMorphEvent | FrameLoadEvent | FrameRenderEvent,
     listenerFailure: string,
   ): void {
     const observer = admittedLifecycleState(this).onObserverError
@@ -646,7 +673,7 @@ function consumeUnexpectedResult(result: unknown): void {
   consumeThenableResult(result)
 }
 
-function notificationName(type: "frame-load" | "frame-render"): string {
+function notificationName(type: "before-frame-morph" | "frame-load" | "frame-render"): string {
   return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
 }
 

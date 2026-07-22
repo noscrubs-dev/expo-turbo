@@ -230,6 +230,13 @@ describe("Frame controller", () => {
       events.push(`before:${event.detail.renderMethod}`)
       return undefined
     })
+    lifecycle.subscribe("before-frame-morph", (event) => {
+      expect(event.detail.currentFrame).toBe(frame)
+      expect(event.detail.newFrame.kind).toBe("frame")
+      expect(event.detail.frameId).toBe("details")
+      events.push("morph")
+      return undefined
+    })
     lifecycle.subscribe("frame-render", (event) => {
       events.push(`render:${event.detail.renderMethod}`)
       return undefined
@@ -314,6 +321,7 @@ describe("Frame controller", () => {
       "render:replace",
       "load",
       "before:morph",
+      "morph",
       "render:morph",
       "load",
       "before:replace",
@@ -352,6 +360,10 @@ describe("Frame controller", () => {
     }
     const lifecycle = new FrameLifecycle()
     const events: string[] = []
+    lifecycle.subscribe("before-frame-morph", (event) => {
+      events.push(`morph:${event.detail.frameId}`)
+      return undefined
+    })
     lifecycle.subscribe("frame-render", (event) => {
       events.push(`render:${event.detail.frameId}`)
       return undefined
@@ -445,7 +457,7 @@ describe("Frame controller", () => {
     expect(await reloaded).toMatchObject({ frameId: "outer", status: "completed" })
     expect(pending).toHaveLength(2)
     expect(pending[1]?.request.url).toBe("https://example.test/inner")
-    expect(events).toEqual(["render:outer", "load:outer"])
+    expect(events).toEqual(["morph:outer", "render:outer", "load:outer"])
 
     pending[1]?.resolve(
       response(
@@ -461,7 +473,14 @@ describe("Frame controller", () => {
     expect(pending[2]?.request.url).toBe("https://example.test/leaf")
     expect(session.tree.getElementById("leaf")).toBe(leafFrame)
     expect(session.tree.getElementById("leaf-content")).toBe(leafContent)
-    expect(events).toEqual(["render:outer", "load:outer", "render:inner", "load:inner"])
+    expect(events).toEqual([
+      "morph:outer",
+      "render:outer",
+      "load:outer",
+      "morph:inner",
+      "render:inner",
+      "load:inner",
+    ])
 
     pending[2]?.resolve(
       response(
@@ -476,10 +495,13 @@ describe("Frame controller", () => {
     expect(session.tree.getElementById("leaf-content")).toBe(leafContent)
     expect(attributeValue(leafContent, "tone")).toBe("after")
     expect(events).toEqual([
+      "morph:outer",
       "render:outer",
       "load:outer",
+      "morph:inner",
       "render:inner",
       "load:inner",
+      "morph:leaf",
       "render:leaf",
       "load:leaf",
     ])

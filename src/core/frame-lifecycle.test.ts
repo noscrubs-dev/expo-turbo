@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { FrameMissingError, PropsError, RequestError, StateError } from "./errors"
 import {
+  BeforeFrameMorphEvent,
   createBeforeFrameRenderEvent,
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
   executeFrameVisitControlReload,
+  FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH,
   FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH,
   FRAME_LIFECYCLE_LOAD_DISPATCH,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
@@ -156,6 +158,44 @@ describe("Frame lifecycle", () => {
     ).toBeUndefined()
 
     expect(events).toEqual(["frame-render", "frame-load"])
+  })
+
+  test("emits frozen before-frame-morph handles through notification semantics", () => {
+    const current = parseExpoTurboDocument(
+      '<Gallery><turbo-frame id="details"><Current /></turbo-frame></Gallery>',
+    ).getElementById("details")
+    const incoming = parseExpoTurboDocument(
+      '<Gallery><turbo-frame id="details"><Incoming /></turbo-frame></Gallery>',
+    ).getElementById("details")
+    if (current?.kind !== "frame" || incoming?.kind !== "frame") {
+      throw new Error("Frame fixture is missing")
+    }
+    const lifecycle = new FrameLifecycle()
+    const event = new BeforeFrameMorphEvent({
+      currentFrame: current,
+      frameId: "details",
+      newFrame: incoming,
+      url: "https://example.test/details",
+    })
+    let received: unknown
+    lifecycle.subscribe("before-frame-morph", (value) => {
+      received = value
+      return undefined
+    })
+
+    expect(lifecycle[FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](event)).toBeUndefined()
+    expect(received).toBe(event)
+    expect(event.type).toBe("before-frame-morph")
+    expect(event.detail).toEqual({
+      currentFrame: current,
+      frameId: "details",
+      newFrame: incoming,
+      url: "https://example.test/details",
+    })
+    expect(Object.isFrozen(event)).toBe(true)
+    expect(Object.isFrozen(event.detail)).toBe(true)
+    expect(Object.isFrozen(event.detail.currentFrame)).toBe(true)
+    expect(Object.isFrozen(event.detail.newFrame)).toBe(true)
   })
 
   test("selects a synchronous before-frame-render wrapper over frozen response metadata", () => {
