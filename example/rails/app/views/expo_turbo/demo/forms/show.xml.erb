@@ -19,6 +19,7 @@
       <% if upload_error %>error="<%= ERB::Util.html_escape(upload_error) %>"<% end %>
     />
     <DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" />
+    <DemoFormSubmitter id="demo-form-upload-retry" label="Validate selected attachment (return 422)" name="commit" value="upload-retry" />
   </DemoForm>
   <DemoForm id="demo-consent-form" action="/api/expo_turbo/demo/form" method="post">
     <DemoText id="demo-consent-form-title">Native successful-control consent</DemoText>

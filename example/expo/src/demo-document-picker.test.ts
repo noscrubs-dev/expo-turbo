@@ -51,7 +51,7 @@ beforeEach(() => {
   });
 });
 
-test("turns one cached native text file into a bounded multipart Blob entry", async () => {
+test("retains one cached native text file as a bounded multipart Blob entry", async () => {
   const picked = await pickDemoTextUpload();
   if (!picked) throw new Error("The picker unexpectedly canceled");
 
@@ -59,6 +59,7 @@ test("turns one cached native text file into a bounded multipart Blob entry", as
     attachment: { filename: "picked-notes.txt" },
     byteLength: fileContents.length,
   });
+  expect(picked.attachment.blob).toBeInstanceOf(ExpoFile);
   expect(await picked.attachment.blob.text()).toBe(fileContents);
   expect(picked.attachment.blob.type).toMatch(/^text\/plain(?:;charset=utf-8)?$/);
   expect(pickerCalls).toEqual([{ copyToCacheDirectory: true, multiple: false, type: "text/plain" }]);
