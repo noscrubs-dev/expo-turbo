@@ -536,6 +536,10 @@ describe("demo Expo Router history bridge", () => {
     fixture.navigation.replaceFocusedParams({ [DEMO_ROUTER_PATH_PARAM]: ["demo"] }, "demo");
 
     expect(
+      fixture.bridge.handleExpoGoLinkEvent("exp://127.0.0.1:8081/--/demo"),
+    ).toBeUndefined();
+    expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)).toBeUndefined();
+    expect(
       fixture.bridge.handleExpoGoLinkEvent(
         "exp://127.0.0.1:8081/--/demo#native-anchor-target",
       ),
@@ -566,6 +570,63 @@ describe("demo Expo Router history bridge", () => {
     );
     await Promise.resolve();
     queryFixture.detach();
+  });
+
+  test("adopts a native-created cross-document Expo Go route without pushing another route", () => {
+    const current = managedEntry("native-linked", 1, LINKED_URL);
+    const fixture = harness(
+      {
+        ...encodeDemoRouterHistoryEntry(current),
+        [DEMO_ROUTER_PATH_PARAM]: ["demo", "linked"],
+      },
+      "/demo/linked",
+    );
+    initialize(fixture, LINKED_URL);
+    const traversals: DocumentHistoryEntry[] = [];
+    const errors: (Error | undefined)[] = [];
+    fixture.bridge.subscribe((entry) => {
+      traversals.push(entry);
+      fixture.history.adoptTraversal(entry);
+    });
+    fixture.bridge.subscribeErrors((error) => errors.push(error));
+
+    fixture.navigation.push(DEMO_ROUTER_ROUTE_NAME, {
+      [DEMO_ROUTER_PATH_PARAM]: ["demo"],
+    });
+    const nativeRouteKey = fixture.navigation.state.routes[1]?.key;
+    if (!nativeRouteKey) throw new Error("native Expo Go route was missing");
+    expect(
+      fixture.bridge.handleExpoGoLinkEvent(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBeUndefined();
+
+    fixture.detach();
+    fixture.navigation.replaceFocusedParams({ [DEMO_ROUTER_PATH_PARAM]: ["demo"] }, "demo");
+    const detachNative = fixture.bridge.attach(fixture.navigation, nativeRouteKey, {
+      deferReconciliation: true,
+    });
+    const adopted = decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[1]?.params);
+    if (!adopted) throw new Error("native Expo Go route did not receive managed history metadata");
+
+    expect(adopted).toMatchObject({
+      restorationIndex: 2,
+      url: GALLERY_URL,
+    });
+    expect(adopted?.restorationIdentifier).toMatch(/^demo-router-link-/);
+    expect(
+      fixture.bridge.readExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+
+    fixture.bridge.reconcile();
+
+    expect(traversals).toEqual([adopted]);
+    expect(fixture.history.current).toEqual(adopted);
+    expect(fixture.navigation.state.routes).toHaveLength(2);
+    expect(errors.filter(Boolean)).toEqual([]);
+    detachNative();
   });
 
   test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {

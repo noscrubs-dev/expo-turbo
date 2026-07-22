@@ -81,7 +81,11 @@ function ActiveDemoRouterRouteOwner({
   const initialAnchor = useRef<string | undefined>(undefined);
   const initialAnchorRequested = useRef(false);
   const handledIncomingLink = useRef<number | undefined>(undefined);
+  const latestIncomingLink = useRef(incomingLink);
   const reconciled = useRef(false);
+  useEffect(() => {
+    latestIncomingLink.current = incomingLink;
+  }, [incomingLink]);
   const markRootReady = useCallback(() => {
     if (reconciled.current) return;
     try {
@@ -110,6 +114,16 @@ function ActiveDemoRouterRouteOwner({
     const initialize = async (): Promise<void> => {
       try {
         detach = runtime.navigation.attach(navigation, routeKey, { deferReconciliation: true });
+        const pendingIncomingLink = latestIncomingLink.current;
+        const incomingAnchor =
+          pendingIncomingLink &&
+          Number.isSafeInteger(pendingIncomingLink.sequence) &&
+          pendingIncomingLink.sequence >= 1
+            ? (() => {
+                handledIncomingLink.current = pendingIncomingLink.sequence;
+                return runtime.navigation.handleExpoGoLinkEvent(pendingIncomingLink.url);
+              })()
+            : undefined;
         initialAnchor.current = runtime.navigation.readInitialExpoGoAnchor(initialUrl);
         let documentUrl = runtime.session.tree.document.url;
         if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
@@ -139,7 +153,7 @@ function ActiveDemoRouterRouteOwner({
             runtime.navigation.readInitialState(documentUrl),
           );
         }
-        const targetId = initialAnchor.current;
+        const targetId = incomingAnchor ?? initialAnchor.current;
         if (targetId && !initialAnchorRequested.current) {
           initialAnchorRequested.current = true;
           runtime.documentAnchorScroll.requestDeferredAnchor(targetId);
@@ -182,7 +196,9 @@ function ActiveDemoRouterRouteOwner({
     }
     handledIncomingLink.current = incomingLink.sequence;
     try {
-      const targetId = runtime.navigation.readExpoGoAnchor(incomingLink.url);
+      const targetId =
+        runtime.navigation.handleExpoGoLinkEvent(incomingLink.url) ??
+        runtime.navigation.readExpoGoAnchor(incomingLink.url);
       if (targetId) runtime.documentAnchorScroll.requestDeferredAnchor(targetId);
     } catch (error) {
       runtime.navigation.reportError(

@@ -1020,6 +1020,126 @@ describe("demo app runtime ownership", () => {
     });
   });
 
+  test("restores a later cross-document Expo Go link through its native-created route", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation(routeParams(LINKED_URL), "/demo/linked");
+    const errors: Error[] = [];
+    const unsubscribeErrors = runtime.navigation.subscribeErrors((error) => {
+      if (error) errors.push(error);
+    });
+    const deferredAnchorRequests: string[] = [];
+    const requestDeferredAnchor = runtime.documentAnchorScroll.requestDeferredAnchor.bind(
+      runtime.documentAnchorScroll,
+    );
+    runtime.documentAnchorScroll.requestDeferredAnchor = (id) => {
+      deferredAnchorRequests.push(id);
+      requestDeferredAnchor(id);
+    };
+    const routeOwner = (
+      focused: boolean,
+      routeKey: string,
+      incomingLink?: Readonly<{ sequence: number; url: string }>,
+    ) =>
+      createElement(
+        DemoRouterRouteOwner,
+        { focused, incomingLink, key: routeKey, navigation, routeKey, runtime },
+        createElement("active-route"),
+      );
+    const routeTree = (
+      routeKey: string,
+      incomingLink?: Readonly<{ sequence: number; url: string }>,
+    ) =>
+      createElement(
+        DemoRuntimeProvider,
+        { runtime },
+        createElement(
+          Fragment,
+          null,
+          routeOwner(routeKey === INITIAL_ROUTE_KEY, INITIAL_ROUTE_KEY),
+          routeKey === INITIAL_ROUTE_KEY ? null : routeOwner(true, routeKey, incomingLink),
+        ),
+      );
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(routeTree(INITIAL_ROUTE_KEY));
+      await nextTurn();
+      await nextTurn();
+    });
+    expect(runtime.session.tree.document.url).toBe(LINKED_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(LINKED_URL);
+
+    navigation.push(DEMO_ROUTER_ROUTE_NAME, { [DEMO_ROUTER_PATH_PARAM]: ["demo"] });
+    const nativeRouteKey = navigation.state.routes[1]?.key;
+    if (!nativeRouteKey) throw new Error("native Expo Go route was missing");
+    expect(
+      runtime.navigation.handleExpoGoLinkEvent(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBeUndefined();
+
+    await act(async () => {
+      renderer?.update(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          routeOwner(false, INITIAL_ROUTE_KEY),
+        ),
+      );
+      await nextTurn();
+    });
+
+    await act(async () => {
+      renderer?.update(
+        routeTree(
+          nativeRouteKey,
+          Object.freeze({
+            sequence: 1,
+            url: "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+          }),
+        ),
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(errors).toEqual([]);
+    expect(runtime.navigation.readRouteState()).toEqual({ kind: "managed", entry: expect.any(Object) });
+    expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)).toBeDefined();
+
+    await act(async () => {
+      runtime.navigation.reconcile();
+      await nextTurn();
+    });
+
+    const adopted = decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params);
+    expect(adopted).toMatchObject({
+      restorationIndex: 1,
+      url: GALLERY_URL,
+    });
+    expect(requests.map((request) => request.url)).toEqual([LINKED_URL, GALLERY_URL]);
+    expect(deferredAnchorRequests).toEqual(["native-anchor-target"]);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current).toEqual(adopted);
+    expect(navigation.pushCalls).toBe(1);
+    expect(navigation.state.routes).toHaveLength(2);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unsubscribeErrors();
+  });
+
   test("applies repeatable exact Expo Go link events after the gallery root mounts", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];
