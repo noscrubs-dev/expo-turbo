@@ -169,6 +169,8 @@ const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
+const GENERIC_ROUTE_URL =
+  "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
 
 interface FixtureTimer {
   readonly callback: () => void;
@@ -597,6 +599,79 @@ describe("demo app runtime ownership", () => {
     ]);
     expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
       GALLERY_QUERY_LINKED_URL,
+    );
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("visits the gallery generic nested route through the exact Router history URL", async () => {
+    const runtime = createDemoRuntime();
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery generic route fixture did not render");
+    const genericRouteLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Open a nested generic Router path and retain its ordered query metadata through native history.",
+            ),
+        ).length > 0,
+      );
+    if (!genericRouteLink) throw new Error("gallery generic route link was not rendered");
+
+    await act(async () => {
+      genericRouteLink.props.onPress();
+      await nextTurn();
+    });
+
+    expect(runtime.session.tree.document.url).toBe(GENERIC_ROUTE_URL);
+    expect(runtime.session.tree.getElementById("generic-route-document")).toBeDefined();
+    expect(runtime.documentRuntime.history.current?.url).toBe(GENERIC_ROUTE_URL);
+    expect(navigation.state.routes).toHaveLength(2);
+    expect(navigation.state.routes[1]?.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
+      "demo",
+      "routes",
+      "ios-proof",
+      "details",
+    ]);
+    expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
+      GENERIC_ROUTE_URL,
     );
 
     await act(async () => {

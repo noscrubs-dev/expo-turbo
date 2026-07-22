@@ -9,23 +9,68 @@ interface DemoRouterDocumentPath {
 
 const encodedSeparator = /%(?:2f|5c)/i;
 const demoOrigin = "https://example.test";
+const maxSegmentCount = 8;
+const maxSegmentLength = 96;
 
-const paths = Object.freeze({
-  "/demo": Object.freeze({
-    segments: Object.freeze(["demo"]),
-    url: "https://example.test/demo",
-  }),
-  "/demo/linked": Object.freeze({
-    segments: Object.freeze(["demo", "linked"]),
-    url: "https://example.test/demo/linked",
-  }),
-} satisfies Record<string, DemoRouterDocumentPath>);
+function pathError(): never {
+  throw new StateError("The Expo Turbo demo Router path is invalid");
+}
 
-function documentPath(pathname: string): DemoRouterDocumentPath {
-  const path = Object.hasOwn(paths, pathname)
-    ? paths[pathname as keyof typeof paths]
-    : undefined;
-  if (!path) throw new StateError("The Expo Turbo demo Router path is unsupported");
+function hasUnsafeSegmentCharacter(value: string): boolean {
+  return (
+    value.includes("/") ||
+    value.includes("\\") ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+    })
+  );
+}
+
+function assertSegment(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() === "" ||
+    value.length > maxSegmentLength ||
+    value === "." ||
+    value === ".." ||
+    hasUnsafeSegmentCharacter(value) ||
+    encodedSeparator.test(value)
+  ) {
+    return pathError();
+  }
+  return value;
+}
+
+function documentPath(segments: readonly string[]): DemoRouterDocumentPath {
+  if (
+    segments.length === 0 ||
+    segments.length > maxSegmentCount ||
+    segments[0] !== "demo"
+  ) {
+    return pathError();
+  }
+  const safeSegments = Object.freeze(segments.map(assertSegment));
+  const url = new URL(`/${safeSegments.map(encodeURIComponent).join("/")}`, demoOrigin);
+  return Object.freeze({ segments: safeSegments, url: url.toString() });
+}
+
+function documentPathFromUrl(pathname: string): DemoRouterDocumentPath {
+  if (!pathname.startsWith("/") || pathname.endsWith("/")) return pathError();
+  const rawSegments = pathname.slice(1).split("/");
+  if (rawSegments.some((segment) => segment === "" || encodedSeparator.test(segment))) {
+    return pathError();
+  }
+  const segments = rawSegments.map((segment) => {
+    try {
+      return assertSegment(decodeURIComponent(segment));
+    } catch {
+      return pathError();
+    }
+  });
+  const path = documentPath(segments);
+  if (new URL(path.url).pathname !== pathname) return pathError();
   return path;
 }
 
@@ -54,7 +99,7 @@ function canonicalDocumentUrl(value: unknown): Readonly<{
     throw new StateError("The Expo Turbo demo document URL is invalid");
   }
   return Object.freeze({
-    path: documentPath(url.pathname),
+    path: documentPathFromUrl(url.pathname),
     url: url.href,
   });
 }
@@ -64,19 +109,6 @@ export function encodeDemoRouterDocumentPath(value: unknown): readonly string[] 
 }
 
 export function decodeDemoRouterDocumentPath(value: unknown): DemoRouterDocumentPath {
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some(
-      (segment) =>
-        typeof segment !== "string" ||
-        segment === "" ||
-        segment.includes("/") ||
-        segment.includes("\\") ||
-        encodedSeparator.test(segment),
-    )
-  ) {
-    throw new StateError("The Expo Turbo demo Router path is invalid");
-  }
-  return documentPath(`/${value.join("/")}`);
+  if (!Array.isArray(value)) return pathError();
+  return documentPath(value);
 }

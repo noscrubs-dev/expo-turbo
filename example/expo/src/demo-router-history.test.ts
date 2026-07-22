@@ -29,6 +29,8 @@ const GALLERY_URL = "https://example.test/demo";
 const LINKED_URL = "https://example.test/demo/linked";
 const GALLERY_QUERY_URL = "https://example.test/demo?source=deep-link&tag=a&tag=b";
 const LINKED_QUERY_URL = "https://example.test/demo/linked?flag=&space=+&encoded=%20";
+const NESTED_QUERY_URL =
+  "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
 
 type WriteBehavior =
   | "collateral"
@@ -363,6 +365,27 @@ describe("demo Expo Router history bridge", () => {
       ...encodeDemoRouterHistoryEntry(entry),
     });
     expect(managed.bridge.readRouteState()).toEqual({ entry, kind: "managed" });
+  });
+
+  test("round-trips a generic nested demo path through the Router history bridge", () => {
+    const fixture = harness({ source: "gallery" });
+    initialize(fixture);
+    const proposal = fixture.history.proposeAdvance(NESTED_QUERY_URL);
+
+    expect(fixture.history.commitProposal(proposal)).toBe(proposal.entry);
+
+    const pushed = fixture.navigation.state.routes[1] as DemoRouterRoute;
+    expect(pushed.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
+      "demo",
+      "routes",
+      "ios-proof",
+      "details",
+    ]);
+    expect(pushed.params?.source).toBe("gallery");
+    expect(decodeDemoRouterHistoryEntry(pushed.params)).toEqual(proposal.entry);
+    const detach = fixture.bridge.attach(fixture.navigation, pushed.key);
+    expect(fixture.bridge.readRouteState()).toEqual({ entry: proposal.entry, kind: "managed" });
+    detach();
   });
 
   test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {
