@@ -6,6 +6,7 @@ class ApplicationController < ActionController::API
     components: {
       "DemoForm" => {},
       "DemoDocumentLink" => {},
+      "DemoFormCheckbox" => {},
       "DemoFormFile" => {},
       "DemoFormInput" => {},
       "DemoFormSubmitter" => {},
