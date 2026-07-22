@@ -981,7 +981,9 @@ describe("demo app runtime ownership", () => {
         pressable.findAll(
           (node) =>
             String(node.type) === "native-text" &&
-            node.children.includes("Load this Frame document, then jump to its fragment target."),
+            node.children.includes(
+              "Use the preloaded Frame response, then jump to its fragment target.",
+            ),
         ).length > 0,
       );
     if (!crossDocumentFrameAnchorLink) {

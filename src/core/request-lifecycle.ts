@@ -24,6 +24,12 @@ export type RequestLifecycleContext =
       requestId: string
     }>
   | Readonly<{
+      frameId: string
+      kind: "frame"
+      purpose: "preload"
+      requestId: string
+    }>
+  | Readonly<{
       formNodeKey?: string
       kind: "form"
       requestId: string

@@ -14,6 +14,7 @@ import {
 import { FRAME_HISTORY_PLAN_OPTION } from "./frame-history"
 import { FrameLifecycle } from "./frame-lifecycle"
 import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
+import { FramePreloadCache } from "./frame-preload-cache"
 import { parseExpoTurboDocument } from "./parser"
 import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
@@ -41,6 +42,50 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 }
 
 describe("Frame request loader", () => {
+  test("consumes only the exact Frame-and-URL preload through normal commit state", async () => {
+    const session = documentSession()
+    const cache = new FramePreloadCache()
+    cache.put({
+      body: '<turbo-frame id="details"><Preloaded id="preloaded" /></turbo-frame>',
+      frameId: "details",
+      redirected: false,
+      requestId: "preloaded-request",
+      responseStatus: 200,
+      responseUrl: "https://example.test/frame",
+      url: "https://example.test/frame",
+    })
+    const requests: TurboRequest[] = []
+    let requestIds = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          requests.push(request)
+          return response('<turbo-frame id="details"><Network /></turbo-frame>', {
+            url: request.url,
+          })
+        },
+      },
+      { next: () => `network-${++requestIds}` },
+      { preloadCache: cache },
+    )
+
+    expect(await loader.load("details", "/frame")).toMatchObject({
+      requestId: "preloaded-request",
+      requestIds: ["preloaded-request"],
+      status: "completed",
+    })
+    expect(requests).toHaveLength(0)
+    expect(requestIds).toBe(0)
+    expect(session.tree.getElementById("preloaded")).toBeDefined()
+    expect(session.recentRequestIds.has("preloaded-request")).toBe(true)
+
+    expect(await loader.load("details", "/frame")).toMatchObject({
+      requestId: "network-1",
+      status: "completed",
+    })
+    expect(requests).toHaveLength(1)
+  })
   test("snapshots and validates the request lifecycle option", async () => {
     const lifecycle = new RequestLifecycle()
     let events = 0

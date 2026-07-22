@@ -102,6 +102,7 @@ import type {
 import { consumeFrameRenderEffects } from "../core/frame-autofocus-internal"
 import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
 import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
+import type { FramePreloadRequester } from "../core/frame-preloader"
 import {
   acknowledgeFrameRender,
   frameRenderLifecycleRevision,
@@ -253,6 +254,7 @@ interface RendererContextValue {
   readonly documentRefreshScroll: DocumentRefreshScrollAdapter | undefined
   readonly frameAutoscroll: FrameAutoscrollAdapter | undefined
   readonly frameComponent: ComponentType<ExpoTurboFrameBoundaryProps> | undefined
+  readonly framePreloader: FramePreloadRequester | undefined
   readonly formComponent: ComponentType<ExpoTurboFormBoundaryProps> | undefined
   readonly formAnnouncements: FormSubmissionAnnouncementAdapter | undefined
   readonly formLinks: FormLinkSubmissionController | undefined
@@ -459,6 +461,62 @@ function automaticDocumentPreloadUrl(
   }
 }
 
+interface AutomaticFramePreloadTarget {
+  readonly frameId: string
+  readonly url: string
+}
+
+function automaticFramePreloadTarget(
+  session: DocumentSession,
+  node: ProtocolElement,
+  href: string,
+  rawHref: string | undefined,
+): AutomaticFramePreloadTarget | undefined {
+  if (
+    attributeValue(node, "href") !== rawHref ||
+    !hasProtocolAttribute(node, "data-turbo-preload") ||
+    hasProtocolAttribute(node, "disabled") ||
+    hasProtocolAttribute(node, "data-turbo-method") ||
+    hasProtocolAttribute(node, "data-turbo-stream")
+  ) {
+    return undefined
+  }
+  const browserTarget = attributeValue(node, "target")
+  if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
+    return undefined
+  }
+  if (UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))) {
+    return undefined
+  }
+  let current: ProtocolNode | null = node
+  while (current && current.kind !== "document") {
+    if (isElement(current)) {
+      const setting = attributeValue(current, "data-turbo")
+      if (setting !== undefined) {
+        if (setting === "false") return undefined
+        break
+      }
+    }
+    current = current.parent
+  }
+  try {
+    const documentUrl = session.tree.document.url
+    if (!documentUrl) return undefined
+    const frameTarget = attributeValue(node, "data-turbo-frame")
+    const destination = resolveFormSubmissionDestination(session.tree, node, {
+      ...(frameTarget !== undefined ? { formTarget: frameTarget } : {}),
+    })
+    if (destination.kind !== "frame") return undefined
+    const resolved = resolveProtocolUrl(href, documentUrl, documentUrl)
+    if (resolved.documentOrigin !== resolved.urlOrigin) return undefined
+    const url = new URL(resolved.url)
+    url.hash = ""
+    return Object.freeze({ frameId: destination.frameId, url: url.toString() })
+  } catch {
+    return undefined
+  }
+}
+
 function pressInDocumentPrefetchUrl(
   session: DocumentSession,
   node: ProtocolElement,
@@ -553,6 +611,7 @@ export interface ExpoTurboProviderProps {
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
   readonly frameAutoscroll?: FrameAutoscrollAdapter
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
+  readonly framePreloader?: FramePreloadRequester
   readonly formComponent?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
   readonly formLinks?: FormLinkSubmissionController
@@ -604,6 +663,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentRefreshScroll: props.documentRefreshScroll,
       frameAutoscroll: props.frameAutoscroll,
       frameComponent: props.frameComponent,
+      framePreloader: props.framePreloader,
       formComponent: props.formComponent,
       formAnnouncements: props.formAnnouncements,
       formLinks: props.formLinks,
@@ -633,6 +693,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentRefreshScroll,
       props.frameAutoscroll,
       props.frameComponent,
+      props.framePreloader,
       props.formComponent,
       props.formAnnouncements,
       props.formLinks,
@@ -1209,6 +1270,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     documentController,
     documentPreloader,
     formLinks,
+    framePreloader,
     frames,
     onError,
     session,
@@ -1218,12 +1280,18 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
   const link = node && isElement(node) ? node : undefined
   const rawHref = link ? attributeValue(link, "href") : undefined
-  useAutomaticDocumentPreloadRevision(session, link, documentPreloader !== undefined)
+  useAutomaticDocumentPreloadRevision(
+    session,
+    link,
+    documentPreloader !== undefined || framePreloader !== undefined,
+  )
   const mounted = useRef(true)
+  const completedFramePreload = useRef<string | undefined>(undefined)
   const onErrorRef = useRef(onError)
   const automaticPreloadConfiguration = useRef({
     documentAutomaticPreloadPolicy,
     documentPreloader,
+    framePreloader,
     href,
     link,
     nodeKey,
@@ -1237,13 +1305,23 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     automaticPreloadConfiguration.current = {
       documentAutomaticPreloadPolicy,
       documentPreloader,
+      framePreloader,
       href,
       link,
       nodeKey,
       rawHref,
       session,
     }
-  }, [documentAutomaticPreloadPolicy, documentPreloader, href, link, nodeKey, rawHref, session])
+  }, [
+    documentAutomaticPreloadPolicy,
+    documentPreloader,
+    framePreloader,
+    href,
+    link,
+    nodeKey,
+    rawHref,
+    session,
+  ])
   useLayoutEffect(() => {
     mounted.current = true
     return () => {
@@ -1359,6 +1437,82 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     rawHref,
     session,
   ])
+  const automaticFramePreload =
+    framePreloader && link ? automaticFramePreloadTarget(session, link, href, rawHref) : undefined
+  useLayoutEffect(() => {
+    const configuration = automaticPreloadConfiguration.current
+    if (
+      !mounted.current ||
+      configuration.framePreloader !== framePreloader ||
+      configuration.href !== href ||
+      configuration.link !== link ||
+      configuration.nodeKey !== nodeKey ||
+      configuration.rawHref !== rawHref ||
+      configuration.session !== session ||
+      !framePreloader ||
+      !automaticFramePreload ||
+      !nodeKey ||
+      !link ||
+      session.tree.getNodeByKey(nodeKey) !== link
+    ) {
+      return
+    }
+    const activeLink = link
+    const linkNodeKey = nodeKey
+    const preload = automaticFramePreload
+    const preloadKey = `${preload.frameId}\n${preload.url}`
+    if (completedFramePreload.current === preloadKey) return
+    const isCurrent = () => {
+      if (
+        !mounted.current ||
+        automaticPreloadConfiguration.current !== configuration ||
+        session.tree.getNodeByKey(linkNodeKey) !== activeLink
+      ) {
+        return false
+      }
+      const current = automaticFramePreloadTarget(session, activeLink, href, rawHref)
+      return current?.frameId === preload.frameId && current.url === preload.url
+    }
+    let active = true
+    let request: ReturnType<FramePreloadRequester["preload"]>
+    try {
+      request = framePreloader.preload(preload.frameId, preload.url)
+    } catch (error) {
+      request = Promise.reject(error)
+    }
+    void Promise.resolve(request).then(
+      (report) => {
+        if (
+          active &&
+          isCurrent() &&
+          (report.status === "cached" || report.status === "hit" || report.status === "superseded")
+        ) {
+          completedFramePreload.current = preloadKey
+        }
+      },
+      (error) => {
+        if (!active || !isCurrent() || requestLifecycleDefaultHandlingPrevented(error)) return
+        const observer = onErrorRef.current
+        if (!observer) return
+        try {
+          observer({
+            error:
+              error instanceof ExpoTurboError
+                ? error
+                : new RequestError("Automatic Frame preload failed"),
+            nodeKey: linkNodeKey,
+          })
+        } catch {
+          queueMicrotask(() => {
+            throw new StateError("Automatic Frame preload error reporting failed")
+          })
+        }
+      },
+    )
+    return () => {
+      active = false
+    }
+  }, [automaticFramePreload, framePreloader, href, link, nodeKey, rawHref, session])
   const activate = useCallback(async () => {
     if (!documentController || !nodeKey || !node || !isElement(node)) {
       throw new TargetError("Document link is outside the active document")
