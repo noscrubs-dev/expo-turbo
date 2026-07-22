@@ -27,6 +27,7 @@ const DEMO_ROUTER_HISTORY_PARAM_NAMES = new Set<string>(
   [DEMO_ROUTER_PATH_PARAM, ...Object.values(DEMO_ROUTER_HISTORY_PARAMS)],
 );
 const documentUrlEncodingPrefix = "v1~";
+let demoRouterHistoryBridgeInstance = 0;
 
 export interface DemoRouterRoute {
   readonly key: string;
@@ -409,12 +410,38 @@ function routeMatchesDocumentUrl(route: DemoRouterRoute, documentUrl: string): b
   }
 }
 
+function routeMatchesExpoGoTarget(route: DemoRouterRoute, documentUrl: string): boolean {
+  if (!routeMatchesDocumentUrl(route, documentUrl)) return false;
+  try {
+    directRouteQuery(route, new URL(documentUrl));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function hasHistoryMetadata(route: DemoRouterRoute): boolean {
   try {
     const params = paramsRecord(route.params);
     return Object.values(DEMO_ROUTER_HISTORY_PARAMS).some((name) => Object.hasOwn(params, name));
   } catch {
     return true;
+  }
+}
+
+function nativeLinkRouteCandidate(route: DemoRouterRoute): boolean {
+  if (
+    hasHistoryMetadata(route) ||
+    typeof route.path !== "string" ||
+    route.path.startsWith("/")
+  ) {
+    return false;
+  }
+  try {
+    routeDocumentPath(route);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -582,7 +609,10 @@ export class DemoRouterHistoryBridge
   private readonly errorListeners = new Set<DemoRouterErrorListener>();
   private emittedEntry: DocumentHistoryEntry | undefined;
   private malformedRouteKey: string | undefined;
+  private readonly nativeLinkRestorationNamespace = `demo-router-link-${Date.now().toString(36)}-${++demoRouterHistoryBridgeInstance}`;
+  private nativeLinkRestorationSequence = 0;
   private readonly openExternalUrl: (url: string) => Promise<void> | void;
+  private pendingExpoGoLink: string | undefined;
   private pendingEntry: DocumentHistoryEntry | undefined;
   private terminal = false;
   private readonly traversalListeners = new Set<(entry: DocumentHistoryEntry) => void>();
@@ -609,7 +639,11 @@ export class DemoRouterHistoryBridge
     if (route.name !== DEMO_ROUTER_ROUTE_NAME) {
       throw new StateError("Demo Router history attachment requires its canonical route");
     }
-    routeDocumentUrl(route);
+    try {
+      routeDocumentUrl(route);
+    } catch (error) {
+      if (!nativeLinkRouteCandidate(route)) throw error;
+    }
 
     this.detach(this.attachment);
     const attachment: DemoRouterAttachment = {
@@ -635,6 +669,12 @@ export class DemoRouterHistoryBridge
       throw new StateError("Demo Router history state subscription failed");
     }
     attachment.unsubscribe = unsubscribe as () => void;
+    try {
+      this.recoverPendingExpoGoLink();
+    } catch (error) {
+      this.detach(attachment);
+      throw error;
+    }
 
     return () => {
       this.detach(attachment);
@@ -678,27 +718,18 @@ export class DemoRouterHistoryBridge
     return expoGoAnchor(route, value, true);
   }
 
-  /** Restores a same-document Router entry displaced by an exact raw Expo Go URL event. */
+  /** Restores an exact raw Expo Go URL event after native Router has consumed it. */
   handleExpoGoLinkEvent(value: unknown): string | undefined {
-    const attachment = this.attachment;
-    const current = this.currentEntry();
-    if (!attachment?.active || !current || this.terminal || this.writeActive) return undefined;
-    const focused = routeState(attachment.navigation);
-    if (focused.route.key !== attachment.routeKey) return undefined;
-    const entry = managedEntry(focused.route);
-    if (entry) return expoGoAnchorForDocument(entry.url, value);
+    if (typeof value !== "string") return undefined;
     const target = expoGoTarget(value);
-    const currentUrl = new URL(current.url);
-    if (
-      !target ||
-      target.pathname !== currentUrl.pathname ||
-      target.search !== currentUrl.search ||
-      !routeMatchesDocumentUrl(focused.route, current.url)
-    ) {
-      return undefined;
-    }
-    this.repairCurrentRoute(attachment, focused, current);
-    return expoGoAnchorForDocument(current.url, value);
+    if (!target) return undefined;
+    const targetDocument = new URL(target.href);
+    targetDocument.hash = "";
+    if (!expoGoAnchorForDocument(targetDocument.href, value)) return undefined;
+    this.pendingExpoGoLink = value;
+    const recovery = this.recoverExpoGoLink(value);
+    if (recovery.handled) this.pendingExpoGoLink = undefined;
+    return recovery.anchor;
   }
 
   reconcile(): void {
@@ -811,6 +842,7 @@ export class DemoRouterHistoryBridge
     this.errorListeners.clear();
     this.error = undefined;
     this.emittedEntry = undefined;
+    this.pendingExpoGoLink = undefined;
     this.pendingEntry = undefined;
   }
 
@@ -889,7 +921,7 @@ export class DemoRouterHistoryBridge
     if (
       !current ||
       hasHistoryMetadata(route) ||
-      !routeMatchesDocumentUrl(route, current.url) ||
+      (!routeMatchesDocumentUrl(route, current.url) && !nativeLinkRouteCandidate(route)) ||
       this.deferredNativeLinkRouteKey === route.key
     ) {
       return false;
@@ -908,6 +940,58 @@ export class DemoRouterHistoryBridge
       }
     });
     return true;
+  }
+
+  private nextNativeLinkEntry(current: DocumentHistoryEntry, url: string): DocumentHistoryEntry {
+    if (current.restorationIndex === Number.MAX_SAFE_INTEGER) {
+      throw new StateError("Document restoration index cannot advance past the safe integer limit");
+    }
+    return Object.freeze({
+      restorationIdentifier: `${this.nativeLinkRestorationNamespace}-${++this.nativeLinkRestorationSequence}`,
+      restorationIndex: current.restorationIndex + 1,
+      url,
+    });
+  }
+
+  private recoverExpoGoLink(value: string): Readonly<{ anchor?: string; handled: boolean }> {
+    const attachment = this.attachment;
+    const current = this.currentEntry();
+    if (!attachment?.active || !current || this.terminal || this.writeActive) {
+      return Object.freeze({ handled: false });
+    }
+    const focused = routeState(attachment.navigation);
+    if (focused.route.key !== attachment.routeKey) return Object.freeze({ handled: false });
+    const target = expoGoTarget(value);
+    if (!target) return Object.freeze({ handled: false });
+    const targetDocument = new URL(target.href);
+    targetDocument.hash = "";
+    const targetUrl = targetDocument.href;
+    const anchor = expoGoAnchorForDocument(targetUrl, value);
+    const entry = managedEntry(focused.route);
+    if (entry) {
+      return Object.freeze({
+        ...(entry.url === targetUrl ? { anchor } : {}),
+        handled: entry.url === targetUrl,
+      });
+    }
+    if (
+      !routeMatchesDocumentUrl(focused.route, targetUrl) ||
+      (targetUrl !== current.url && !routeMatchesExpoGoTarget(focused.route, targetUrl))
+    ) {
+      return Object.freeze({ handled: false });
+    }
+    const nextEntry =
+      targetUrl === current.url ? current : this.nextNativeLinkEntry(current, targetUrl);
+    this.repairCurrentRoute(attachment, focused, nextEntry);
+    this.reconcileAttachment(false);
+    return Object.freeze({ anchor, handled: true });
+  }
+
+  private recoverPendingExpoGoLink(): void {
+    const value = this.pendingExpoGoLink;
+    if (!value) return;
+    const recovery = this.recoverExpoGoLink(value);
+    if (recovery.handled) this.pendingExpoGoLink = undefined;
   }
 
   private repairCurrentRoute(

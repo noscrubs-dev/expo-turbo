@@ -301,6 +301,7 @@ export function DemoRouteScreen() {
     <>
       <Stack.Screen options={{ title: "Expo Turbo" }} />
       <DemoRouterRouteOwner
+        key={route.key}
         focused={focused && navigationReady}
         incomingLink={incomingLink}
         initialUrl={initialUrl}
