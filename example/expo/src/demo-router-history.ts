@@ -347,10 +347,8 @@ function directRouteDocumentUrl(route: DemoRouterRoute): string | undefined {
   return url.href;
 }
 
-function initialExpoGoAnchor(route: DemoRouterRoute, value: unknown): string | undefined {
+function expoGoTarget(value: unknown): URL | undefined {
   if (typeof value !== "string" || value === "") return undefined;
-  const documentUrl = directRouteDocumentUrl(route);
-  if (!documentUrl) return undefined;
   let source: URL;
   try {
     source = new URL(value);
@@ -361,24 +359,25 @@ function initialExpoGoAnchor(route: DemoRouterRoute, value: unknown): string | u
     (source.protocol !== "exp:" && source.protocol !== "exps:") ||
     source.username !== "" ||
     source.password !== "" ||
-    !source.pathname.startsWith("/--/") ||
-    source.hash === ""
+    !source.pathname.startsWith("/--/")
   ) {
     return undefined;
   }
-  let target: URL;
   try {
-    target = new URL(`${source.pathname.slice(3)}${source.search}${source.hash}`, "https://example.test");
+    return new URL(
+      `${source.pathname.slice(3)}${source.search}${source.hash}`,
+      "https://example.test",
+    );
   } catch {
     return undefined;
   }
+}
+
+function expoGoAnchorForDocument(documentUrl: string, value: unknown): string | undefined {
+  const target = expoGoTarget(value);
+  if (!target || target.hash === "") return undefined;
   const current = new URL(documentUrl);
-  if (target.pathname !== current.pathname) return undefined;
-  try {
-    directRouteQuery(route, target);
-  } catch {
-    return undefined;
-  }
+  if (target.pathname !== current.pathname || target.search !== current.search) return undefined;
   let targetId: string;
   try {
     targetId = decodeURIComponent(target.hash.slice(1));
@@ -395,6 +394,40 @@ function initialExpoGoAnchor(route: DemoRouterRoute, value: unknown): string | u
     return undefined;
   }
   return targetId;
+}
+
+function routeMatchesDocumentUrl(route: DemoRouterRoute, documentUrl: string): boolean {
+  try {
+    const documentSegments = encodeDemoRouterDocumentPath(documentUrl);
+    const routeSegments = routeDocumentPath(route).segments;
+    return (
+      documentSegments.length === routeSegments.length &&
+      documentSegments.every((segment, index) => segment === routeSegments[index])
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasHistoryMetadata(route: DemoRouterRoute): boolean {
+  try {
+    const params = paramsRecord(route.params);
+    return Object.values(DEMO_ROUTER_HISTORY_PARAMS).some((name) => Object.hasOwn(params, name));
+  } catch {
+    return true;
+  }
+}
+
+function expoGoAnchor(
+  route: DemoRouterRoute,
+  value: unknown,
+  allowManaged: boolean,
+): string | undefined {
+  const entry = managedEntry(route);
+  if (entry && !allowManaged) return undefined;
+  const documentUrl = entry?.url ?? directRouteDocumentUrl(route);
+  if (!documentUrl) return undefined;
+  return expoGoAnchorForDocument(documentUrl, value);
 }
 
 function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined {
@@ -544,6 +577,7 @@ export class DemoRouterHistoryBridge
 {
   private attachment: DemoRouterAttachment | undefined;
   private readonly currentEntry: () => DocumentHistoryEntry | undefined;
+  private deferredNativeLinkRouteKey: string | undefined;
   private error: Error | undefined;
   private readonly errorListeners = new Set<DemoRouterErrorListener>();
   private emittedEntry: DocumentHistoryEntry | undefined;
@@ -629,14 +663,42 @@ export class DemoRouterHistoryBridge
       : Object.freeze({ kind: "unmanaged", url: routeDocumentUrl(route) });
   }
 
-  /**
-   * Recovers one exact Expo Go cold-link fragment after Router has consumed it
-   * from route state. Managed history entries never inherit a raw app link.
-   */
-  readInitialAnchor(value: unknown): string | undefined {
+  /** Recovers one exact cold Expo Go fragment before managed history initializes. */
+  readInitialExpoGoAnchor(value: unknown): string | undefined {
     const route = this.focusedAttachment().route;
-    if (managedEntry(route)) return undefined;
-    return initialExpoGoAnchor(route, value);
+    return expoGoAnchor(route, value, false);
+  }
+
+  /**
+   * Recovers one exact Expo Go URL event after Router has consumed its fragment.
+   * Managed entries require the raw URL to retain their canonical query exactly.
+   */
+  readExpoGoAnchor(value: unknown): string | undefined {
+    const route = this.focusedAttachment().route;
+    return expoGoAnchor(route, value, true);
+  }
+
+  /** Restores a same-document Router entry displaced by an exact raw Expo Go URL event. */
+  handleExpoGoLinkEvent(value: unknown): string | undefined {
+    const attachment = this.attachment;
+    const current = this.currentEntry();
+    if (!attachment?.active || !current || this.terminal || this.writeActive) return undefined;
+    const focused = routeState(attachment.navigation);
+    if (focused.route.key !== attachment.routeKey) return undefined;
+    const entry = managedEntry(focused.route);
+    if (entry) return expoGoAnchorForDocument(entry.url, value);
+    const target = expoGoTarget(value);
+    const currentUrl = new URL(current.url);
+    if (
+      !target ||
+      target.pathname !== currentUrl.pathname ||
+      target.search !== currentUrl.search ||
+      !routeMatchesDocumentUrl(focused.route, current.url)
+    ) {
+      return undefined;
+    }
+    this.repairCurrentRoute(attachment, focused, current);
+    return expoGoAnchorForDocument(current.url, value);
   }
 
   reconcile(): void {
@@ -744,6 +806,7 @@ export class DemoRouterHistoryBridge
 
   dispose(): void {
     this.detach(this.attachment);
+    this.deferredNativeLinkRouteKey = undefined;
     this.traversalListeners.clear();
     this.errorListeners.clear();
     this.error = undefined;
@@ -810,12 +873,68 @@ export class DemoRouterHistoryBridge
       return;
     }
     try {
-      if (routeState(attachment.navigation).route.key !== attachment.routeKey) return;
+      const focused = routeState(attachment.navigation);
+      if (focused.route.key !== attachment.routeKey) return;
+      if (this.deferNativeLinkRecovery(attachment, focused.route)) return;
       this.reconcileAttachment(true);
     } catch (error) {
       this.reportError(
         error instanceof Error ? error : new StateError("Demo Router history traversal failed"),
       );
+    }
+  }
+
+  private deferNativeLinkRecovery(attachment: DemoRouterAttachment, route: DemoRouterRoute): boolean {
+    const current = this.currentEntry();
+    if (
+      !current ||
+      hasHistoryMetadata(route) ||
+      !routeMatchesDocumentUrl(route, current.url) ||
+      this.deferredNativeLinkRouteKey === route.key
+    ) {
+      return false;
+    }
+    this.deferredNativeLinkRouteKey = route.key;
+    queueMicrotask(() => {
+      if (this.attachment !== attachment || !attachment.active) return;
+      this.deferredNativeLinkRouteKey = undefined;
+      try {
+        if (routeState(attachment.navigation).route.key !== attachment.routeKey) return;
+        this.reconcileAttachment(true);
+      } catch (error) {
+        this.reportError(
+          error instanceof Error ? error : new StateError("Demo Router history traversal failed"),
+        );
+      }
+    });
+    return true;
+  }
+
+  private repairCurrentRoute(
+    attachment: DemoRouterAttachment,
+    before: Readonly<{ route: DemoRouterRoute; state: DemoRouterState }>,
+    entry: DocumentHistoryEntry,
+  ): void {
+    this.writeActive = true;
+    this.pendingEntry = entry;
+    try {
+      const result = attachment.navigation.setParams(mergedParams(before.route, entry));
+      assertUndefinedResult(result, "Demo Router link recovery failed");
+      this.assertReplace(before, routeState(attachment.navigation), attachment, entry);
+    } catch {
+      try {
+        this.rollback(attachment.navigation, before.state);
+      } catch {
+        this.terminal = true;
+        this.detach(attachment);
+        const error = new StateError("Demo Router link recovery failed closed");
+        this.reportError(error);
+        throw error;
+      }
+      throw new StateError("Demo Router link recovery failed");
+    } finally {
+      this.pendingEntry = undefined;
+      this.writeActive = false;
     }
   }
 
@@ -885,7 +1004,10 @@ export class DemoRouterHistoryBridge
   private detach(attachment: DemoRouterAttachment | undefined): void {
     if (!attachment?.active) return;
     attachment.active = false;
-    if (this.attachment === attachment) this.attachment = undefined;
+    if (this.attachment === attachment) {
+      this.attachment = undefined;
+      this.deferredNativeLinkRouteKey = undefined;
+    }
     const unsubscribe = attachment.unsubscribe;
     attachment.unsubscribe = undefined;
     if (!unsubscribe) return;

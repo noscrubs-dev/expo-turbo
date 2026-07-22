@@ -47,12 +47,12 @@ describe("DemoDocumentAnchorScrollRegistry", () => {
     expect(() => registry.registerTarget("section", { getOffset: () => 0 })).toThrow("disposed");
   });
 
-  test("holds one cold-link target until native layout makes it scrollable", () => {
+  test("holds one Expo Go link target until native layout makes it scrollable", () => {
     const registry = new DemoDocumentAnchorScrollRegistry();
     const calls: Readonly<{ x: number; y: number }>[] = [];
     let targetOffset: number | undefined;
 
-    registry.requestInitialAnchor("section");
+    registry.requestDeferredAnchor("section");
     registry.registerContainer({
       isAvailable: () => true,
       scrollTo: (position) => {
@@ -65,7 +65,7 @@ describe("DemoDocumentAnchorScrollRegistry", () => {
 
     expect(calls).toEqual([]);
     targetOffset = 320;
-    registry.notifyInitialAnchorLayout();
+    registry.notifyDeferredAnchorLayout();
 
     expect(calls).toEqual([{ x: 0, y: 430 }]);
     registry.setDocumentContentOffset(64);

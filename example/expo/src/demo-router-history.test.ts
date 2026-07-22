@@ -203,10 +203,14 @@ class FakeNavigation implements DemoRouterNavigation {
     this.emit();
   }
 
-  replaceFocusedParams(params: Readonly<Record<string, unknown>>): void {
+  replaceFocusedParams(params: Readonly<Record<string, unknown>>, path?: string): void {
     const route = this.state.routes[this.state.index] as DemoRouterRoute;
     const routes = [...this.state.routes];
-    routes[this.state.index] = Object.freeze({ ...route, params: Object.freeze({ ...params }) });
+    routes[this.state.index] = Object.freeze({
+      ...route,
+      ...(path === undefined ? {} : { path }),
+      params: Object.freeze({ ...params }),
+    });
     this.state = Object.freeze({ ...this.state, routes: Object.freeze(routes) });
     this.emit();
   }
@@ -444,16 +448,16 @@ describe("demo Expo Router history bridge", () => {
     expect(() => harness({ source: "wrong" }, "/demo?source=direct")).toThrow(StateError);
   });
 
-  test("recovers only an exact Expo Go cold-link fragment for an unmanaged direct route", () => {
+  test("recovers exact cold and later Expo Go anchors without changing Router ownership", () => {
     const fixture = harness(undefined, "/demo");
 
     expect(
-      fixture.bridge.readInitialAnchor(
+      fixture.bridge.readInitialExpoGoAnchor(
         "exp://127.0.0.1:8081/--/demo#native-anchor-target",
       ),
     ).toBe("native-anchor-target");
     expect(
-      fixture.bridge.readInitialAnchor(
+      fixture.bridge.readInitialExpoGoAnchor(
         "exps://127.0.0.1:8081/--/demo#native%2Danchor%2Dtarget",
       ),
     ).toBe("native-anchor-target");
@@ -464,7 +468,7 @@ describe("demo Expo Router history bridge", () => {
       "exp://127.0.0.1:8081/--/demo#",
       "exp://127.0.0.1:8081/--/demo#%E0%A4%A",
     ]) {
-      expect(fixture.bridge.readInitialAnchor(value)).toBeUndefined();
+      expect(fixture.bridge.readInitialExpoGoAnchor(value)).toBeUndefined();
     }
     fixture.detach();
 
@@ -473,11 +477,79 @@ describe("demo Expo Router history bridge", () => {
       "/demo",
     );
     expect(
-      managed.bridge.readInitialAnchor(
+      managed.bridge.readInitialExpoGoAnchor(
         "exp://127.0.0.1:8081/--/demo#native-anchor-target",
       ),
     ).toBeUndefined();
+    expect(
+      managed.bridge.readExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+    expect(
+      managed.bridge.readExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo?source=wrong#native-anchor-target",
+      ),
+    ).toBeUndefined();
     managed.detach();
+
+    const managedQuery = harness(
+      encodeDemoRouterHistoryEntry(managedEntry("managed-query", 2, GALLERY_QUERY_URL)),
+      "/demo",
+    );
+    expect(
+      managedQuery.bridge.readExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo?source=deep-link&tag=a&tag=b#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+    expect(
+      managedQuery.bridge.readExpoGoAnchor(
+        "exp://127.0.0.1:8081/--/demo?tag=a&tag=b&source=deep-link#native-anchor-target",
+      ),
+    ).toBeUndefined();
+    managedQuery.detach();
+  });
+
+  test("repairs one same-document Router metadata loss caused by a raw Expo Go URL event", async () => {
+    const entry = managedEntry("native-event", 1, GALLERY_URL);
+    const fixture = harness(encodeDemoRouterHistoryEntry(entry), "/demo");
+    initialize(fixture);
+    const errors: (Error | undefined)[] = [];
+    fixture.bridge.subscribeErrors((error) => errors.push(error));
+
+    fixture.navigation.replaceFocusedParams({ [DEMO_ROUTER_PATH_PARAM]: ["demo"] }, "demo");
+
+    expect(
+      fixture.bridge.handleExpoGoLinkEvent(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+    expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)).toEqual(entry);
+
+    await Promise.resolve();
+
+    expect(errors.filter(Boolean)).toEqual([]);
+    expect(fixture.history.current).toEqual(entry);
+    fixture.detach();
+
+    const queryEntry = managedEntry("native-event-query", 2, GALLERY_QUERY_URL);
+    const queryFixture = harness(encodeDemoRouterHistoryEntry(queryEntry), "/demo");
+    initialize(queryFixture, GALLERY_QUERY_URL);
+    queryFixture.navigation.replaceFocusedParams(
+      { [DEMO_ROUTER_PATH_PARAM]: ["demo"] },
+      "demo",
+    );
+
+    expect(
+      queryFixture.bridge.handleExpoGoLinkEvent(
+        "exp://127.0.0.1:8081/--/demo?source=deep-link&tag=a&tag=b#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+    expect(decodeDemoRouterHistoryEntry(queryFixture.navigation.state.routes[0]?.params)).toEqual(
+      queryEntry,
+    );
+    await Promise.resolve();
+    queryFixture.detach();
   });
 
   test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {

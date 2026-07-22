@@ -887,13 +887,13 @@ describe("demo app runtime ownership", () => {
     });
     const navigation = new TestNavigation(undefined, "/demo");
     const scrolls: Readonly<{ x: number; y: number }>[] = [];
-    const initialAnchorRequests: string[] = [];
-    const requestInitialAnchor = runtime.documentAnchorScroll.requestInitialAnchor.bind(
+    const deferredAnchorRequests: string[] = [];
+    const requestDeferredAnchor = runtime.documentAnchorScroll.requestDeferredAnchor.bind(
       runtime.documentAnchorScroll,
     );
-    runtime.documentAnchorScroll.requestInitialAnchor = (id) => {
-      initialAnchorRequests.push(id);
-      requestInitialAnchor(id);
+    runtime.documentAnchorScroll.requestDeferredAnchor = (id) => {
+      deferredAnchorRequests.push(id);
+      requestDeferredAnchor(id);
     };
     const unregisterScroll = runtime.documentAnchorScroll.registerContainer({
       isAvailable: () => true,
@@ -949,9 +949,137 @@ describe("demo app runtime ownership", () => {
       target.props.onLayout({ nativeEvent: { layout: { y: 480 } } });
     });
 
-    expect(initialAnchorRequests).toEqual(["native-anchor-target"]);
+    expect(deferredAnchorRequests).toEqual(["native-anchor-target"]);
     expect(scrolls).toEqual([{ x: 0, y: 584 }]);
     expect(requests).toHaveLength(requestsBeforeAnchor);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterScroll();
+  });
+
+  test("applies repeatable exact Expo Go link events after the gallery root mounts", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation(undefined, "/demo");
+    const scrolls: Readonly<{ x: number; y: number }>[] = [];
+    const deferredAnchorRequests: string[] = [];
+    const requestDeferredAnchor = runtime.documentAnchorScroll.requestDeferredAnchor.bind(
+      runtime.documentAnchorScroll,
+    );
+    runtime.documentAnchorScroll.requestDeferredAnchor = (id) => {
+      deferredAnchorRequests.push(id);
+      requestDeferredAnchor(id);
+    };
+    const unregisterScroll = runtime.documentAnchorScroll.registerContainer({
+      isAvailable: () => true,
+      scrollTo(position) {
+        scrolls.push(position);
+      },
+    });
+    runtime.documentAnchorScroll.setDocumentOffset(40);
+    const routeOwner = (incomingLink?: Readonly<{ sequence: number; url: string }>) =>
+      createElement(
+        DemoRuntimeProvider,
+        { runtime },
+        createElement(
+          DemoRouterRouteOwner,
+          {
+            focused: true,
+            incomingLink,
+            navigation,
+            routeKey: INITIAL_ROUTE_KEY,
+            runtime,
+          },
+          createElement(ExpoTurboRoot),
+        ),
+      );
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(routeOwner(), {
+        createNodeMock(element) {
+          if (element.type === "text-input") return { blur() {}, focus() {} };
+          if (element.type === "view") {
+            return {
+              measureInWindow(
+                listener: (x: number, y: number, width: number, height: number) => void,
+              ) {
+                listener(0, 0, 320, 40);
+              },
+            };
+          }
+          return {};
+        },
+      });
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery link-event fixture did not render");
+    const content = renderer.root.findByProps({ testID: "demo-document-anchor-content" });
+    const target = renderer.root.findByProps({ testID: "demo-anchor-target-native-anchor-target" });
+    act(() => {
+      content.props.onLayout({ nativeEvent: { layout: { y: 64 } } });
+      target.props.onLayout({ nativeEvent: { layout: { y: 480 } } });
+    });
+    const requestsBeforeLink = requests.length;
+    const matchingLink = Object.freeze({
+      sequence: 1,
+      url: "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+    });
+
+    expect(runtime.navigation.readExpoGoAnchor(matchingLink.url)).toBe("native-anchor-target");
+
+    await act(async () => {
+      renderer?.update(routeOwner(matchingLink));
+      await nextTurn();
+    });
+    await act(async () => {
+      renderer?.update(routeOwner(Object.freeze({ ...matchingLink })));
+      await nextTurn();
+    });
+    await act(async () => {
+      renderer?.update(
+        routeOwner(
+          Object.freeze({
+            sequence: 2,
+            url: "exp://127.0.0.1:8081/--/demo/linked#native-anchor-target",
+          }),
+        ),
+      );
+      await nextTurn();
+    });
+    await act(async () => {
+      renderer?.update(
+        routeOwner(
+          Object.freeze({
+            sequence: 3,
+            url: "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+          }),
+        ),
+      );
+      await nextTurn();
+    });
+
+    expect(deferredAnchorRequests).toEqual(["native-anchor-target", "native-anchor-target"]);
+    expect(scrolls).toEqual([
+      { x: 0, y: 584 },
+      { x: 0, y: 584 },
+    ]);
+    expect(requests).toHaveLength(requestsBeforeLink);
     expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
     expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
     expect(navigation.state.routes).toHaveLength(1);
