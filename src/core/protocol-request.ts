@@ -36,6 +36,10 @@ export interface DocumentLinkAnchorResolution {
   readonly url: string
 }
 
+export interface DocumentLinkFragmentResolution extends DocumentLinkAnchorResolution {
+  readonly requestUrl: string
+}
+
 function requestHeaderValue(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -163,6 +167,21 @@ export function resolveDocumentLinkAnchor(
   documentUrl: string,
   context: ExpoTurboErrorContext = {},
 ): DocumentLinkAnchorResolution | undefined {
+  const resolution = resolveDocumentLinkFragment(source, documentUrl, context)
+  if (!resolution) return undefined
+  const current = new URL(resolveProtocolUrl(documentUrl, documentUrl, documentUrl, context).url)
+  current.hash = ""
+  return resolution.requestUrl === current.toString()
+    ? Object.freeze({ targetId: resolution.targetId, url: resolution.url })
+    : undefined
+}
+
+/** Resolves a nonempty HTTP(S) fragment while retaining its fragment-free request URL. */
+export function resolveDocumentLinkFragment(
+  source: string,
+  documentUrl: string,
+  context: ExpoTurboErrorContext = {},
+): DocumentLinkFragmentResolution | undefined {
   assertDocumentLinkSource(source, context)
   try {
     const document = resolveProtocolUrl(documentUrl, documentUrl, documentUrl, context)
@@ -171,9 +190,6 @@ export function resolveDocumentLinkAnchor(
     const hash = target.hash
     if (hash === "") return undefined
     target.hash = ""
-    const current = new URL(document.url)
-    current.hash = ""
-    if (target.toString() !== current.toString()) return undefined
     let targetId: string
     try {
       targetId = decodeURIComponent(hash.slice(1))
@@ -189,7 +205,7 @@ export function resolveDocumentLinkAnchor(
     ) {
       throw new TargetError("Document link anchor is invalid", context)
     }
-    return Object.freeze({ targetId, url: resolution.url })
+    return Object.freeze({ requestUrl: target.toString(), targetId, url: resolution.url })
   } catch (error) {
     if (error instanceof TargetError) throw error
     throw new TargetError("Document link URL is invalid", context)

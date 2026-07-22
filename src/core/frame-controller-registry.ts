@@ -175,9 +175,10 @@ export class FrameControllerRegistry
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new TargetError("Frame visits require an active document URL")
     const resolved = resolveProtocolUrl(url, documentUrl)
-    if (resolved.url.includes("#")) {
-      throw new TargetError("Frame visit fragments require navigation support")
-    }
+    const requestLocation = new URL(resolved.url)
+    const hasFragment = requestLocation.hash !== ""
+    requestLocation.hash = ""
+    const requestUrl = requestLocation.toString()
     const target = resolveFrameTarget(this.session.tree, options.frame, options)
     const targetFrame =
       target.kind === "frame" ? this.session.tree.getElementById(target.frameId) : undefined
@@ -194,6 +195,8 @@ export class FrameControllerRegistry
       return Object.freeze({ kind: "external", target, url: resolved.url })
     }
     if (target.kind === "top") {
+      if (hasFragment)
+        throw new TargetError("Top-level Frame visit fragments require navigation support")
       const topAction = action ?? "advance"
       if (this.topLevelVisits) {
         const outcome = await this.topLevelVisits.visit(resolved.url, {
@@ -234,9 +237,9 @@ export class FrameControllerRegistry
         resolved.url,
         action,
       )
-      load = await visitFrameWithHistory(controller, resolved.url, plan)
+      load = await visitFrameWithHistory(controller, requestUrl, plan)
     } else {
-      load = await controller.visit(resolved.url)
+      load = await controller.visit(requestUrl)
     }
     return Object.freeze({
       ...(action ? { action } : {}),

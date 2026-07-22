@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
 
 import { TargetError } from "./errors"
-import { resolveDocumentLinkAnchor, resolveDocumentLinkUrl } from "./protocol-request"
+import {
+  resolveDocumentLinkAnchor,
+  resolveDocumentLinkFragment,
+  resolveDocumentLinkUrl,
+} from "./protocol-request"
 
 describe("document link URL admission", () => {
   test("admits normalized mail and telephone schemes without weakening protocol URLs", () => {
@@ -113,5 +117,21 @@ describe("document link URL admission", () => {
     expect(() => resolveDocumentLinkAnchor("#%", documentUrl)).toThrow(TargetError)
     expect(() => resolveDocumentLinkAnchor("#%00", documentUrl)).toThrow(TargetError)
     expect(() => resolveDocumentLinkAnchor("#%20", documentUrl)).toThrow(TargetError)
+  })
+
+  test("resolves cross-document fragments with a fragment-free request URL", () => {
+    expect(
+      resolveDocumentLinkFragment(
+        "../next?tab=one#section%2Dtwo",
+        "https://example.test/app/current",
+      ),
+    ).toEqual({
+      requestUrl: "https://example.test/next?tab=one",
+      targetId: "section-two",
+      url: "https://example.test/next?tab=one#section%2Dtwo",
+    })
+    expect(
+      resolveDocumentLinkFragment("../next", "https://example.test/app/current"),
+    ).toBeUndefined()
   })
 })

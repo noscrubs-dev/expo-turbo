@@ -53,6 +53,14 @@ export function createDemoFrameControllers(
                     <DemoForm action="/demo/frame-autofocus">
                       <DemoFormInput id="frame-autofocus-name" autofocus="" label="Autofocused Frame field" name="frame_autofocus_name" value="" />
                     </DemoForm>
+                    <DemoCard title="Frame fragment spacer" style-tokens="space:comfortable">
+                      <DemoText>The response target remains below the newly loaded Frame content.</DemoText>
+                    </DemoCard>
+                    <DemoAnchorTarget id="frame-linked-fragment-target">
+                      <DemoCard title="Loaded Frame fragment target" tone="positive" style-tokens="space:comfortable surface:elevated">
+                        <DemoText>The Frame request omitted the fragment, then native scrolling resolved this target from the committed response.</DemoText>
+                      </DemoCard>
+                    </DemoAnchorTarget>
                   </turbo-frame></Gallery>`
                 : frameId === "nested-lazy-frame"
                   ? `<Gallery><turbo-frame id="nested-lazy-frame">

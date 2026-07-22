@@ -177,6 +177,22 @@ describe("Frame controller registry visits", () => {
     )
   })
 
+  test("retains Frame fragments while requesting the fragment-free resource", async () => {
+    const { registry, requests } = harness()
+
+    const result = await registry.visit("/next?tab=one#section", {
+      elementTarget: "_self",
+      frame: "current",
+    })
+
+    expect(result).toMatchObject({
+      frameId: "current",
+      kind: "frame",
+      url: "https://example.test/next?tab=one#section",
+    })
+    expect(requests.map((request) => request.url)).toEqual(["https://example.test/next?tab=one"])
+  })
+
   test("loads self and parent targets without a parallel request implementation", async () => {
     const { registry, requests, session } = harness()
 
@@ -444,7 +460,7 @@ describe("Frame controller registry visits", () => {
     registry.dispose()
   })
 
-  test("rejects unsafe, credential-bearing, malformed, and fragment visit URLs before dispatch", async () => {
+  test("rejects unsafe, credential-bearing, and malformed visit URLs before dispatch", async () => {
     const sources = [
       "javascript:alert('secret-token')",
       "data:text/plain,secret-token",
@@ -456,9 +472,6 @@ describe("Frame controller registry visits", () => {
       "https://user:secret-token@example.test/private",
       "https://user:secret-token@outside.test/private",
       "http://[secret-token",
-      "/next#section",
-      "/next#",
-      "https://outside.test/next#section",
     ]
 
     for (const source of sources) {

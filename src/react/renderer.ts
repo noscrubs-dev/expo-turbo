@@ -115,6 +115,7 @@ import { type ProtocolDirection, protocolDirection } from "../core/protocol-dire
 import {
   type ExternalDocumentLinkScheme,
   resolveDocumentLinkAnchor,
+  resolveDocumentLinkFragment,
   resolveDocumentLinkUrl,
   resolveProtocolUrl,
 } from "../core/protocol-request"
@@ -1462,7 +1463,12 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         url: anchor.url,
       })
     }
-    const linkUrl = resolveDocumentLinkUrl(href, documentUrl)
+    const fragment = href.includes("#") ? resolveDocumentLinkFragment(href, documentUrl) : undefined
+    const frameFragment =
+      fragment && documentAnchorDestinationScope(session, node, elementTarget) !== undefined
+        ? fragment
+        : undefined
+    const linkUrl = resolveDocumentLinkUrl(frameFragment?.requestUrl ?? href, documentUrl)
     if (linkUrl.kind === "external") {
       if (!navigation) throw new TargetError("Document link delegation requires host navigation")
       await navigation.openExternal(linkUrl.url)
@@ -1532,7 +1538,11 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     }
     if (
       !optedOut &&
-      !dispatchDocumentVisitLinkClick(documentController, nodeKey, disposition.url)
+      !dispatchDocumentVisitLinkClick(
+        documentController,
+        nodeKey,
+        frameFragment?.url ?? disposition.url,
+      )
     ) {
       return Object.freeze({
         kind: "link",
@@ -1550,11 +1560,19 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         })
       }
       const frameAction = linkFrameVisitAction(actionValue)
-      return frames.visit(disposition.url, {
+      const result = await frames.visit(frameFragment?.url ?? disposition.url, {
         ...(frameAction !== undefined ? { action: frameAction } : {}),
         ...(elementTarget !== undefined ? { elementTarget } : {}),
         frame: nearestFrameId,
       })
+      if (frameFragment && result.kind === "frame" && result.load?.status === "completed") {
+        const target = session.tree.getElementById(frameFragment.targetId)
+        if (!target || documentAnchorFrameScope(target) !== result.frameId) {
+          throw new TargetError("Frame link anchor target is unavailable")
+        }
+        requestDocumentAnchorScroll(documentAnchorScroll, frameFragment.targetId)
+      }
+      return result
     }
     if (!optedOut && elementTarget && elementTarget !== "_top") {
       const targetFrame = session.tree.getElementById(elementTarget)
@@ -1565,11 +1583,19 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           })
         }
         const frameAction = linkFrameVisitAction(actionValue)
-        return frames.visit(disposition.url, {
+        const result = await frames.visit(frameFragment?.url ?? disposition.url, {
           ...(frameAction !== undefined ? { action: frameAction } : {}),
           elementTarget,
           frame: elementTarget,
         })
+        if (frameFragment && result.kind === "frame" && result.load?.status === "completed") {
+          const target = session.tree.getElementById(frameFragment.targetId)
+          if (!target || documentAnchorFrameScope(target) !== result.frameId) {
+            throw new TargetError("Frame link anchor target is unavailable")
+          }
+          requestDocumentAnchorScroll(documentAnchorScroll, frameFragment.targetId)
+        }
+        return result
       }
     }
     if (optedOut) {

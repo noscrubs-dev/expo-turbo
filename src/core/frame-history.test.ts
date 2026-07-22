@@ -1465,6 +1465,32 @@ describe("promoted Frame history", () => {
     )
   })
 
+  test("promotes a Frame fragment through history without sending it to the server or Frame src", async () => {
+    const current = historyHarness(async ({ url }) =>
+      response('<turbo-frame id="details"><Section id="section" /></turbo-frame>', { url }),
+    )
+
+    await expect(
+      current.registry.visit("/next?tab=one#section", {
+        action: "advance",
+        frame: "details",
+      }),
+    ).resolves.toMatchObject({
+      action: "advance",
+      kind: "frame",
+      url: "https://example.test/next?tab=one#section",
+    })
+
+    expect(current.frameRequests.map((request) => request.url)).toEqual([
+      "https://example.test/next?tab=one",
+    ])
+    expect(current.history.current?.url).toBe("https://example.test/next?tab=one#section")
+    expect(current.session.tree.document.url).toBe("https://example.test/next?tab=one#section")
+    expect(attributeValue(current.session.tree.getElementById("details") as never, "src")).toBe(
+      "https://example.test/next?tab=one",
+    )
+  })
+
   test("leaves promoted Frame history uncommitted when before-frame-render declines default", async () => {
     const lifecycle = new FrameLifecycle()
     lifecycle.subscribe("before-frame-render", (event) => {

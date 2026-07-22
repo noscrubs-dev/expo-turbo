@@ -55,6 +55,7 @@ interface FrameHistoryCommitPlanState {
   frameCheckpoint?: FrameRequestCheckpoint
   readonly frameScope: object
   readonly history: DocumentHistory
+  readonly historyFragment?: string
   readonly navigation?: NavigationAdapter
   requestedUrl: string
   readonly rootLocation: string
@@ -376,6 +377,10 @@ export function prepareFrameHistoryCommit(
   if (disposition.classification !== "visitable") {
     throw new TargetError("Promoted Frame visits require a root-visitable destination")
   }
+  const requestLocation = new URL(disposition.url)
+  const historyFragment = requestLocation.hash || undefined
+  requestLocation.hash = ""
+  const requestUrl = requestLocation.toString()
   const frameId = attributeValue(frame, "id")
   if (frame.kind !== "frame" || !frameId || session.tree.getElementById(frameId) !== frame) {
     throw new StateError("Frame history requires an exact active Frame", {
@@ -409,7 +414,8 @@ export function prepareFrameHistoryCommit(
     frameScope,
     history,
     ...(navigation ? { navigation } : {}),
-    requestedUrl: disposition.url,
+    ...(historyFragment ? { historyFragment } : {}),
+    requestedUrl: requestUrl,
     rootLocation: disposition.rootLocation,
     session,
     ...(snapshot ? { snapshot } : {}),
@@ -691,7 +697,10 @@ export function frameHistoryDocumentUrl(
 ): string {
   const state = planState(plan)
   validateCandidate(state, session, frame, candidate)
-  return candidate.url
+  if (!state.historyFragment) return candidate.url
+  const url = new URL(candidate.url)
+  url.hash = state.historyFragment
+  return url.toString()
 }
 
 export function commitFrameHistoryPlan(
@@ -712,10 +721,11 @@ export function commitFrameHistoryPlan(
     throw new StateError("Frame history proposal is stale", { frameId })
   }
 
+  const documentUrl = frameHistoryDocumentUrl(plan, session, frame, candidate)
   const proposal =
     state.action === "replace"
-      ? state.history.proposeFrameReplace(state.frameScope, candidate.url)
-      : state.history.proposeFrameAdvance(state.frameScope, candidate.url)
+      ? state.history.proposeFrameReplace(state.frameScope, documentUrl)
+      : state.history.proposeFrameAdvance(state.frameScope, documentUrl)
   const tree = session.tree
   const treeGeneration = session.treeGeneration
   const revision = session.revision
