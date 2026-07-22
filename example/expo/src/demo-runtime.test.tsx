@@ -171,6 +171,7 @@ const LINKED_REPLACEMENT_QUERY_URL = "https://example.test/demo/linked?source=ch
 const GALLERY_QUERY_LINKED_URL =
   "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
 const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
+const PRESS_IN_PREFETCH_URL = "https://example.test/demo/linked?prefetch=reuse";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
@@ -618,6 +619,93 @@ describe("demo app runtime ownership", () => {
     expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
       GALLERY_QUERY_LINKED_URL,
     );
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("reuses the gallery press-in response as the authoritative document", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery press-in reuse fixture did not render");
+    const link = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find(
+        (pressable) =>
+          pressable.findAll(
+            (node) =>
+              String(node.type) === "native-text" &&
+              node.children.includes(
+                "Reuse the native press-in response without a second document request.",
+              ),
+          ).length > 0,
+      );
+    if (!link) throw new Error("gallery press-in reuse link was not rendered");
+
+    act(() => link.props.onPressIn());
+    await act(async () => {
+      await nextTurn();
+      await nextTurn();
+    });
+    expect(requests.filter((request) => request.url === PRESS_IN_PREFETCH_URL)).toHaveLength(1);
+    expect(
+      requests.find((request) => request.url === PRESS_IN_PREFETCH_URL)?.headers["X-Sec-Purpose"],
+    ).toBe("prefetch");
+
+    await act(async () => {
+      link.props.onPressOut();
+      link.props.onPress();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(requests.filter((request) => request.url === PRESS_IN_PREFETCH_URL)).toHaveLength(1);
+    expect(runtime.session.tree.getElementById("press-in-prefetch-reused")).toBeDefined();
+    expect(runtime.session.tree.getElementById("press-in-prefetch-missed")).toBeUndefined();
+    expect(runtime.documentRuntime.history.current?.url).toBe(PRESS_IN_PREFETCH_URL);
 
     await act(async () => {
       renderer?.unmount();
