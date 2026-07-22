@@ -126,9 +126,13 @@ All three operations use the same normalized streamables and append the fixed `:
 
 For a protected resource, configure host-owned credential, subject, authorization, and redacted callback-error hooks during application boot. Include the connection module in the host's chosen Cable connection; it resolves and caches the subject only when a protected subscription asks for it, and does not add an Action Cable connection identifier.
 
+The callback receives the included connection. Use its public `expo_turbo_request` bridge for request headers/cookies because Action Cable keeps `request` private.
+
 ```ruby
 ExpoTurbo::Rails::Cable.configure(
-  credential_extractor: ->(connection) { host_extract_short_lived_credential(connection) },
+  credential_extractor: ->(connection) {
+    host_extract_short_lived_credential(connection.expo_turbo_request)
+  },
   subject_resolver: ->(credential) { host_resolve_subject(credential) },
   subscription_authorizer: ->(subject:, stream_name:, grant:) {
     host_authorize_expo_stream(subject:, stream_name:, grant:)

@@ -1,0 +1,4 @@
+<%= expo_turbo_frame_tag "demo-protected-frame" do %>
+  <DemoText id="demo-protected-stream-message">Waiting for a protected Action Cable broadcast</DemoText>
+  <%= expo_turbo_protected_stream_from ExpoTurboDemo::NativeCableTicket::STREAM, grant: ExpoTurboDemo::NativeCableTicket::GRANT, id: "demo-protected-stream-source" %>
+<% end %>

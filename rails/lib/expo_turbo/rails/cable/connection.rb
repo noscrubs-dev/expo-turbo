@@ -4,6 +4,10 @@ module ExpoTurbo
   module Rails
     module Cable
       module Connection
+        def expo_turbo_request
+          request
+        end
+
         def expo_turbo_subject
           return @expo_turbo_subject if defined?(@expo_turbo_subject_resolved)
 

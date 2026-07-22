@@ -44,6 +44,96 @@ RSpec.describe "standalone demo host" do
     expect(document.at_xpath("//turbo-cable-stream-source")).to be_nil
   end
 
+  it "issues a short-lived header ticket and confines the protected source to its grant" do
+    get "/api/expo_turbo/demo/protected_ticket"
+
+    ticket = response.body
+    configuration = ExpoTurbo::Rails::Cable.configuration
+    connection = Struct.new(:expo_turbo_request).new(
+      Struct.new(:headers).new({ExpoTurboDemo::NativeCableTicket::HEADER => ticket})
+    )
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq("text/plain")
+    expect(response.headers["Cache-Control"]).to eq("no-store")
+    expect(ticket).to be_present
+    expect(ApplicationCable::Connection.ancestors).to include(ExpoTurbo::Rails::Cable::Connection)
+    subject = configuration.subject_resolver.call(configuration.credential_extractor.call(connection))
+    expect(subject).to eq(ExpoTurboDemo::NativeCableTicket::SUBJECT)
+    expect(ExpoTurboDemo::NativeCableTicket.subject_for("forged")).to be_nil
+    expect(
+      ExpoTurboDemo::NativeCableTicket.subject_for(
+        Rails.application.message_verifier(ExpoTurboDemo::NativeCableTicket::VERIFIER_NAME).generate(
+          ExpoTurboDemo::NativeCableTicket::SUBJECT,
+          expires_in: -1.second,
+          purpose: ExpoTurboDemo::NativeCableTicket::VERIFIER_PURPOSE
+        )
+      )
+    ).to be_nil
+    expect(
+      configuration.subscription_authorizer.call(
+        subject:,
+        stream_name: ExpoTurbo::Rails::Streams.stream_name_for(ExpoTurboDemo::NativeCableTicket::STREAM),
+        grant: ExpoTurboDemo::NativeCableTicket::GRANT
+      )
+    ).to be(true)
+    expect(
+      configuration.subscription_authorizer.call(
+        subject:,
+        stream_name: ExpoTurbo::Rails::Streams.stream_name_for(ExpoTurboDemo::NativeCableTicket::STREAM),
+        grant: "forged"
+      )
+    ).to be(false)
+  end
+
+  it "serves a protected Frame descriptor and broadcasts only to its opaque Cable token" do
+    host! "localhost"
+    get "/api/expo_turbo/demo/protected_document"
+
+    document = ExpoTurbo::Rails::Testing.parse_document(response.body)
+    frame = document.at_xpath("//turbo-frame[@id='demo-protected-frame']")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(frame&.[]("src")).to eq("/api/expo_turbo/demo/protected_frame")
+
+    get "/api/expo_turbo/demo/protected_frame", headers: {"Turbo-Frame" => "demo-protected-frame"}
+
+    protected_frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    source = protected_frame.at_xpath("./turbo-cable-stream-source[@id='demo-protected-stream-source']")
+    token = source&.[]("signed-stream-name")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(source&.[]("channel")).to eq(ExpoTurbo::Rails::Cable::ProtectedStreamsChannel.name)
+    expect(source&.[]("data-grant")).to eq(ExpoTurboDemo::NativeCableTicket::GRANT)
+    expect(ExpoTurbo::Rails::Cable.verified_protected_stream_name(token)).to eq(
+      ExpoTurbo::Rails::Streams.stream_name_for(ExpoTurboDemo::NativeCableTicket::STREAM)
+    )
+
+    adapter = ActionCable.server.pubsub
+    deliveries = Queue.new
+    callback = ->(payload) { deliveries << payload }
+    subscribed = Queue.new
+    adapter.subscribe(token, callback, -> { subscribed << :protected })
+    Timeout.timeout(5) { subscribed.pop }
+
+    post "/api/expo_turbo/demo/protected_broadcast"
+
+    payload = Timeout.timeout(5) { deliveries.pop }
+    stream = ExpoTurbo::Rails::Testing.parse_stream_fragment(ActiveSupport::JSON.decode(payload))
+      .at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:no_content)
+    expect(stream["action"]).to eq("replace")
+    expect(stream["target"]).to eq("demo-protected-stream-message")
+    expect(stream.at_xpath("./template/DemoText[@id='demo-protected-stream-message']")&.text)
+      .to eq("Protected broadcast from the standalone Rails demo")
+  ensure
+    adapter&.unsubscribe(token, callback) if callback && token
+    ActionCable.server.restart if adapter
+  end
+
   it "serves standard sibling Stream fragments from confined XML partials" do
     host! "localhost"
     get "/api/expo_turbo/demo/stream"

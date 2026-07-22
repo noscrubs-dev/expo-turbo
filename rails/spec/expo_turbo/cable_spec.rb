@@ -64,6 +64,18 @@ RSpec.describe ExpoTurbo::Rails::Cable::Connection do
     end
   end
 
+  it "exposes the Cable request through a public host callback bridge" do
+    request = Object.new
+    connection = Class.new do
+      include ExpoTurbo::Rails::Cable::Connection
+
+      define_method(:request) { request }
+      private :request
+    end.new
+
+    expect(connection.expo_turbo_request).to be(request)
+  end
+
   it "resolves and caches a subject only when a protected channel asks for it" do
     extraction_count = 0
     resolution_count = 0
