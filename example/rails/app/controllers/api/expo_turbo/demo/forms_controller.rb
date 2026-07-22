@@ -10,6 +10,7 @@ module Api
         MAX_UPLOAD_BYTES = 64 * 1024
         MULTIPART_MEDIA_TYPE = "multipart/form-data"
         TEXT_PLAIN_MEDIA_TYPE = "text/plain"
+        UPLOAD_VALIDATION_ERROR = "Upload a UTF-8 text file from 1 to 64 KiB"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
         UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8", "text/plain; charset=utf-8"].freeze
         TEXT_PLAIN_FORM = /\Aprofile\[first_name\]=(?<first_name>[^\r\n]*)\r\ncommit=(?<commit>save)\r\n\z/
@@ -49,8 +50,8 @@ module Api
           head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
         end
 
-        def render_form(first_name: "", error: nil, status: :ok)
-          render_expo_turbo "demo/forms/show", locals: {error:, first_name:}, status:
+        def render_form(first_name: "", error: nil, status: :ok, upload_error: nil)
+          render_expo_turbo "demo/forms/show", locals: {error:, first_name:, upload_error:}, status:
         end
 
         def render_bad_form_request
@@ -74,7 +75,9 @@ module Api
           submitted = submitted_upload
           return head :bad_request unless submitted
           return head :bad_request unless submitted.fetch(:commit) == "upload"
-          return head :bad_request unless valid_demo_upload?(submitted.fetch(:attachment))
+          unless valid_demo_upload?(submitted.fetch(:attachment))
+            return render_form(upload_error: UPLOAD_VALIDATION_ERROR, status: :unprocessable_content)
+          end
 
           redirect_to api_expo_turbo_demo_form_path, status: :see_other
         end
