@@ -62,6 +62,8 @@ import {
   FrameControllerRegistry,
   FrameLifecycle,
   FrameMissingError,
+  FramePreloadCache,
+  FramePreloader,
   FrameRequestLoader,
   parseExpoTurboDocument,
   renderedNodeTextContent,
@@ -202,6 +204,7 @@ function render(
     frameAutoscroll?: FrameAutoscrollAdapter
     formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
+    framePreloader?: ExpoTurboProviderProps["framePreloader"]
     frames?: FrameControllerCollection
     forms?: ExpoTurboProviderProps["forms"]
     navigation?: NavigationAdapter
@@ -543,6 +546,8 @@ function renderDocumentLinks(
     documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
     documentPrefetchPolicy?: DocumentPrefetchPolicy
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
+    framePreloadCache?: FramePreloadCache
+    framePreloader?: ExpoTurboProviderProps["framePreloader"]
     onError?: (event: ExpoTurboRenderError) => void
     renderError?: (event: ExpoTurboRenderError) => ReactNode
     strict?: boolean
@@ -588,7 +593,8 @@ function renderDocumentLinks(
     tag: "DocumentLink",
   })
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
-  const providerOptions = createProviderOptions?.(session) ?? {}
+  const configuredProviderOptions = createProviderOptions?.(session) ?? {}
+  const { framePreloadCache, ...providerOptions } = configuredProviderOptions
   const formLinks = createFormLinks?.(session)
   const controller = new DocumentVisitController(
     new DocumentRequestLoader(
@@ -607,9 +613,12 @@ function renderDocumentLinks(
   const frames = frameFetch
     ? new FrameControllerRegistry(
         session,
-        new FrameRequestLoader(session, { fetch: frameFetch }, {
-          next: () => `request-frame-link-${++frameRequestId}`,
-        }),
+        new FrameRequestLoader(
+          session,
+          { fetch: frameFetch },
+          { next: () => `request-frame-link-${++frameRequestId}` },
+          framePreloadCache ? { preloadCache: framePreloadCache } : {},
+        ),
         undefined,
         navigation,
         controller,
@@ -683,6 +692,44 @@ function renderDocumentLinks(
   }
 }
 
+function renderPreloadingFrameLinks(
+  xml: string,
+  fetch: (request: TurboRequest) => Promise<TurboResponse>,
+) {
+  const cache = new FramePreloadCache()
+  let requestIds = 0
+  let preloader: FramePreloader | undefined
+  const harness = renderDocumentLinks(
+    xml,
+    async () => {
+      throw new Error("Frame link activation invoked the document transport")
+    },
+    "https://example.test/gallery",
+    undefined,
+    async () => {
+      throw new Error("Frame link activation ignored its preloaded response")
+    },
+    undefined,
+    undefined,
+    (session) => {
+      preloader = new FramePreloader(
+        session,
+        { fetch },
+        { next: () => `frame-preload-${++requestIds}` },
+        cache,
+      )
+      return { framePreloadCache: cache, framePreloader: preloader }
+    },
+  )
+  if (!preloader) throw new Error("Frame preloader was not created")
+  return {
+    cache,
+    harness,
+    preloader,
+    requestIdCount: () => requestIds,
+  }
+}
+
 function renderPreloadingDocumentLinks(
   xml: string,
   fetch: (request: TurboRequest) => Promise<TurboResponse>,
@@ -742,6 +789,56 @@ function renderPreloadingDocumentLinks(
 }
 
 describe("React protocol renderer", () => {
+  test("automatically preloads and consumes an exact marked Frame destination", async () => {
+    const requests: TurboRequest[] = []
+    const { cache, harness, requestIdCount } = renderPreloadingFrameLinks(
+      `<Gallery>
+        <DocumentLink id="preloaded-link" href="/details" data-turbo-frame="details" data-turbo-preload="" />
+        <turbo-frame id="details"><DemoText>Current</DemoText></turbo-frame>
+        <turbo-frame id="other"><DemoText>Other</DemoText></turbo-frame>
+      </Gallery>`,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () =>
+            '<Gallery><turbo-frame id="details"><DemoText id="target">Loaded</DemoText></turbo-frame></Gallery>',
+          url: request.url,
+        }
+      },
+    )
+
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      headers: { "Turbo-Frame": "details", "X-Sec-Purpose": "prefetch" },
+      method: "GET",
+      url: "https://example.test/details",
+    })
+    expect(cache.has("details", "https://example.test/details")).toBe(true)
+    expect(cache.has("other", "https://example.test/details")).toBe(false)
+    expect(harness.session.tree.getElementById("target")).toBeUndefined()
+
+    await act(async () => {
+      await expect(harness.activation("/details")()).resolves.toMatchObject({
+        frameId: "details",
+        kind: "frame",
+        load: { requestId: "frame-preload-1", status: "completed" },
+      })
+    })
+
+    expect(requestIdCount()).toBe(1)
+    expect(requests).toHaveLength(1)
+    expect(harness.session.tree.getElementById("target")).toBeDefined()
+    expect(cache.size).toBe(0)
+    act(() => harness.renderer.unmount())
+  })
+
   test("renders registered nodes while omitting comments, templates, Streams, and sources", async () => {
     const tree = parseExpoTurboDocument(`<Gallery>
       <!-- ignored -->

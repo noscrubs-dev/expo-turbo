@@ -970,8 +970,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoDocumentLink href="#frame-native-anchor-target">
         <DemoText>Jump within this Frame to its registered native anchor target.</DemoText>
       </DemoDocumentLink>
-      <DemoDocumentLink href="/demo/frame-linked#frame-linked-fragment-target">
-        <DemoText>Load this Frame document, then jump to its fragment target.</DemoText>
+      <DemoDocumentLink
+        data-turbo-preload=""
+        href="/demo/frame-linked#frame-linked-fragment-target"
+      >
+        <DemoText>Use the preloaded Frame response, then jump to its fragment target.</DemoText>
       </DemoDocumentLink>
       <DemoCard title="Frame anchor spacer" style-tokens="space:comfortable">
         <DemoText>This spacer keeps the Frame-owned target below its activation link.</DemoText>

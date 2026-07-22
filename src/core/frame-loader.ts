@@ -8,6 +8,7 @@ import {
   ContentTypeError,
   ExpoTurboError,
   FrameMissingError,
+  PropsError,
   RequestError,
   StateError,
   TargetError,
@@ -39,6 +40,7 @@ import {
 } from "./frame-lifecycle"
 import { frameLoadRenderMethod } from "./frame-load-render-method-internal"
 import { recordFrameMorphReloadReport } from "./frame-morph-reload-internal"
+import { FramePreloadCache, type FramePreloadEntry } from "./frame-preload-cache"
 import {
   dispatchFrameLoad,
   dispatchFrameRender,
@@ -172,6 +174,7 @@ export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
   readonly frameLifecycle?: FrameLifecycle
   readonly maxRecurseDepth?: number
+  readonly preloadCache?: FramePreloadCache
   readonly requestLifecycle?: RequestLifecycle
 }
 
@@ -297,6 +300,7 @@ export class FrameRequestLoader {
   private readonly frameLifecycle: FrameLifecycle | undefined
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
+  private readonly preloadCache: FramePreloadCache | undefined
   private readonly requestLifecycle: RequestLifecycle | undefined
   private readonly streamOptions: StreamActionDispatchOptions
 
@@ -311,6 +315,13 @@ export class FrameRequestLoader {
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
+    if (
+      options.preloadCache !== undefined &&
+      !(options.preloadCache instanceof FramePreloadCache)
+    ) {
+      throw new PropsError("Frame request loader preload cache is invalid")
+    }
+    this.preloadCache = options.preloadCache
     this.ownership = destinationRequestOwnership(session)
     this.streamOptions = Object.freeze({
       ...(options.customActions ? { customActions: options.customActions } : {}),
@@ -377,13 +388,22 @@ export class FrameRequestLoader {
     if (frame?.kind !== "frame") {
       throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
     }
+    let cachedPreload: FramePreloadEntry | undefined
+    let firstRequestId: string
+    let firstHeaders: ReturnType<typeof protocolRequestHeaders>
+    try {
+      cachedPreload = this.preloadCache?.take(frameId, url)
+      firstRequestId = cachedPreload?.requestId ?? this.requestIds.next()
+      firstHeaders = protocolRequestHeaders({
+        ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
+        frameId,
+        requestId: firstRequestId,
+      })
+    } catch (error) {
+      if (cachedPreload) this.preloadCache?.put(cachedPreload)
+      throw error
+    }
     const controller = new AbortController()
-    const firstRequestId = this.requestIds.next()
-    const firstHeaders = protocolRequestHeaders({
-      ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
-      frameId,
-      requestId: firstRequestId,
-    })
     const requestIds: string[] = []
     const active: ActiveFrameRequest = {
       controller,
@@ -396,6 +416,7 @@ export class FrameRequestLoader {
       active.lease = this.ownership.claimFrame(frame, controller)
     } catch (error) {
       controller.abort()
+      if (cachedPreload) this.preloadCache?.put(cachedPreload)
       if (this.active.get(frameId) === active) {
         if (previous) this.active.set(frameId, previous)
         else this.active.delete(frameId)
@@ -476,7 +497,20 @@ export class FrameRequestLoader {
           return true
         }
         let response: TurboResponse
-        if (this.requestLifecycle) {
+        const preload = recurseDepth === 0 && requestUrl === url ? cachedPreload : undefined
+        cachedPreload = undefined
+        if (preload) {
+          if (!startRequest(request)) {
+            return this.canceled(frameId, requestIds, responseUrl, active)
+          }
+          response = Object.freeze({
+            headers: Object.freeze({ "Content-Type": EXPO_TURBO_MIME_TYPE }),
+            redirected: preload.redirected,
+            status: preload.responseStatus,
+            text: () => Promise.resolve(preload.body),
+            url: preload.responseUrl,
+          })
+        } else if (this.requestLifecycle) {
           const fetched = await fetchWithRequestLifecycle({
             admission: {
               admitUrl: (candidate) => this.resolveSameOrigin(candidate, requestUrl, frameId),

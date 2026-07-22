@@ -11,6 +11,7 @@ import {
   StreamLifecycle,
   type FormSubmissionController,
   type FrameControllerRegistry,
+  type FramePreloader,
 } from "expo-turbo/core";
 import { ExpoTurboProvider } from "expo-turbo/react";
 import {
@@ -69,6 +70,7 @@ export interface DemoRuntime {
   readonly forms: DocumentFormControls;
   readonly focus: DemoFocusRegistry;
   readonly frames: FrameControllerRegistry;
+  readonly framePreloader: FramePreloader;
   readonly navigation: DemoRouterHistoryBridge;
   readonly refresh: DocumentRefreshController;
   readonly session: DocumentSession;
@@ -139,7 +141,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   const visibility = new DemoVisibilityRegistry();
   const submissionLifecycle = new FormSubmissionLifecycle();
   const streamLifecycle = new StreamLifecycle();
-  const frames = createDemoFrameControllers(
+  const frameRuntime = createDemoFrameControllers(
     session,
     navigation,
     documentRuntime.controller,
@@ -150,6 +152,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     streamLifecycle,
     visibility,
   );
+  const { frames, preloader: framePreloader } = frameRuntime;
   const formController = createDemoFormController(
     session,
     refresh,
@@ -191,6 +194,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     forms,
     focus,
     frames,
+    framePreloader,
     navigation,
     refresh,
     session,
@@ -267,6 +271,7 @@ export function DemoRuntimeProvider({
                   documentRefreshScroll={runtime.documentRefreshScroll}
                   frameAutoscroll={runtime.frameAutoscroll}
                   frameComponent={DemoFrameBoundary}
+                  framePreloader={runtime.framePreloader}
                   formComponent={DemoFormBoundary}
                   formAnnouncements={DEMO_FORM_ANNOUNCEMENTS}
                   formLinks={runtime.formLinks}

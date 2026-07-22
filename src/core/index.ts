@@ -93,6 +93,8 @@ export {
   type FrameVisitControlReloadRequest,
 } from "./frame-lifecycle"
 export * from "./frame-loader"
+export * from "./frame-preload-cache"
+export * from "./frame-preloader"
 export * from "./frame-reconnect-reconciler"
 export * from "./frames"
 export * from "./inspector"
