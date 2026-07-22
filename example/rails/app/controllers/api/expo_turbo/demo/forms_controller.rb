@@ -11,9 +11,7 @@ module Api
         MULTIPART_MEDIA_TYPE = "multipart/form-data"
         TEXT_PLAIN_MEDIA_TYPE = "text/plain"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
-        UPLOAD_CONTENT = "Expo Turbo native multipart upload\n"
-        UPLOAD_FILENAME = "expo-turbo-upload.txt"
-        UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8"].freeze
+        UPLOAD_MEDIA_TYPES = ["text/plain", "text/plain;charset=utf-8", "text/plain; charset=utf-8"].freeze
         TEXT_PLAIN_FORM = /\Aprofile\[first_name\]=(?<first_name>[^\r\n]*)\r\ncommit=(?<commit>save)\r\n\z/
 
         rescue_from ActionController::BadRequest, ActionController::ParameterMissing, with: :render_bad_form_request
@@ -76,7 +74,7 @@ module Api
           submitted = submitted_upload
           return head :bad_request unless submitted
           return head :bad_request unless submitted.fetch(:commit) == "upload"
-          return head :bad_request unless exact_demo_upload?(submitted.fetch(:attachment))
+          return head :bad_request unless valid_demo_upload?(submitted.fetch(:attachment))
 
           redirect_to api_expo_turbo_demo_form_path, status: :see_other
         end
@@ -88,15 +86,27 @@ module Api
           }
         end
 
-        def exact_demo_upload?(attachment)
+        def valid_demo_upload?(attachment)
           return false unless attachment.is_a?(ActionDispatch::Http::UploadedFile)
-          return false unless attachment.original_filename == UPLOAD_FILENAME
-          return false unless UPLOAD_MEDIA_TYPES.include?(attachment.content_type)
-          return false unless attachment.size.is_a?(Integer) && attachment.size.between?(0, MAX_UPLOAD_BYTES)
+          return false unless valid_upload_filename?(attachment.original_filename)
+          return false unless UPLOAD_MEDIA_TYPES.include?(attachment.content_type.to_s.downcase)
+          return false unless attachment.size.is_a?(Integer) && attachment.size.between?(1, MAX_UPLOAD_BYTES)
 
           body = attachment.read
           attachment.rewind
-          body == UPLOAD_CONTENT
+          body.bytesize == attachment.size && valid_upload_body?(body)
+        end
+
+        def valid_upload_filename?(filename)
+          return false unless filename.is_a?(String) && filename.bytesize.between?(1, 255)
+
+          value = filename.dup.force_encoding(Encoding::UTF_8)
+          value.valid_encoding? && value.match?(/\A[^\\\/\u0000-\u001F\u007F]+\z/)
+        end
+
+        def valid_upload_body?(body)
+          value = body.dup.force_encoding(Encoding::UTF_8)
+          value.valid_encoding?
         end
 
         def parse_text_plain_form

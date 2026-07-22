@@ -286,7 +286,7 @@ RSpec.describe "standalone demo host" do
     expect(response.body).to be_empty
   end
 
-  it "accepts only the bounded fixed native multipart upload" do
+  it "accepts only bounded UTF-8 text/plain native multipart uploads and discards their bytes" do
     host! "localhost"
     headers = {"Turbo-Frame" => "demo-form-frame"}
 
@@ -315,7 +315,7 @@ RSpec.describe "standalone demo host" do
 
     Tempfile.create(["expo-turbo-upload", ".txt"]) do |file|
       file.binmode
-      file.write("forged")
+      file.write("picked from Files\n")
       file.rewind
 
       post "/api/expo_turbo/demo/form",
@@ -326,7 +326,54 @@ RSpec.describe "standalone demo host" do
               file.path,
               "text/plain",
               true,
-              original_filename: "expo-turbo-upload.txt"
+              original_filename: "picked-notes.txt"
+            )
+          }
+        },
+        headers: headers
+
+      expect(response).to have_http_status(:see_other)
+      expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
+    end
+
+    Tempfile.create(["expo-turbo-upload", ".txt"]) do |file|
+      file.binmode
+      file.write("x" * (64 * 1024 + 1))
+      file.rewind
+
+      post "/api/expo_turbo/demo/form",
+        params: {
+          commit: "upload",
+          profile: {
+            attachment: Rack::Test::UploadedFile.new(
+              file.path,
+              "text/plain",
+              true,
+              original_filename: "too-large.txt"
+            )
+          }
+        },
+        headers: headers
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.body).to be_empty
+      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    end
+
+    Tempfile.create(["expo-turbo-upload", ".bin"]) do |file|
+      file.binmode
+      file.write("picked from Files\n")
+      file.rewind
+
+      post "/api/expo_turbo/demo/form",
+        params: {
+          commit: "upload",
+          profile: {
+            attachment: Rack::Test::UploadedFile.new(
+              file.path,
+              "application/octet-stream",
+              true,
+              original_filename: "picked-notes.txt"
             )
           }
         },
