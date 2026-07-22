@@ -110,6 +110,15 @@ const AUTOFOCUS_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
 </Gallery>`;
 
+const GENERIC_ROUTE_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="generic-route-document" title="Generic nested Router path reached" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The standalone host safely mapped this document's nested /demo/routes/ios-proof/details path into Expo Router catch-all segments while the opaque history entry retained its repeated and empty query values.</DemoText>
+  </DemoCard>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
 const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 export const DEMO_CLOCK: ClockAdapter = {
@@ -151,6 +160,8 @@ export function createDemoFixtureFetchAdapter(
         xml = HISTORY_SCROLL_DOCUMENT;
       } else if (url.pathname === "/demo/linked" && url.search === "?autofocus=scroll") {
         xml = AUTOFOCUS_SCROLL_DOCUMENT;
+      } else if (url.pathname === "/demo/routes/ios-proof/details") {
+        xml = GENERIC_ROUTE_DOCUMENT;
       } else {
         xml = LINKED_DOCUMENT;
       }

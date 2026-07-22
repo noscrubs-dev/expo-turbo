@@ -937,6 +937,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked?autofocus=scroll">
     <DemoText>Open the root autofocus-scroll proof and focus the measured native field below the viewport.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/routes/ios-proof/details?source=gallery&amp;tag=a&amp;tag=b&amp;empty=">
+    <DemoText>Open a nested generic Router path and retain its ordered query metadata through native history.</DemoText>
+  </DemoDocumentLink>
   <DemoDocumentLink href="#native-anchor-target">
     <DemoText>Jump to the registered native anchor target without a request or Router history write.</DemoText>
   </DemoDocumentLink>
