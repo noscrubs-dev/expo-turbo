@@ -9,6 +9,7 @@ class ApplicationController < ActionController::API
       "DemoFormCheckbox" => {},
       "DemoFormFile" => {},
       "DemoFormInput" => {},
+      "DemoFormPlanSelect" => {},
       "DemoFormSubmitter" => {},
       "Gallery" => {},
       "DemoText" => {}

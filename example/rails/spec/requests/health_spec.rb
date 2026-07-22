@@ -216,6 +216,12 @@ RSpec.describe "standalone demo host" do
     expect(consent&.[]("checked")).to be_nil
     expect(consent_form&.at_xpath("./DemoFormSubmitter[@id='demo-form-consent']")&.[]("value"))
       .to eq("save-consent")
+    plan_form = frame.at_xpath("./DemoForm[@id='demo-plan-form']")
+    plan = plan_form&.at_xpath("./DemoFormPlanSelect[@id='demo-form-plan']")
+    expect(plan&.[]("name")).to eq("profile[plan]")
+    expect(plan&.[]("selected")).to eq("none")
+    expect(plan_form&.at_xpath("./DemoFormSubmitter[@id='demo-form-plan-submit']")&.[]("value"))
+      .to eq("save-plan")
 
     get "/api/expo_turbo/demo/form"
     expect(response).to have_http_status(:bad_request)
@@ -325,6 +331,48 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:unprocessable_content)
     expect(consent&.[]("checked")).to be_nil
     expect(consent&.[]("error")).to eq("Accept the demo terms before saving")
+  end
+
+  it "keeps an unselected native plan absent and returns matching 422 XML" do
+    host! "localhost"
+    headers = {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+
+    post "/api/expo_turbo/demo/form", params: {commit: "save-plan"}, headers: headers
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    plan = frame.at_xpath(".//DemoFormPlanSelect[@id='demo-form-plan']")
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(plan&.[]("selected")).to eq("none")
+    expect(plan&.[]("error")).to eq("Choose a supported demo plan")
+
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "save-plan", profile: {plan: "pro"}},
+      headers: headers
+
+    expect(response).to have_http_status(:see_other)
+    expect(response.headers["Location"]).to eq("http://localhost/api/expo_turbo/demo/form")
+
+    get "/api/expo_turbo/demo/form", headers: {"Turbo-Frame" => "demo-form-frame"}
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    plan = frame.at_xpath(".//DemoFormPlanSelect[@id='demo-form-plan']")
+
+    expect(response).to have_http_status(:ok)
+    expect(plan&.[]("selected")).to eq("none")
+    expect(plan&.[]("error")).to be_nil
+
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "save-plan", profile: {plan: "forged"}},
+      headers: headers
+
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    plan = frame.at_xpath(".//DemoFormPlanSelect[@id='demo-form-plan']")
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(plan&.[]("selected")).to eq("none")
+    expect(plan&.[]("error")).to eq("Choose a supported demo plan")
   end
 
   it "accepts only bounded UTF-8 text/plain native multipart uploads and discards their bytes" do
