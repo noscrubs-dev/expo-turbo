@@ -3,6 +3,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ClockAdapter, FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters";
 import {
+  attributeValue,
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
   isElement,
@@ -169,6 +170,8 @@ const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
+const SAME_PATH_REPLACE_URL = "https://example.test/demo/linked?replace=morph";
+const SAME_PATH_REPLACED_URL = "https://example.test/demo/linked?replace=morph&revision=next";
 const GENERIC_ROUTE_URL =
   "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
 const DIRECT_QUERY_PATH =
@@ -1269,6 +1272,117 @@ describe("demo app runtime ownership", () => {
       await Promise.resolve();
     });
     unregisterScroll();
+  });
+
+  test("morphs a same-path replace from root metadata and resets the gallery root scroll", async () => {
+    nativeScrollCalls.length = 0;
+    nativeRootScrollContainerIds.length = 0;
+    nextNativeScrollContainerId = 0;
+    const runtime = createDemoRuntime();
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+    const routeTree = (routeKey: string) =>
+      createElement(
+        DemoRuntimeProvider,
+        { runtime },
+        createElement(
+          DemoRouterRouteOwner,
+          { focused: true, navigation, routeKey, runtime },
+          createElement(DemoCompatibilityGallery),
+        ),
+      );
+
+    try {
+      await act(async () => {
+        renderer = create(routeTree(INITIAL_ROUTE_KEY), {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        });
+        await nextTurn();
+        await nextTurn();
+      });
+      if (!renderer) throw new Error("same-path replace gallery did not render");
+
+      await act(async () => {
+        await runtime.documentRuntime.controller.visit(SAME_PATH_REPLACE_URL);
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(runtime.session.tree.document.url).toBe(SAME_PATH_REPLACE_URL);
+      const scenarioRouteKey = navigation.state.routes.at(1)?.key;
+      if (!scenarioRouteKey) throw new Error("same-path replace scenario route was not pushed");
+
+      await act(async () => {
+        renderer?.update(routeTree(scenarioRouteKey));
+        await nextTurn();
+        await nextTurn();
+      });
+      const scenarioScrollContainerId = nativeRootScrollContainerIds.at(-1);
+      if (!scenarioScrollContainerId) {
+        throw new Error("same-path replace scenario root ScrollView did not mount");
+      }
+      const sourceTree = runtime.session.tree;
+      const sourceCard = sourceTree.getElementById("same-path-replace-card");
+      const sourceCardIdentity = runtime.session.getNodeSnapshot("id:same-path-replace-card")?.identity;
+      if (!sourceCard || !sourceCardIdentity) {
+        throw new Error("same-path replace source card was not retained for proof");
+      }
+      const replaceLink = renderer.root
+        .findAll((node) => String(node.type) === "pressable")
+        .find((pressable) =>
+          pressable.findAll(
+            (node) =>
+              String(node.type) === "native-text" &&
+              node.children.includes(
+                "Commit a same-path replace morph and reset the owning root scroll.",
+              ),
+          ).length > 0,
+        );
+      if (!replaceLink) throw new Error("same-path replace action link was not rendered");
+
+      nativeScrollCalls.length = 0;
+      await act(async () => {
+        replaceLink.props.onPress();
+        await nextTurn();
+        await nextTurn();
+        await nextTurn();
+      });
+
+      expect(runtime.session.tree.document.url).toBe(SAME_PATH_REPLACED_URL);
+      expect(runtime.session.tree).toBe(sourceTree);
+      expect(runtime.session.tree.getElementById("same-path-replace-card")).toBe(sourceCard);
+      expect(runtime.session.getNodeSnapshot("id:same-path-replace-card")?.identity).toBe(
+        sourceCardIdentity,
+      );
+      const committedCard = runtime.session.tree.getElementById("same-path-replace-card");
+      if (!committedCard) throw new Error("same-path replace result card was not rendered");
+      expect(attributeValue(committedCard, "title")).toBe("Same-path replace morph committed");
+      expect(runtime.documentRuntime.history.current?.url).toBe(SAME_PATH_REPLACED_URL);
+      expect(navigation.state.routes).toHaveLength(2);
+      expect(navigation.state.index).toBe(1);
+      expect(nativeScrollCalls).toEqual([
+        {
+          containerId: scenarioScrollContainerId,
+          options: { animated: false, x: 0, y: 0 },
+        },
+      ]);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+    }
   });
 
   test("direct disposal releases every runtime-owned state surface", () => {

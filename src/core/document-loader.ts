@@ -16,7 +16,11 @@ import {
   markDocumentContentTypeError,
   markDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
-import { documentCachePolicy } from "./document-metadata"
+import {
+  type DocumentRefreshSettings,
+  documentCachePolicy,
+  documentRefreshSettings,
+} from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
 import {
   discardDocumentRefreshScroll,
@@ -239,6 +243,10 @@ export class DocumentRequestLoader {
 
   get currentUrl(): string | undefined {
     return this.session.tree.document.url
+  }
+
+  get currentRefreshSettings(): DocumentRefreshSettings {
+    return documentRefreshSettings(this.session.tree)
   }
 
   get documentClaimSerial(): number {

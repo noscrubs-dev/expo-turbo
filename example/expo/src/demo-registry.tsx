@@ -934,6 +934,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked?refresh=scroll">
     <DemoText>Open a Refresh Stream scenario and reset the owning root scroll after its canonical update.</DemoText>
   </DemoDocumentLink>
+  <DemoDocumentLink href="/demo/linked?replace=morph">
+    <DemoText>Open the same-path replace morph and root-scroll proof.</DemoText>
+  </DemoDocumentLink>
   <DemoDocumentLink href="/demo/linked?autofocus=scroll">
     <DemoText>Open the root autofocus-scroll proof and focus the measured native field below the viewport.</DemoText>
   </DemoDocumentLink>

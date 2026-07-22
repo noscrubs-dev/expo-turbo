@@ -4819,6 +4819,125 @@ describe("Document visit controller", () => {
     ])
   })
 
+  test("uses root-configured morph and reset semantics for a fragment-free same-path replace", async () => {
+    const history = historyFixture()
+    const snapshotCache = new DocumentSnapshotCache()
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = harness({
+      documentXml:
+        '<Gallery id="gallery" data-turbo-root="/" data-turbo-refresh-method="morph"><Panel id="retained" tone="before"/><Removed id="removed"/></Gallery>',
+      history: history.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    const releaseRenderer = retainDocumentRenderer(current.session)
+    const destination = "https://example.test/current?revision=next"
+    snapshotCache.put(
+      destination,
+      parseExpoTurboDocument('<Gallery id="cached"><Preview id="preview" /></Gallery>', {
+        url: destination,
+      }),
+    )
+    const tree = current.session.tree
+    const retained = tree.getElementById("retained")
+    const retainedIdentity = current.session.getNodeSnapshot("id:retained")?.identity
+    const renderMethods: string[] = []
+    lifecycle.subscribe("render", (event) => {
+      renderMethods.push(event.detail.renderMethod)
+    })
+
+    const refreshing = current.controller.visit("/current?revision=next", { action: "replace" })
+    expect(current.pending).toHaveLength(1)
+    expect(current.pending[0]?.request.url).toBe(destination)
+    expect(current.session.tree).toBe(tree)
+    expect(current.controller.state.previewVisible).toBe(false)
+
+    const renderRevision = documentRenderLifecycleRevision(current.session)
+    current.pending[0]?.resolve(
+      response(
+        '<Gallery id="gallery" data-turbo-root="/" data-turbo-refresh-method="morph"><Panel id="retained" tone="after"/><Added id="added"/></Gallery>',
+        { url: destination },
+      ),
+    )
+
+    await waitForDocumentRenderSeal(current.session, renderRevision)
+    const acknowledgement = acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )
+    expect(acknowledgement?.finish()).toBe(true)
+
+    expect(await refreshing).toMatchObject({ status: "committed", url: destination })
+    expect(current.session.tree).toBe(tree)
+    expect(current.session.tree.getElementById("retained")).toBe(retained)
+    expect(current.session.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
+    const currentRetained = current.session.tree.getElementById("retained")
+    if (!currentRetained) throw new Error("Expected retained same-path refresh fixture")
+    expect(attributeValue(currentRetained, "tone")).toBe("after")
+    expect(current.session.tree.getElementById("removed")).toBeUndefined()
+    expect(current.session.tree.getElementById("added")).toBeDefined()
+    expect(renderMethods).toEqual(["morph"])
+    expect(
+      consumeDocumentRefreshScroll(
+        current.session,
+        current.session.tree.document,
+        current.session.treeGeneration,
+      ),
+    ).toBe(true)
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: destination,
+        },
+        method: "replace",
+      },
+    ])
+    releaseRenderer()
+  })
+
+  test("preserves root scroll for a fragment-free same-path replace only when configured", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = harness({
+      documentXml:
+        '<Gallery data-turbo-root="/" data-turbo-refresh-scroll="preserve"><Panel id="before" /></Gallery>',
+      history: historyFixture().history,
+      visitLifecycle: lifecycle,
+    })
+    const releaseRenderer = retainDocumentRenderer(current.session)
+    const destination = "https://example.test/current?revision=preserved"
+    const refreshing = current.controller.visit("/current?revision=preserved", {
+      action: "replace",
+    })
+    const renderRevision = documentRenderLifecycleRevision(current.session)
+    current.pending[0]?.resolve(
+      response('<Gallery data-turbo-root="/"><Panel id="after" /></Gallery>', {
+        url: destination,
+      }),
+    )
+
+    await waitForDocumentRenderSeal(current.session, renderRevision)
+    const acknowledgement = acknowledgeDocumentRender(
+      current.session,
+      current.session.tree.document,
+      current.session.treeGeneration,
+      current.session.revision,
+    )
+    expect(acknowledgement?.finish()).toBe(true)
+    expect(await refreshing).toMatchObject({ status: "committed", url: destination })
+    expect(
+      consumeDocumentRefreshScroll(
+        current.session,
+        current.session.tree.document,
+        current.session.treeGeneration,
+      ),
+    ).toBe(false)
+    releaseRenderer()
+  })
+
   test("replaces error documents after a morph refresh and reports replacement rendering", async () => {
     for (const candidate of [
       { classification: "client-error", status: 422 },
