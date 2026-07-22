@@ -61,6 +61,7 @@ class DemoRouterRouteGate {
 export interface DemoRouterRouteOwnerProps {
   readonly children?: ReactNode;
   readonly focused: boolean;
+  readonly initialUrl?: string;
   readonly navigation: DemoRouterNavigation;
   readonly routeKey: string;
   readonly runtime: DemoRuntime;
@@ -68,12 +69,15 @@ export interface DemoRouterRouteOwnerProps {
 
 function ActiveDemoRouterRouteOwner({
   children,
+  initialUrl,
   navigation,
   routeKey,
   runtime,
 }: Omit<DemoRouterRouteOwnerProps, "focused">) {
   const gate = useMemo(() => new DemoRouterRouteGate(routeKey), [routeKey]);
   const owner = useSyncExternalStore(gate.subscribe, gate.snapshot, gate.snapshot);
+  const initialAnchor = useRef<string | undefined>(undefined);
+  const initialAnchorRequested = useRef(false);
   const reconciled = useRef(false);
   const markRootReady = useCallback(() => {
     if (reconciled.current) return;
@@ -86,6 +90,7 @@ function ActiveDemoRouterRouteOwner({
           ? error
           : new StateError("Demo Router history reconciliation failed"),
       );
+      return;
     }
   }, [runtime.navigation]);
 
@@ -102,6 +107,7 @@ function ActiveDemoRouterRouteOwner({
     const initialize = async (): Promise<void> => {
       try {
         detach = runtime.navigation.attach(navigation, routeKey, { deferReconciliation: true });
+        initialAnchor.current = runtime.navigation.readInitialAnchor(initialUrl);
         let documentUrl = runtime.session.tree.document.url;
         if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");
         const routeState = runtime.navigation.readRouteState();
@@ -130,6 +136,11 @@ function ActiveDemoRouterRouteOwner({
             runtime.navigation.readInitialState(documentUrl),
           );
         }
+        const targetId = initialAnchor.current;
+        if (targetId && !initialAnchorRequested.current) {
+          initialAnchorRequested.current = true;
+          runtime.documentAnchorScroll.requestInitialAnchor(targetId);
+        }
         initialized = true;
         runtime.navigation.clearError();
         if (active) gate.ready(routeKey);
@@ -150,7 +161,7 @@ function ActiveDemoRouterRouteOwner({
       unsubscribeErrors();
       detach?.();
     };
-  }, [gate, navigation, routeKey, runtime]);
+  }, [gate, initialUrl, navigation, routeKey, runtime]);
 
   if (owner.routeKey !== routeKey || owner.status === "pending") return null;
   if (owner.status === "error") {
@@ -171,6 +182,7 @@ function ActiveDemoRouterRouteOwner({
 export function DemoRouterRouteOwner({
   children,
   focused,
+  initialUrl,
   navigation,
   routeKey,
   runtime,
@@ -179,6 +191,7 @@ export function DemoRouterRouteOwner({
   return (
     <ActiveDemoRouterRouteOwner
       key={routeKey}
+      initialUrl={initialUrl}
       navigation={navigation}
       routeKey={routeKey}
       runtime={runtime}

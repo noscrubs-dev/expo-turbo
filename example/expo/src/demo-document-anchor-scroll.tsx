@@ -29,6 +29,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
   private disposed = false;
   private documentContentOffset: number | undefined;
   private documentOffset: number | undefined;
+  private pendingInitialTarget: string | undefined;
   private readonly targets = new Map<string, DemoDocumentAnchorScrollTarget>();
 
   dispose(): void {
@@ -37,6 +38,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     this.container = undefined;
     this.documentContentOffset = undefined;
     this.documentOffset = undefined;
+    this.pendingInitialTarget = undefined;
     this.targets.clear();
   }
 
@@ -49,6 +51,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       throw new TypeError("Demo document anchor scroll container is incomplete");
     }
     this.container = container;
+    this.flushInitialAnchor();
     return () => {
       if (this.container === container) this.container = undefined;
     };
@@ -64,30 +67,27 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       throw new Error(`Demo document anchor target ${id} is already registered`);
     }
     this.targets.set(id, target);
+    this.flushInitialAnchor();
     return () => {
       if (this.targets.get(id) === target) this.targets.delete(id);
     };
   }
 
   scrollTo(id: string, alignment: "start"): undefined {
-    if (alignment !== "start" || this.disposed) return undefined;
-    const container = this.container;
-    const target = this.targets.get(id);
-    if (
-      !container?.isAvailable() ||
-      !target ||
-      this.documentOffset === undefined ||
-      this.documentContentOffset === undefined
-    ) {
-      return undefined;
-    }
-    const targetOffset = target.getOffset();
-    if (!isNonNegativeFinite(targetOffset)) return undefined;
-    container.scrollTo({
-      x: 0,
-      y: this.documentOffset + this.documentContentOffset + targetOffset,
-    });
+    if (alignment !== "start") return undefined;
+    this.scrollToTarget(id);
     return undefined;
+  }
+
+  /** Retains one exact cold-link request until the root and target finish native layout. */
+  requestInitialAnchor(id: string): void {
+    if (this.disposed || id.trim() === "") return;
+    this.pendingInitialTarget = id;
+    this.flushInitialAnchor();
+  }
+
+  notifyInitialAnchorLayout(): void {
+    this.flushInitialAnchor();
   }
 
   setDocumentOffset(offset: number | undefined): void {
@@ -96,6 +96,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       throw new TypeError("Demo document anchor offsets must be finite nonnegative values");
     }
     this.documentOffset = offset;
+    this.flushInitialAnchor();
   }
 
   setDocumentContentOffset(offset: number | undefined): void {
@@ -104,6 +105,34 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
       throw new TypeError("Demo document anchor offsets must be finite nonnegative values");
     }
     this.documentContentOffset = offset;
+    this.flushInitialAnchor();
+  }
+
+  private flushInitialAnchor(): void {
+    const targetId = this.pendingInitialTarget;
+    if (!targetId || !this.scrollToTarget(targetId)) return;
+    this.pendingInitialTarget = undefined;
+  }
+
+  private scrollToTarget(id: string): boolean {
+    if (this.disposed) return false;
+    const container = this.container;
+    const target = this.targets.get(id);
+    if (
+      !container?.isAvailable() ||
+      !target ||
+      this.documentOffset === undefined ||
+      this.documentContentOffset === undefined
+    ) {
+      return false;
+    }
+    const targetOffset = target.getOffset();
+    if (!isNonNegativeFinite(targetOffset)) return false;
+    container.scrollTo({
+      x: 0,
+      y: this.documentOffset + this.documentContentOffset + targetOffset,
+    });
+    return true;
   }
 
   private assertActive(): void {
@@ -163,8 +192,9 @@ export function useDemoDocumentAnchorTarget(id: string): Readonly<{
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
       target.setOffset(event.nativeEvent.layout.y);
+      anchorScroll.notifyInitialAnchorLayout();
     },
-    [target],
+    [anchorScroll, target],
   );
   return useMemo(() => Object.freeze({ onLayout }), [onLayout]);
 }

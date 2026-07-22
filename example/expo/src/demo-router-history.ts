@@ -347,6 +347,56 @@ function directRouteDocumentUrl(route: DemoRouterRoute): string | undefined {
   return url.href;
 }
 
+function initialExpoGoAnchor(route: DemoRouterRoute, value: unknown): string | undefined {
+  if (typeof value !== "string" || value === "") return undefined;
+  const documentUrl = directRouteDocumentUrl(route);
+  if (!documentUrl) return undefined;
+  let source: URL;
+  try {
+    source = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (
+    (source.protocol !== "exp:" && source.protocol !== "exps:") ||
+    source.username !== "" ||
+    source.password !== "" ||
+    !source.pathname.startsWith("/--/") ||
+    source.hash === ""
+  ) {
+    return undefined;
+  }
+  let target: URL;
+  try {
+    target = new URL(`${source.pathname.slice(3)}${source.search}${source.hash}`, "https://example.test");
+  } catch {
+    return undefined;
+  }
+  const current = new URL(documentUrl);
+  if (target.pathname !== current.pathname) return undefined;
+  try {
+    directRouteQuery(route, target);
+  } catch {
+    return undefined;
+  }
+  let targetId: string;
+  try {
+    targetId = decodeURIComponent(target.hash.slice(1));
+  } catch {
+    return undefined;
+  }
+  if (
+    targetId.trim() === "" ||
+    [...targetId].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+    })
+  ) {
+    return undefined;
+  }
+  return targetId;
+}
+
 function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined {
   const entry = decodeDemoRouterHistoryEntry(route.params);
   if (!entry) return undefined;
@@ -577,6 +627,16 @@ export class DemoRouterHistoryBridge
     return entry
       ? Object.freeze({ entry, kind: "managed" })
       : Object.freeze({ kind: "unmanaged", url: routeDocumentUrl(route) });
+  }
+
+  /**
+   * Recovers one exact Expo Go cold-link fragment after Router has consumed it
+   * from route state. Managed history entries never inherit a raw app link.
+   */
+  readInitialAnchor(value: unknown): string | undefined {
+    const route = this.focusedAttachment().route;
+    if (managedEntry(route)) return undefined;
+    return initialExpoGoAnchor(route, value);
   }
 
   reconcile(): void {

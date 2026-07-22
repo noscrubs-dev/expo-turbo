@@ -444,6 +444,42 @@ describe("demo Expo Router history bridge", () => {
     expect(() => harness({ source: "wrong" }, "/demo?source=direct")).toThrow(StateError);
   });
 
+  test("recovers only an exact Expo Go cold-link fragment for an unmanaged direct route", () => {
+    const fixture = harness(undefined, "/demo");
+
+    expect(
+      fixture.bridge.readInitialAnchor(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBe("native-anchor-target");
+    expect(
+      fixture.bridge.readInitialAnchor(
+        "exps://127.0.0.1:8081/--/demo#native%2Danchor%2Dtarget",
+      ),
+    ).toBe("native-anchor-target");
+    for (const value of [
+      "https://127.0.0.1:8081/--/demo#native-anchor-target",
+      "exp://127.0.0.1:8081/--/demo/linked#native-anchor-target",
+      "exp://127.0.0.1:8081/--/demo?source=wrong#native-anchor-target",
+      "exp://127.0.0.1:8081/--/demo#",
+      "exp://127.0.0.1:8081/--/demo#%E0%A4%A",
+    ]) {
+      expect(fixture.bridge.readInitialAnchor(value)).toBeUndefined();
+    }
+    fixture.detach();
+
+    const managed = harness(
+      encodeDemoRouterHistoryEntry(managedEntry("managed", 1, GALLERY_URL)),
+      "/demo",
+    );
+    expect(
+      managed.bridge.readInitialAnchor(
+        "exp://127.0.0.1:8081/--/demo#native-anchor-target",
+      ),
+    ).toBeUndefined();
+    managed.detach();
+  });
+
   test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {
     const unmanaged = harness({
       source: "gallery",
