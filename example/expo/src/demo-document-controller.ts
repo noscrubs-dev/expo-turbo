@@ -4,6 +4,7 @@ import {
   type DocumentHistoryHostAdapter,
   type DocumentHistoryState,
   type DocumentLoadReport,
+  DocumentPrefetchCache,
   DocumentPreloader,
   DocumentRequestLoader,
   type DocumentSession,
@@ -338,6 +339,7 @@ export function createDemoDocumentRuntime(
     historyHost,
   );
   const snapshotCache = new DocumentSnapshotCache();
+  const prefetchCache = new DocumentPrefetchCache();
   const visitLifecycle = new DocumentVisitLifecycle();
   let preloadRequestId = 0;
   const preloader = new DocumentPreloader(
@@ -345,6 +347,7 @@ export function createDemoDocumentRuntime(
     fetchAdapter,
     { next: () => `demo-document-preload-${++preloadRequestId}` },
     snapshotCache,
+    { prefetchCache },
   );
   const loader = new DocumentRequestLoader(
     session,
@@ -353,6 +356,7 @@ export function createDemoDocumentRuntime(
   );
   const controller = new DocumentVisitController(loader, clock, {
     history,
+    prefetchCache,
     snapshotCache,
     visitLifecycle,
   });

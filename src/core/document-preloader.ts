@@ -1,5 +1,6 @@
 import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { documentCachePolicy } from "./document-metadata"
+import type { DocumentPrefetchCache } from "./document-prefetch-cache"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
@@ -22,6 +23,7 @@ import { classifyTopLevelLocation } from "./visitability"
 export interface DocumentPreloaderOptions {
   readonly capabilityHash?: string
   readonly limits?: Partial<ParseLimits>
+  readonly prefetchCache?: DocumentPrefetchCache
   readonly requestLifecycle?: RequestLifecycle
 }
 
@@ -67,6 +69,8 @@ interface ActiveDocumentPreload {
     cacheCommitProtected: boolean
     durable: boolean
     leases: number
+    prefetchCommitted: boolean
+    prefetchTree?: ReturnType<typeof parseExpoTurboDocument>
   }
   readonly url: string
 }
@@ -89,6 +93,7 @@ export class DocumentPreloader {
   private readonly active = new Map<string, ActiveDocumentPreload>()
   private readonly capabilityHash: string | undefined
   private readonly limits: Partial<ParseLimits> | undefined
+  private readonly prefetchCache: DocumentPrefetchCache | undefined
   private readonly requestLifecycle: RequestLifecycle | undefined
 
   constructor(
@@ -112,9 +117,11 @@ export class DocumentPreloader {
     let capabilityHash: unknown
     let configuredLimits: unknown
     let requestLifecycle: unknown
+    let prefetchCache: unknown
     try {
       capabilityHash = options.capabilityHash
       configuredLimits = options.limits
+      prefetchCache = options.prefetchCache
       requestLifecycle = options.requestLifecycle
     } catch {
       throw new PropsError("Document preloader options could not be read")
@@ -123,6 +130,15 @@ export class DocumentPreloader {
       throw new PropsError("Document preloader capability hash must be a string")
     }
     this.capabilityHash = capabilityHash
+    if (
+      prefetchCache !== undefined &&
+      (!prefetchCache ||
+        typeof prefetchCache !== "object" ||
+        typeof (prefetchCache as Partial<DocumentPrefetchCache>).putPending !== "function")
+    ) {
+      throw new PropsError("Document preloader prefetch cache is invalid")
+    }
+    this.prefetchCache = prefetchCache as DocumentPrefetchCache | undefined
     this.requestLifecycle = admitRequestLifecycle(
       requestLifecycle,
       "Document preloader request lifecycle is invalid",
@@ -184,14 +200,25 @@ export class DocumentPreloader {
       const settle = (durable: boolean) => {
         if (!retained) return
         retained = false
-        if (this.active.get(active.url) !== active) return
         active.state.leases -= 1
-        if (durable) active.state.durable = true
+        if (durable) {
+          if (this.prefetchCache) {
+            active.state.prefetchCommitted = true
+            this.prefetchCache.putPending(
+              active.url,
+              active.promise.then(() => active.state.prefetchTree),
+            )
+          } else {
+            active.state.durable = true
+          }
+        }
         if (
           !durable &&
           !active.state.durable &&
+          !active.state.prefetchCommitted &&
           !active.state.cacheCommitProtected &&
-          active.state.leases === 0
+          active.state.leases === 0 &&
+          this.active.get(active.url) === active
         ) {
           this.active.delete(active.url)
           active.controller.abort()
@@ -257,10 +284,15 @@ export class DocumentPreloader {
     }
 
     const controller = new AbortController()
-    const state = { cacheCommitProtected: false, durable, leases: 0 }
+    const state: ActiveDocumentPreload["state"] = {
+      cacheCommitProtected: false,
+      durable,
+      leases: 0,
+      prefetchCommitted: false,
+    }
     let active: ActiveDocumentPreload
     const promise = Promise.resolve()
-      .then(() => this.perform(disposition.url, controller))
+      .then(() => this.perform(disposition.url, controller, state))
       .finally(() => {
         if (this.active.get(disposition.url) === active) this.active.delete(disposition.url)
       })
@@ -269,7 +301,11 @@ export class DocumentPreloader {
     return active
   }
 
-  private async perform(url: string, controller: AbortController): Promise<DocumentPreloadReport> {
+  private async perform(
+    url: string,
+    controller: AbortController,
+    state: ActiveDocumentPreload["state"],
+  ): Promise<DocumentPreloadReport> {
     if (controller.signal.aborted) return this.canceled(undefined, url)
     let hit: boolean
     try {
@@ -454,8 +490,9 @@ export class DocumentPreloader {
       throw new ParseError("Document preload XML could not be parsed", location ? { location } : {})
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
+    state.prefetchTree = tree
     const cacheable = documentCachePolicy(tree).cacheable
-    if (cacheable) {
+    if (cacheable && state.durable) {
       let superseded: boolean
       try {
         superseded = this.cacheContains(request.url)

@@ -111,6 +111,10 @@ export interface DocumentSnapshotPreviewOptions {
   readonly onPreviewStart?: () => undefined
 }
 
+export interface DocumentSnapshotSource {
+  get(url: string): DocumentTree | undefined
+}
+
 export type DocumentCommitCandidate =
   | (DocumentResponseReport &
       Readonly<{
@@ -282,7 +286,7 @@ export class DocumentRequestLoader {
   }
 
   restoreSnapshot(
-    cache: DocumentSnapshotCache,
+    cache: DocumentSnapshotSource,
     url: string,
     owner?: object,
     options: DocumentSnapshotRestoreOptions = {},
@@ -328,14 +332,15 @@ export class DocumentRequestLoader {
   }
 
   private applySnapshot(
-    cache: DocumentSnapshotCache,
+    cache: DocumentSnapshotSource | DocumentSnapshotCache,
     url: string,
     owner: object | undefined,
     options: DocumentSnapshotApplicationOptions,
     preview = false,
   ): DocumentSnapshotRestoreReport {
     const restoredUrl = this.resolveSource(url)
-    const cached = preview ? cache.getPreview(restoredUrl) : cache.get(restoredUrl)
+    const cached =
+      preview && "getPreview" in cache ? cache.getPreview(restoredUrl) : cache.get(restoredUrl)
     if (!cached) return Object.freeze({ status: "miss", url: restoredUrl })
 
     const tree = cached.clone({ documentUrl: restoredUrl })

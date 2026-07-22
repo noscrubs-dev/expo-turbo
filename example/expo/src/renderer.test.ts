@@ -42,6 +42,7 @@ import {
   DocumentHistory,
   type DocumentHistoryEntry,
   type DocumentHistoryWriteMethod,
+  DocumentPrefetchCache,
   DocumentPreloader,
   DocumentRequestLoader,
   DocumentSnapshotCache,
@@ -746,6 +747,7 @@ function renderPreloadingDocumentLinks(
   }> = {},
 ) {
   const cache = new DocumentSnapshotCache()
+  const prefetchCache = new DocumentPrefetchCache()
   let requestIds = 0
   let preloader: DocumentPreloader | undefined
   const harness = renderDocumentLinks(
@@ -759,6 +761,7 @@ function renderPreloadingDocumentLinks(
     undefined,
     undefined,
     {
+      prefetchCache,
       snapshotCache: cache,
       ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
     },
@@ -769,7 +772,10 @@ function renderPreloadingDocumentLinks(
         { fetch },
         { next: () => `automatic-preload-${++requestIds}` },
         cache,
-        options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {},
+        {
+          prefetchCache,
+          ...(options.requestLifecycle ? { requestLifecycle: options.requestLifecycle } : {}),
+        },
       )
       return {
         ...(options.documentAutomaticPreloadPolicy === undefined
@@ -5557,10 +5563,9 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("preloads eligible document links on press-in and supplies the next preview", async () => {
+  test("reuses one eligible press-in response as the authoritative document visit", async () => {
     const prefetchRequests: TurboRequest[] = []
     const documentRequests: TurboRequest[] = []
-    let resolveDocument: ((response: TurboResponse) => void) | undefined
     const harness = renderPreloadingDocumentLinks(
       '<Gallery data-turbo-root="/app"><DocumentLink href=" /app/next " /></Gallery>',
       async (request) => {
@@ -5575,11 +5580,9 @@ describe("React protocol renderer", () => {
         }
       },
       {
-        documentFetch: (request) => {
+        documentFetch: async (request) => {
           documentRequests.push(request)
-          return new Promise<TurboResponse>((resolve) => {
-            resolveDocument = resolve
-          })
+          throw new Error("press-in activation must reuse the prefetched response")
         },
         url: "https://example.test/app/current",
       },
@@ -5599,39 +5602,21 @@ describe("React protocol renderer", () => {
       method: "GET",
       url: "https://example.test/app/next",
     })
-    expect(harness.cache.has("https://example.test/app/next")).toBe(true)
+    expect(harness.cache.has("https://example.test/app/next")).toBe(false)
     expect(harness.requestIdCount()).toBe(1)
     expect(harness.session.revision).toBe(0)
 
     let visit: Promise<unknown> | undefined
     act(() => {
+      harness.commitPrefetch("/app/next")
       visit = harness.activation("/app/next")()
     })
     await act(async () => {
-      await nextTurn()
-    })
-    expect(harness.session.treeState.preview).toBe(true)
-    expect(harness.session.tree.getElementById("preloaded")).toBeDefined()
-    expect(documentRequests.map((request) => request.url)).toEqual([
-      "https://example.test/app/next",
-    ])
-
-    await act(async () => {
-      if (!resolveDocument || !documentRequests[0] || !visit) {
-        throw new Error("canonical press-in prefetch revalidation did not start")
-      }
-      resolveDocument({
-        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
-        redirected: false,
-        status: 200,
-        text: async () =>
-          '<Gallery data-turbo-root="/app"><DemoText id="canonical">Canonical</DemoText></Gallery>',
-        url: documentRequests[0].url,
-      })
       await visit
     })
     expect(harness.session.treeState.preview).toBe(false)
-    expect(harness.session.tree.getElementById("canonical")).toBeDefined()
+    expect(harness.session.tree.getElementById("preloaded")).toBeDefined()
+    expect(documentRequests).toEqual([])
 
     act(() => harness.renderer.unmount())
   })
@@ -5702,7 +5687,14 @@ describe("React protocol renderer", () => {
       await nextTurn()
     })
 
-    expect(harness.cache.get("https://example.test/next")?.getElementById("preloaded")).toBeDefined()
+    let visit: Promise<unknown> | undefined
+    act(() => {
+      visit = harness.activation("/next")()
+    })
+    await act(async () => {
+      await visit
+    })
+    expect(harness.session.tree.getElementById("preloaded")).toBeDefined()
     act(() => harness.renderer.unmount())
   })
 
@@ -5975,7 +5967,7 @@ describe("React protocol renderer", () => {
       url: "https://example.test/next",
     })
     expect(harness.requestIdCount()).toBe(1)
-    expect(harness.cache.has("https://example.test/next")).toBe(true)
+    expect(harness.cache.has("https://example.test/next")).toBe(false)
     expect(harness.session.revision).toBe(0)
 
     act(() => harness.renderer.unmount())
@@ -6555,7 +6547,7 @@ describe("React protocol renderer", () => {
     ])
     expect(harness.requestIdCount()).toBe(10)
     expect(harness.session.revision).toBe(0)
-    expect(harness.cache.size).toBe(10)
+    expect(harness.cache.size).toBe(0)
 
     act(() => harness.renderer.unmount())
   })
