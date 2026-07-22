@@ -128,6 +128,7 @@ export function DemoNestedScrollRegion({
     () =>
       anchorScroll.registerNestedContainer(id, {
         isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        measure: (listener) => scrollView.current?.getNativeScrollRef?.()?.measureInWindow(listener),
         scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: true, x, y }),
       }),
     [anchorScroll, id],

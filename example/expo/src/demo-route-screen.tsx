@@ -93,6 +93,18 @@ export function DemoCompatibilityGallery() {
     () =>
       runtime.documentAnchorScroll.registerContainer({
         isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        reveal: (container) => {
+          const root = scrollView.current?.getNativeScrollRef?.();
+          if (!root || !container.measure) return;
+          container.measure((_containerX, containerY) => {
+            root.measureInWindow((_rootX, rootY) => {
+              const y = scrollY.current + containerY - rootY;
+              if (Number.isFinite(y) && y >= 0) {
+                scrollView.current?.scrollTo({ animated: true, x: 0, y });
+              }
+            });
+          });
+        },
         scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: true, x, y }),
       }),
     [runtime.documentAnchorScroll],

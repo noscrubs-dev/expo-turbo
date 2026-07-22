@@ -48,7 +48,7 @@ const NativeScrollView = forwardRef<NativeScrollViewHandle, Readonly<Record<stri
     useImperativeHandle(ref, () => ({
       getNativeScrollRef: () => ({
         measureInWindow(listener) {
-          listener(0, 0, 390, 844);
+          listener(0, props.testID ? 600 : 0, 390, 844);
         },
       }),
       scrollTo(options) {
@@ -1041,6 +1041,102 @@ describe("demo app runtime ownership", () => {
 
     expect(deferredAnchorRequests).toEqual(["native-anchor-target"]);
     expect(scrolls).toEqual([{ x: 0, y: 584 }]);
+    expect(requests).toHaveLength(requestsBeforeAnchor);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    unregisterScroll();
+  });
+
+  test("applies an exact Expo Go cold-link fragment inside its declared nested ScrollView", async () => {
+    nativeScrollCalls.length = 0;
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation(undefined, "/demo");
+    const deferredAnchorRequests: string[] = [];
+    const requestDeferredAnchor = runtime.documentAnchorScroll.requestDeferredAnchor.bind(
+      runtime.documentAnchorScroll,
+    );
+    runtime.documentAnchorScroll.requestDeferredAnchor = (id) => {
+      deferredAnchorRequests.push(id);
+      requestDeferredAnchor(id);
+    };
+    const rootReveals: Readonly<{ x: number; y: number }>[] = [];
+    const unregisterScroll = runtime.documentAnchorScroll.registerContainer({
+      isAvailable: () => true,
+      reveal(container) {
+        container.measure?.((x, y) => rootReveals.push({ x, y }));
+      },
+      scrollTo: () => undefined,
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            {
+              focused: true,
+              initialUrl:
+                "exp://127.0.0.1:8081/--/demo#nested-native-anchor-target",
+              navigation,
+              routeKey: INITIAL_ROUTE_KEY,
+              runtime,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("nested cold-link anchor fixture did not render");
+    const target = renderer.root.findByProps({
+      testID: "demo-anchor-target-nested-native-anchor-target",
+    });
+    const requestsBeforeAnchor = requests.length;
+    nativeScrollCalls.length = 0;
+    act(() => {
+      target.props.onLayout({ nativeEvent: { layout: { y: 360 } } });
+    });
+
+    expect(deferredAnchorRequests).toEqual(["nested-native-anchor-target"]);
+    expect(rootReveals).toEqual([{ x: 0, y: 600 }]);
+    expect(nativeScrollCalls.map((call) => call.options)).toEqual([
+      { animated: true, x: 0, y: 360 },
+    ]);
+    expect(nativeRootScrollContainerIds).not.toContain(nativeScrollCalls[0]?.containerId);
     expect(requests).toHaveLength(requestsBeforeAnchor);
     expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
     expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
