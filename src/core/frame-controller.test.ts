@@ -6,7 +6,13 @@ import { consumeFrameAutofocus, consumeFrameRenderEffects } from "./frame-autofo
 import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
 import { FrameLifecycle } from "./frame-lifecycle"
-import { EXPO_TURBO_MIME_TYPE, FrameCommitError, FrameRequestLoader } from "./frame-loader"
+import {
+  EXPO_TURBO_MIME_TYPE,
+  FrameCommitError,
+  FrameRequestLoader,
+  type FrameRequestLoaderOptions,
+} from "./frame-loader"
+import { FramePreloadCache } from "./frame-preload-cache"
 import {
   acknowledgeFrameRender,
   frameRenderLifecycleRevision,
@@ -39,7 +45,7 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 function harness(
   attributes = 'src="/frame"',
   visibility?: VisibilityAdapter,
-  options: Readonly<{ frameLifecycle?: FrameLifecycle }> = {},
+  options: FrameRequestLoaderOptions = {},
 ) {
   const pending: PendingRequest[] = []
   const session = new DocumentSession(
@@ -129,6 +135,160 @@ describe("Frame controller", () => {
     expect(session.tree.getElementById("details")?.children.filter(isElement)[0]?.tagName).toBe(
       "Loaded",
     )
+  })
+
+  test("renders an exact cached Frame as a provisional preview before canonical revalidation", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Outside id="outside" /><turbo-frame id="details" src="/frame"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const cache = new FramePreloadCache()
+    cache.put({
+      body: `<Gallery>
+        <turbo-frame id="details"><Preview /></turbo-frame>
+        <turbo-stream action="remove" target="outside"></turbo-stream>
+      </Gallery>`,
+      frameId: "details",
+      redirected: false,
+      requestId: "preview-request",
+      responseStatus: 200,
+      responseUrl: "https://example.test/frame",
+      url: "https://example.test/frame",
+    })
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    let controller!: FrameController
+    lifecycle.subscribe("before-frame-render", (event) => {
+      events.push(`before:${event.detail.newFrame.children.filter(isElement)[0]?.tagName}`)
+    })
+    lifecycle.subscribe("frame-render", () => {
+      events.push(`render:${controller.state.previewVisible ? "preview" : "canonical"}`)
+    })
+    lifecycle.subscribe("frame-load", () => {
+      events.push("load")
+      return undefined
+    })
+    let canonicalStarted!: () => void
+    const canonicalStart = new Promise<void>((resolve) => {
+      canonicalStarted = resolve
+    })
+    let resolveCanonical!: (response: TurboResponse) => void
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: () => {
+          canonicalStarted()
+          return new Promise<TurboResponse>((resolve) => {
+            resolveCanonical = resolve
+          })
+        },
+      },
+      { next: () => "canonical-request" },
+      { frameLifecycle: lifecycle, preloadBehavior: "preview", preloadCache: cache },
+    )
+    controller = new FrameController(session, "details", loader)
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "details", session.revision)?.finish()
+    })
+
+    const loaded = controller.connect()
+    await canonicalStart
+
+    expect(controller.state).toMatchObject({
+      busy: true,
+      complete: false,
+      hasBeenLoaded: false,
+      previewVisible: true,
+      status: "loading",
+    })
+    expect(frame.children.filter(isElement)[0]?.tagName).toBe("Preview")
+    expect(session.tree.getElementById("outside")).toBeDefined()
+    expect(events).toEqual(["before:Preview", "render:preview"])
+
+    resolveCanonical(response('<turbo-frame id="details"><Canonical /></turbo-frame>'))
+    await expect(loaded).resolves.toMatchObject({
+      requestId: "canonical-request",
+      status: "completed",
+    })
+    expect(controller.state).toMatchObject({
+      busy: false,
+      complete: true,
+      hasBeenLoaded: true,
+      previewVisible: false,
+      status: "completed",
+    })
+    expect(frame.children.filter(isElement)[0]?.tagName).toBe("Canonical")
+    expect(events).toEqual([
+      "before:Preview",
+      "render:preview",
+      "before:Canonical",
+      "render:canonical",
+      "load",
+    ])
+
+    unsubscribe()
+    releaseRenderer()
+  })
+
+  test("keeps the provisional Frame visible when canonical revalidation is empty", async () => {
+    const cache = new FramePreloadCache()
+    cache.put({
+      body: '<turbo-frame id="details"><Preview id="preview" /></turbo-frame>',
+      frameId: "details",
+      redirected: false,
+      requestId: "preview-request",
+      responseStatus: 200,
+      responseUrl: "https://example.test/frame",
+      url: "https://example.test/frame",
+    })
+    const { controller, pending, session } = harness('src="/frame"', undefined, {
+      preloadBehavior: "preview",
+      preloadCache: cache,
+    })
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "details", session.revision)?.finish()
+    })
+
+    const loaded = controller.connect()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(pending).toHaveLength(1)
+    expect(controller.state).toMatchObject({
+      busy: true,
+      previewVisible: true,
+      status: "loading",
+    })
+    pending[0]?.resolve(
+      response("", {
+        status: 204,
+      }),
+    )
+
+    await expect(loaded).resolves.toMatchObject({ status: "empty" })
+    expect(controller.state).toMatchObject({
+      busy: false,
+      complete: true,
+      hasBeenLoaded: true,
+      previewVisible: true,
+      status: "empty",
+    })
+    expect(session.tree.getElementById("preview")).toBeDefined()
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("acknowledges matching Frame responses before render/load across success and errors", async () => {

@@ -24,6 +24,7 @@ import {
   FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER,
   FRAME_REQUEST_LOADER_PREPARE_RENDER,
   FrameCommitError,
+  type FrameLoadOptions,
   type FrameLoadReport,
   type FrameRequestLoader,
 } from "./frame-loader"
@@ -66,6 +67,7 @@ export interface FrameControllerSnapshot {
   readonly frameId: string
   readonly hasBeenLoaded: boolean
   readonly loading: FrameLoadingStyle
+  readonly previewVisible: boolean
   readonly revision: number
   readonly source?: string
   readonly status: FrameControllerStatus
@@ -106,6 +108,7 @@ export class FrameController {
   private pendingAutofocus: PendingFrameAutofocus | undefined
   private pendingAutoscroll: PendingFrameAutoscroll | undefined
   private pendingFrameRender: Readonly<{ epoch: number; prepared: PreparedFrameRender }> | undefined
+  private previewVisible = false
   private visitFinalization: AbortController | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
   private visibilityUnsubscribe: Unsubscribe | undefined
@@ -365,14 +368,13 @@ export class FrameController {
     this.pendingAutofocus = undefined
     this.pendingAutoscroll = undefined
     this.needsLoad = false
+    this.previewVisible = false
     this.status = "loading"
     this.publish()
-    const request = this.loader.load(
-      this.frameId,
-      source,
+    const requestOptions = (includeHistory: boolean): FrameLoadOptions =>
       withFrameLoadRenderMethod(
         {
-          ...(historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
+          ...(includeHistory && historyPlan ? { [FRAME_HISTORY_PLAN_OPTION]: historyPlan } : {}),
           owner: this.requestOwner,
           [FRAME_RENDER_PREPARE_OPTION]: (frame, candidate, method) => {
             this.trackFrameRender(
@@ -383,8 +385,11 @@ export class FrameController {
           },
         },
         renderMethod,
-      ),
-    )
+      )
+    const request =
+      this.loader.preloadBehavior === "preview"
+        ? this.loadPreviewThenCanonical(source, requestOptions(false), requestOptions(true), epoch)
+        : this.loader.load(this.frameId, source, requestOptions(true))
     if (historyPlan && epoch === this.loadEpoch) this.publish()
     const loaded = request.then(
       async (report) => {
@@ -468,6 +473,58 @@ export class FrameController {
     )
     this.loadedPromise = loaded
     return loaded
+  }
+
+  private async loadPreviewThenCanonical(
+    source: string,
+    previewOptions: FrameLoadOptions,
+    canonicalOptions: FrameLoadOptions,
+    epoch: number,
+  ): Promise<FrameLoadReport> {
+    const preview = await this.loader.loadPreloaded(this.frameId, source, previewOptions)
+    if (preview?.status === "completed") {
+      const prepared =
+        this.pendingFrameRender?.epoch === epoch ? this.pendingFrameRender.prepared : undefined
+      const rendering = this.frameRenderResult(prepared, epoch)
+      const rendered = typeof rendering === "boolean" ? rendering : await rendering
+      if (!this.previewContinuationCurrent(prepared, epoch)) {
+        return this.canceledPreview(preview)
+      }
+      this.previewVisible = true
+      this.publish()
+      if (rendered && prepared && this.previewContinuationCurrent(prepared, epoch)) {
+        this.loader[FRAME_REQUEST_LOADER_DISPATCH_FRAME_RENDER](prepared)
+      }
+      if (!this.previewContinuationCurrent(prepared, epoch)) {
+        return this.canceledPreview(preview)
+      }
+    }
+    return this.loader.loadCanonical(this.frameId, source, canonicalOptions)
+  }
+
+  private previewContinuationCurrent(
+    prepared: PreparedFrameRender | undefined,
+    epoch: number,
+  ): boolean {
+    return (
+      epoch === this.loadEpoch &&
+      this.connected &&
+      this.status === "loading" &&
+      attributeValue(this.frameNode, "disabled") === undefined &&
+      this.session.tree.getElementById(this.frameId) === this.frameNode &&
+      (!prepared || prepared.isCurrent())
+    )
+  }
+
+  private canceledPreview(report: FrameLoadReport): FrameLoadReport {
+    return Object.freeze({
+      frameId: report.frameId,
+      requestId: report.requestId,
+      requestIds: report.requestIds,
+      ...(report.responseStatus !== undefined ? { responseStatus: report.responseStatus } : {}),
+      status: "canceled",
+      url: report.url,
+    })
   }
 
   private async finishLoadWithoutRender(
@@ -577,6 +634,7 @@ export class FrameController {
       report.status === "empty" ||
       report.status === "promoted"
     ) {
+      if (report.status !== "empty") this.previewVisible = false
       this.hasBeenLoaded = true
       this.needsLoad = false
     } else {
@@ -710,6 +768,7 @@ export class FrameController {
         complete: this.status !== "loading",
         connected: this.connected,
         hasBeenLoaded: this.hasBeenLoaded,
+        previewVisible: this.previewVisible,
         revision: this.revision,
         status: this.status,
       })
@@ -724,6 +783,7 @@ export class FrameController {
       frameId: this.frameId,
       hasBeenLoaded: this.hasBeenLoaded,
       loading: loadingStyle(frame),
+      previewVisible: this.previewVisible,
       revision: this.revision,
       ...(source !== undefined ? { source } : {}),
       status: this.status,

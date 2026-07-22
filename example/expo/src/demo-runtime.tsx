@@ -151,6 +151,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     documentRuntime.visitLifecycle,
     streamLifecycle,
     visibility,
+    clock,
   );
   const { frames, preloader: framePreloader } = frameRuntime;
   const formController = createDemoFormController(

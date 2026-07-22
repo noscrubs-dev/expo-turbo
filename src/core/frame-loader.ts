@@ -175,8 +175,11 @@ export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly frameLifecycle?: FrameLifecycle
   readonly maxRecurseDepth?: number
   readonly preloadCache?: FramePreloadCache
+  readonly preloadBehavior?: "consume" | "preview"
   readonly requestLifecycle?: RequestLifecycle
 }
+
+type FramePreloadMode = "consume" | "ignore" | "require"
 
 interface ActiveFrameRequest {
   readonly controller: AbortController
@@ -301,6 +304,7 @@ export class FrameRequestLoader {
   private readonly maxRecurseDepth: number
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
   private readonly preloadCache: FramePreloadCache | undefined
+  readonly preloadBehavior: "consume" | "preview"
   private readonly requestLifecycle: RequestLifecycle | undefined
   private readonly streamOptions: StreamActionDispatchOptions
 
@@ -315,6 +319,7 @@ export class FrameRequestLoader {
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
+    this.preloadBehavior = options.preloadBehavior ?? "consume"
     if (
       options.preloadCache !== undefined &&
       !(options.preloadCache instanceof FramePreloadCache)
@@ -322,6 +327,12 @@ export class FrameRequestLoader {
       throw new PropsError("Frame request loader preload cache is invalid")
     }
     this.preloadCache = options.preloadCache
+    if (this.preloadBehavior !== "consume" && this.preloadBehavior !== "preview") {
+      throw new PropsError("Frame request loader preload behavior is invalid")
+    }
+    if (this.preloadBehavior === "preview" && !this.preloadCache) {
+      throw new PropsError("Frame preview behavior requires a preload cache")
+    }
     this.ownership = destinationRequestOwnership(session)
     this.streamOptions = Object.freeze({
       ...(options.customActions ? { customActions: options.customActions } : {}),
@@ -380,6 +391,41 @@ export class FrameRequestLoader {
     source: string,
     options: FrameLoadOptions = {},
   ): Promise<FrameLoadReport> {
+    const report = await this.loadWithPreloadMode(frameId, source, options, "consume")
+    if (!report) {
+      throw new StateError("Frame load unexpectedly missed its required response", { frameId })
+    }
+    return report
+  }
+
+  /** @internal Consumes only an exact cached response and starts no request on a miss. */
+  loadPreloaded(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions = {},
+  ): Promise<FrameLoadReport | undefined> {
+    return this.loadWithPreloadMode(frameId, source, options, "require")
+  }
+
+  /** @internal Performs the canonical request without consuming an exact cached response. */
+  async loadCanonical(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions = {},
+  ): Promise<FrameLoadReport> {
+    const report = await this.loadWithPreloadMode(frameId, source, options, "ignore")
+    if (!report) {
+      throw new StateError("Canonical Frame load unexpectedly produced no response", { frameId })
+    }
+    return report
+  }
+
+  private async loadWithPreloadMode(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions,
+    preloadMode: FramePreloadMode,
+  ): Promise<FrameLoadReport | undefined> {
     const renderMethod = frameLoadRenderMethod(options)
     const loadOptions = frameLoadOptions(options)
     const owner = loadOptions.owner
@@ -392,7 +438,8 @@ export class FrameRequestLoader {
     let firstRequestId: string
     let firstHeaders: ReturnType<typeof protocolRequestHeaders>
     try {
-      cachedPreload = this.preloadCache?.take(frameId, url)
+      cachedPreload = preloadMode === "ignore" ? undefined : this.preloadCache?.take(frameId, url)
+      if (preloadMode === "require" && !cachedPreload) return undefined
       firstRequestId = cachedPreload?.requestId ?? this.requestIds.next()
       firstHeaders = protocolRequestHeaders({
         ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
@@ -697,7 +744,8 @@ export class FrameRequestLoader {
           .getFrames()
           .find((frame) => attributeValue(frame, "id") === frameId)
         if (matchingFrame) {
-          const responseRenderMethod = recurseDepth === 0 ? renderMethod : "replace"
+          const responseRenderMethod =
+            preloadMode === "require" ? "replace" : recurseDepth === 0 ? renderMethod : "replace"
           const prepared = prepareFrameResponseTree(frameId, document)
           const candidate: FrameTreeCommitCandidate = Object.freeze({
             frameId,
@@ -812,30 +860,39 @@ export class FrameRequestLoader {
           let frameReport: FrameResponseReport
           try {
             const nestedFrames = commitPreparedFrameMutation(this.session, mutation)
-            const streams = await dispatchPreparedFrameResponseStreams(
-              this.session,
-              prepared,
-              this.streamOptions,
-              {
-                shouldContinue: () => Boolean(active.lease && this.ownership.retains(active.lease)),
-              },
-            )
-            frameReport = recordFrameMorphReloadReport(
-              recordFrameAutofocusReport(
-                Object.freeze({
-                  finalUrl: responseUrl,
-                  frameId,
-                  streams,
-                }),
+            if (preloadMode === "require") {
+              frameReport = Object.freeze({
+                finalUrl: responseUrl,
+                frameId,
+                streams: Object.freeze({ actions: Object.freeze([]), interrupted: false }),
+              })
+            } else {
+              const streams = await dispatchPreparedFrameResponseStreams(
+                this.session,
+                prepared,
+                this.streamOptions,
+                {
+                  shouldContinue: () =>
+                    Boolean(active.lease && this.ownership.retains(active.lease)),
+                },
+              )
+              frameReport = recordFrameMorphReloadReport(
+                recordFrameAutofocusReport(
+                  Object.freeze({
+                    finalUrl: responseUrl,
+                    frameId,
+                    streams,
+                  }),
+                  this.session,
+                  frame,
+                  activeFrameAutofocusCandidates(this.session, frame),
+                  frameAutoscrollIntent(this.session, frame, prepared),
+                ),
                 this.session,
                 frame,
-                activeFrameAutofocusCandidates(this.session, frame),
-                frameAutoscrollIntent(this.session, frame, prepared),
-              ),
-              this.session,
-              frame,
-              nestedFrames,
-            )
+                nestedFrames,
+              )
+            }
           } catch (error) {
             if (this.session.revision !== revision) throw new FrameCommitError(candidate)
             throw error
