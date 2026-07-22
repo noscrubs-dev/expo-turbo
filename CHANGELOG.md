@@ -4,7 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
-- Add an opt-in Action Cable stale-socket monitor. It records every valid server frame through an injected host time source, makes one socket replacement after more than six seconds of silence, and prevents a silent replacement from entering a retry loop. The standalone Expo/Rails runtime opts in with its existing clock; generic lifecycle, network, and retry/backoff policy remain host-owned.
+- Add an opt-in Action Cable stale-socket monitor. It records every valid server frame through an injected host time source, makes one socket replacement after more than six seconds of silence, and prevents a silent replacement from entering a retry loop. The standalone Expo/Rails runtime opts in with its existing clock. An iPhone Simulator/Expo Go run stays connected past that interval and applies a live Rails replacement, confirming normal Action Cable pings do not falsely trigger recovery; deterministic tests cover simulated stale recovery. Generic lifecycle, network, and retry/backoff policy remain host-owned.
 
 - Add the Action Cable subscription confirmation guarantee. The injected WebSocket adapter now retries all active unconfirmed opaque identifiers from one shared 500 ms timer, and cancels that timer after the final confirmation, rejection, unsubscribe, socket detachment, or disposal. This does not add automatic socket reconnection, heartbeat monitoring, native lifecycle/network integration, or device proof.
 

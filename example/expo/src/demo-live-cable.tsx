@@ -517,7 +517,7 @@ const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
 const DEMO_PROTECTED_STREAM_SOURCE_KEY = "id:demo-protected-stream-source";
 const protectedCablePanelOptions = Object.freeze({
   description:
-    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It is a bounded demo contract, not a production user, revocation, rotation, heartbeat, network, Android-interaction, or physical-device policy.",
+    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the adapter's bounded injected-clock heartbeat monitor, but is not a production user, revocation, rotation, generic heartbeat, network, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
   sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,
@@ -526,7 +526,7 @@ const protectedCablePanelOptions = Object.freeze({
 
 export function DemoLiveCablePanel({
   description =
-    "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, server-owned Frame form, auth, heartbeat, network policy, or client retry.",
+    "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active, and opts into the adapter's bounded injected-clock heartbeat monitor; it has no user document navigation, server-owned Frame form, auth, generic lifecycle/network/backoff policy, or unbounded client retry.",
   proof,
   refreshButtonLabel = "Refresh canonical document",
   replaceButtonLabel = "Broadcast XML replace",
