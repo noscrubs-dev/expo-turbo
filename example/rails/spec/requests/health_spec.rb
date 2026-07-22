@@ -355,9 +355,13 @@ RSpec.describe "standalone demo host" do
         },
         headers: headers
 
-      expect(response).to have_http_status(:bad_request)
-      expect(response.body).to be_empty
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
       expect(response.headers["Vary"]).to eq("Turbo-Frame")
+      frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+      expect(frame["id"]).to eq("demo-form-frame")
+      expect(frame.at_xpath(".//DemoFormFile[@id='demo-form-attachment']")&.[]("error"))
+        .to eq("Upload a UTF-8 text file from 1 to 64 KiB")
     end
 
     Tempfile.create(["expo-turbo-upload", ".bin"]) do |file|
@@ -379,9 +383,13 @@ RSpec.describe "standalone demo host" do
         },
         headers: headers
 
-      expect(response).to have_http_status(:bad_request)
-      expect(response.body).to be_empty
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
       expect(response.headers["Vary"]).to eq("Turbo-Frame")
+      frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+      expect(frame["id"]).to eq("demo-form-frame")
+      expect(frame.at_xpath(".//DemoFormFile[@id='demo-form-attachment']")&.[]("error"))
+        .to eq("Upload a UTF-8 text file from 1 to 64 KiB")
     end
   end
 

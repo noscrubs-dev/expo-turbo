@@ -2,6 +2,7 @@ import type { FetchAdapter } from "expo-turbo/adapters";
 import {
   DocumentFormControls,
   DocumentSession,
+  DocumentStateStore,
   ExpoTurboError,
   FormSubmissionController,
   FrameControllerRegistry,
@@ -38,6 +39,7 @@ export interface DemoLiveFormRuntime {
   readonly forms: DocumentFormControls;
   readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
+  readonly state: DocumentStateStore;
 }
 
 type DemoLiveFormInitialization = Readonly<{
@@ -82,6 +84,7 @@ export function createDemoLiveFormRuntime(
     }),
   );
   const focus = new DemoFocusRegistry();
+  const state = new DocumentStateStore();
   const forms = new DocumentFormControls(session, {
     focus,
     formSemantics: DEMO_REGISTRY,
@@ -98,12 +101,14 @@ export function createDemoLiveFormRuntime(
       forms.dispose();
       frames.dispose();
       focus.dispose();
+      state.dispose();
     },
     focus,
     formUrl,
     forms,
     frames,
     session,
+    state,
   });
 }
 
@@ -139,6 +144,7 @@ export function DemoLiveFormRuntimeProvider({
           </Text>
         )}
         session={proof.session}
+        state={proof.state}
         styles={DEMO_STYLE_ADAPTER}
       >
         {children}

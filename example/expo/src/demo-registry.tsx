@@ -453,16 +453,22 @@ const formInput = defineComponent({
 const DEMO_UPLOAD_CONTENT = "Expo Turbo native multipart upload\n";
 
 function DemoFormFileComponent({
+  error,
   filename,
   label,
   name,
 }: {
+  error?: string;
   filename: string;
   label: string;
   name: string;
 }) {
   const mounted = useRef(true);
-  const [picked, setPicked] = useState<DemoPickedTextUpload>();
+  // A rejected matching Frame response replaces this component. Keep the
+  // intentionally bounded picker result with the document so retrying does
+  // not make an iOS user choose the same file again.
+  const pickedState = useDocumentState<DemoPickedTextUpload>("demo-upload-attachment");
+  const picked = pickedState.value;
   const [pickerError, setPickerError] = useState<string>();
   const [selecting, setSelecting] = useState(false);
   const fallbackAttachment = useMemo(
@@ -478,6 +484,7 @@ function DemoFormFileComponent({
     kind: "entries",
   });
   const disabled = control.disabled || selecting;
+  const displayedError = pickerError ?? error;
   const selectedFilename = attachment.filename;
   useEffect(() => {
     mounted.current = true;
@@ -492,7 +499,7 @@ function DemoFormFileComponent({
     setSelecting(true);
     void pickDemoTextUpload()
       .then((next) => {
-        if (next && mounted.current) setPicked(next);
+        if (next && mounted.current) pickedState.set(next);
       })
       .catch((error: unknown) => {
         if (!mounted.current) return;
@@ -505,6 +512,7 @@ function DemoFormFileComponent({
 
   return (
     <View
+      accessibilityHint={displayedError}
       accessibilityLabel={`${label}: ${selectedFilename}`}
       accessibilityState={control.accessibilityState}
       style={{ gap: 4, opacity: disabled ? 0.55 : 1 }}
@@ -525,9 +533,9 @@ function DemoFormFileComponent({
           {selecting ? "Opening Files…" : "Choose a text file"}
         </Text>
       </Pressable>
-      {pickerError ? (
+      {displayedError ? (
         <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
-          {pickerError}
+          {displayedError}
         </Text>
       ) : null}
     </View>
@@ -536,6 +544,7 @@ function DemoFormFileComponent({
 
 const formFile = defineComponent({
   attributes: {
+    error: { codec: stringCodec, prop: "error" },
     filename: { codec: stringCodec, prop: "filename" },
     label: { codec: stringCodec, prop: "label" },
     name: { codec: stringCodec, prop: "name" },
@@ -543,6 +552,7 @@ const formFile = defineComponent({
   children: "none",
   component: DemoFormFileComponent,
   schema: z.object({
+    error: z.string().trim().min(1).optional(),
     filename: z.string().trim().min(1),
     label: z.string().trim().min(1),
     name: z.string().trim().min(1),

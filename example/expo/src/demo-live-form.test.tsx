@@ -85,8 +85,8 @@ function response(
   });
 }
 
-function formXml(firstName: string, error?: string): string {
-  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt" /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm></turbo-frame>`;
+function formXml(firstName: string, error?: string, uploadError?: string): string {
+  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /></DemoForm></turbo-frame>`;
 }
 
 function takePending(pending: PendingFetch[], message: string): PendingFetch {
@@ -193,7 +193,34 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     expect(await attachment.text()).toBe("picked from Files\n");
     expect((attachment as Blob & { name?: string }).name).toBe("picked-notes.txt");
     await act(async () => {
-      upload.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
+      upload.resolve(
+        response(formXml("", undefined, "Upload a UTF-8 text file from 1 to 64 KiB"), {
+          status: 422,
+          url: formUrl,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Upload a UTF-8 text file from 1 to 64 KiB");
+    expect(
+      renderer?.root.findByProps({ accessibilityLabel: "Sample attachment: picked-notes.txt" }),
+    ).toBeDefined();
+
+    act(() => {
+      submitter("Upload sample attachment").onPress?.();
+    });
+    const retryUpload = takePending(pending, "The selected attachment was not retained for retry");
+    if (!(retryUpload.request.body instanceof FormData)) {
+      throw new Error("The retained multipart request did not reach the host as FormData");
+    }
+    const retainedAttachment = retryUpload.request.body.get("profile[attachment]");
+    if (!(retainedAttachment instanceof Blob)) {
+      throw new Error("The retained multipart request omitted its Blob");
+    }
+    expect(await retainedAttachment.text()).toBe("picked from Files\n");
+    expect((retainedAttachment as Blob & { name?: string }).name).toBe("picked-notes.txt");
+    await act(async () => {
+      retryUpload.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
       await Promise.resolve();
     });
 
@@ -303,6 +330,7 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     });
     await nextTurn();
     expect(proof.forms.isDisposed).toBe(true);
+    expect(proof.state.isDisposed).toBe(true);
     proof.dispose();
   }
 });

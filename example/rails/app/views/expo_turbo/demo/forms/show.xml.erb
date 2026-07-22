@@ -11,7 +11,13 @@
   </DemoForm>
   <DemoForm id="demo-upload-form" action="/api/expo_turbo/demo/form" enctype="multipart/form-data" method="post">
     <DemoText id="demo-upload-form-title">Native multipart upload</DemoText>
-    <DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt" />
+    <DemoFormFile
+      id="demo-form-attachment"
+      label="Sample attachment"
+      name="profile[attachment]"
+      filename="expo-turbo-upload.txt"
+      <% if upload_error %>error="<%= ERB::Util.html_escape(upload_error) %>"<% end %>
+    />
     <DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" />
   </DemoForm>
 <% end %>
