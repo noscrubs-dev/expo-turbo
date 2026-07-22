@@ -41,8 +41,13 @@ mock.module("react-native", () => ({
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
 }));
 
-const { createDemoLiveCableRuntime, createNativeActionCableSocket, DemoLiveCablePanel, DemoLiveCableProof } =
-  await import("./demo-live-cable");
+const {
+  createDemoLiveCableRuntime,
+  createDemoLiveProtectedCableRuntime,
+  createNativeActionCableSocket,
+  DemoLiveCablePanel,
+  DemoLiveCableProof,
+} = await import("./demo-live-cable");
 const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html";
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -231,6 +236,60 @@ test("buffers an early native welcome until the Action Cable adapter is listenin
     expect(sockets).toHaveLength(1);
     expect(sockets[0]?.sent).toEqual([encodeActionCableSubscribe(identifier)]);
     expect(connected).toEqual([false]);
+  } finally {
+    if (originalWebSocket) Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
+  }
+});
+
+test("passes an explicit protected ticket through native WebSocket headers, not the Cable URL", () => {
+  const originalWebSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  const constructions: Readonly<{
+    headers: Readonly<Record<string, string>> | undefined;
+    protocols: readonly string[];
+    url: string;
+  }>[] = [];
+
+  class HeaderNativeSocket {
+    protocol = ACTION_CABLE_V1_JSON_PROTOCOL;
+
+    constructor(
+      url: string,
+      protocols: readonly string[],
+      options?: Readonly<{ headers: Readonly<Record<string, string>> }>,
+    ) {
+      constructions.push({ headers: options?.headers, protocols, url });
+    }
+
+    addEventListener(): void {}
+
+    close(): void {}
+
+    removeEventListener(): void {}
+
+    send(): void {}
+  }
+
+  Object.defineProperty(globalThis, "WebSocket", {
+    configurable: true,
+    value: HeaderNativeSocket,
+  });
+
+  try {
+    const socket = createNativeActionCableSocket(
+      "ws://demo.example.test/cable",
+      [ACTION_CABLE_V1_JSON_PROTOCOL],
+      { "X-Expo-Turbo-Demo-Ticket": "short-lived-ticket" },
+    );
+
+    expect(constructions).toEqual([
+      {
+        headers: { "X-Expo-Turbo-Demo-Ticket": "short-lived-ticket" },
+        protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
+        url: "ws://demo.example.test/cable",
+      },
+    ]);
+    socket.close();
   } finally {
     if (originalWebSocket) Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
     else Reflect.deleteProperty(globalThis, "WebSocket");
@@ -438,6 +497,163 @@ describe("standalone Rails Action Cable proof", () => {
 
     const socket = sockets[0];
     if (!socket) throw new Error("missing Action Cable socket");
+    expect(socket.sent).toEqual([
+      encodeActionCableSubscribe(identifier),
+      encodeActionCableUnsubscribe(identifier),
+    ]);
+    expect(socket.closeCalls).toBe(1);
+  });
+
+  test("uses a protected Rails ticket only as a native socket header", async () => {
+    const ticket = "short-lived-ticket";
+    const ticketUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_ticket";
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_document";
+    const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_frame";
+    const broadcastUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_broadcast";
+    const signedStreamName = "protected-signed-stream";
+    const identifier = JSON.stringify({
+      channel: "ExpoTurbo::Rails::Cable::ProtectedStreamsChannel",
+      signed_stream_name: signedStreamName,
+      grant: "demo-protected-frame",
+    });
+    const document = `<Gallery id="demo-protected-document"><turbo-frame id="demo-protected-frame" src="/api/expo_turbo/demo/protected_frame"><DemoText id="demo-protected-frame-loading">Loading the protected Action Cable Frame</DemoText></turbo-frame></Gallery>`;
+    const frame = `<turbo-frame id="demo-protected-frame"><DemoText id="demo-protected-stream-message">Waiting for a protected Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-protected-stream-source" channel="ExpoTurbo::Rails::Cable::ProtectedStreamsChannel" signed-stream-name="${signedStreamName}" data-grant="demo-protected-frame" /></turbo-frame>`;
+    const requests: RecordedRequest[] = [];
+    const sockets: FakeActionCableSocket[] = [];
+    const socketCalls: Readonly<{
+      headers: Readonly<Record<string, string>> | undefined;
+      protocols: readonly string[];
+      url: string;
+    }>[] = [];
+    const proof = await createDemoLiveProtectedCableRuntime({
+      createSocket(url, protocols, headers) {
+        const socket = new FakeActionCableSocket();
+        socketCalls.push({ headers, protocols, url });
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (url, request) => {
+        requests.push({ request, url });
+        if (url === ticketUrl) {
+          return {
+            headers: { forEach: () => undefined },
+            redirected: false,
+            status: 200,
+            text: async () => ticket,
+            url,
+          };
+        }
+        if (url === documentUrl || url === frameUrl) {
+          return {
+            headers: {
+              forEach(callback: (value: string, name: string) => void): void {
+                callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+              },
+            },
+            redirected: false,
+            status: 200,
+            text: async () => (url === documentUrl ? document : frame),
+            url,
+          };
+        }
+        if (url === broadcastUrl) {
+          return {
+            headers: { forEach: () => undefined },
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url,
+          };
+        }
+        throw new Error("unexpected protected demo request");
+      },
+      origin: "http://demo.example:3000",
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      expect(requests[0]).toMatchObject({
+        request: { headers: { Accept: "text/plain" }, method: "GET" },
+        url: ticketUrl,
+      });
+      expect(requests[1]).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "GET" },
+        url: documentUrl,
+      });
+      await act(async () => {
+        renderer = create(
+          createElement(DemoLiveCablePanel, {
+            proof,
+            refreshButtonLabel: false,
+            replaceButtonLabel: "Broadcast protected XML replace",
+            sourceKey: "id:demo-protected-stream-source",
+          }),
+        );
+        await nextTurn();
+        await proof.frames.get("demo-protected-frame").loaded;
+      });
+      const socket = sockets[0];
+      if (!socket) throw new Error("missing protected Action Cable socket");
+
+      expect(socketCalls).toEqual([
+        {
+          headers: { "X-Expo-Turbo-Demo-Ticket": ticket },
+          protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
+          url: "ws://demo.example:3000/cable",
+        },
+      ]);
+      expect(socketCalls[0]?.url).not.toContain("?");
+      expect(requests.every((request) => !request.url.includes(ticket))).toBe(true);
+      const button = () =>
+        renderer?.root.findByProps({ accessibilityLabel: "Broadcast protected XML replace" });
+      expect(button()?.props.disabled).toBe(true);
+
+      await act(async () => {
+        socket.emitOpen();
+        socket.emitMessage('{"type":"welcome"}');
+        await Promise.resolve();
+      });
+      expect(socket.sent).toEqual([encodeActionCableSubscribe(identifier)]);
+
+      await act(async () => {
+        socket.emitMessage(`{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`);
+        await Promise.resolve();
+      });
+      expect(button()?.props.disabled).toBe(false);
+
+      await act(async () => {
+        button()?.props.onPress();
+        await Promise.resolve();
+      });
+      const broadcastRequest = unabortedRequests(requests).find(
+        (request) => request.url === broadcastUrl,
+      );
+      expect(broadcastRequest).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
+        url: broadcastUrl,
+      });
+      expect(broadcastRequest?.request.headers["X-Expo-Turbo-Demo-Ticket"]).toBeUndefined();
+
+      await act(async () => {
+        socket.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"message":"<turbo-stream action=\\"replace\\" target=\\"demo-protected-stream-message\\"><template><DemoText id=\\"demo-protected-stream-message\\">Protected broadcast from the standalone Rails demo</DemoText></template></turbo-stream>"}`,
+        );
+        await Promise.resolve();
+      });
+      const message = proof.session.tree.getElementById("demo-protected-stream-message");
+      expect(message ? nodeTextContent(message) : undefined).toBe(
+        "Protected broadcast from the standalone Rails demo",
+      );
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
+
+    const socket = sockets[0];
+    if (!socket) throw new Error("missing protected Action Cable socket");
     expect(socket.sent).toEqual([
       encodeActionCableSubscribe(identifier),
       encodeActionCableUnsubscribe(identifier),

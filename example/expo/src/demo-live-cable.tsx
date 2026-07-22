@@ -45,7 +45,11 @@ export type {
 
 const BROADCAST_PATH = "/api/expo_turbo/demo/broadcast";
 const DOCUMENT_PATH = "/api/expo_turbo/demo/document";
+const PROTECTED_BROADCAST_PATH = "/api/expo_turbo/demo/protected_broadcast";
+const PROTECTED_DOCUMENT_PATH = "/api/expo_turbo/demo/protected_document";
+const PROTECTED_TICKET_PATH = "/api/expo_turbo/demo/protected_ticket";
 const CABLE_PATH = "/cable";
+const NATIVE_CABLE_TICKET_HEADER = "X-Expo-Turbo-Demo-Ticket";
 const LOADING_DOCUMENT = `<Gallery id="demo-live-loading"><DemoText id="demo-live-loading-message">Loading the standalone Rails demo</DemoText></Gallery>`;
 const liveRuntimeOwners = new WeakMap<DemoLiveCableRuntime, number>();
 const nativeClock: ClockAdapter = {
@@ -57,6 +61,19 @@ const nativeClock: ClockAdapter = {
 export interface DemoLiveCableRuntimeOptions {
   readonly clock?: ClockAdapter;
   readonly createSocket?: ActionCableWebSocketAdapterOptions["createSocket"];
+  readonly fetch?: DemoLiveFetch;
+  readonly origin: string;
+}
+
+export type NativeActionCableSocketFactory = (
+  url: string,
+  protocols: readonly ["actioncable-v1-json"],
+  headers?: Readonly<Record<string, string>>,
+) => ActionCableWebSocket;
+
+export interface DemoLiveProtectedCableRuntimeOptions {
+  readonly clock?: ClockAdapter;
+  readonly createSocket?: NativeActionCableSocketFactory;
   readonly fetch?: DemoLiveFetch;
   readonly origin: string;
 }
@@ -89,10 +106,19 @@ export interface DemoLiveCableLifecycle {
   subscribe(listener: (state: DemoLiveCableLifecycleState) => void): () => void;
 }
 
+export interface DemoLiveCablePanelOptions {
+  readonly description?: string;
+  readonly refreshButtonLabel?: string | false;
+  readonly replaceButtonLabel?: string;
+  readonly sourceKey?: string;
+  readonly title?: string;
+}
+
 export interface DemoLiveCableProofProps {
   readonly createRuntime?: () => Promise<DemoLiveCableRuntime>;
   readonly lifecycle?: DemoLiveCableLifecycle;
   readonly origin: string;
+  readonly panelOptions?: DemoLiveCablePanelOptions;
 }
 
 function asDisplayError(error: unknown): Error {
@@ -113,12 +139,21 @@ const actionCableSocketEventTypes = ["open", "close", "error", "message"] as con
 export function createNativeActionCableSocket(
   url: string,
   protocols: readonly ["actioncable-v1-json"],
+  headers?: Readonly<Record<string, string>>,
 ): ActionCableWebSocket {
-  const NativeWebSocket = globalThis.WebSocket;
+  const NativeWebSocket = globalThis.WebSocket as unknown as
+    | (new (
+        url: string,
+        protocols: readonly string[],
+        options?: Readonly<{ headers: Readonly<Record<string, string>> }>,
+      ) => ActionCableWebSocket)
+    | undefined;
   if (typeof NativeWebSocket !== "function") {
     throw new StateError("The native WebSocket API is unavailable");
   }
-  const socket = new NativeWebSocket(url, [...protocols]) as unknown as ActionCableWebSocket;
+  const socket = headers
+    ? new NativeWebSocket(url, [...protocols], { headers })
+    : new NativeWebSocket(url, [...protocols]);
   const listeners = new Map<ActionCableWebSocketEventType, Set<NativeSocketListener>>(
     actionCableSocketEventTypes.map((type) => [type, new Set()]),
   );
@@ -200,22 +235,47 @@ const nativeDemoLiveCableLifecycle: DemoLiveCableLifecycle = Object.freeze({
 });
 
 export function resolveDemoLiveCableEndpoints(origin: string): DemoLiveCableEndpoints {
+  return resolveDemoLiveCableEndpointsFor(origin, {
+    broadcastPath: BROADCAST_PATH,
+    documentPath: DOCUMENT_PATH,
+  });
+}
+
+interface DemoLiveCablePaths {
+  readonly broadcastPath: string;
+  readonly documentPath: string;
+}
+
+function resolveDemoLiveCableEndpointsFor(
+  origin: string,
+  paths: DemoLiveCablePaths,
+): DemoLiveCableEndpoints {
   const cableUrl = resolveActionCableEndpoint(origin, CABLE_PATH);
   const base = new URL(origin).origin;
   return Object.freeze({
-    broadcastUrl: new URL(BROADCAST_PATH, base).toString(),
+    broadcastUrl: new URL(paths.broadcastPath, base).toString(),
     cableUrl,
-    documentUrl: new URL(DOCUMENT_PATH, base).toString(),
+    documentUrl: new URL(paths.documentPath, base).toString(),
   });
 }
 
 export async function createDemoLiveCableRuntime(
   options: DemoLiveCableRuntimeOptions,
 ): Promise<DemoLiveCableRuntime> {
+  return createDemoLiveCableRuntimeFor(options, {
+    broadcastPath: BROADCAST_PATH,
+    documentPath: DOCUMENT_PATH,
+  });
+}
+
+async function createDemoLiveCableRuntimeFor(
+  options: DemoLiveCableRuntimeOptions,
+  paths: DemoLiveCablePaths,
+): Promise<DemoLiveCableRuntime> {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new StateError("Standalone Rails demo options are invalid");
   }
-  const endpoints = resolveDemoLiveCableEndpoints(options.origin);
+  const endpoints = resolveDemoLiveCableEndpointsFor(options.origin, paths);
   const fetch = options.fetch ?? nativeDemoLiveFetch;
   if (typeof fetch !== "function") {
     throw new StateError("Standalone Rails demo fetch is invalid");
@@ -362,6 +422,55 @@ export async function createDemoLiveCableRuntime(
   });
 }
 
+export async function createDemoLiveProtectedCableRuntime(
+  options: DemoLiveProtectedCableRuntimeOptions,
+): Promise<DemoLiveCableRuntime> {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new StateError("Standalone Rails protected Cable demo options are invalid");
+  }
+  const fetch = options.fetch ?? nativeDemoLiveFetch;
+  if (typeof fetch !== "function") {
+    throw new StateError("Standalone Rails protected Cable demo fetch is invalid");
+  }
+  const endpoints = resolveDemoLiveCableEndpointsFor(options.origin, {
+    broadcastPath: PROTECTED_BROADCAST_PATH,
+    documentPath: PROTECTED_DOCUMENT_PATH,
+  });
+  const response = await fetch(new URL(PROTECTED_TICKET_PATH, endpoints.documentUrl).toString(), {
+    headers: { Accept: "text/plain" },
+    method: "GET",
+  });
+  if (response.status !== 200) {
+    throw new RequestError("The standalone Rails protected Cable ticket request failed", {
+      responseStatus: response.status,
+    });
+  }
+  let ticket: string;
+  try {
+    ticket = await response.text();
+  } catch {
+    throw new RequestError("The standalone Rails protected Cable ticket response failed");
+  }
+  if (ticket === "" || ticket.trim() !== ticket) {
+    throw new RequestError("The standalone Rails protected Cable ticket is invalid");
+  }
+  const headers = Object.freeze({ [NATIVE_CABLE_TICKET_HEADER]: ticket });
+  const createSocket = options.createSocket ?? createNativeActionCableSocket;
+
+  return createDemoLiveCableRuntimeFor(
+    {
+      clock: options.clock,
+      createSocket: (url, protocols) => createSocket(url, protocols, headers),
+      fetch,
+      origin: options.origin,
+    },
+    {
+      broadcastPath: PROTECTED_BROADCAST_PATH,
+      documentPath: PROTECTED_DOCUMENT_PATH,
+    },
+  );
+}
+
 function useDemoLiveCableRuntimeOwner(proof: DemoLiveCableRuntime): void {
   useEffect(() => {
     liveRuntimeOwners.set(proof, (liveRuntimeOwners.get(proof) ?? 0) + 1);
@@ -403,8 +512,25 @@ export function DemoLiveCableRuntimeProvider({
 }
 
 const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
+const DEMO_PROTECTED_STREAM_SOURCE_KEY = "id:demo-protected-stream-source";
+const protectedCablePanelOptions = Object.freeze({
+  description:
+    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It is a bounded demo contract, not a production user, revocation, rotation, heartbeat, network, Android-interaction, or physical-device policy.",
+  refreshButtonLabel: false,
+  replaceButtonLabel: "Broadcast protected XML replace",
+  sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,
+  title: "Header-ticket Action Cable proof",
+} satisfies DemoLiveCablePanelOptions);
 
-export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRuntime }>) {
+export function DemoLiveCablePanel({
+  description =
+    "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, server-owned Frame form, auth, heartbeat, network policy, or client retry.",
+  proof,
+  refreshButtonLabel = "Refresh canonical document",
+  replaceButtonLabel = "Broadcast XML replace",
+  sourceKey = DEMO_STREAM_SOURCE_KEY,
+  title = "Anonymous Action Cable proof",
+}: Readonly<{ proof: DemoLiveCableRuntime }> & DemoLiveCablePanelOptions) {
   const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
@@ -423,13 +549,13 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
       setConnected(
         proof.streamSources.connectionSnapshot.sources.some(
           (source) =>
-            source.nodeKey === DEMO_STREAM_SOURCE_KEY && source.state === "connected",
+            source.nodeKey === sourceKey && source.state === "connected",
         ),
       );
     };
     updateConnection();
     return proof.streamSources.subscribeConnection(updateConnection);
-  }, [proof]);
+  }, [proof, sourceKey]);
 
   useEffect(
     () =>
@@ -443,14 +569,14 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
     <DemoLiveCableRuntimeProvider proof={proof}>
       <View style={{ borderColor: "#6d7f93", borderRadius: 12, borderWidth: 1, gap: 12, padding: 16 }}>
         <Text selectable style={{ fontSize: 18, fontWeight: "600" }}>
-          Anonymous Action Cable proof
+          {title}
         </Text>
         <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-          This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active; it has no user document navigation, server-owned Frame form, auth, heartbeat, network policy, or client retry.
+          {description}
         </Text>
         <ExpoTurboRoot />
         <Pressable
-          accessibilityLabel="Broadcast XML replace"
+          accessibilityLabel={replaceButtonLabel}
           accessibilityRole="button"
           disabled={broadcasting !== undefined || !connected}
           onPress={() => sendBroadcast("replace")}
@@ -466,31 +592,33 @@ export function DemoLiveCablePanel({ proof }: Readonly<{ proof: DemoLiveCableRun
             {broadcasting === "replace"
               ? "Broadcasting…"
               : connected
-                ? "Broadcast XML replace"
+                ? replaceButtonLabel
                 : "Waiting for Action Cable…"}
           </Text>
         </Pressable>
-        <Pressable
-          accessibilityLabel="Refresh canonical document"
-          accessibilityRole="button"
-          disabled={broadcasting !== undefined || !connected}
-          onPress={() => sendBroadcast("refresh")}
-          style={({ pressed }) => ({
-            alignItems: "center",
-            backgroundColor: pressed || broadcasting === "refresh" ? "#254a36" : "#34704d",
-            borderRadius: 12,
-            opacity: broadcasting !== undefined ? 0.65 : 1,
-            padding: 14,
-          })}
-        >
-          <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
-            {broadcasting === "refresh"
-              ? "Refreshing…"
-              : connected
-                ? "Refresh canonical document"
-                : "Waiting for Action Cable…"}
-          </Text>
-        </Pressable>
+        {refreshButtonLabel ? (
+          <Pressable
+            accessibilityLabel={refreshButtonLabel}
+            accessibilityRole="button"
+            disabled={broadcasting !== undefined || !connected}
+            onPress={() => sendBroadcast("refresh")}
+            style={({ pressed }) => ({
+              alignItems: "center",
+              backgroundColor: pressed || broadcasting === "refresh" ? "#254a36" : "#34704d",
+              borderRadius: 12,
+              opacity: broadcasting !== undefined ? 0.65 : 1,
+              padding: 14,
+            })}
+          >
+            <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+              {broadcasting === "refresh"
+                ? "Refreshing…"
+                : connected
+                  ? refreshButtonLabel
+                  : "Waiting for Action Cable…"}
+            </Text>
+          </Pressable>
+        ) : null}
         {error ? (
           <Text selectable style={{ color: "#a62525" }}>
             {error.name}: {error.message}
@@ -505,6 +633,7 @@ export function DemoLiveCableProof({
   createRuntime,
   lifecycle = nativeDemoLiveCableLifecycle,
   origin,
+  panelOptions,
 }: DemoLiveCableProofProps) {
   const startRuntime = useCallback(
     () => createRuntime?.() ?? createDemoLiveCableRuntime({ origin }),
@@ -607,5 +736,25 @@ export function DemoLiveCableProof({
       </Text>
     );
   }
-  return <DemoLiveCablePanel proof={proof} />;
+  return <DemoLiveCablePanel proof={proof} {...panelOptions} />;
+}
+
+export function DemoLiveProtectedCableProof({
+  createRuntime,
+  lifecycle,
+  origin,
+}: Readonly<Omit<DemoLiveCableProofProps, "panelOptions">>) {
+  const startRuntime = useCallback(
+    () => createRuntime?.() ?? createDemoLiveProtectedCableRuntime({ origin }),
+    [createRuntime, origin],
+  );
+
+  return (
+    <DemoLiveCableProof
+      createRuntime={startRuntime}
+      lifecycle={lifecycle}
+      origin={origin}
+      panelOptions={protectedCablePanelOptions}
+    />
+  );
 }
