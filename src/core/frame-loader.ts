@@ -178,6 +178,8 @@ export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly requestLifecycle?: RequestLifecycle
 }
 
+type FramePreloadMode = "consume" | "ignore" | "require"
+
 interface ActiveFrameRequest {
   readonly controller: AbortController
   readonly frame: ProtocolElement
@@ -380,6 +382,41 @@ export class FrameRequestLoader {
     source: string,
     options: FrameLoadOptions = {},
   ): Promise<FrameLoadReport> {
+    const report = await this.loadWithPreloadMode(frameId, source, options, "consume")
+    if (!report) {
+      throw new StateError("Frame load unexpectedly missed its required response", { frameId })
+    }
+    return report
+  }
+
+  /** @internal Consumes only an exact cached response and starts no request on a miss. */
+  loadPreloaded(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions = {},
+  ): Promise<FrameLoadReport | undefined> {
+    return this.loadWithPreloadMode(frameId, source, options, "require")
+  }
+
+  /** @internal Performs the canonical request without consuming an exact cached response. */
+  async loadCanonical(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions = {},
+  ): Promise<FrameLoadReport> {
+    const report = await this.loadWithPreloadMode(frameId, source, options, "ignore")
+    if (!report) {
+      throw new StateError("Canonical Frame load unexpectedly produced no response", { frameId })
+    }
+    return report
+  }
+
+  private async loadWithPreloadMode(
+    frameId: string,
+    source: string,
+    options: FrameLoadOptions,
+    preloadMode: FramePreloadMode,
+  ): Promise<FrameLoadReport | undefined> {
     const renderMethod = frameLoadRenderMethod(options)
     const loadOptions = frameLoadOptions(options)
     const owner = loadOptions.owner
@@ -392,7 +429,8 @@ export class FrameRequestLoader {
     let firstRequestId: string
     let firstHeaders: ReturnType<typeof protocolRequestHeaders>
     try {
-      cachedPreload = this.preloadCache?.take(frameId, url)
+      cachedPreload = preloadMode === "ignore" ? undefined : this.preloadCache?.take(frameId, url)
+      if (preloadMode === "require" && !cachedPreload) return undefined
       firstRequestId = cachedPreload?.requestId ?? this.requestIds.next()
       firstHeaders = protocolRequestHeaders({
         ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),

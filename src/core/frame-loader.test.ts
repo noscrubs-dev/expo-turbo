@@ -86,6 +86,54 @@ describe("Frame request loader", () => {
     })
     expect(requests).toHaveLength(1)
   })
+
+  test("separates cache-only preview selection from canonical revalidation", async () => {
+    const session = documentSession()
+    const cache = new FramePreloadCache()
+    const requests: TurboRequest[] = []
+    let requestIds = 0
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async (request) => {
+          requests.push(request)
+          return response('<turbo-frame id="details"><Canonical id="canonical" /></turbo-frame>', {
+            url: request.url,
+          })
+        },
+      },
+      { next: () => `canonical-${++requestIds}` },
+      { preloadCache: cache },
+    )
+
+    expect(await loader.loadPreloaded("details", "/frame")).toBeUndefined()
+    expect({ requestIds, requests }).toEqual({ requestIds: 0, requests: [] })
+
+    cache.put({
+      body: '<turbo-frame id="details"><Preview id="preview" /></turbo-frame>',
+      frameId: "details",
+      redirected: false,
+      requestId: "preview-request",
+      responseStatus: 200,
+      responseUrl: "https://example.test/frame",
+      url: "https://example.test/frame",
+    })
+    expect(await loader.loadPreloaded("details", "/frame")).toMatchObject({
+      requestId: "preview-request",
+      status: "completed",
+    })
+    expect(session.tree.getElementById("preview")).toBeDefined()
+    expect(requests).toHaveLength(0)
+
+    expect(await loader.loadCanonical("details", "/frame")).toMatchObject({
+      requestId: "canonical-1",
+      status: "completed",
+    })
+    expect(requests).toHaveLength(1)
+    expect(session.tree.getElementById("preview")).toBeUndefined()
+    expect(session.tree.getElementById("canonical")).toBeDefined()
+  })
+
   test("snapshots and validates the request lifecycle option", async () => {
     const lifecycle = new RequestLifecycle()
     let events = 0
