@@ -1026,7 +1026,7 @@ describe("demo app runtime ownership", () => {
     expect(scrolls.at(-1)).toEqual({ x: 0, y: 720 });
     const canonicalTimer = timers[0];
     if (!canonicalTimer) throw new Error("Frame preview canonical revalidation did not delay");
-    expect(canonicalTimer.delayMs).toBe(1_500);
+    expect(canonicalTimer.delayMs).toBe(4_000);
 
     await act(async () => {
       canonicalTimer.callback();

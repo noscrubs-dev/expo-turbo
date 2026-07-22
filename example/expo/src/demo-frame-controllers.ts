@@ -27,7 +27,7 @@ export interface DemoFrameControllers {
   readonly preloader: FramePreloader;
 }
 
-const FRAME_PREVIEW_REVALIDATION_DELAY_MS = 1_500;
+const FRAME_PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 const LINK_FRAME_PREVIEW = `<Gallery><turbo-frame id="link-frame">
   <DemoCard id="frame-preload-preview" title="Preloaded Frame preview" tone="warning">
