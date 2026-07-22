@@ -878,7 +878,7 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
-  test("activates a registered anchor inside its current Frame without a Frame request", async () => {
+  test("activates current and named Frame anchors without a Frame request", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];
     const runtime = createDemoRuntime({
@@ -961,13 +961,30 @@ describe("demo app runtime ownership", () => {
         ).length > 0,
       );
     if (!anchorLink) throw new Error("Frame anchor link was not rendered");
+    const namedFrameAnchorLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Jump from the document into the named Frame anchor target.",
+            ),
+        ).length > 0,
+      );
+    if (!namedFrameAnchorLink) throw new Error("Named Frame anchor link was not rendered");
 
     await act(async () => {
       anchorLink.props.onPress();
       await nextTurn();
+      namedFrameAnchorLink.props.onPress();
+      await nextTurn();
     });
 
-    expect(scrolls).toEqual([{ x: 0, y: 720 }]);
+    expect(scrolls).toEqual([
+      { x: 0, y: 720 },
+      { x: 0, y: 720 },
+    ]);
     expect(requests).toHaveLength(requestsBeforeAnchor);
     expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
     expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
