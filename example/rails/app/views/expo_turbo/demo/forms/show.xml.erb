@@ -32,4 +32,15 @@
     />
     <DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" />
   </DemoForm>
+  <DemoForm id="demo-plan-form" action="/api/expo_turbo/demo/form" method="post">
+    <DemoText id="demo-plan-form-title">Native select descriptor</DemoText>
+    <DemoFormPlanSelect
+      id="demo-form-plan"
+      label="Demo plan"
+      name="profile[plan]"
+      selected="<%= plan_selected %>"
+      <% if plan_error %>error="<%= ERB::Util.html_escape(plan_error) %>"<% end %>
+    />
+    <DemoFormSubmitter id="demo-form-plan-submit" label="Save plan" name="commit" value="save-plan" />
+  </DemoForm>
 <% end %>

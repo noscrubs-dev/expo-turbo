@@ -662,6 +662,87 @@ const formCheckbox = defineComponent({
   tag: "DemoFormCheckbox",
 });
 
+type DemoPlan = "none" | "starter" | "pro";
+
+function DemoFormPlanSelectComponent({
+  error,
+  label,
+  name,
+  selected,
+}: {
+  error?: string;
+  label: string;
+  name: string;
+  selected: DemoPlan;
+}) {
+  const [current, setCurrent] = useState(selected);
+  const control = useExpoTurboFormControl({
+    kind: "select",
+    name,
+    options: [
+      { kind: "option", selected: current === "starter", value: "starter" },
+      { kind: "option", selected: current === "pro", value: "pro" },
+    ],
+  });
+  const option = (value: Exclude<DemoPlan, "none">, optionLabel: string) => {
+    const isSelected = current === value;
+    return (
+      <Pressable
+        accessibilityLabel={optionLabel}
+        accessibilityRole="radio"
+        accessibilityState={{ ...control.accessibilityState, selected: isSelected }}
+        disabled={control.disabled}
+        key={value}
+        onPress={() => setCurrent(value)}
+        style={{
+          backgroundColor: isSelected ? "#d7e8fa" : "white",
+          borderColor: isSelected ? "#285589" : "#9eb0c3",
+          borderRadius: 10,
+          borderWidth: 1,
+          opacity: control.disabled ? 0.55 : 1,
+          padding: 10,
+        }}
+      >
+        <Text style={{ color: "#172230", fontSize: 14, fontWeight: isSelected ? "600" : "400" }}>
+          {optionLabel}
+        </Text>
+      </Pressable>
+    );
+  };
+  return (
+    <View accessibilityHint={error} style={{ gap: 6 }}>
+      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+      <View accessibilityLabel={label} style={{ gap: 6 }}>
+        {option("starter", "Starter plan")}
+        {option("pro", "Pro plan")}
+      </View>
+      {error ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+const formPlanSelect = defineComponent({
+  attributes: {
+    error: { codec: stringCodec, prop: "error" },
+    label: { codec: stringCodec, prop: "label" },
+    name: { codec: stringCodec, prop: "name" },
+    selected: { codec: enumCodec(["none", "starter", "pro"]), prop: "selected" },
+  },
+  children: "none",
+  component: DemoFormPlanSelectComponent,
+  schema: z.object({
+    error: z.string().trim().min(1).optional(),
+    label: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    selected: z.enum(["none", "starter", "pro"]),
+  }),
+  tag: "DemoFormPlanSelect",
+});
+
 function DemoFormSubmitterComponent(props: {
   formaction?: string;
   formenctype?: string;
@@ -743,6 +824,7 @@ export const DEMO_REGISTRY = createRegistry(
       formInput,
       formFile,
       formCheckbox,
+      formPlanSelect,
       formSubmitter,
     ],
     name: "demo-primitives",
