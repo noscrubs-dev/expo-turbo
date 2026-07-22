@@ -227,7 +227,7 @@ export class ActionCableV1WebSocketAdapter implements CableAdapter {
     if (this.welcomed && group.records.has(record) && !group.subscribed) {
       this.subscribeGroup(group)
     }
-    if (group.confirmed && record.active && group.records.has(record)) {
+    if (group.confirmed && !record.connected && record.active && group.records.has(record)) {
       record.connected = true
       this.invoke(record, "connected", false)
     }

@@ -3,6 +3,7 @@ import {
   resolveActionCableEndpoint,
   type ActionCableWebSocket,
   type ActionCableWebSocketAdapterOptions,
+  type ActionCableWebSocketEventType,
   type ClockAdapter,
 } from "expo-turbo/adapters";
 import {
@@ -100,7 +101,16 @@ function asDisplayError(error: unknown): Error {
     : new StateError("The standalone Rails demo is unavailable");
 }
 
-function nativeSocket(
+type NativeSocketListener = (event: Readonly<{ readonly data?: unknown }>) => void;
+
+type BufferedNativeSocketEvent = Readonly<{
+  readonly event: Readonly<{ readonly data?: unknown }>;
+  readonly type: ActionCableWebSocketEventType;
+}>;
+
+const actionCableSocketEventTypes = ["open", "close", "error", "message"] as const;
+
+export function createNativeActionCableSocket(
   url: string,
   protocols: readonly ["actioncable-v1-json"],
 ): ActionCableWebSocket {
@@ -108,7 +118,66 @@ function nativeSocket(
   if (typeof NativeWebSocket !== "function") {
     throw new StateError("The native WebSocket API is unavailable");
   }
-  return new NativeWebSocket(url, [...protocols]) as unknown as ActionCableWebSocket;
+  const socket = new NativeWebSocket(url, [...protocols]) as unknown as ActionCableWebSocket;
+  const listeners = new Map<ActionCableWebSocketEventType, Set<NativeSocketListener>>(
+    actionCableSocketEventTypes.map((type) => [type, new Set()]),
+  );
+  const pending: BufferedNativeSocketEvent[] = [];
+  let messageFlushScheduled = false;
+
+  const flush = (allowMessages = false) => {
+    while (pending[0]) {
+      const next = pending[0];
+      if (!next) return;
+      const callbacks = listeners.get(next.type);
+      if (!callbacks || callbacks.size === 0) return;
+      if (next.type === "message" && !allowMessages) {
+        if (!messageFlushScheduled) {
+          messageFlushScheduled = true;
+          setTimeout(() => {
+            messageFlushScheduled = false;
+            flush(true);
+          }, 0);
+        }
+        return;
+      }
+      pending.shift();
+      for (const callback of callbacks) callback(next.event);
+    }
+  };
+
+  const receive = (
+    type: ActionCableWebSocketEventType,
+    event: Readonly<{ readonly data?: unknown }>,
+  ) => {
+    pending.push({
+      event: type === "message" ? { data: event.data } : {},
+      type,
+    });
+    flush();
+  };
+
+  for (const type of actionCableSocketEventTypes)
+    socket.addEventListener(type, (event) => receive(type, event));
+
+  return Object.freeze({
+    addEventListener(type: ActionCableWebSocketEventType, listener: NativeSocketListener) {
+      listeners.get(type)?.add(listener);
+      flush();
+    },
+    close() {
+      socket.close();
+    },
+    get protocol() {
+      return socket.protocol;
+    },
+    removeEventListener(type: ActionCableWebSocketEventType, listener: NativeSocketListener) {
+      listeners.get(type)?.delete(listener);
+    },
+    send(data: string) {
+      socket.send(data);
+    },
+  });
 }
 
 function asDemoLiveCableLifecycleState(
@@ -218,7 +287,7 @@ export async function createDemoLiveCableRuntime(
     { onError: reportError },
   );
   const cable = new ActionCableV1WebSocketAdapter({
-    createSocket: options.createSocket ?? nativeSocket,
+    createSocket: options.createSocket ?? createNativeActionCableSocket,
     onError: reportError,
     url: endpoints.cableUrl,
   });

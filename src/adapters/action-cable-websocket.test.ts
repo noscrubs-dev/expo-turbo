@@ -224,6 +224,31 @@ describe("Action Cable v1 WebSocket adapter", () => {
     expect(disposedSocket.closeCalls).toBe(1)
   })
 
+  test("notifies a synchronously confirmed initial subscription once", () => {
+    const socket = new FakeSocket()
+    const events: string[] = []
+    const identifier = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"synchronous"}'
+    const addEventListener = socket.addEventListener.bind(socket)
+    socket.addEventListener = (type, listener) => {
+      addEventListener(type, listener)
+      if (type !== "message") return
+      socket.emitOpen()
+      socket.emitMessage('{"type":"welcome"}')
+    }
+    socket.onSend = (command) => {
+      if (command === encodeActionCableSubscribe(identifier)) confirmation(socket, identifier)
+    }
+    const adapter = new ActionCableV1WebSocketAdapter({
+      createSocket: () => socket,
+      onError: () => undefined,
+      url: "wss://cable.example.test/cable",
+    })
+
+    adapter.subscribe(identifier, callbackEvents(events, "initial"))
+
+    expect(events).toEqual(["initial:connected:false"])
+  })
+
   test("settles queued reentrant subscriptions when a socket factory fails and allows a later retry", () => {
     const errors: SubscriptionError[] = []
     const events: string[] = []
