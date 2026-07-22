@@ -31,6 +31,12 @@ const GALLERY_QUERY_URL = "https://example.test/demo?source=deep-link&tag=a&tag=
 const LINKED_QUERY_URL = "https://example.test/demo/linked?flag=&space=+&encoded=%20";
 const NESTED_QUERY_URL =
   "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
+const DIRECT_QUERY_INPUT_PATH =
+  "/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=+&encoded=%20";
+const DIRECT_QUERY_PATH =
+  "/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
+const DIRECT_QUERY_URL =
+  "https://example.test/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
 
 type WriteBehavior =
   | "collateral"
@@ -50,7 +56,10 @@ class FakeNavigation implements DemoRouterNavigation {
   synchronousEvents = true;
   state: DemoRouterState;
 
-  constructor(params?: Readonly<Record<string, unknown>>) {
+  constructor(
+    params?: Readonly<Record<string, unknown>>,
+    path?: string,
+  ) {
     this.state = Object.freeze({
       stale: false,
       type: "stack",
@@ -63,7 +72,7 @@ class FakeNavigation implements DemoRouterNavigation {
         Object.freeze({
           key: INITIAL_ROUTE_KEY,
           name: DEMO_ROUTER_ROUTE_NAME,
-          path: "/demo",
+          path,
           state: Object.freeze({ index: 0, routes: Object.freeze([]) }),
           params: Object.freeze({
             [DEMO_ROUTER_PATH_PARAM]: Object.freeze(["demo"]),
@@ -232,8 +241,11 @@ function managedEntry(
   return Object.freeze({ restorationIdentifier, restorationIndex, url });
 }
 
-function harness(params?: Readonly<Record<string, unknown>>) {
-  const navigation = new FakeNavigation(params);
+function harness(
+  params?: Readonly<Record<string, unknown>>,
+  path?: string,
+) {
+  const navigation = new FakeNavigation(params, path);
   let history!: DocumentHistory;
   let identifier = 0;
   const external: string[] = [];
@@ -386,6 +398,50 @@ describe("demo Expo Router history bridge", () => {
     const detach = fixture.bridge.attach(fixture.navigation, pushed.key);
     expect(fixture.bridge.readRouteState()).toEqual({ entry: proposal.entry, kind: "managed" });
     detach();
+  });
+
+  test("uses Expo Router's canonical direct-link path as authoritative query input", () => {
+    const state = getStateFromPath(DIRECT_QUERY_INPUT_PATH, {
+      screens: { [DEMO_ROUTER_ROUTE_NAME]: { path: "*expoTurboPath" } },
+    });
+    const route = state?.routes[0];
+    if (!route?.params || !route.path) throw new Error("missing direct Router route");
+    const params = route.params as Readonly<Record<string, unknown>>;
+    expect(route.path).toBe(DIRECT_QUERY_INPUT_PATH);
+    expect(params.plus).toBe(" ");
+    expect(params.encoded).toBe(" ");
+    const nativeParams = Object.freeze({ ...params, encoded: "" });
+
+    for (const path of [DIRECT_QUERY_PATH, `/--${DIRECT_QUERY_PATH}`]) {
+      const fixture = harness(nativeParams, path);
+      expect(fixture.bridge.readRouteState()).toEqual({
+        kind: "unmanaged",
+        url: DIRECT_QUERY_URL,
+      });
+
+      const initialized = initialize(fixture, DIRECT_QUERY_URL);
+      expect(initialized.entry.url).toBe(DIRECT_QUERY_URL);
+      expect(fixture.navigation.state.routes[0]?.params?.source).toBe("direct");
+      expect(fixture.navigation.state.routes[0]?.params?.tag).toEqual(["a", "b"]);
+      expect(decodeDemoRouterHistoryEntry(fixture.navigation.state.routes[0]?.params)).toEqual(
+        initialized.entry,
+      );
+      fixture.detach();
+    }
+  });
+
+  test("rejects malformed or path-mismatched direct Router links", () => {
+    for (const path of [
+      "/demo?",
+      "/demo#anchor",
+      "//other.test/demo",
+      "/demo\\linked",
+      "/demo/linked?source=wrong",
+      "/demo%2Flinked?source=wrong",
+    ]) {
+      expect(() => harness(undefined, path)).toThrow(StateError);
+    }
+    expect(() => harness({ source: "wrong" }, "/demo?source=direct")).toThrow(StateError);
   });
 
   test("keeps ordinary Router query-shaped params unmanaged while history owns query URLs", () => {

@@ -268,6 +268,85 @@ function routeDocumentPath(route: DemoRouterRoute) {
   return decodeDemoRouterDocumentPath(params[DEMO_ROUTER_PATH_PARAM]);
 }
 
+function directRouteQuery(route: DemoRouterRoute, url: URL): void {
+  const params = unmanagedParams(route);
+  const expected = new Map<string, string[]>();
+  for (const [name, value] of url.searchParams) {
+    const values = expected.get(name);
+    if (values) values.push(value);
+    else expected.set(name, [value]);
+  }
+  if (Object.keys(params).length !== expected.size) {
+    throw new StateError("Demo Router history route query is invalid");
+  }
+  for (const [name, expectedValues] of expected) {
+    const value = params[name];
+    const actualValues =
+      typeof value === "string"
+        ? [value]
+        : Array.isArray(value) && value.every((candidate) => typeof candidate === "string")
+          ? value
+          : undefined;
+    if (
+      !actualValues ||
+      actualValues.length !== expectedValues.length ||
+      actualValues.some((candidate, index) => candidate !== expectedValues[index])
+    ) {
+      throw new StateError("Demo Router history route query is invalid");
+    }
+  }
+}
+
+function directRouteDocumentUrl(route: DemoRouterRoute): string | undefined {
+  if (route.path === undefined) return undefined;
+  if (typeof route.path !== "string" || !route.path.startsWith("/")) {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  const path = route.path.startsWith("/--/") ? route.path.slice(3) : route.path;
+  const queryIndex = path.indexOf("?");
+  const pathname = queryIndex === -1 ? path : path.slice(0, queryIndex);
+  if (
+    pathname.includes("\\") ||
+    [...path].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+    })
+  ) {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  let url: URL;
+  try {
+    url = new URL(path, "https://example.test");
+  } catch {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  if (
+    url.origin !== "https://example.test" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== "" ||
+    path.includes("#") ||
+    (url.search === "" && queryIndex !== -1)
+  ) {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  const routePath = routeDocumentPath(route);
+  let directSegments: readonly string[];
+  try {
+    directSegments = encodeDemoRouterDocumentPath(url.href);
+  } catch {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  if (
+    directSegments.length !== routePath.segments.length ||
+    directSegments.some((segment, index) => segment !== routePath.segments[index])
+  ) {
+    throw new StateError("Demo Router history route path is invalid");
+  }
+  directRouteQuery(route, url);
+  return url.href;
+}
+
 function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined {
   const entry = decodeDemoRouterHistoryEntry(route.params);
   if (!entry) return undefined;
@@ -288,7 +367,7 @@ function managedEntry(route: DemoRouterRoute): DocumentHistoryEntry | undefined 
 }
 
 function routeDocumentUrl(route: DemoRouterRoute): string {
-  return managedEntry(route)?.url ?? routeDocumentPath(route).url;
+  return managedEntry(route)?.url ?? directRouteDocumentUrl(route) ?? routeDocumentPath(route).url;
 }
 
 function sameStackState(left: DemoRouterState, right: DemoRouterState): boolean {
