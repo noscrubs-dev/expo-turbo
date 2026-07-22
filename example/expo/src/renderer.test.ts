@@ -7480,6 +7480,65 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("loads a cross-document Frame fragment before scrolling its exact Frame target", async () => {
+    const clicks: string[] = []
+    const requests: TurboRequest[] = []
+    const scrolls: Readonly<{ alignment: string; id: string }>[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      clicks.push(event.detail.url)
+    })
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <turbo-frame id="current-frame">
+          <DocumentLink href="/next?tab=one#frame-section" />
+        </turbo-frame>
+      </Gallery>`,
+      async () => {
+        throw new Error("cross-document Frame fragments must not fetch a document")
+      },
+      "https://example.test/current",
+      undefined,
+      async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () =>
+            '<turbo-frame id="current-frame"><DemoText id="frame-section">Loaded section</DemoText></turbo-frame>',
+          url: request.url,
+        }
+      },
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id, alignment) {
+            scrolls.push({ alignment, id })
+          },
+        },
+      }),
+    )
+
+    let result: unknown
+    await act(async () => {
+      result = await harness.activation("/next?tab=one#frame-section")()
+    })
+
+    expect(result).toMatchObject({
+      frameId: "current-frame",
+      kind: "frame",
+      url: "https://example.test/next?tab=one#frame-section",
+    })
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://example.test/next?tab=one",
+    ])
+    expect(clicks).toEqual(["https://example.test/next?tab=one#frame-section"])
+    expect(scrolls).toEqual([{ alignment: "start", id: "frame-section" }])
+    act(() => harness.renderer.unmount())
+  })
+
   test("rejects same-document anchors while a document visit owns the session", async () => {
     let resolvePending: ((response: TurboResponse) => void) | undefined
     const scrolls: string[] = []

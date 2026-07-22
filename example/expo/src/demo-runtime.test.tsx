@@ -878,7 +878,7 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
-  test("activates current and named Frame anchors without a Frame request", async () => {
+  test("activates same-document and loaded cross-document Frame anchors", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];
     const runtime = createDemoRuntime({
@@ -923,6 +923,8 @@ describe("demo app runtime ownership", () => {
                 ) {
                   if (testID === "demo-anchor-target-frame-native-anchor-target") {
                     onSuccess(0, 720, 320, 40);
+                  } else if (testID === "demo-anchor-target-frame-linked-fragment-target") {
+                    onSuccess(0, 880, 320, 40);
                   }
                 },
                 measureInWindow(
@@ -973,6 +975,18 @@ describe("demo app runtime ownership", () => {
         ).length > 0,
       );
     if (!namedFrameAnchorLink) throw new Error("Named Frame anchor link was not rendered");
+    const crossDocumentFrameAnchorLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes("Load this Frame document, then jump to its fragment target."),
+        ).length > 0,
+      );
+    if (!crossDocumentFrameAnchorLink) {
+      throw new Error("Cross-document Frame anchor link was not rendered");
+    }
 
     await act(async () => {
       anchorLink.props.onPress();
@@ -989,6 +1003,17 @@ describe("demo app runtime ownership", () => {
     expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
     expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
     expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      crossDocumentFrameAnchorLink.props.onPress();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(scrolls.at(-1)).toEqual({ x: 0, y: 880 });
+    expect(runtime.session.tree.getElementById("frame-linked-fragment-target")).toBeDefined();
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
 
     await act(async () => {
       renderer?.unmount();
