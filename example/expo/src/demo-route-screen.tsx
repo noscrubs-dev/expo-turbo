@@ -21,6 +21,7 @@ import {
 import type { DemoRouterNavigation } from "./demo-router-history";
 import { DemoRouterRouteOwner } from "./demo-router-route-owner";
 import { DemoLiveCableProof } from "./demo-live-cable";
+import { DemoLiveDocumentRefreshMorphProof } from "./demo-live-document-refresh-morph";
 import { DemoLiveFormProof } from "./demo-live-form";
 import { DemoLiveMorphProof } from "./demo-live-morph";
 import { useDemoRuntime } from "./demo-runtime";
@@ -150,6 +151,7 @@ export function DemoCompatibilityGallery() {
       {Platform.OS !== "web" && DEMO_LIVE_RAILS_ORIGIN ? (
         <>
           <DemoLiveCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />
+          <DemoLiveDocumentRefreshMorphProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveFormProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveMorphProof origin={DEMO_LIVE_RAILS_ORIGIN} />
         </>
