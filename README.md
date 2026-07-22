@@ -70,7 +70,7 @@ A checked item is implemented and covered by the public test suite in the curren
 - [x] **Examples and bundle checks:** independently installed Expo and Rails examples; Expo checks export web, iOS, and Android bundles. Native exports catch bundle drift, not release-build or physical-device behavior.
 - [ ] **Still required for a production release:** production host-specific Action Cable credentials/tickets, protected-resource policy and expiry/revocation teardown, authenticated host-native socket integration, full reconnect/lifecycle policy, Frame-aware physical-device integration, complete conformance coverage, physical-device/accessibility evidence, and npm/RubyGems publication.
 
-The manual **Release candidate** workflow runs only from merged `main`, builds and clean-installs the exact npm tarball and Ruby gem, records a paired checksum manifest, and verifies its GitHub OIDC repository, `main` ref, and `release` environment claims. It deliberately cannot publish packages, create tags, or create releases. That keeps candidate verification separate from the remaining compatibility gates. Before any registry trusted publisher is enabled, protect the `release` environment with reviewer and `main` deployment rules. The first unscoped npm publication also remains a deliberate human 2FA bootstrap: npm trusted publishing can be configured only after the package exists.
+The manual **Release** workflow defaults to a non-publishing candidate run on merged `main`: it builds and clean-installs the exact npm tarball and Ruby gem, records a paired checksum manifest, and verifies its GitHub OIDC repository, `main` ref, and `release` environment claims. Its separately approval-gated `publish` mode accepts only a successful candidate-run ID for the exact current `main` commit, reuses those downloaded bytes without rebuilding, checks the candidate and registry-download SHA-256 values, and creates the source tag/GitHub release only after both registry writes succeed. Registry publication is necessarily sequential rather than cross-registry atomic; a failure stops loudly without a source tag or GitHub release. The protected `release` environment requires review and permits deployments only from `main`. The first unscoped npm publication remains a deliberate human 2FA bootstrap because npm trusted publishing can be configured only after the package exists; later stable runs use the configured npm and RubyGems trusted publishers.
 
 ### Detailed implemented surface
 
@@ -231,6 +231,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-22**:
+
+- Changed: The manual release workflow now has a default candidate mode and a reviewer-gated stable-publication mode that consumes a successful frozen candidate run.
+- Why: A stable release must publish the exact independently checked archives rather than silently rebuilding from source.
+- Impact: Stable publication verifies the candidate's current-main commit, manifests, checksums, empty registry versions, downloaded registry bytes, and unused source tag before creating the GitHub release. npm and RubyGems trusted-publisher setup remains required; the first unscoped npm publication is still a human 2FA bootstrap.
 
 **2026-07-22**:
 
