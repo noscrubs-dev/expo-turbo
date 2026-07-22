@@ -972,6 +972,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
     <DemoText>The nested region below owns a second clipping viewport. Its Frame remains idle until it is visible inside both this region and the gallery scroll view.</DemoText>
     <DemoScrollRegion id="nested-scroll-region">
       <DemoCard title="Nested offscreen content" style-tokens="space:comfortable">
+        <DemoDocumentLink href="#nested-native-anchor-target">
+          <DemoText>Jump within this nested ScrollView to its registered anchor target.</DemoText>
+        </DemoDocumentLink>
         <DemoText>Scroll this inner region to reach its lazy Frame. The outer gallery and nested ScrollView both measure in window coordinates.</DemoText>
       </DemoCard>
       <DemoCard title="Nested spacer" style-tokens="space:comfortable">
@@ -982,6 +985,11 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
           <DemoText>The Frame loads only after it appears through every registered clipping region.</DemoText>
         </DemoCard>
       </turbo-frame>
+      <DemoAnchorTarget id="nested-native-anchor-target">
+        <DemoCard title="Nested native anchor target" tone="positive" style-tokens="space:comfortable surface:elevated">
+          <DemoText>The example-owned anchor registry scrolled only this declared nested container.</DemoText>
+        </DemoCard>
+      </DemoAnchorTarget>
     </DemoScrollRegion>
   </DemoCard>
   <DemoCard id="flatlist-visibility-card" title="Virtualized lazy Frame visibility" style-tokens="tone:info space:compact">
