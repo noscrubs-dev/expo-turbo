@@ -232,6 +232,8 @@ RSpec.describe "standalone demo host" do
       .to eq("/api/expo_turbo/demo/form")
     expect(frame.at_xpath(".//DemoFormInput[@id='demo-form-first-name']")&.[]("value")).to eq("")
     expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-submit']")&.[]("value")).to eq("save")
+    expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-preserve-local']")&.[]("value"))
+      .to eq("save-morph")
     expect(frame.at_xpath(".//DemoFormSubmitter[@id='demo-form-complete']")&.[]("value"))
       .to eq("no-content")
     upload_form = frame.at_xpath("./DemoForm[@id='demo-upload-form']")
@@ -278,6 +280,29 @@ RSpec.describe "standalone demo host" do
     expect(frame.at_xpath(".//DemoFormInput[@id='demo-form-first-name']")&.[]("value")).to eq("invalid")
     expect(frame.at_xpath(".//DemoText[@id='demo-form-error']")&.text)
       .to eq("This demo name is unavailable")
+  end
+
+  it "returns a standard morph Stream for an opt-in local-draft validation response" do
+    host! "localhost"
+    post "/api/expo_turbo/demo/form",
+      params: {commit: "save-morph", profile: {first_name: "invalid"}},
+      headers: {"Content-Type" => "application/x-www-form-urlencoded", "Turbo-Frame" => "demo-form-frame"}
+
+    fragment = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
+    stream = fragment.at_xpath("/expo-turbo-test-root/turbo-stream")
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(stream["action"]).to eq("replace")
+    expect(stream["method"]).to eq("morph")
+    expect(stream["target"]).to eq("demo-form")
+    expect(stream.at_xpath("./template/DemoForm[@id='demo-form']/DemoFormInput[@id='demo-form-first-name']")&.[]("value"))
+      .to eq("")
+    expect(stream.at_xpath("./template/DemoForm/DemoText[@id='demo-form-error']")&.text)
+      .to eq("This demo name is unavailable")
+    expect(stream.at_xpath("./template/DemoForm/DemoFormSubmitter[@id='demo-form-preserve-local']")&.[]("value"))
+      .to eq("save-morph")
   end
 
   it "accepts only the standalone text/plain form profile" do

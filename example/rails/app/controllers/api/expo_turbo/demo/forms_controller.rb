@@ -38,9 +38,10 @@ module Api
           first_name = submitted.fetch(:first_name)
           commit = submitted.fetch(:commit)
           return head :bad_request unless valid_first_name?(first_name)
-          return head :bad_request unless ["save", "no-content"].include?(commit)
+          return head :bad_request unless ["save", "save-morph", "no-content"].include?(commit)
 
           error = validation_error(first_name)
+          return render_morph_validation_error(error:) if error && commit == "save-morph"
           return render_form(first_name:, error:, status: :unprocessable_content) if error
 
           return head :no_content if commit == "no-content"
@@ -57,6 +58,18 @@ module Api
 
         def render_form(first_name: "", error: nil, status: :ok, plan_error: nil, plan_selected: "none", terms_accepted: false, terms_error: nil, upload_error: nil)
           render_expo_turbo "demo/forms/show", locals: {error:, first_name:, plan_error:, plan_selected:, terms_accepted:, terms_error:, upload_error:}, status:
+        end
+
+        def render_morph_validation_error(error:)
+          render_expo_turbo_stream(
+            expo_turbo_stream.replace(
+              "demo-form",
+              method: :morph,
+              partial: "demo/forms/first_name_form",
+              locals: {error:, first_name: ""}
+            ),
+            status: :unprocessable_content
+          )
         end
 
         def render_bad_form_request

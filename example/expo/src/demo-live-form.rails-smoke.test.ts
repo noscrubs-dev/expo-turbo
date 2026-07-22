@@ -171,12 +171,57 @@ liveTest(
       throw new Error("Rails validation response did not include its error element")
     expect(nodeTextContent(invalidError)).toBe("This demo name is unavailable")
 
-    const textPlain = forms.controlsFor("id:demo-form")
-    textPlain.register("id:demo-form-first-name", {
+    const morph = forms.controlsFor("id:demo-form")
+    const formBeforeMorph = session.tree.getElementById("demo-form")
+    const inputBeforeMorph = session.tree.getElementById("demo-form-first-name")
+    if (!formBeforeMorph || !inputBeforeMorph)
+      throw new Error("Rails validation response did not leave its form addressable")
+    morph.register("id:demo-form-first-name", {
       kind: "value",
       name: "profile[first_name]",
-      value: "invalid",
+      value: "invalid local draft",
     })
+    const morphSubmitter = morph.register("id:demo-form-preserve-local", {
+      kind: "submitter",
+      name: "commit",
+      value: "save-morph",
+    })
+
+    await expect(
+      morph.submit({
+        protocol: { requestId: "rails-form-morph-invalid" },
+        submitter: morphSubmitter.selection,
+      }),
+    ).resolves.toMatchObject({
+      application: "stream",
+      classification: "client-error",
+      destination: { frameId: FRAME_ID, kind: "frame" },
+      redirected: false,
+      responseStatus: 422,
+      responseUrl: formUrl,
+      status: "applied",
+    })
+    expect(requests.shift()).toMatchObject({
+      body: {
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+        value: "profile%5Bfirst_name%5D=invalid+local+draft&commit=save-morph",
+      },
+      headers: {
+        Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+        "Turbo-Frame": FRAME_ID,
+      },
+      method: "POST",
+      url: formUrl,
+    })
+    expect(morph.isDisposed).toBe(false)
+    expect(session.tree.getElementById("demo-form")).toBe(formBeforeMorph)
+    expect(session.tree.getElementById("demo-form-first-name")).toBe(inputBeforeMorph)
+    expect(attributeValue(inputBeforeMorph, "value")).toBe("")
+    const morphError = session.tree.getElementById("demo-form-error")
+    if (!morphError) throw new Error("Rails morph validation response did not include its error")
+    expect(nodeTextContent(morphError)).toBe("This demo name is unavailable")
+
+    const textPlain = morph
     const textPlainSubmitter = textPlain.register("id:demo-form-text-plain", {
       kind: "submitter",
       name: "commit",
@@ -200,7 +245,7 @@ liveTest(
     expect(requests.shift()).toMatchObject({
       body: {
         contentType: "text/plain",
-        value: "profile[first_name]=invalid\r\ncommit=save\r\n",
+        value: "profile[first_name]=invalid local draft\r\ncommit=save\r\n",
       },
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,

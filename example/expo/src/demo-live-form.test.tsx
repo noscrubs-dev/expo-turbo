@@ -77,12 +77,12 @@ interface DemoLiveFetchResponse {
 
 function response(
   body: string,
-  options: Readonly<{ redirected?: boolean; status: number; url: string }>,
+  options: Readonly<{ contentType?: string; redirected?: boolean; status: number; url: string }>,
 ): DemoLiveFetchResponse {
   return Object.freeze({
     headers: Object.freeze({
       forEach(callback: (value: string, name: string) => void): void {
-        callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+        callback(options.contentType ?? EXPO_TURBO_MIME_TYPE, "Content-Type");
       },
     }),
     redirected: options.redirected ?? false,
@@ -101,7 +101,11 @@ function formXml(
   planSelected: "none" | "starter" | "pro" = "none",
   planError?: string,
 ): string {
-  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /><DemoFormSubmitter id="demo-form-upload-retry" label="Validate selected attachment (return 422)" name="commit" value="upload-retry" /></DemoForm><DemoForm id="demo-consent-form" action="${FORM_PATH}" method="post"><DemoFormCheckbox id="demo-form-terms" label="Accept demo terms" name="profile[terms]" value="accepted"${termsAccepted ? " checked" : ""}${termsError ? ` error="${termsError}"` : ""} /><DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" /></DemoForm><DemoForm id="demo-plan-form" action="${FORM_PATH}" method="post"><DemoFormPlanSelect id="demo-form-plan" label="Demo plan" name="profile[plan]" selected="${planSelected}"${planError ? ` error="${planError}"` : ""} /><DemoFormSubmitter id="demo-form-plan-submit" label="Save plan" name="commit" value="save-plan" /></DemoForm></turbo-frame>`;
+  return `<turbo-frame id="${FRAME_ID}"><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="${firstName}" />${error ? `<DemoText id="demo-form-error">${error}</DemoText>` : ""}<DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-preserve-local" label="Save name and preserve local draft" name="commit" value="save-morph" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm><DemoForm id="demo-upload-form" action="${FORM_PATH}" enctype="multipart/form-data" method="post"><DemoFormFile id="demo-form-attachment" label="Sample attachment" name="profile[attachment]" filename="expo-turbo-upload.txt"${uploadError ? ` error="${uploadError}"` : ""} /><DemoFormSubmitter id="demo-form-upload" label="Upload sample attachment" name="commit" value="upload" /><DemoFormSubmitter id="demo-form-upload-retry" label="Validate selected attachment (return 422)" name="commit" value="upload-retry" /></DemoForm><DemoForm id="demo-consent-form" action="${FORM_PATH}" method="post"><DemoFormCheckbox id="demo-form-terms" label="Accept demo terms" name="profile[terms]" value="accepted"${termsAccepted ? " checked" : ""}${termsError ? ` error="${termsError}"` : ""} /><DemoFormSubmitter id="demo-form-consent" label="Save consent" name="commit" value="save-consent" /></DemoForm><DemoForm id="demo-plan-form" action="${FORM_PATH}" method="post"><DemoFormPlanSelect id="demo-form-plan" label="Demo plan" name="profile[plan]" selected="${planSelected}"${planError ? ` error="${planError}"` : ""} /><DemoFormSubmitter id="demo-form-plan-submit" label="Save plan" name="commit" value="save-plan" /></DemoForm></turbo-frame>`;
+}
+
+function morphValidationStream(error: string): string {
+  return `<turbo-stream action="replace" target="demo-form" method="morph"><template><DemoForm id="demo-form" action="${FORM_PATH}" method="post"><DemoText id="demo-form-title">Rails Frame form</DemoText><DemoFormInput id="demo-form-first-name" label="First name" name="profile[first_name]" value="" /><DemoText id="demo-form-error">${error}</DemoText><DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" /><DemoFormSubmitter id="demo-form-preserve-local" label="Save name and preserve local draft" name="commit" value="save-morph" /><DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" /></DemoForm></template></turbo-stream>`;
 }
 
 function takePending(pending: PendingFetch[], message: string): PendingFetch {
@@ -427,6 +431,46 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     );
     const invalidFrame = proof.session.tree.getElementById(FRAME_ID);
     expect(invalidFrame && attributeValue(invalidFrame, "src")).toBe(formUrl);
+
+    const formBeforeMorph = proof.session.tree.getElementById("demo-form");
+    const inputBeforeMorph = proof.session.tree.getElementById("demo-form-first-name");
+    if (!formBeforeMorph || !inputBeforeMorph) throw new Error("The invalid form did not remain addressable");
+    await act(async () => {
+      renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("invalid local draft");
+      await Promise.resolve();
+    });
+    act(() => {
+      submitter("Save name and preserve local draft").onPress?.();
+    });
+    const morphValidation = takePending(pending, "The rendered form did not submit its morph validation action");
+    expect(morphValidation).toMatchObject({
+      request: {
+        body: "profile%5Bfirst_name%5D=invalid+local+draft&commit=save-morph",
+        headers: {
+          Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "Turbo-Frame": FRAME_ID,
+        },
+        method: "POST",
+      },
+      url: formUrl,
+    });
+    await act(async () => {
+      morphValidation.resolve(
+        response(morphValidationStream("This demo name is unavailable"), {
+          contentType: TURBO_STREAM_MIME_TYPE,
+          status: 422,
+          url: formUrl,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(proof.session.tree.getElementById("demo-form")).toBe(formBeforeMorph);
+    expect(proof.session.tree.getElementById("demo-form-first-name")).toBe(inputBeforeMorph);
+    expect(attributeValue(inputBeforeMorph, "value")).toBe("");
+    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe(
+      "invalid local draft",
+    );
 
     await act(async () => {
       renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("Ada");
