@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
+import { isTurboMultipartBody } from "../adapters"
 import { RequestError, TargetError } from "./errors"
 import {
   type BuildFormRequestOptions,
@@ -7,6 +8,8 @@ import {
   FORM_MULTIPART,
   FORM_TEXT_PLAIN,
   FORM_URL_ENCODED,
+  MAX_FORM_FILE_BYTES,
+  MAX_FORM_MULTIPART_BODY_BYTES,
   MAX_FORM_REQUEST_ENTRIES,
   MAX_FORM_TEXT_PLAIN_BODY_BYTES,
 } from "./form-request"
@@ -262,6 +265,57 @@ describe("form request construction", () => {
     }
   })
 
+  test("builds an immutable bounded multipart payload without a caller Content-Type", () => {
+    const attachment = Object.freeze({
+      blob: new Blob(["Expo Turbo native upload\n"], { type: "text/plain" }),
+      filename: "expo-turbo-upload.txt",
+    })
+    const built = plan({
+      entries: [
+        { name: "profile[caption]", value: "iOS fixture" },
+        { name: "profile[attachment]", value: attachment },
+        { name: "commit", value: "upload" },
+      ],
+      form: { enctype: FORM_MULTIPART, method: "POST" },
+    })
+
+    expect(built.request.body?.contentType).toBeUndefined()
+    const body = built.request.body?.value
+    if (!isTurboMultipartBody(body)) throw new Error("multipart body was not planned")
+    expect(body).toEqual({
+      byteLength: 104,
+      entries: [
+        { name: "profile[caption]", value: "iOS fixture" },
+        { name: "profile[attachment]", value: attachment },
+        { name: "commit", value: "upload" },
+      ],
+      kind: "multipart",
+    })
+    expect(Object.isFrozen(body)).toBe(true)
+    expect(Object.isFrozen(body.entries)).toBe(true)
+    expect(body.entries.every(Object.isFrozen)).toBe(true)
+  })
+
+  test("keeps Rails method normalization inside multipart payloads", () => {
+    const attachment = {
+      blob: new Blob(["upload"], { type: "text/plain" }),
+      filename: "upload.txt",
+    }
+    const built = plan({
+      entries: [{ name: "profile[attachment]", value: attachment }],
+      form: { enctype: FORM_MULTIPART, method: "PATCH" },
+    })
+
+    expect(built).toMatchObject({ effectiveMethod: "PATCH", sourceMethod: "PATCH" })
+    expect(built.request.method).toBe("POST")
+    const body = built.request.body?.value
+    if (!isTurboMultipartBody(body)) throw new Error("multipart body was not planned")
+    expect(body.entries).toEqual([
+      { name: "profile[attachment]", value: attachment },
+      { name: "_method", value: "patch" },
+    ])
+  })
+
   test("keeps _method literal for direct text/plain unsafe requests", () => {
     const built = plan({
       entries: [
@@ -479,8 +533,14 @@ describe("form request construction", () => {
     }
   })
 
-  test("rejects unconsumable bodies, malformed Rails overrides, metadata, and entries", () => {
-    expect(() => plan({ form: { enctype: FORM_MULTIPART, method: "POST" } })).toThrow(RequestError)
+  test("rejects malformed multipart files, unsupported file encodings, malformed Rails overrides, metadata, and entries", () => {
+    expect(plan({ form: { enctype: FORM_MULTIPART, method: "POST" } }).request.body?.value).toEqual(
+      {
+        byteLength: 0,
+        entries: [],
+        kind: "multipart",
+      },
+    )
     for (const value of ["", "get", "trace"]) {
       expect(() =>
         plan({ entries: [{ name: "_method", value }], form: { method: "POST" } }),
@@ -497,17 +557,48 @@ describe("form request construction", () => {
     expect(() =>
       plan({ entries: [{ name: "count", value: 3 } as unknown as SuccessfulFormEntry] }),
     ).toThrow(RequestError)
+    const attachment = {
+      blob: new Blob(["binary"], { type: "application/octet-stream" }),
+      filename: "photo.bin",
+    }
+    for (const form of [
+      {},
+      { enctype: FORM_TEXT_PLAIN, method: "POST" },
+      { enctype: FORM_URL_ENCODED, method: "POST" },
+    ]) {
+      expect(() =>
+        plan({
+          entries: [{ name: "upload", value: attachment }],
+          form,
+        }),
+      ).toThrow(RequestError)
+    }
     for (const value of [
       new Blob(["binary"]),
       { name: "photo.jpg", type: "image/jpeg", uri: "file:///photo.jpg" },
+      { blob: new Blob(["binary"]), filename: "bad\r\nname.txt" },
+      {
+        blob: { size: MAX_FORM_FILE_BYTES + 1, type: "application/octet-stream" } as Blob,
+        filename: "too-large.bin",
+      },
     ]) {
       expect(() =>
         plan({
           entries: [{ name: "upload", value } as unknown as SuccessfulFormEntry],
-          form: { enctype: FORM_TEXT_PLAIN, method: "POST" },
+          form: { enctype: FORM_MULTIPART, method: "POST" },
         }),
       ).toThrow(RequestError)
     }
+    const bodyLimit = {
+      blob: { size: MAX_FORM_MULTIPART_BODY_BYTES, type: "application/octet-stream" } as Blob,
+      filename: "over-body-limit.bin",
+    }
+    expect(() =>
+      plan({
+        entries: [{ name: "upload", value: bodyLimit }],
+        form: { enctype: FORM_MULTIPART, method: "POST" },
+      }),
+    ).toThrow(RequestError)
     expect(() => plan({ unsafeMethodTransport: "browser" as never })).toThrow(RequestError)
     expect(() => plan({ entries: Array(1) as unknown as readonly SuccessfulFormEntry[] })).toThrow(
       RequestError,

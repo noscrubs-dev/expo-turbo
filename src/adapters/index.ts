@@ -15,9 +15,51 @@ export * from "./styles"
 
 export type Unsubscribe = () => void
 
+/**
+ * One host-owned file selected for a native multipart form. The public core
+ * retains the immutable Blob reference and filename; the FetchAdapter turns
+ * it into the platform's FormData representation immediately before fetch.
+ */
+export interface TurboMultipartFile {
+  readonly blob: Blob
+  readonly filename: string
+}
+
+export interface TurboMultipartEntry {
+  readonly name: string
+  readonly value: string | TurboMultipartFile
+}
+
+/**
+ * Immutable semantic multipart payload. `byteLength` is the bounded logical
+ * payload size (field UTF-8 bytes plus Blob bytes), not exact wire framing.
+ * Adapters must not send a Content-Type header for this body: FormData owns
+ * the boundary.
+ */
+export interface TurboMultipartBody {
+  readonly byteLength: number
+  readonly entries: readonly TurboMultipartEntry[]
+  readonly kind: "multipart"
+}
+
+export type TurboRequestBodyValue = string | Uint8Array | TurboMultipartBody
+
 export interface TurboRequestBody {
   readonly contentType?: string
-  readonly value: string | Uint8Array
+  readonly value: TurboRequestBodyValue
+}
+
+export function isTurboMultipartBody(value: unknown): value is TurboMultipartBody {
+  try {
+    return (
+      !!value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      (value as { readonly kind?: unknown }).kind === "multipart"
+    )
+  } catch {
+    return false
+  }
 }
 
 export interface TurboRequest {

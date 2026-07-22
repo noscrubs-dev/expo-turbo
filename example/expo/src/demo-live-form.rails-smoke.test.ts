@@ -1,7 +1,12 @@
 /// <reference types="bun" />
 
 import { expect, mock, test } from "bun:test"
-import type { FetchAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters"
+import {
+  isTurboMultipartBody,
+  type FetchAdapter,
+  type TurboRequest,
+  type TurboResponse,
+} from "expo-turbo/adapters"
 import {
   attributeValue,
   DocumentFormControls,
@@ -15,6 +20,8 @@ import {
 } from "expo-turbo/core"
 import { createElement } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
+
+import { createDemoLiveFetchAdapter, nativeDemoLiveFetch } from "./demo-live-transport"
 
 interface PressableProps {
   readonly accessibilityLabel?: string
@@ -57,28 +64,10 @@ interface PendingFetch {
   readonly resolve: (response: TurboResponse) => void
 }
 
-async function fetchResponse(request: TurboRequest): Promise<TurboResponse> {
-  const headers = {
-    ...request.headers,
-    ...(request.body ? { "Content-Type": request.body.contentType } : {}),
-  }
-  const response = await globalThis.fetch(request.url, {
-    ...(request.body ? { body: request.body.value } : {}),
-    headers,
-    method: request.method,
-    ...(request.signal ? { signal: request.signal } : {}),
-  } as RequestInit)
-  const responseHeaders: Record<string, string> = {}
-  response.headers.forEach((value, name) => {
-    responseHeaders[name] = value
-  })
-  return Object.freeze({
-    headers: Object.freeze(responseHeaders),
-    redirected: response.redirected,
-    status: response.status,
-    text: () => response.text(),
-    url: response.url,
-  })
+const liveTransport = createDemoLiveFetchAdapter(nativeDemoLiveFetch)
+
+function fetchResponse(request: TurboRequest): Promise<TurboResponse> {
+  return liveTransport.fetch(request)
 }
 
 function createFetchAdapter(requests: TurboRequest[]): FetchAdapter {
@@ -307,6 +296,54 @@ liveTest(
     if (!validTitle) throw new Error("Rails canonical response did not include its form title")
     expect(nodeTextContent(validTitle)).toBe("Rails Frame form")
     expect(session.tree.getElementById("demo-form-error")).toBeUndefined()
+
+    const upload = forms.controlsFor("id:demo-upload-form")
+    const uploadBlob = new Blob(["Expo Turbo native multipart upload\n"], { type: "text/plain" })
+    upload.register("id:demo-form-attachment", {
+      entries: [
+        {
+          name: "profile[attachment]",
+          value: { blob: uploadBlob, filename: "expo-turbo-upload.txt" },
+        },
+      ],
+      kind: "entries",
+    })
+    const uploadSubmitter = upload.register("id:demo-form-upload", {
+      kind: "submitter",
+      name: "commit",
+      value: "upload",
+    })
+
+    await expect(
+      upload.submit({
+        protocol: { requestId: "rails-form-upload" },
+        submitter: uploadSubmitter.selection,
+      }),
+    ).resolves.toMatchObject({
+      application: "frame",
+      classification: "success",
+      destination: { frameId: FRAME_ID, kind: "frame" },
+      redirected: true,
+      responseStatus: 200,
+      responseUrl: formUrl,
+      status: "applied",
+    })
+    const uploadRequest = requests.shift()
+    if (!uploadRequest || !isTurboMultipartBody(uploadRequest.body?.value)) {
+      throw new Error("The Rails upload smoke did not issue a multipart request")
+    }
+    expect(uploadRequest.body.contentType).toBeUndefined()
+    expect(uploadRequest.body.value.entries).toEqual([
+      { name: "profile[attachment]", value: { blob: uploadBlob, filename: "expo-turbo-upload.txt" } },
+      { name: "commit", value: "upload" },
+    ])
+    expect(uploadRequest.headers).toMatchObject({
+      Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+      "Turbo-Frame": FRAME_ID,
+    })
+    expect(uploadRequest.method).toBe("POST")
+    expect(uploadRequest.url).toBe(formUrl)
+    expect(requests).toHaveLength(0)
   },
 )
 
@@ -431,7 +468,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     expect(session.tree.getElementById(FRAME_ID)).toBe(frameBeforeNoContent)
     expect(frameBeforeNoContent.children).toBe(childrenBeforeNoContent)
     expect(session.revision).toBe(revisionBeforeNoContent)
-    expect(renderer?.root.findByProps({ accessibilityLabel: "Form ready" })).toBeDefined()
+    expect(renderer?.root.findAllByProps({ accessibilityLabel: "Form ready" }).length).toBeGreaterThan(0)
     expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("Ada")
     expect(pending).toHaveLength(0)
 
@@ -465,7 +502,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
     })
     await invalidSubmission
     expect(session.tree.getElementById("demo-form-error")).toBeDefined()
-    expect(renderer?.root.findByProps({ accessibilityLabel: "Form ready" })).toBeDefined()
+    expect(renderer?.root.findAllByProps({ accessibilityLabel: "Form ready" }).length).toBeGreaterThan(0)
     expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe(
       "invalid",
     )

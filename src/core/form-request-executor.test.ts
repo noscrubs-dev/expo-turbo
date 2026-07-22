@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { TurboRequest, TurboResponse } from "../adapters"
+import { isTurboMultipartBody, type TurboRequest, type TurboResponse } from "../adapters"
 import { ContentTypeError, ExpoTurboError, PropsError, RequestError } from "./errors"
 import {
   type BuildFormRequestOptions,
@@ -183,6 +183,48 @@ describe("FormRequestExecutor", () => {
         }),
       ),
     ).toMatchObject({ status: "empty", transportMethod: "POST" })
+  })
+
+  test("forwards a bounded multipart plan through the request lifecycle", async () => {
+    const lifecycle = new RequestLifecycle()
+    let fetched: TurboRequest | undefined
+    const blob = new Blob(["native multipart fixture"], { type: "text/plain" })
+    const executor = new FormRequestExecutor(
+      {
+        fetch: async (request) => {
+          fetched = request
+          return response("", { headers: {}, status: 204, url: request.url })
+        },
+      },
+      { requestLifecycle: lifecycle },
+    )
+
+    await expect(
+      executor.execute((signal) =>
+        buildFormRequest({
+          documentUrl: "https://example.test/current",
+          entries: [
+            {
+              name: "profile[attachment]",
+              value: { blob, filename: "native-multipart.txt" },
+            },
+            { name: "commit", value: "upload" },
+          ],
+          form: { enctype: "multipart/form-data", method: "POST" },
+          protocol: { requestId: "request-multipart" },
+          signal,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "empty", transportMethod: "POST" })
+
+    if (!isTurboMultipartBody(fetched?.body?.value)) {
+      throw new Error("The multipart plan did not reach fetch")
+    }
+    expect(fetched.body.contentType).toBeUndefined()
+    expect(fetched.body.value.entries).toEqual([
+      { name: "profile[attachment]", value: { blob, filename: "native-multipart.txt" } },
+      { name: "commit", value: "upload" },
+    ])
   })
 
   test("forwards the exact immutable request and buffers a frozen XML candidate", async () => {

@@ -1,4 +1,4 @@
-import type { FocusAdapter, VisitAction } from "../adapters"
+import type { FocusAdapter, TurboMultipartFile, VisitAction } from "../adapters"
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
 import {
   buildFormRequest,
@@ -52,9 +52,11 @@ export interface FormControlDirectionality {
   readonly value: "ltr" | "rtl"
 }
 
+export type FormFile = TurboMultipartFile
+
 export interface SuccessfulFormEntry {
   readonly name: string
-  readonly value: string
+  readonly value: string | FormFile
 }
 
 export const MAX_FORM_CONTROL_ENTRIES_PER_CONTROL = 256
@@ -517,6 +519,48 @@ function normalizeDirectionality(
   return Object.freeze({ name: value.name, value: value.value })
 }
 
+function normalizeFormFile(value: unknown, nodeKey: string): FormFile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PropsError("Form file entries must provide a Blob and filename", { target: nodeKey })
+  }
+  if (Object.keys(value).some((key) => key !== "blob" && key !== "filename")) {
+    throw new PropsError("Form file entries contain unsupported fields", { target: nodeKey })
+  }
+  let blob: unknown
+  let filename: unknown
+  try {
+    blob = (value as FormFile).blob
+    filename = (value as FormFile).filename
+  } catch {
+    throw new PropsError("Form file entries could not be read", { target: nodeKey })
+  }
+  if (!blob || typeof blob !== "object") {
+    throw new PropsError("Form file entries must provide a Blob", { target: nodeKey })
+  }
+  let size: unknown
+  let type: unknown
+  try {
+    size = (blob as Blob).size
+    type = (blob as Blob).type
+  } catch {
+    throw new PropsError("Form file Blob metadata could not be read", { target: nodeKey })
+  }
+  if (
+    typeof size !== "number" ||
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    typeof type !== "string"
+  ) {
+    throw new PropsError("Form file entries must provide a Blob", { target: nodeKey })
+  }
+  if (typeof filename !== "string" || filename === "" || /\p{Cc}/u.test(filename)) {
+    throw new PropsError("Form file entry filenames must be non-empty printable strings", {
+      target: nodeKey,
+    })
+  }
+  return Object.freeze({ blob: blob as Blob, filename })
+}
+
 function normalizeDescriptor(
   descriptor: FormControlDescriptor,
   nodeKey: string,
@@ -608,12 +652,12 @@ function normalizeDescriptor(
             target: nodeKey,
           })
         }
-        if (typeof value !== "string") {
-          throw new PropsError("Entry-list form control entry values must be strings", {
-            target: nodeKey,
-          })
-        }
-        entries.push(Object.freeze({ name, value }))
+        entries.push(
+          Object.freeze({
+            name,
+            value: typeof value === "string" ? value : normalizeFormFile(value, nodeKey),
+          }),
+        )
       }
       const entriesValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
@@ -791,7 +835,8 @@ function normalizeDescriptor(
 }
 
 /**
- * Host-neutral registration for the string-valued portion of a native form.
+ * Host-neutral registration for native form controls. String controls use the
+ * ordinary descriptors; host-owned Blob/file entries use the `entries` descriptor.
  * The host owns native widgets and updates their current values; this registry
  * retains exact logical-node identity and produces the currently supported
  * successful-entry subset.
