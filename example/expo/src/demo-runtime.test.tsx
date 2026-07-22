@@ -878,6 +878,92 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
+  test("routes a same-document anchor through its declared nested ScrollView", async () => {
+    nativeScrollCalls.length = 0;
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(
+            DemoRouterRouteOwner,
+            { focused: true, navigation, routeKey: INITIAL_ROUTE_KEY, runtime },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("nested anchor fixture did not render");
+    const target = renderer.root.findByProps({
+      testID: "demo-anchor-target-nested-native-anchor-target",
+    });
+    act(() => {
+      target.props.onLayout({ nativeEvent: { layout: { y: 360 } } });
+    });
+    const requestsBeforeAnchor = requests.length;
+    nativeScrollCalls.length = 0;
+    const anchorLink = renderer.root
+      .findAll((node) => String(node.type) === "pressable")
+      .find((pressable) =>
+        pressable.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes(
+              "Jump within this nested ScrollView to its registered anchor target.",
+            ),
+        ).length > 0,
+      );
+    if (!anchorLink) throw new Error("nested anchor link was not rendered");
+
+    await act(async () => {
+      anchorLink.props.onPress();
+      await nextTurn();
+    });
+
+    expect(nativeScrollCalls).toHaveLength(1);
+    expect(nativeScrollCalls[0]?.options).toEqual({ animated: true, x: 0, y: 360 });
+    expect(nativeRootScrollContainerIds).not.toContain(nativeScrollCalls[0]?.containerId);
+    expect(requests).toHaveLength(requestsBeforeAnchor);
+    expect(runtime.session.tree.document.url).toBe(GALLERY_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(GALLERY_URL);
+    expect(navigation.state.routes).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("applies an exact Expo Go cold-link fragment after the gallery root lays out", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];

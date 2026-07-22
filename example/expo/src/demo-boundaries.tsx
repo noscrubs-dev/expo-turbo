@@ -29,7 +29,11 @@ import {
   demoDocumentLiveRegion,
 } from "./demo-document-announcements";
 import { demoFormAnnouncement, demoFormLiveRegion } from "./demo-form-announcements";
-import { useDemoDocumentAnchorScrollContent } from "./demo-document-anchor-scroll";
+import {
+  DemoDocumentAnchorContainerProvider,
+  useDemoDocumentAnchorScroll,
+  useDemoDocumentAnchorScrollContent,
+} from "./demo-document-anchor-scroll";
 import { DemoFrameAutoscrollRegistry } from "./demo-frame-autoscroll";
 import { useOptionalDemoRouterRouteReady } from "./demo-router-route-owner";
 import {
@@ -107,6 +111,7 @@ export function DemoNestedScrollRegion({
   id,
 }: Readonly<{ children?: ReactNode; id: string }>) {
   const visibility = useDemoVisibility();
+  const anchorScroll = useDemoDocumentAnchorScroll();
   const parentClips = useDemoVisibilityClips();
   const scrollView = useRef<ScrollView>(null);
   const clips = useMemo(() => Object.freeze([...parentClips, id]), [id, parentClips]);
@@ -119,6 +124,14 @@ export function DemoNestedScrollRegion({
       }),
     [id, visibility],
   );
+  useLayoutEffect(
+    () =>
+      anchorScroll.registerNestedContainer(id, {
+        isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
+        scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: true, x, y }),
+      }),
+    [anchorScroll, id],
+  );
 
   return (
     <ScrollView
@@ -130,10 +143,13 @@ export function DemoNestedScrollRegion({
       ref={scrollView}
       scrollEventThrottle={32}
       style={{ borderColor: "#9eb0c3", borderRadius: 10, borderWidth: 1, height: 160 }}
+      testID={`demo-nested-scroll-${id}`}
     >
-      <DemoVisibilityClipContext.Provider value={clips}>
-        {children}
-      </DemoVisibilityClipContext.Provider>
+      <DemoDocumentAnchorContainerProvider id={id}>
+        <DemoVisibilityClipContext.Provider value={clips}>
+          {children}
+        </DemoVisibilityClipContext.Provider>
+      </DemoDocumentAnchorContainerProvider>
     </ScrollView>
   );
 }

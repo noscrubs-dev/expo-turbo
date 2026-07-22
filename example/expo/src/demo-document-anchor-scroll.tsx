@@ -19,18 +19,24 @@ export interface DemoDocumentAnchorScrollTarget {
   readonly getOffset: () => number | undefined;
 }
 
+interface DemoDocumentAnchorScrollTargetOwnership {
+  readonly containerId: string | undefined;
+  readonly target: DemoDocumentAnchorScrollTarget;
+}
+
 interface RegisteredDemoDocumentAnchorScrollTarget extends DemoDocumentAnchorScrollTarget {
   readonly setOffset: (offset: number) => void;
 }
 
-/** Example-owned, root-only mapping from exact XML IDs to ScrollView offsets. */
+/** Example-owned mapping from exact XML IDs to the root or one declared nested ScrollView. */
 export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAdapter {
   private container: DemoDocumentAnchorScrollContainer | undefined;
   private disposed = false;
   private documentContentOffset: number | undefined;
   private documentOffset: number | undefined;
+  private readonly nestedContainers = new Map<string, DemoDocumentAnchorScrollContainer>();
   private pendingDeferredTarget: string | undefined;
-  private readonly targets = new Map<string, DemoDocumentAnchorScrollTarget>();
+  private readonly targets = new Map<string, DemoDocumentAnchorScrollTargetOwnership>();
 
   dispose(): void {
     if (this.disposed) return;
@@ -38,6 +44,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     this.container = undefined;
     this.documentContentOffset = undefined;
     this.documentOffset = undefined;
+    this.nestedContainers.clear();
     this.pendingDeferredTarget = undefined;
     this.targets.clear();
   }
@@ -57,19 +64,57 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     };
   }
 
-  registerTarget(id: string, target: DemoDocumentAnchorScrollTarget): () => void {
+  registerNestedContainer(id: string, container: DemoDocumentAnchorScrollContainer): () => void {
     this.assertActive();
-    if (!id || !target || typeof target.getOffset !== "function") {
+    if (
+      !id ||
+      id.trim() !== id ||
+      !container ||
+      typeof container !== "object" ||
+      Array.isArray(container)
+    ) {
+      throw new TypeError("Demo nested anchor scrolling requires an ID and ScrollView container");
+    }
+    if (typeof container.isAvailable !== "function" || typeof container.scrollTo !== "function") {
+      throw new TypeError("Demo nested anchor scroll container is incomplete");
+    }
+    const existing = this.nestedContainers.get(id);
+    if (existing && existing !== container) {
+      throw new Error(`Demo nested anchor scroll container ${id} is already registered`);
+    }
+    this.nestedContainers.set(id, container);
+    this.flushDeferredAnchor();
+    return () => {
+      if (this.nestedContainers.get(id) === container) this.nestedContainers.delete(id);
+    };
+  }
+
+  registerTarget(
+    id: string,
+    target: DemoDocumentAnchorScrollTarget,
+    containerId?: string,
+  ): () => void {
+    this.assertActive();
+    if (
+      !id ||
+      (containerId !== undefined && (!containerId || containerId.trim() !== containerId)) ||
+      !target ||
+      typeof target.getOffset !== "function"
+    ) {
       throw new TypeError("Demo document anchor targets require an ID and offset reader");
     }
     const existing = this.targets.get(id);
-    if (existing && existing !== target) {
+    if (
+      existing &&
+      (existing.target !== target || existing.containerId !== containerId)
+    ) {
       throw new Error(`Demo document anchor target ${id} is already registered`);
     }
-    this.targets.set(id, target);
+    const ownership = existing ?? Object.freeze({ containerId, target });
+    this.targets.set(id, ownership);
     this.flushDeferredAnchor();
     return () => {
-      if (this.targets.get(id) === target) this.targets.delete(id);
+      if (this.targets.get(id) === ownership) this.targets.delete(id);
     };
   }
 
@@ -127,7 +172,15 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
   private scrollToTarget(id: string): boolean {
     if (this.disposed) return false;
     const container = this.container;
-    const target = this.targets.get(id);
+    const ownership = this.targets.get(id);
+    const target = ownership?.target;
+    if (ownership?.containerId) {
+      const nestedContainer = this.nestedContainers.get(ownership.containerId);
+      const targetOffset = target?.getOffset();
+      if (!nestedContainer?.isAvailable() || !isNonNegativeFinite(targetOffset)) return false;
+      nestedContainer.scrollTo({ x: 0, y: targetOffset });
+      return true;
+    }
     if (
       !container?.isAvailable() ||
       !target ||
@@ -157,6 +210,7 @@ function isNonNegativeFinite(value: unknown): value is number {
 const DemoDocumentAnchorScrollContext = createContext<DemoDocumentAnchorScrollRegistry | undefined>(
   undefined,
 );
+const DemoDocumentAnchorContainerContext = createContext<string | undefined>(undefined);
 
 export function DemoDocumentAnchorScrollProvider({
   anchorScroll,
@@ -167,6 +221,23 @@ export function DemoDocumentAnchorScrollProvider({
       {children}
     </DemoDocumentAnchorScrollContext.Provider>
   );
+}
+
+export function DemoDocumentAnchorContainerProvider({
+  children,
+  id,
+}: Readonly<{ children?: ReactNode; id: string }>) {
+  return (
+    <DemoDocumentAnchorContainerContext.Provider value={id}>
+      {children}
+    </DemoDocumentAnchorContainerContext.Provider>
+  );
+}
+
+export function useDemoDocumentAnchorScroll(): DemoDocumentAnchorScrollRegistry {
+  const anchorScroll = useContext(DemoDocumentAnchorScrollContext);
+  if (!anchorScroll) throw new Error("The Expo Turbo demo document anchor scroll is not configured");
+  return anchorScroll;
 }
 
 export function useDemoDocumentAnchorScrollContent(): Readonly<{
@@ -187,8 +258,8 @@ export function useDemoDocumentAnchorScrollContent(): Readonly<{
 export function useDemoDocumentAnchorTarget(id: string): Readonly<{
   onLayout(event: LayoutChangeEvent): void;
 }> {
-  const anchorScroll = useContext(DemoDocumentAnchorScrollContext);
-  if (!anchorScroll) throw new Error("The Expo Turbo demo document anchor scroll is not configured");
+  const anchorScroll = useDemoDocumentAnchorScroll();
+  const containerId = useContext(DemoDocumentAnchorContainerContext);
   const [target] = useState<RegisteredDemoDocumentAnchorScrollTarget>(() => {
     let offset: number | undefined;
     return Object.freeze({
@@ -198,7 +269,10 @@ export function useDemoDocumentAnchorTarget(id: string): Readonly<{
       },
     });
   });
-  useLayoutEffect(() => anchorScroll.registerTarget(id, target), [anchorScroll, id, target]);
+  useLayoutEffect(
+    () => anchorScroll.registerTarget(id, target, containerId),
+    [anchorScroll, containerId, id, target],
+  );
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {
       target.setOffset(event.nativeEvent.layout.y);
