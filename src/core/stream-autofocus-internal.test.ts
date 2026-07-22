@@ -27,7 +27,7 @@ function streamElements(xml: string): readonly ProtocolElement[] {
 }
 
 describe("standalone Stream autofocus", () => {
-  test("claims the first eligible structural candidate in message order and consumes it once", () => {
+  test("claims the first eligible structural candidate in message order and consumes it once", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
     const revision = streamAutofocusLifecycleRevision(session)
     let notifications = 0
@@ -35,7 +35,7 @@ describe("standalone Stream autofocus", () => {
       notifications += 1
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       session,
       `<turbo-stream action="append" target="gallery"><template>
         <Field id="first" autofocus="" />
@@ -55,19 +55,19 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(session, session.revision)).toBeUndefined()
   })
 
-  test("retains the first live candidate across later standalone Stream messages", () => {
+  test("retains the first live candidate across later standalone Stream messages", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="first" autofocus="" /></template></turbo-stream>',
     )
     const firstRevision = session.revision
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="unrelated" /></template></turbo-stream>',
     )
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="later" autofocus="" /></template></turbo-stream>',
     )
@@ -77,11 +77,11 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(session, session.revision)).toEqual(["id:first"])
   })
 
-  test("does not stage Stream autofocus for document or Frame-embedded stream elements", () => {
+  test("does not stage Stream autofocus for document or Frame-embedded stream elements", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
     const revision = streamAutofocusLifecycleRevision(session)
 
-    const report = dispatchEmbeddedTurboStreamElements(
+    const report = await dispatchEmbeddedTurboStreamElements(
       session,
       streamElements(
         '<turbo-stream action="append" target="gallery"><template><Field id="embedded" autofocus="" /></template></turbo-stream>',
@@ -94,9 +94,9 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(session, session.revision)).toBeUndefined()
   })
 
-  test("rejects stale render revisions and same-id replacement candidates", () => {
+  test("rejects stale render revisions and same-id replacement candidates", async () => {
     const staleRevisionSession = sessionFor('<Gallery id="gallery" />')
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       staleRevisionSession,
       '<turbo-stream action="append" target="gallery"><template><Field id="candidate" autofocus="" /></template></turbo-stream>',
     )
@@ -131,14 +131,14 @@ describe("standalone Stream autofocus", () => {
     ).toBeUndefined()
   })
 
-  test("replaces an invalidated candidate with the next standalone Stream candidate", () => {
+  test("replaces an invalidated candidate with the next standalone Stream candidate", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="first" autofocus="" /></template></turbo-stream>',
     )
-    dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="first" />')
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="first" />')
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="second" autofocus="" /></template></turbo-stream>',
     )
@@ -146,14 +146,14 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(session, session.revision)).toEqual(["id:second"])
   })
 
-  test("stages autofocus for retained exact-target standalone Stream morph candidates", () => {
+  test("stages autofocus for retained exact-target standalone Stream morph candidates", async () => {
     const updateSession = sessionFor(
       '<Gallery><Panel id="panel"><Field id="update-candidate" /></Panel></Gallery>',
     )
     const updateCandidate = updateSession.tree.getElementById("update-candidate")
     if (!updateCandidate) throw new Error("update candidate fixture is missing")
 
-    const updateReport = dispatchTurboStreamFragment(
+    const updateReport = await dispatchTurboStreamFragment(
       updateSession,
       '<turbo-stream action="update" target="panel" method="morph"><template><Field id="update-candidate" autofocus="" /></template></turbo-stream>',
     )
@@ -168,7 +168,7 @@ describe("standalone Stream autofocus", () => {
     const replaceCandidate = replaceSession.tree.getElementById("replace-candidate")
     if (!replaceCandidate) throw new Error("replace candidate fixture is missing")
 
-    const replaceReport = dispatchTurboStreamFragment(
+    const replaceReport = await dispatchTurboStreamFragment(
       replaceSession,
       '<turbo-stream action="replace" target="replace-candidate" method="morph"><template><Panel id="replace-candidate" autofocus="" /></template></turbo-stream>',
     )
@@ -180,11 +180,11 @@ describe("standalone Stream autofocus", () => {
     ])
   })
 
-  test("excludes permanent-bearing Stream autofocus", () => {
+  test("excludes permanent-bearing Stream autofocus", async () => {
     const permanentMorphSession = sessionFor(
       '<Gallery><Panel id="panel"><Field id="permanent" data-turbo-permanent="" /><Field id="eligible" /></Panel></Gallery>',
     )
-    const permanentMorphReport = dispatchTurboStreamFragment(
+    const permanentMorphReport = await dispatchTurboStreamFragment(
       permanentMorphSession,
       '<turbo-stream action="update" target="panel" method="morph"><template><Field id="permanent" data-turbo-permanent="" autofocus="" /><Field id="eligible" autofocus="" /></template></turbo-stream>',
     )
@@ -197,7 +197,7 @@ describe("standalone Stream autofocus", () => {
     const permanentInsertionSession = sessionFor(
       '<Gallery id="gallery"><Field id="permanent" data-turbo-permanent="" /></Gallery>',
     )
-    const permanentInsertionReport = dispatchTurboStreamFragment(
+    const permanentInsertionReport = await dispatchTurboStreamFragment(
       permanentInsertionSession,
       '<turbo-stream action="append" target="gallery" method="morph"><template><Field id="permanent" data-turbo-permanent="" autofocus="" /></template></turbo-stream>',
     )
@@ -210,9 +210,9 @@ describe("standalone Stream autofocus", () => {
     ).toBeUndefined()
   })
 
-  test("treats inert insertion method=morph as structural Stream autofocus", () => {
+  test("treats inert insertion method=morph as structural Stream autofocus", async () => {
     const inertMorphSession = sessionFor('<Gallery id="gallery" />')
-    const inertMorphReport = dispatchTurboStreamFragment(
+    const inertMorphReport = await dispatchTurboStreamFragment(
       inertMorphSession,
       '<turbo-stream action="append" target="gallery" method="morph"><template><Field id="morph" autofocus="" /></template></turbo-stream>',
     )
@@ -223,14 +223,14 @@ describe("standalone Stream autofocus", () => {
     )
   })
 
-  test("excludes canceled and no-op stream actions", () => {
+  test("excludes canceled and no-op stream actions", async () => {
     const canceledSession = sessionFor('<Gallery id="gallery" />')
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
       event.preventDefault()
       return undefined
     })
-    const canceledReport = dispatchTurboStreamFragment(
+    const canceledReport = await dispatchTurboStreamFragment(
       canceledSession,
       '<turbo-stream action="append" target="gallery"><template><Field id="canceled" autofocus="" /></template></turbo-stream>',
       { streamLifecycle: lifecycle },
@@ -242,7 +242,7 @@ describe("standalone Stream autofocus", () => {
     ).toBeUndefined()
 
     const noopSession = sessionFor('<Gallery id="gallery" />')
-    const noopReport = dispatchTurboStreamFragment(
+    const noopReport = await dispatchTurboStreamFragment(
       noopSession,
       '<turbo-stream action="append" target="missing"><template><Field id="missing-target" autofocus="" /></template></turbo-stream>',
     )
@@ -250,7 +250,7 @@ describe("standalone Stream autofocus", () => {
     expect(consumeStandaloneStreamAutofocus(noopSession, noopSession.revision)).toBeUndefined()
 
     const noFallbackSession = sessionFor('<Gallery id="gallery" />')
-    const noFallbackReport = dispatchTurboStreamFragment(
+    const noFallbackReport = await dispatchTurboStreamFragment(
       noFallbackSession,
       `<turbo-stream action="append" target="missing"><template><Field id="first" autofocus="" /></template></turbo-stream>
        <turbo-stream action="append" target="gallery"><template><Field id="later" autofocus="" /></template></turbo-stream>`,
@@ -261,7 +261,7 @@ describe("standalone Stream autofocus", () => {
     ).toBeUndefined()
   })
 
-  test("does not stage autofocus after a guarded Stream message loses ownership", () => {
+  test("does not stage autofocus after a guarded Stream message loses ownership", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
     const lifecycle = new StreamLifecycle()
     let active = true
@@ -270,7 +270,7 @@ describe("standalone Stream autofocus", () => {
       return undefined
     })
 
-    const report = dispatchGuardedTurboStreamElements(
+    const report = await dispatchGuardedTurboStreamElements(
       session,
       streamElements(
         `<turbo-stream action="append" target="gallery"><template>

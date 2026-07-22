@@ -124,7 +124,7 @@ export interface NavigationAdapter {
 export interface CableCallbacks {
   connected(reconnected: boolean): void
   disconnected(willAttemptReconnect?: boolean): void
-  received(message: string): void
+  received(message: string): PromiseLike<void> | void
   rejected(): void
 }
 

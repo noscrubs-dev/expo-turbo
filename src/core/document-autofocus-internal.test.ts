@@ -10,7 +10,7 @@ function sessionFor(xml: string): DocumentSession {
 }
 
 describe("document autofocus generations", () => {
-  test("claims ordered stable-id application candidates once for the initial document", () => {
+  test("claims ordered stable-id application candidates once for the initial document", async () => {
     const session = sessionFor(
       `<Gallery id="gallery" autofocus="">
         <Field autofocus="" />
@@ -33,7 +33,7 @@ describe("document autofocus generations", () => {
     ).toBeUndefined()
   })
 
-  test("keeps a pending generation valid across unrelated in-place mutations", () => {
+  test("keeps a pending generation valid across unrelated in-place mutations", async () => {
     const session = sessionFor(
       '<Gallery><Field id="candidate" autofocus="" /><Other id="other" /></Gallery>',
     )
@@ -44,11 +44,11 @@ describe("document autofocus generations", () => {
     expect(consumeDocumentAutofocus(session, document, 0)).toEqual(["id:candidate"])
   })
 
-  test("consumes a generation without focusing after candidate replacement or insertion", () => {
+  test("consumes a generation without focusing after candidate replacement or insertion", async () => {
     {
       const session = sessionFor('<Gallery><Field id="candidate" autofocus="" /></Gallery>')
       const document = session.tree.document
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="candidate"><template><Field id="candidate" autofocus="" /></template></turbo-stream>',
       )
@@ -62,7 +62,7 @@ describe("document autofocus generations", () => {
         '<Gallery id="gallery"><Field id="first" autofocus="" /></Gallery>',
       )
       const document = session.tree.document
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="append" target="gallery"><template><Field id="second" autofocus="" /></template></turbo-stream>',
       )
@@ -71,7 +71,7 @@ describe("document autofocus generations", () => {
     }
   })
 
-  test("does not let a stale rendered generation consume the current replacement", () => {
+  test("does not let a stale rendered generation consume the current replacement", async () => {
     const session = sessionFor('<Gallery><Field id="old" autofocus="" /></Gallery>')
     const oldDocument = session.tree.document
     session.replaceTree(
@@ -84,7 +84,7 @@ describe("document autofocus generations", () => {
     expect(consumeDocumentAutofocus(session, session.tree.document, 1)).toEqual(["id:new"])
   })
 
-  test("stages a replacement before old-tree disposal callbacks can publish it", () => {
+  test("stages a replacement before old-tree disposal callbacks can publish it", async () => {
     const session = sessionFor('<Gallery><Field id="old" /></Gallery>')
     let observed: readonly string[] | undefined
     session.registerDisposal("id:old", () => {
@@ -100,7 +100,7 @@ describe("document autofocus generations", () => {
     expect(observed).toEqual(["id:new"])
   })
 
-  test("stages every whole-tree generation even when the same tree is reinstalled", () => {
+  test("stages every whole-tree generation even when the same tree is reinstalled", async () => {
     const session = sessionFor('<Gallery><Field id="candidate" autofocus="" /></Gallery>')
     const tree = session.tree
 
@@ -110,7 +110,7 @@ describe("document autofocus generations", () => {
     expect(consumeDocumentAutofocus(session, tree.document, 1)).toEqual(["id:candidate"])
   })
 
-  test("suppresses preview autofocus and stages the later canonical generation", () => {
+  test("suppresses preview autofocus and stages the later canonical generation", async () => {
     const session = sessionFor('<Gallery><Field id="initial" autofocus="" /></Gallery>')
     expect(
       consumeDocumentAutofocus(session, session.tree.document, session.treeGeneration),
@@ -135,7 +135,7 @@ describe("document autofocus generations", () => {
     ).toEqual(["id:canonical"])
   })
 
-  test("clears stale pending autofocus before preview disposal callbacks run", () => {
+  test("clears stale pending autofocus before preview disposal callbacks run", async () => {
     const session = sessionFor(
       '<Gallery><Field id="old" autofocus="" /><Other id="removed" /></Gallery>',
     )
@@ -153,12 +153,12 @@ describe("document autofocus generations", () => {
     expect(observed).toBeUndefined()
   })
 
-  test("consumes an empty generation before a later Stream inserts autofocus", () => {
+  test("consumes an empty generation before a later Stream inserts autofocus", async () => {
     const session = sessionFor('<Gallery id="gallery" />')
     const document = session.tree.document
 
     expect(consumeDocumentAutofocus(session, document, 0)).toEqual([])
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="append" target="gallery"><template><Field id="late" autofocus="" /></template></turbo-stream>',
     )

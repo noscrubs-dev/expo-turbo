@@ -33,7 +33,7 @@ function response(xml: string, url: string): TurboResponse {
 }
 
 describe("document session snapshots", () => {
-  test("publishes frozen preview provenance only for whole-document replacements", () => {
+  test("publishes frozen preview provenance only for whole-document replacements", async () => {
     const document = session('<Gallery><Panel id="panel" /></Gallery>')
     const states: Array<Readonly<{ generation: number; preview: boolean }>> = []
     const initial = document.treeState
@@ -60,7 +60,7 @@ describe("document session snapshots", () => {
     expect(document.treeState).toEqual({ generation: 3, preview: false })
   })
 
-  test("publishes one session revision notification for each logical commit", () => {
+  test("publishes one session revision notification for each logical commit", async () => {
     const document = session('<Gallery><Panel id="panel" /></Gallery>')
     const revisions: number[] = []
     const unsubscribe = document.subscribeRevision(() => revisions.push(document.revision))
@@ -82,7 +82,7 @@ describe("document session snapshots", () => {
     expect(revisions).toEqual([1, 2, 3, 4])
   })
 
-  test("retains compatible document morph identity while publishing a fresh nonpreview generation", () => {
+  test("retains compatible document morph identity while publishing a fresh nonpreview generation", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery id="gallery" tone="before"><Panel id="retained" tone="before"/><Panel id="permanent" data-turbo-permanent="" tone="kept"><Locked id="locked" value="current"/></Panel><Removed id="removed"/></Gallery>',
@@ -139,7 +139,7 @@ describe("document session snapshots", () => {
     expect(disposed).toEqual(["removed"])
   })
 
-  test("ignores document-level formatting around a compatible document morph root", () => {
+  test("ignores document-level formatting around a compatible document morph root", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
         '\n<!-- current formatting -->\n<Gallery><Panel id="panel" tone="before"/></Gallery>',
@@ -158,7 +158,7 @@ describe("document session snapshots", () => {
     expect(attributeValue(panel, "tone")).toBe("after")
   })
 
-  test("rejects a blank incoming document URL before a current-document morph changes state", () => {
+  test("rejects a blank incoming document URL before a current-document morph changes state", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery id="gallery"><Panel id="panel" tone="before"/></Gallery>', {
         url: "https://example.test/current",
@@ -205,7 +205,7 @@ describe("document session snapshots", () => {
     expect(disposed).toEqual([])
   })
 
-  test("keeps a revision committed when its session-wide listener fails", () => {
+  test("keeps a revision committed when its session-wide listener fails", async () => {
     const document = session('<Gallery><Panel id="panel" /></Gallery>')
     document.subscribeRevision(() => {
       throw new Error("revision listener failed")
@@ -221,7 +221,7 @@ describe("document session snapshots", () => {
     )
   })
 
-  test("captures an independent tree and restores fresh clones repeatedly", () => {
+  test("captures an independent tree and restores fresh clones repeatedly", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Panel id="panel" data-state="original" /></Gallery>', {
         url: "https://example.test/current",
@@ -249,7 +249,7 @@ describe("document session snapshots", () => {
     )
   })
 
-  test("fails capture without an active URL and leaves misses as true no-ops", () => {
+  test("fails capture without an active URL and leaves misses as true no-ops", async () => {
     const cache = new DocumentSnapshotCache()
     cache.put(
       "https://example.test/existing",
@@ -276,7 +276,7 @@ describe("document session snapshots", () => {
     expect(disposed).toEqual([])
   })
 
-  test("restores through one tree replacement with disposal and fresh identities", () => {
+  test("restores through one tree replacement with disposal and fresh identities", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
         url: "https://example.test/cached",
@@ -309,7 +309,7 @@ describe("document session snapshots", () => {
     expect(document.getNodeSnapshot("id:cached")?.identity).not.toBe(initialIdentity)
   })
 
-  test("keeps the restored tree committed when replacement finalization fails", () => {
+  test("keeps the restored tree committed when replacement finalization fails", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Cached id="cached" /></Gallery>', {
         url: "https://example.test/cached",
@@ -375,34 +375,34 @@ describe("document session snapshots", () => {
 })
 
 describe("document subtree disposal", () => {
-  test("runs descendant hooks before parent hooks exactly once", () => {
+  test("runs descendant hooks before parent hooks exactly once", async () => {
     const document = session('<Gallery><Panel id="panel"><Child id="child"/></Panel></Gallery>')
     const events: string[] = []
     document.registerDisposal("id:panel", () => events.push("panel"))
     document.registerDisposal("id:child", () => events.push("child"))
 
-    dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
-    dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
+    await dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
+    await dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
 
     expect(events).toEqual(["child", "panel"])
   })
 
-  test("disposes replaced identity even when the stable key is reused", () => {
+  test("disposes replaced identity even when the stable key is reused", async () => {
     const document = session('<Gallery><Panel id="panel"><Old/></Panel></Gallery>')
     const disposed: string[] = []
     document.registerDisposal("id:panel", () => disposed.push("old"))
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       document,
       '<turbo-stream action="replace" target="panel"><template><Panel id="panel"><New/></Panel></template></turbo-stream>',
     )
     document.registerDisposal("id:panel", () => disposed.push("new"))
-    dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
+    await dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
 
     expect(disposed).toEqual(["old", "new"])
   })
 
-  test("supports explicit unregister and reports hook errors after all cleanup runs", () => {
+  test("supports explicit unregister and reports hook errors after all cleanup runs", async () => {
     const errors: DisposalError[] = []
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Panel id="panel"><Child id="child"/></Panel></Gallery>'),
@@ -417,7 +417,7 @@ describe("document subtree disposal", () => {
     })
     document.registerDisposal("id:panel", () => events.push("parent"))
 
-    dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
+    await dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>')
 
     expect(events).toEqual(["broken", "parent"])
     expect(errors).toHaveLength(1)
@@ -426,7 +426,7 @@ describe("document subtree disposal", () => {
     expect(() => document.registerDisposal("id:panel", () => undefined)).toThrow(TargetError)
   })
 
-  test("commits before reporting every disposal and stable-snapshot listener failure", () => {
+  test("commits before reporting every disposal and stable-snapshot listener failure", async () => {
     const document = session('<Gallery><Panel id="panel" /></Gallery>')
     const events: string[] = []
     document.registerDisposal("id:panel", () => {
@@ -458,7 +458,7 @@ describe("document subtree disposal", () => {
     expect(document.treeGeneration).toBe(1)
   })
 
-  test("uses one callback snapshot across every key in a tree replacement", () => {
+  test("uses one callback snapshot across every key in a tree replacement", async () => {
     const document = session('<Gallery><First id="first" /><Second id="second" /></Gallery>')
     const events: string[] = []
     let unsubscribeSecond: () => void = () => undefined
@@ -475,7 +475,7 @@ describe("document subtree disposal", () => {
     expect(events).toEqual(["first", "second"])
   })
 
-  test("reports every disposal, reporter, and listener failure after commit", () => {
+  test("reports every disposal, reporter, and listener failure after commit", async () => {
     const events: string[] = []
     const document = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Panel id="panel"><Child id="child" /></Panel></Gallery>'),

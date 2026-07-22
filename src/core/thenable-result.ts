@@ -14,6 +14,68 @@ interface ThenableConsumption {
 
 const MAX_THENABLE_CHAIN = 64
 
+/** Resolves one caller-owned thenable through the same bounded hostile-chain rules. */
+export function resolveThenableResult(result: unknown): Promise<unknown> | undefined {
+  if (!isObjectLike(result)) return undefined
+  let then: unknown
+  try {
+    then = (result as { readonly then?: unknown }).then
+  } catch {
+    return Promise.reject(new TypeError("Thenable result could not be read"))
+  }
+  if (typeof then !== "function") return undefined
+  return resolveKnownThenable(result, then as ThenMethod, MAX_THENABLE_CHAIN, new WeakSet())
+}
+
+function resolveKnownThenable(
+  result: object,
+  then: ThenMethod,
+  remaining: number,
+  seen: WeakSet<object>,
+): Promise<unknown> {
+  if (remaining === 0 || seen.has(result)) {
+    return Promise.reject(new TypeError("Thenable result exceeded the bounded resolution chain"))
+  }
+  seen.add(result)
+  return new Promise((resolve, reject) => {
+    let settled = false
+    try {
+      Reflect.apply(then, result, [
+        (value?: unknown) => {
+          if (settled) return
+          settled = true
+          const nested = resolveThenableValue(value, remaining - 1, seen)
+          if (nested) nested.then(resolve, reject)
+          else resolve(value)
+        },
+        (reason?: unknown) => {
+          if (settled) return
+          settled = true
+          reject(reason)
+        },
+      ])
+    } catch (error) {
+      if (!settled) reject(error)
+    }
+  })
+}
+
+function resolveThenableValue(
+  value: unknown,
+  remaining: number,
+  seen: WeakSet<object>,
+): Promise<unknown> | undefined {
+  if (!isObjectLike(value)) return undefined
+  let then: unknown
+  try {
+    then = (value as { readonly then?: unknown }).then
+  } catch {
+    return Promise.reject(new TypeError("Thenable result could not be read"))
+  }
+  if (typeof then !== "function") return undefined
+  return resolveKnownThenable(value, then as ThenMethod, remaining, seen)
+}
+
 /** Reads each possible then method once and consumes a bounded resolution chain. */
 export function consumeThenableResult(result: unknown): boolean {
   if (!isObjectLike(result)) return false

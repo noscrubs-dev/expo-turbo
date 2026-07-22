@@ -26,7 +26,7 @@ import {
   type StreamRenderResult,
   streamLifecycleOption,
 } from "./stream-lifecycle"
-import { consumeThenableResult } from "./thenable-result"
+import { resolveThenableResult } from "./thenable-result"
 import {
   attributeValue,
   type DocumentTree,
@@ -57,6 +57,7 @@ const STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS = new Set([
   "replace",
   "update",
 ])
+const STREAM_RENDER_INTERRUPTED = Symbol("expo-turbo.stream-render-interrupted")
 
 export type StreamActionStatus = "applied" | "canceled" | "error" | "noop"
 
@@ -74,6 +75,17 @@ export interface StreamActionDispatchOptions {
   readonly onActionError?: (report: StreamActionReport) => void
   readonly refresh?: DocumentRefreshRequester
   readonly streamLifecycle?: StreamLifecycle
+  readonly streamRenderScheduler?: StreamRenderScheduler
+}
+
+export interface StreamRenderScheduleContext {
+  readonly action: string
+  readonly index: number
+  readonly newStream: ProtocolElement
+}
+
+export interface StreamRenderScheduler {
+  beforeRender(context: StreamRenderScheduleContext): PromiseLike<void> | void
 }
 
 export interface StreamDispatchOptions extends ParseOptions, StreamActionDispatchOptions {}
@@ -98,6 +110,66 @@ function actionError(message: string, action: string, target?: string): ActionEr
 
 function streamCommitError(message: string, action: string): SessionCommitError {
   return markSessionCommitError(new SessionCommitError([new ActionError(message, { action })]))
+}
+
+function streamRenderSchedulerOption(
+  options: unknown,
+  owner: string,
+): StreamRenderScheduler | undefined {
+  let candidate: unknown
+  try {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("invalid options")
+    }
+    candidate = (options as { readonly streamRenderScheduler?: unknown }).streamRenderScheduler
+  } catch {
+    throw new ActionError(`${owner} options could not be read`)
+  }
+  if (candidate === undefined) return undefined
+  let beforeRender: unknown
+  try {
+    beforeRender = (candidate as { readonly beforeRender?: unknown }).beforeRender
+  } catch {
+    throw new ActionError(`${owner} Stream render scheduler could not be read`)
+  }
+  if (typeof beforeRender !== "function") {
+    throw new ActionError(`${owner} Stream render scheduler is invalid`)
+  }
+  return Object.freeze({
+    beforeRender(context: StreamRenderScheduleContext): PromiseLike<void> | void {
+      return Reflect.apply(beforeRender, candidate, [context]) as PromiseLike<void> | void
+    },
+  })
+}
+
+async function awaitStreamRenderSchedule(
+  scheduler: StreamRenderScheduler | undefined,
+  context: StreamRenderScheduleContext,
+  session: DocumentSession,
+  action: string,
+  control?: StreamDispatchControl,
+): Promise<void> {
+  if (!scheduler) return
+  const revision = session.revision
+  let candidate: unknown
+  try {
+    candidate = scheduler.beforeRender(context)
+    const settlement = resolveThenableResult(candidate)
+    if (settlement) candidate = await settlement
+  } catch {
+    if (control && !control.shouldContinue()) throw STREAM_RENDER_INTERRUPTED
+    if (session.revision !== revision) {
+      throw streamCommitError("Stream render scheduler failed after mutating the session", action)
+    }
+    throw actionError("Stream render scheduler failed", action)
+  }
+  if (control && !control.shouldContinue()) throw STREAM_RENDER_INTERRUPTED
+  if (session.revision !== revision) {
+    throw streamCommitError("Stream render scheduler mutated the session", action)
+  }
+  if (candidate !== undefined) {
+    throw actionError("Stream render scheduler must resolve undefined", action)
+  }
 }
 
 function templatePayload(stream: ProtocolElement, action: string): readonly ProtocolNode[] {
@@ -189,11 +261,14 @@ function customResult(
   return Object.freeze({ appliedTargets, status: result.status })
 }
 
-function dispatchCustomAction(
+async function dispatchCustomAction(
   session: DocumentSession,
   stream: ProtocolElement,
   definition: DefinedStreamAction,
-): Readonly<{ appliedTargets: number; matchedTargets: number; status: "applied" | "noop" }> {
+  control?: StreamDispatchControl,
+): Promise<
+  Readonly<{ appliedTargets: number; matchedTargets: number; status: "applied" | "noop" }>
+> {
   const action = definition.action
   const hasTarget =
     attributeValue(stream, "target") !== undefined ||
@@ -202,7 +277,7 @@ function dispatchCustomAction(
   const revision = session.revision
   try {
     const params = definition.decodeParams(customParams(stream))
-    const result = definition.handler(
+    let result: unknown = definition.handler(
       Object.freeze({
         action,
         params,
@@ -212,21 +287,28 @@ function dispatchCustomAction(
         template: Object.freeze([...templatePayload(stream, action)]),
       }),
     )
-    if (consumeThenableResult(result)) {
-      if (session.revision !== revision) {
-        throw streamCommitError("Asynchronous custom Stream action mutated the session", action)
+    const settlement = resolveThenableResult(result)
+    if (settlement) {
+      result = await settlement
+      if (control && !control.shouldContinue()) {
+        if (session.revision !== revision) {
+          throw streamCommitError(
+            "Custom Stream action lost ownership after mutating the session",
+            action,
+          )
+        }
+        throw STREAM_RENDER_INTERRUPTED
       }
-      throw actionError("Custom Stream action handlers must be synchronous", action)
     }
     return Object.freeze({
-      ...customResult(result, targets.length),
+      ...customResult(result as CustomStreamActionResult | undefined, targets.length),
       matchedTargets: targets.length,
     })
   } catch (error) {
     if (isSessionCommitError(error)) throw error
-    if (session.revision !== revision) {
+    if (error === STREAM_RENDER_INTERRUPTED) throw error
+    if (session.revision !== revision)
       throw streamCommitError("Custom Stream action failed after mutating the session", action)
-    }
     throw actionError("Custom Stream action failed", action)
   }
 }
@@ -406,16 +488,14 @@ interface StreamActionDispatchResult {
 
 type StreamDispatchMode = "embedded" | "standalone"
 
-const STREAM_RENDER_INTERRUPTED = Symbol("expo-turbo.stream-render-interrupted")
-
-function renderAction(
+async function renderAction(
   session: DocumentSession,
   stream: ProtocolElement,
   action: string,
   options: StreamActionDispatchOptions,
   progress: StreamActionProgress,
   control?: StreamDispatchControl,
-): StreamRenderResult {
+): Promise<StreamRenderResult> {
   if (!action) throw actionError("Turbo Stream action must not be blank", action)
   if (action === "refresh") {
     if (!options.refresh) {
@@ -441,7 +521,7 @@ function renderAction(
     if (!customAction) {
       throw actionError(`Unknown Turbo Stream action ${JSON.stringify(action)}`, action)
     }
-    const result = dispatchCustomAction(session, stream, customAction)
+    const result = await dispatchCustomAction(session, stream, customAction, control)
     progress.appliedTargets = result.appliedTargets
     progress.matchedTargets = result.matchedTargets
     return result
@@ -488,15 +568,16 @@ function renderAction(
   })
 }
 
-function dispatchAction(
+async function dispatchAction(
   session: DocumentSession,
   stream: ProtocolElement,
   index: number,
   options: StreamActionDispatchOptions,
   lifecycle: StreamLifecycle | undefined,
+  scheduler: StreamRenderScheduler | undefined,
   control?: StreamDispatchControl,
   mode: StreamDispatchMode = "standalone",
-): StreamActionDispatchResult {
+): Promise<StreamActionDispatchResult> {
   const action = attributeValue(stream, "action") ?? ""
   const progress: StreamActionProgress = {
     appliedTargets: 0,
@@ -515,7 +596,18 @@ function dispatchAction(
     let result: StreamRenderResult
     let defaultRendered = false
     if (!lifecycle) {
-      result = renderAction(session, stream, action, options, progress, control)
+      await awaitStreamRenderSchedule(
+        scheduler,
+        Object.freeze({ action, index, newStream: stream }),
+        session,
+        action,
+        control,
+      )
+      if (control && !control.shouldContinue()) {
+        ownershipInterrupted = true
+        throw STREAM_RENDER_INTERRUPTED
+      }
+      result = await renderAction(session, stream, action, options, progress, control)
       defaultRendered = true
     } else {
       let defaultResult: StreamRenderResult | undefined
@@ -527,7 +619,7 @@ function dispatchAction(
         action,
         index,
         newStream: stream,
-        renderDefault(): StreamRenderResult {
+        async renderDefault(): Promise<StreamRenderResult> {
           if (!rendering) {
             throw actionError("The Stream render context is no longer active", action)
           }
@@ -541,7 +633,7 @@ function dispatchAction(
           }
           defaultRendered = true
           try {
-            defaultResult = renderAction(session, stream, action, options, progress, control)
+            defaultResult = await renderAction(session, stream, action, options, progress, control)
             return defaultResult
           } catch (error) {
             defaultFailure = error
@@ -551,11 +643,11 @@ function dispatchAction(
         },
         session,
       }) satisfies StreamRenderContext
-      const defaultRenderer: StreamRenderer = (activeContext) => {
+      const defaultRenderer: StreamRenderer = async (activeContext) => {
         if (activeContext !== context) {
           throw actionError("Stream renderer received an invalid context", action)
         }
-        return activeContext.renderDefault()
+        return await activeContext.renderDefault()
       }
       const event = createBeforeStreamRenderEvent(action, index, stream, defaultRenderer)
       const beforeRevision = session.revision
@@ -569,10 +661,27 @@ function dispatchAction(
         throw error
       }
       if (control && !control.shouldContinue()) {
+        if (session.revision !== beforeRevision) {
+          throw streamCommitError(
+            "Before-stream-render lost ownership after mutating the session",
+            action,
+          )
+        }
         ownershipInterrupted = true
         throw STREAM_RENDER_INTERRUPTED
       }
       if (event.defaultPrevented) {
+        throw STREAM_RENDER_INTERRUPTED
+      }
+      await awaitStreamRenderSchedule(
+        scheduler,
+        Object.freeze({ action, index, newStream: stream }),
+        session,
+        action,
+        control,
+      )
+      if (control && !control.shouldContinue()) {
+        ownershipInterrupted = true
         throw STREAM_RENDER_INTERRUPTED
       }
       const renderer = event.detail.render
@@ -581,6 +690,8 @@ function dispatchAction(
       try {
         try {
           candidate = renderer(context)
+          const settlement = resolveThenableResult(candidate)
+          if (settlement) candidate = await settlement
         } finally {
           rendering = false
         }
@@ -588,20 +699,40 @@ function dispatchAction(
         if (fatalDefaultError) throw fatalDefaultError
         if (renderInterrupted) throw STREAM_RENDER_INTERRUPTED
         if (renderer === defaultRenderer && error === defaultFailure) throw error
+        if (session.revision !== rendererRevision) {
+          throw streamCommitError("Stream renderer failed after mutating the session", action)
+        }
         throw actionError("Stream renderer failed", action)
       }
       if (fatalDefaultError) throw fatalDefaultError
       if (renderInterrupted) throw STREAM_RENDER_INTERRUPTED
-      if (consumeThenableResult(candidate)) {
-        if (session.revision !== rendererRevision) {
-          throw streamCommitError("Asynchronous Stream renderer mutated the session", action)
-        }
-        throw actionError("Stream renderers must be synchronous", action)
-      }
       if (defaultRendered && candidate !== defaultResult) {
+        if (session.revision !== rendererRevision) {
+          throw streamCommitError(
+            "A wrapped Stream renderer returned invalid truth after the default mutation",
+            action,
+          )
+        }
         throw actionError("A wrapped Stream renderer must return the default result", action)
       }
-      result = admitRenderResult(candidate, action)
+      if (control && !control.shouldContinue()) {
+        if (session.revision !== rendererRevision) {
+          throw streamCommitError(
+            "Stream renderer lost ownership after mutating the session",
+            action,
+          )
+        }
+        ownershipInterrupted = true
+        throw STREAM_RENDER_INTERRUPTED
+      }
+      try {
+        result = admitRenderResult(candidate, action)
+      } catch (error) {
+        if (session.revision !== rendererRevision) {
+          throw streamCommitError("Stream renderer returned invalid truth after mutation", action)
+        }
+        throw error
+      }
     }
     report = actionReport(action, index, result)
     if (lifecycle && defaultRendered && mode === "standalone") {
@@ -610,6 +741,7 @@ function dispatchAction(
   } catch (error) {
     if (isSessionCommitError(error)) throw error
     if (error === STREAM_RENDER_INTERRUPTED) {
+      if (control && !control.shouldContinue()) ownershipInterrupted = true
       report = Object.freeze({
         action,
         appliedTargets: progress.appliedTargets,
@@ -701,46 +833,61 @@ function admitRenderResult(candidate: unknown, action: string): StreamRenderResu
   })
 }
 
-export function dispatchTurboStreamFragment(
+export async function dispatchTurboStreamFragment(
   session: DocumentSession,
   xml: string,
   options: StreamDispatchOptions = {},
-): StreamDispatchReport {
+): Promise<StreamDispatchReport> {
   const fragment = parseTurboStreamFragment(xml, options)
   const streams = fragment.document.children.filter(
     (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
   )
-  return dispatchTurboStreamElements(session, streams, options)
+  return await dispatchTurboStreamElements(session, streams, options)
 }
 
-export function dispatchTurboStreamElements(
+/** Internal source-owned variant that stops parsed sibling work after ownership is lost. */
+export async function dispatchGuardedTurboStreamFragment(
+  session: DocumentSession,
+  xml: string,
+  options: StreamDispatchOptions,
+  control: StreamDispatchControl,
+): Promise<StreamDispatchReport> {
+  const fragment = parseTurboStreamFragment(xml, options)
+  const streams = fragment.document.children.filter(
+    (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
+  )
+  return await dispatchGuardedTurboStreamElements(session, streams, options, control)
+}
+
+export async function dispatchTurboStreamElements(
   session: DocumentSession,
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
-): StreamDispatchReport {
-  return dispatchGuardedTurboStreamElements(session, streams, options)
+): Promise<StreamDispatchReport> {
+  return await dispatchGuardedTurboStreamElements(session, streams, options)
 }
 
 /** Internal response path for Streams embedded in a document or Frame payload. */
-export function dispatchEmbeddedTurboStreamElements(
+export async function dispatchEmbeddedTurboStreamElements(
   session: DocumentSession,
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
-): StreamDispatchReport {
-  return dispatchGuardedTurboStreamElements(session, streams, options, control, "embedded")
+): Promise<StreamDispatchReport> {
+  return await dispatchGuardedTurboStreamElements(session, streams, options, control, "embedded")
 }
 
 /** Internal staged-response entry point; intentionally omitted from the public core barrel. */
-export function dispatchGuardedTurboStreamElements(
+export async function dispatchGuardedTurboStreamElements(
   session: DocumentSession,
   streams: readonly ProtocolElement[],
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
   mode: StreamDispatchMode = "standalone",
-): StreamDispatchReport {
+): Promise<StreamDispatchReport> {
   const revision = session.revision
   const lifecycle = streamLifecycleOption(options, "Turbo Stream dispatcher")
+  const scheduler = streamRenderSchedulerOption(options, "Turbo Stream dispatcher")
   const actions: StreamActionReport[] = []
   let autofocusCandidate: ProtocolNode | undefined
   let autofocusCandidateClaimed = false
@@ -757,7 +904,16 @@ export function dispatchGuardedTurboStreamElements(
         : undefined
     const candidateBefore = candidate ? session.tree.getNodeByKey(candidate.key) : undefined
     if (candidate) autofocusCandidateClaimed = true
-    const dispatched = dispatchAction(session, stream, index, options, lifecycle, control, mode)
+    const dispatched = await dispatchAction(
+      session,
+      stream,
+      index,
+      options,
+      lifecycle,
+      scheduler,
+      control,
+      mode,
+    )
     const report = dispatched.report
     actions.push(report)
     if (candidate && report.status === "applied") {

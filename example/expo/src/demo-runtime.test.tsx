@@ -345,7 +345,7 @@ function routeTree(
 }
 
 describe("demo app runtime ownership", () => {
-  test("shares one Stream lifecycle through direct gallery dispatch", () => {
+  test("shares one Stream lifecycle through direct gallery dispatch", async () => {
     const runtime = createDemoRuntime();
     const events: string[] = [];
     const unsubscribeBefore = runtime.streamLifecycle.subscribe(
@@ -361,7 +361,7 @@ describe("demo app runtime ownership", () => {
     });
 
     try {
-      const report = dispatchTurboStreamFragment(
+      const report = await dispatchTurboStreamFragment(
         runtime.session,
         '<turbo-stream action="update" target="static-renderer"><template><DemoText>Lifecycle update.</DemoText></template></turbo-stream>',
         { streamLifecycle: runtime.streamLifecycle },
@@ -1973,8 +1973,8 @@ describe("demo app runtime ownership", () => {
       await nextTurn();
     });
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         runtime.session,
         '<turbo-stream action="refresh" method="replace" target="ignored"><template><DemoText>Ignored refresh payload.</DemoText></template></turbo-stream>',
         { refresh: runtime.refresh, streamLifecycle: runtime.streamLifecycle },
@@ -2118,7 +2118,7 @@ describe("demo app runtime ownership", () => {
     }
   });
 
-  test("direct disposal releases every runtime-owned state surface", () => {
+  test("direct disposal releases every runtime-owned state surface", async () => {
     const runtime = createDemoRuntime();
 
     runtime.dispose();

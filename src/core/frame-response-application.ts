@@ -352,25 +352,25 @@ export function renderPreparedFrameMutation(
   }
 }
 
-export function dispatchPreparedFrameResponseStreams(
+export async function dispatchPreparedFrameResponseStreams(
   session: DocumentSession,
   prepared: PreparedFrameResponse,
   options: StreamActionDispatchOptions = {},
   control?: StreamDispatchControl,
-): StreamDispatchReport {
-  return dispatchEmbeddedTurboStreamElements(session, prepared.streams, options, control)
+): Promise<StreamDispatchReport> {
+  return await dispatchEmbeddedTurboStreamElements(session, prepared.streams, options, control)
 }
 
-export function commitPreparedFrameResponse(
+export async function commitPreparedFrameResponse(
   session: DocumentSession,
   activeFrame: ProtocolElement,
   prepared: PreparedFrameResponse,
   options: CommitPreparedFrameResponseOptions = {},
   control?: StreamDispatchControl,
-): CommittedFrameResponse {
+): Promise<CommittedFrameResponse> {
   const mutation = prepareFrameMutation(session, activeFrame, prepared, options)
   commitPreparedFrameMutation(session, mutation)
-  const streams = dispatchPreparedFrameResponseStreams(session, prepared, options, control)
+  const streams = await dispatchPreparedFrameResponseStreams(session, prepared, options, control)
   return Object.freeze({
     ...(options.documentUrl !== undefined ? { documentUrl: options.documentUrl } : {}),
     ...(options.finalUrl ? { finalUrl: options.finalUrl } : {}),

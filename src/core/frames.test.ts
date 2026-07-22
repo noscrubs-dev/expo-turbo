@@ -16,11 +16,11 @@ function session(): DocumentSession {
 }
 
 describe("Turbo Frame responses", () => {
-  test("extracts the exact frame, preserves its wrapper, and records the redirected src", () => {
+  test("extracts the exact frame, preserves its wrapper, and records the redirected src", async () => {
     const document = session()
     const frame = document.tree.getElementById("details")
     if (!frame) throw new Error("fixture lost its active frame")
-    const report = applyFrameResponse(
+    const report = await applyFrameResponse(
       document,
       "details",
       '<Page><Unrelated/><turbo-frame id="details" target="ignored"><Card id="card"/></turbo-frame></Page>',
@@ -38,9 +38,9 @@ describe("Turbo Frame responses", () => {
     })
   })
 
-  test("commits frame content before executing and consuming embedded Streams", () => {
+  test("commits frame content before executing and consuming embedded Streams", async () => {
     const document = session()
-    const report = applyFrameResponse(
+    const report = await applyFrameResponse(
       document,
       "details",
       `<turbo-frame id="details">
@@ -58,9 +58,9 @@ describe("Turbo Frame responses", () => {
     ).toBe(false)
   })
 
-  test("reports ordered stable-id autofocus candidates that survive embedded Streams", () => {
+  test("reports ordered stable-id autofocus candidates that survive embedded Streams", async () => {
     const document = session()
-    applyFrameResponse(
+    await applyFrameResponse(
       document,
       "details",
       `<turbo-frame id="details" autofocus="">
@@ -94,7 +94,7 @@ describe("Turbo Frame responses", () => {
     expect(document.tree.getElementById("source-child")).toBeDefined()
   })
 
-  test("fails without changing the active frame when the response omits it", () => {
+  test("fails without changing the active frame when the response omits it", async () => {
     const document = session()
     const frame = document.tree.getElementById("details")
     const children = frame?.children
@@ -106,7 +106,7 @@ describe("Turbo Frame responses", () => {
     expect(frame?.children.filter(isElement).map((child) => child.tagName)).toEqual(["Loading"])
   })
 
-  test("fails loudly when the active frame itself is missing", () => {
+  test("fails loudly when the active frame itself is missing", async () => {
     expect(() => applyFrameResponse(session(), "missing", '<turbo-frame id="missing"/>')).toThrow(
       FrameMissingError,
     )
@@ -114,7 +114,7 @@ describe("Turbo Frame responses", () => {
 })
 
 describe("Turbo Frame target resolution", () => {
-  test("applies submitter, element, Frame default, and current-frame precedence", () => {
+  test("applies submitter, element, Frame default, and current-frame precedence", async () => {
     const tree = parseExpoTurboDocument(
       `<Gallery>
         <turbo-frame id="named" />
@@ -145,7 +145,7 @@ describe("Turbo Frame target resolution", () => {
     ).toEqual({ frameId: "named", kind: "frame", requestedTarget: "named" })
   })
 
-  test("promotes _top and unavailable or disabled parent targets", () => {
+  test("promotes _top and unavailable or disabled parent targets", async () => {
     const tree = parseExpoTurboDocument(
       `<Gallery>
         <turbo-frame id="disabled" disabled="" />
@@ -174,7 +174,7 @@ describe("Turbo Frame target resolution", () => {
     })
   })
 
-  test("falls back to the current Frame for missing named targets", () => {
+  test("falls back to the current Frame for missing named targets", async () => {
     const tree = parseExpoTurboDocument('<Gallery><turbo-frame id="current" /></Gallery>')
 
     expect(resolveFrameTarget(tree, "current", { elementTarget: "missing" })).toEqual({
@@ -187,7 +187,7 @@ describe("Turbo Frame target resolution", () => {
 })
 
 describe("native form submission destination resolution", () => {
-  test("captures only an active enabled named Frame from document-level forms", () => {
+  test("captures only an active enabled named Frame from document-level forms", async () => {
     const tree = parseExpoTurboDocument(
       `<Gallery>
         <DemoForm id="form" />
@@ -237,7 +237,7 @@ describe("native form submission destination resolution", () => {
     expect(targetReads).toBe(1)
   })
 
-  test("uses Turbo's in-Frame blank-submitter and nearest-Frame semantics", () => {
+  test("uses Turbo's in-Frame blank-submitter and nearest-Frame semantics", async () => {
     const tree = parseExpoTurboDocument(
       `<Gallery>
         <turbo-frame id="named" />

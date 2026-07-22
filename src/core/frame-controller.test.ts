@@ -1255,7 +1255,7 @@ describe("Frame controller", () => {
     const { controller, loader, pending, session } = harness()
     const originalLoad = controller.connect()
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="replace" target="details"><template><turbo-frame id="details" src="/replacement"><Replacement/></turbo-frame></template></turbo-stream>',
     )

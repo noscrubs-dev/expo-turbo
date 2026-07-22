@@ -778,7 +778,7 @@ export class FrameRequestLoader {
           let frameReport: FrameResponseReport
           try {
             const nestedFrames = commitPreparedFrameMutation(this.session, mutation)
-            const streams = dispatchPreparedFrameResponseStreams(
+            const streams = await dispatchPreparedFrameResponseStreams(
               this.session,
               prepared,
               this.streamOptions,

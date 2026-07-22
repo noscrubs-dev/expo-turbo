@@ -272,7 +272,7 @@ describe("Cable stream source registry", () => {
     refresh.dispose()
   })
 
-  test("hands the reconnect reconciler frozen active source keys without Cable credentials", () => {
+  test("hands the reconnect reconciler frozen active source keys without Cable credentials", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
         `<Gallery>
@@ -321,7 +321,7 @@ describe("Cable stream source registry", () => {
     expect(JSON.stringify(requests)).not.toContain("signed-secret")
   })
 
-  test("redacts a reconnect reconciliation failure", () => {
+  test("redacts a reconnect reconciliation failure", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
@@ -544,7 +544,7 @@ describe("Cable stream source registry", () => {
     refresh.dispose()
   })
 
-  test("does not reconcile a reconfirmation superseded by a connection observer", () => {
+  test("does not reconcile a reconfirmation superseded by a connection observer", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery><turbo-cable-stream-source id="source" channel="DemoChannel" /></Gallery>',
@@ -798,7 +798,7 @@ describe("Cable stream source registry", () => {
     expect(errors).toEqual([])
   })
 
-  test("admits canonical standard/custom channels and rejects unsafe identifiers", () => {
+  test("admits canonical standard/custom channels and rejects unsafe identifiers", async () => {
     const document = session(`<Gallery>
       <turbo-cable-stream-source id="custom" channel="CustomChannel" />
       <turbo-cable-stream-source id="missing-channel" />
@@ -891,7 +891,7 @@ describe("Cable stream source registry", () => {
     expect(errors.every((error) => error.cause === undefined)).toBe(true)
   })
 
-  test("rebinds descriptor changes synchronously and recovers from invalid attributes", () => {
+  test("rebinds descriptor changes synchronously and recovers from invalid attributes", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="OldChannel" />
@@ -910,11 +910,11 @@ describe("Cable stream source registry", () => {
     const current = cable.records[1]
     if (!current) throw new Error("Missing rebound subscription")
     expect(old.unsubscribeCalls).toBe(1)
-    old.callbacks.received(
+    await old.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
-    current.callbacks.received(
+    await current.callbacks.received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
@@ -926,7 +926,7 @@ describe("Cable stream source registry", () => {
         target: "id:source",
       }),
     ])
-    current.callbacks.received(
+    await current.callbacks.received(
       '<turbo-stream action="update" target="status"><template>invalid</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
@@ -937,7 +937,7 @@ describe("Cable stream source registry", () => {
     )
   })
 
-  test("does not resume a stale rebind after unsubscribe-error observer reentrancy", () => {
+  test("does not resume a stale rebind after unsubscribe-error observer reentrancy", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="FirstChannel" />
@@ -969,17 +969,17 @@ describe("Cable stream source registry", () => {
         target: "id:source",
       }),
     ])
-    first.callbacks.received(
+    await first.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
-    cable.records[1]?.callbacks.received(
+    await cable.records[1]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
   })
 
-  test("does not report a superseded subscribe failure after a reentrant rebind", () => {
+  test("does not report a superseded subscribe failure after a reentrant rebind", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="FirstChannel" />
@@ -1007,17 +1007,17 @@ describe("Cable stream source registry", () => {
     ])
     expect(first.unsubscribeCalls).toBe(1)
     expect(errors).toEqual([])
-    cable.records[1]?.callbacks.received(
+    await cable.records[1]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
-    cable.records[2]?.callbacks.received(
+    await cable.records[2]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
   })
 
-  test("reports a current subscribe failure after a same-identifier notification", () => {
+  test("reports a current subscribe failure after a same-identifier notification", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="CurrentChannel" />
@@ -1043,7 +1043,7 @@ describe("Cable stream source registry", () => {
         target: "id:source",
       }),
     ])
-    cable.records[0]?.callbacks.received(
+    await cable.records[0]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
@@ -1080,11 +1080,11 @@ describe("Cable stream source registry", () => {
         target: "id:first",
       }),
     ])
-    cable.records[0]?.callbacks.received(
+    await cable.records[0]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
-    cable.records[1]?.callbacks.received(
+    await cable.records[1]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
@@ -1097,7 +1097,7 @@ describe("Cable stream source registry", () => {
     expect(cable.records[1]?.unsubscribeCalls).toBe(1)
   })
 
-  test("dispatches messages once per shared subscription and recovers after malformed input", () => {
+  test("dispatches messages once per shared subscription and recovers after malformed input", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="first" channel="DemoChannel" />
@@ -1124,8 +1124,8 @@ describe("Cable stream source registry", () => {
     const received = cable.records[0]?.callbacks.received
     if (!received) throw new Error("Missing Cable receiver")
 
-    received("<turbo-stream")
-    received(
+    await received("<turbo-stream")
+    await received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
 
@@ -1139,7 +1139,7 @@ describe("Cable stream source registry", () => {
     expect((errors[0] as SubscriptionError).context).toEqual({ target: "id:first" })
   })
 
-  test("routes a decoded Action Cable delivery through the active subscription callback", () => {
+  test("routes a decoded Action Cable delivery through the active subscription callback", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
@@ -1165,12 +1165,12 @@ describe("Cable stream source registry", () => {
     if (!("identifier" in frame && "message" in frame)) {
       throw new Error("Expected Action Cable delivery frame")
     }
-    received(frame.message)
+    await received(frame.message)
 
     expect(text(document, "status")).toBe("fresh")
   })
 
-  test("serializes reentrant delivery across distinct subscriptions", () => {
+  test("serializes reentrant delivery across distinct subscriptions", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="first" channel="FirstChannel" />
@@ -1182,7 +1182,9 @@ describe("Cable stream source registry", () => {
       onError: (error) => {
         throw error
       },
-      onMessage: () => observations.push(`report:${text(document, "status")}`),
+      onMessage: () => {
+        observations.push(`report:${text(document, "status")}`)
+      },
     })
     registry.retain(source(document, "first"))
     registry.retain(source(document, "second"))
@@ -1199,7 +1201,7 @@ describe("Cable stream source registry", () => {
       )
     })
 
-    first.callbacks.received(
+    await first.callbacks.received(
       '<turbo-stream action="update" target="status"><template>first</template></turbo-stream>',
     )
 
@@ -1212,7 +1214,7 @@ describe("Cable stream source registry", () => {
     ])
   })
 
-  test("isolates a message observer failure from later delivery", () => {
+  test("isolates a message observer failure from later delivery", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
@@ -1231,10 +1233,10 @@ describe("Cable stream source registry", () => {
     const received = cable.records[0]?.callbacks.received
     if (!received) throw new Error("Missing Cable receiver")
 
-    received(
+    await received(
       '<turbo-stream action="update" target="status"><template>first</template></turbo-stream>',
     )
-    received(
+    await received(
       '<turbo-stream action="update" target="status"><template>second</template></turbo-stream>',
     )
 
@@ -1248,7 +1250,7 @@ describe("Cable stream source registry", () => {
     expect(errors[0]?.cause).toBeUndefined()
   })
 
-  test("disconnects synchronously on exact-node removal and ignores late callbacks", () => {
+  test("disconnects synchronously on exact-node removal and ignores late callbacks", async () => {
     const document = session(`<Gallery id="gallery">
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
@@ -1268,7 +1270,7 @@ describe("Cable stream source registry", () => {
     })
 
     expect(record.unsubscribeCalls).toBe(1)
-    record.callbacks.received(
+    await record.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("old")
@@ -1291,7 +1293,7 @@ describe("Cable stream source registry", () => {
     if (!record) throw new Error("Missing subscription")
 
     release()
-    record.callbacks.received(
+    void record.callbacks.received(
       '<turbo-stream action="update" target="status"><template>stale</template></turbo-stream>',
     )
 
@@ -1336,7 +1338,7 @@ describe("Cable stream source registry", () => {
     expect(cable.records[1]?.identifier).toBe(
       JSON.stringify({ channel: "RecoveredChannel", signed_stream_name: null }),
     )
-    cable.records[1]?.callbacks.received(
+    await cable.records[1]?.callbacks.received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
     expect(text(document, "status")).toBe("fresh")
@@ -1374,14 +1376,15 @@ describe("Cable stream source registry", () => {
     expect(cable.records[0]?.unsubscribeCalls).toBe(1)
   })
 
-  test("publishes the source before hostile subscribe reentrancy and cleans up once", () => {
+  test("publishes the source before hostile subscribe reentrancy and cleans up once", async () => {
     const document = session(`<Gallery id="gallery">
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
     </Gallery>`)
     const cable = new FakeCable()
     const errors: Error[] = []
+    let delivery: PromiseLike<void> | void = Promise.resolve()
     cable.subscribeHook = (callbacks) => {
-      callbacks.received(
+      delivery = callbacks.received(
         '<turbo-stream action="remove" target="source"><template /></turbo-stream>',
       )
     }
@@ -1390,6 +1393,7 @@ describe("Cable stream source registry", () => {
     })
 
     const release = registry.retain(source(document, "source"))
+    await delivery
 
     expect(document.tree.getElementById("source")).toBeUndefined()
     expect(cable.records[0]?.unsubscribeCalls).toBe(1)
@@ -1397,7 +1401,7 @@ describe("Cable stream source registry", () => {
     expect(release()).toBeUndefined()
   })
 
-  test("redacts adapter failures and reports cleanup violations without failing mutation", () => {
+  test("redacts adapter failures and reports cleanup violations without failing mutation", async () => {
     const document = session(`<Gallery>
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
     </Gallery>`)
@@ -1462,7 +1466,7 @@ describe("Cable stream source registry", () => {
     await Promise.resolve()
   })
 
-  test("rejects stale exact nodes and disposes every active transport", () => {
+  test("rejects stale exact nodes and disposes every active transport", async () => {
     const document = session(`<Gallery>
       <turbo-cable-stream-source id="first" channel="FirstChannel" />
       <turbo-cable-stream-source id="second" channel="SecondChannel" />
@@ -1497,7 +1501,7 @@ describe("Cable stream source registry", () => {
     )
   })
 
-  test("rejects non-string delivery without poisoning the subscription", () => {
+  test("rejects non-string delivery without poisoning the subscription", async () => {
     const document = session(`<Gallery>
       <Status id="status">old</Status>
       <turbo-cable-stream-source id="source" channel="DemoChannel" />
@@ -1510,8 +1514,8 @@ describe("Cable stream source registry", () => {
     registry.retain(source(document, "source"))
     const received = cable.records[0]?.callbacks.received as (message: unknown) => void
 
-    received({ secret: "payload" })
-    received(
+    await received({ secret: "payload" })
+    await received(
       '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
     )
 
@@ -1523,7 +1527,7 @@ describe("Cable stream source registry", () => {
     ])
   })
 
-  test("retains source attributes without mutating protocol state", () => {
+  test("retains source attributes without mutating protocol state", async () => {
     const document = session(`<Gallery>
       <turbo-cable-stream-source
         id="source"

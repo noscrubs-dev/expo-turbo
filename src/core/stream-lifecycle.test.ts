@@ -21,7 +21,123 @@ function session(xml: string): DocumentSession {
 }
 
 describe("Stream lifecycle", () => {
-  test("orders before-render and action notifications across applied, canceled, no-op, and error siblings", () => {
+  test("awaits the native render scheduler between before-render and each ordered action", async () => {
+    const document = session('<Gallery><First id="first"/><Second id="second"/></Gallery>')
+    const lifecycle = new StreamLifecycle()
+    const order: string[] = []
+    lifecycle.subscribe("before-stream-render", (event) => {
+      order.push(`before:${event.detail.index}`)
+      if (event.detail.index === 0) {
+        event.detail.render = async (context) => {
+          order.push("renderer:start")
+          await Promise.resolve()
+          order.push("renderer:default")
+          return await context.renderDefault()
+        }
+      }
+      return undefined
+    })
+    lifecycle.subscribe("stream-action", (event) => {
+      order.push(`action:${event.detail.report.index}`)
+      return undefined
+    })
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="remove" target="first" />
+       <turbo-stream action="remove" target="second" />`,
+      {
+        streamLifecycle: lifecycle,
+        streamRenderScheduler: {
+          async beforeRender(context) {
+            order.push(`schedule:start:${context.index}`)
+            await Promise.resolve()
+            order.push(`schedule:end:${context.index}`)
+          },
+        },
+      },
+    )
+
+    expect(report.actions.map((action) => action.status)).toEqual(["applied", "applied"])
+    expect(order).toEqual([
+      "before:0",
+      "schedule:start:0",
+      "schedule:end:0",
+      "renderer:start",
+      "renderer:default",
+      "action:0",
+      "before:1",
+      "schedule:start:1",
+      "schedule:end:1",
+      "action:1",
+    ])
+  })
+
+  test("skips scheduling for canceled actions and isolates a rejected scheduler", async () => {
+    const document = session(
+      '<Gallery><Canceled id="canceled"/><Rejected id="rejected"/><Later id="later"/></Gallery>',
+    )
+    const lifecycle = new StreamLifecycle()
+    const scheduled: number[] = []
+    lifecycle.subscribe("before-stream-render", (event) => {
+      if (event.detail.index === 0) event.preventDefault()
+      return undefined
+    })
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="remove" target="canceled" />
+       <turbo-stream action="remove" target="rejected" />
+       <turbo-stream action="remove" target="later" />`,
+      {
+        streamLifecycle: lifecycle,
+        streamRenderScheduler: {
+          beforeRender(context) {
+            scheduled.push(context.index)
+            if (context.index === 1) return Promise.reject(new Error("secret scheduler failure"))
+            return undefined
+          },
+        },
+      },
+    )
+
+    expect(report.actions.map((action) => action.status)).toEqual(["canceled", "error", "applied"])
+    expect(report.actions[1]?.error?.message).toBe("Stream render scheduler failed")
+    expect(scheduled).toEqual([1, 2])
+    expect(document.tree.getElementById("canceled")).toBeDefined()
+    expect(document.tree.getElementById("rejected")).toBeDefined()
+    expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("cancels guarded work when ownership is lost while the scheduler is pending", async () => {
+    const document = session('<Gallery><First id="first"/></Gallery>')
+    const streams = parseTurboStreamFragment(
+      '<turbo-stream action="remove" target="first" />',
+    ).document.children.filter(
+      (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
+    )
+    let active = true
+
+    const report = await dispatchGuardedTurboStreamElements(
+      document,
+      streams,
+      {
+        streamRenderScheduler: {
+          async beforeRender() {
+            await Promise.resolve()
+            active = false
+          },
+        },
+      },
+      { shouldContinue: () => active },
+    )
+
+    expect(report).toMatchObject({ interrupted: true })
+    expect(report.actions.map((action) => action.status)).toEqual(["canceled"])
+    expect(document.tree.getElementById("first")).toBeDefined()
+  })
+
+  test("orders before-render and action notifications across applied, canceled, no-op, and error siblings", async () => {
     const document = session(
       '<Gallery><Panel id="panel"><Old /></Panel><Keep id="keep"/><Later id="later"/></Gallery>',
     )
@@ -64,7 +180,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="update" target="panel" method="morph"><template><New id="new"/></template></turbo-stream>
        <turbo-stream action="append" targets="["><template><Never /></template></turbo-stream>
@@ -101,7 +217,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("notifies only successful default standalone Stream morphs", () => {
+  test("notifies only successful default standalone Stream morphs", async () => {
     const document = session(
       `<Gallery>
         <Replace id="replace"><Old id="replace-old"/></Replace>
@@ -141,7 +257,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="replace" target="replace" method="morph"><template><Replace id="replace"><Fresh id="replace-fresh"/></Replace></template></turbo-stream>
        <turbo-stream action="update" target="update" method="morph"><template><Fresh id="update-fresh"/></template></turbo-stream>
@@ -181,7 +297,7 @@ describe("Stream lifecycle", () => {
     ).toBe("replacement")
   })
 
-  test("keeps Stream morph notifications out of embedded Stream rendering", () => {
+  test("keeps Stream morph notifications out of embedded Stream rendering", async () => {
     const document = session('<Gallery><Panel id="panel"><Old/></Panel></Gallery>')
     const lifecycle = new StreamLifecycle()
     const morphs: string[] = []
@@ -200,7 +316,7 @@ describe("Stream lifecycle", () => {
       (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
     )
 
-    const report = dispatchEmbeddedTurboStreamElements(document, streams, {
+    const report = await dispatchEmbeddedTurboStreamElements(document, streams, {
       streamLifecycle: lifecycle,
     })
 
@@ -210,7 +326,7 @@ describe("Stream lifecycle", () => {
     expect(actions).toEqual(["applied"])
   })
 
-  test("keeps cancellation irreversible across later listeners", () => {
+  test("keeps cancellation irreversible across later listeners", async () => {
     const document = session('<Gallery><First id="first"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let eventPrototype: object | undefined
@@ -238,9 +354,9 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = (() => {
+    const report = await (async () => {
       try {
-        return dispatchTurboStreamFragment(
+        return await dispatchTurboStreamFragment(
           document,
           '<turbo-stream action="remove" target="first" />',
           { streamLifecycle: lifecycle },
@@ -259,7 +375,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("first")).toBeDefined()
   })
 
-  test("allows a registered synchronous renderer to replace the default action with an explicit result", () => {
+  test("allows a registered synchronous renderer to replace the default action with an explicit result", async () => {
     const document = session('<Gallery><Panel id="panel"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
@@ -278,7 +394,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="panel" />
        <turbo-stream action="remove" target="later" />`,
@@ -292,7 +408,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("expires the default render continuation before action observers and dispatch return", () => {
+  test("expires the default render continuation before action observers and dispatch return", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let savedRender: (() => unknown) | undefined
@@ -310,7 +426,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="later" />`,
@@ -323,51 +439,40 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("expires the default continuation before reading replacement result properties", () => {
-    const document = session(
-      '<Gallery><First id="first"/><Second id="second"/><Later id="later"/></Gallery>',
-    )
+  test("keeps the default continuation active until an awaited renderer settles", async () => {
+    const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
+    const order: string[] = []
     lifecycle.subscribe("before-stream-render", (event) => {
       if (event.detail.index === 0) {
-        event.detail.render = ((context: StreamRenderContext) => ({
-          get appliedTargets() {
-            context.renderDefault()
-            return 0
-          },
-          matchedTargets: 0,
-          status: "noop",
-        })) as never
-      } else if (event.detail.index === 1) {
-        event.detail.render = ((context: StreamRenderContext) => {
-          const result = {}
-          Object.defineProperty(result, ["th", "en"].join(""), {
-            get() {
-              context.renderDefault()
-              return undefined
-            },
-          })
-          return result
-        }) as never
+        event.detail.render = async (context) => {
+          order.push("renderer:start")
+          await Promise.resolve()
+          order.push("renderer:default")
+          return await context.renderDefault()
+        }
       }
       return undefined
     })
+    lifecycle.subscribe("stream-action", (event) => {
+      order.push(`action:${event.detail.report.index}`)
+      return undefined
+    })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
-       <turbo-stream action="remove" target="second" />
        <turbo-stream action="remove" target="later" />`,
       { streamLifecycle: lifecycle },
     )
 
-    expect(report.actions.map((action) => action.status)).toEqual(["error", "error", "applied"])
-    expect(document.tree.getElementById("first")).toBeDefined()
-    expect(document.tree.getElementById("second")).toBeDefined()
+    expect(report.actions.map((action) => action.status)).toEqual(["applied", "applied"])
+    expect(order).toEqual(["renderer:start", "renderer:default", "action:0", "action:1"])
+    expect(document.tree.getElementById("first")).toBeUndefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("never downgrades committed failures from replacement result getters", () => {
+  test("never downgrades committed failures from replacement result getters", async () => {
     for (const property of ["appliedTargets", ["th", "en"].join("")]) {
       const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
       const lifecycle = new StreamLifecycle()
@@ -405,17 +510,16 @@ describe("Stream lifecycle", () => {
     }
   })
 
-  test("isolates invalid, asynchronous, and repeated default renderers without poisoning siblings", async () => {
+  test("awaits replacement renderers and isolates rejected or invalid results", async () => {
     const document = session(
       '<Gallery><First id="first"/><Second id="second"/><Third id="third"/><Later id="later"/></Gallery>',
     )
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
       if (event.detail.index === 0) {
-        event.detail.render = (context) => {
-          const result = context.renderDefault()
-          context.renderDefault()
-          return result
+        event.detail.render = async () => {
+          await Promise.resolve()
+          return Object.freeze({ appliedTargets: 0, matchedTargets: 0, status: "noop" })
         }
       } else if (event.detail.index === 1) {
         event.detail.render = (() => {
@@ -434,7 +538,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="second" />
@@ -442,23 +546,20 @@ describe("Stream lifecycle", () => {
        <turbo-stream action="remove" target="later" />`,
       { streamLifecycle: lifecycle },
     )
-    await Promise.resolve()
-    await Promise.resolve()
-
     expect(report.actions.map((action) => action.status)).toEqual([
-      "error",
+      "noop",
       "error",
       "error",
       "applied",
     ])
-    expect(report.actions[0]).toMatchObject({ appliedTargets: 1, matchedTargets: 1 })
-    expect(document.tree.getElementById("first")).toBeUndefined()
+    expect(report.actions[0]).toMatchObject({ appliedTargets: 0, matchedTargets: 0 })
+    expect(document.tree.getElementById("first")).toBeDefined()
     expect(document.tree.getElementById("second")).toBeDefined()
     expect(document.tree.getElementById("third")).toBeDefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("isolates notification observer faults and keeps stable listener snapshots", () => {
+  test("isolates notification observer faults and keeps stable listener snapshots", async () => {
     const document = session('<Gallery><First id="first"/><Second id="second"/></Gallery>')
     const observerErrors: AggregateError[] = []
     const lifecycle = new StreamLifecycle({
@@ -483,7 +584,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="second" />`,
@@ -497,7 +598,7 @@ describe("Stream lifecycle", () => {
     expect(observerErrors[0]?.errors[0]?.message).toBe("Stream-action listener failed")
   })
 
-  test("isolates Stream morph observer faults before Stream action notification", () => {
+  test("isolates Stream morph observer faults before Stream action notification", async () => {
     const document = session('<Gallery><Panel id="panel"><Old/></Panel></Gallery>')
     const observerErrors: AggregateError[] = []
     const lifecycle = new StreamLifecycle({
@@ -520,7 +621,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       '<turbo-stream action="update" target="panel" method="morph"><template><Fresh id="fresh"/></template></turbo-stream>',
       { streamLifecycle: lifecycle },
@@ -533,7 +634,7 @@ describe("Stream lifecycle", () => {
     expect(observerErrors[0]?.errors[0]?.message).toBe("Stream-morph listener failed")
   })
 
-  test("turns a failing before-render listener into one isolated action error", () => {
+  test("turns a failing before-render listener into one isolated action error", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
@@ -541,7 +642,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="later" />`,
@@ -554,7 +655,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("redacts replacement renderer errors and revoked proxies", () => {
+  test("redacts replacement renderer errors and revoked proxies", async () => {
     const document = session(
       '<Gallery><First id="first"/><Second id="second"/><Later id="later"/></Gallery>',
     )
@@ -579,7 +680,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="second" />
@@ -602,7 +703,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("does not trust host-constructed commit errors", () => {
+  test("does not trust host-constructed commit errors", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     lifecycle.subscribe("before-stream-render", (event) => {
@@ -612,7 +713,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="later" />`,
@@ -626,7 +727,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("preserves a committed failure from an invalid before-listener then getter", () => {
+  test("preserves a committed failure from an invalid before-listener then getter", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     document.subscribe("id:first", () => {
@@ -685,7 +786,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeDefined()
   })
 
-  test("invokes rejected thenables synchronously and preserves their committed mutation", () => {
+  test("invokes rejected thenables synchronously and preserves their committed mutation", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let thenCalls = 0
@@ -735,7 +836,7 @@ describe("Stream lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       document,
       `<turbo-stream action="remove" target="first" />
        <turbo-stream action="remove" target="later" />`,
@@ -749,7 +850,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("never isolates a committed failure thrown by a before-render listener", () => {
+  test("never isolates a committed failure thrown by a before-render listener", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     const actionEvents: number[] = []
@@ -781,7 +882,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeDefined()
   })
 
-  test("marks a guarded action interrupted when before-render loses ownership", () => {
+  test("marks a guarded action interrupted when before-render loses ownership", async () => {
     const document = session('<Gallery><First id="first"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let active = true
@@ -795,7 +896,7 @@ describe("Stream lifecycle", () => {
     ).document.children.filter(
       (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
     )
-    const guarded = dispatchGuardedTurboStreamElements(
+    const guarded = await dispatchGuardedTurboStreamElements(
       document,
       streams,
       { streamLifecycle: lifecycle },
@@ -807,15 +908,15 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("first")).toBeDefined()
   })
 
-  test("does not let a replacement renderer swallow guarded default interruption", () => {
+  test("does not let a replacement renderer swallow guarded default interruption", async () => {
     const document = session('<Gallery><First id="first"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let active = true
     lifecycle.subscribe("before-stream-render", (event) => {
-      event.detail.render = (context) => {
+      event.detail.render = async (context) => {
         active = false
         try {
-          context.renderDefault()
+          await context.renderDefault()
         } catch {
           return Object.freeze({ appliedTargets: 0, matchedTargets: 0, status: "noop" })
         }
@@ -829,7 +930,7 @@ describe("Stream lifecycle", () => {
       (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
     )
 
-    const report = dispatchGuardedTurboStreamElements(
+    const report = await dispatchGuardedTurboStreamElements(
       document,
       streams,
       { streamLifecycle: lifecycle },
@@ -841,7 +942,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("first")).toBeDefined()
   })
 
-  test("does not call lifecycle cancellation interrupted when ownership changes afterward", () => {
+  test("does not call lifecycle cancellation interrupted when ownership changes afterward", async () => {
     const document = session('<Gallery><First id="first"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let active = true
@@ -859,7 +960,7 @@ describe("Stream lifecycle", () => {
       (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
     )
 
-    const report = dispatchGuardedTurboStreamElements(
+    const report = await dispatchGuardedTurboStreamElements(
       document,
       streams,
       { streamLifecycle: lifecycle },
@@ -871,7 +972,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("first")).toBeDefined()
   })
 
-  test("does not infer interruption from a completed no-op after ownership changes", () => {
+  test("does not infer interruption from a completed no-op after ownership changes", async () => {
     const document = session('<Gallery><First id="first"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     let active = true
@@ -885,7 +986,7 @@ describe("Stream lifecycle", () => {
       (node): node is ProtocolElement => isElement(node) && node.kind === "stream",
     )
 
-    const report = dispatchGuardedTurboStreamElements(
+    const report = await dispatchGuardedTurboStreamElements(
       document,
       streams,
       { streamLifecycle: lifecycle },
@@ -904,7 +1005,7 @@ describe("Stream lifecycle", () => {
     ])
   })
 
-  test("rethrows a committed default-render failure even when a wrapper catches it", () => {
+  test("rethrows a committed default-render failure even when a wrapper catches it", async () => {
     const document = session('<Gallery><First id="first"/><Later id="later"/></Gallery>')
     const lifecycle = new StreamLifecycle()
     const actionEvents: number[] = []
@@ -943,7 +1044,7 @@ describe("Stream lifecycle", () => {
     expect(document.tree.getElementById("later")).toBeDefined()
   })
 
-  test("validates lifecycle options and preserves committed finalization failure propagation", () => {
+  test("validates lifecycle options and preserves committed finalization failure propagation", async () => {
     const document = session('<Gallery><Panel id="panel"/><Later id="later"/></Gallery>')
     expect(() =>
       dispatchTurboStreamFragment(document, '<turbo-stream action="remove" target="panel"/>', {
