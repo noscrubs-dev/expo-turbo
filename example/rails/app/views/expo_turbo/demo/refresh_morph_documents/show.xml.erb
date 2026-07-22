@@ -3,5 +3,9 @@
   <DemoDocumentLink id="demo-document-refresh-morph-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph" data-turbo-stream="" accessibility-label="Refresh current Rails document with a state-preserving morph">
     <DemoText>Refresh current Rails document with a state-preserving morph</DemoText>
   </DemoDocumentLink>
+  <DemoText id="demo-document-refresh-morph-suppression">No originating request-ID refresh has been demonstrated yet.</DemoText>
+  <DemoDocumentLink id="demo-document-refresh-morph-suppression-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph-originating" data-turbo-stream="" accessibility-label="Echo request ID and suppress document refresh">
+    <DemoText>Echo request ID and suppress document refresh</DemoText>
+  </DemoDocumentLink>
   <DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" increment-label="Increment document refresh morph counter" />
 </Gallery>

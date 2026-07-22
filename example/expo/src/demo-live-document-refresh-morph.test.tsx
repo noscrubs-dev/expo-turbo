@@ -206,3 +206,110 @@ test("preserves local native state through a Rails current-document Refresh Stre
     proof.dispose();
   }
 });
+
+test("shows Rails request-id suppression without issuing a duplicate canonical document GET", async () => {
+  const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/refresh_morph_document";
+  const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream?mode=refresh-morph-originating";
+  const initialDocument = `<Gallery id="demo-document-refresh-morph"><DemoText id="demo-document-refresh-morph-response">Canonical Rails response one</DemoText><DemoText id="demo-document-refresh-morph-suppression">No originating request-ID refresh has been demonstrated yet.</DemoText><DemoDocumentLink id="demo-document-refresh-morph-suppression-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph-originating" data-turbo-stream="" accessibility-label="Echo request ID and suppress document refresh"><DemoText>Echo request ID and suppress document refresh</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" increment-label="Increment document refresh morph counter" /></Gallery>`;
+  const stream = '<turbo-stream action="replace" target="demo-document-refresh-morph-suppression"><template><DemoText id="demo-document-refresh-morph-suppression">Rails echoed the originating request ID, so the document Refresh Stream was suppressed.</DemoText></template></turbo-stream><turbo-stream action="refresh" method="morph" request-id="demo-live-document-refresh-morph-link-1"></turbo-stream>';
+  const requests: RecordedRequest[] = [];
+  const clock = new ManualClock();
+  const proof = await createDemoLiveDocumentRefreshMorphRuntime({
+    clock,
+    fetch: async (url, request) => {
+      requests.push({ request, url });
+      if (url === documentUrl) {
+        return {
+          headers: {
+            forEach(callback: (value: string, name: string) => void): void {
+              callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+            },
+          },
+          redirected: false,
+          status: 200,
+          text: async () => initialDocument,
+          url,
+        };
+      }
+      if (url === streamUrl) {
+        return {
+          headers: {
+            forEach(callback: (value: string, name: string) => void): void {
+              callback(TURBO_STREAM_MIME_TYPE, "Content-Type");
+            },
+          },
+          redirected: false,
+          status: 200,
+          text: async () => stream,
+          url,
+        };
+      }
+      throw new Error("Unexpected standalone Rails originating refresh-morph request");
+    },
+    origin: "http://demo.example:3000",
+  });
+  let renderer: ReactTestRenderer | undefined;
+  const errors: (Error | undefined)[] = [];
+  const unsubscribeErrors = proof.subscribeErrors((error) => {
+    errors.push(error);
+  });
+
+  try {
+    await act(async () => {
+      renderer = create(createElement(DemoLiveDocumentRefreshMorphPanel, { proof }));
+      await nextTurn();
+    });
+    const initialResponse = proof.session.tree.getElementById("demo-document-refresh-morph-response");
+    if (!initialResponse) throw new Error("The Rails suppression document is missing its canonical response");
+    const initialResponseText = nodeTextContent(initialResponse);
+
+    const streamLink = renderer?.root
+      .findAllByProps({ accessibilityRole: "link" })
+      .find(
+        (candidate) =>
+          candidate.props.accessibilityLabel === "Echo request ID and suppress document refresh" &&
+          typeof candidate.props.onPress === "function",
+      );
+    if (!streamLink) throw new Error("The Rails originating-refresh link is missing its native handler");
+    await act(async () => {
+      streamLink.props.onPress();
+      await nextTurn();
+      await nextTurn();
+    });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({
+      request: {
+        headers: {
+          Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
+          "X-Turbo-Request-Id": "demo-live-document-refresh-morph-link-1",
+        },
+        method: "GET",
+      },
+      url: streamUrl,
+    });
+    const suppression = proof.session.tree.getElementById("demo-document-refresh-morph-suppression");
+    expect(suppression ? nodeTextContent(suppression) : undefined).toBe(
+      "Rails echoed the originating request ID, so the document Refresh Stream was suppressed.",
+    );
+    expect(clock.timers).toHaveLength(1);
+
+    await act(async () => {
+      clock.fire(0);
+      await nextTurn();
+    });
+
+    expect(requests).toHaveLength(2);
+    const response = proof.session.tree.getElementById("demo-document-refresh-morph-response");
+    expect(response ? nodeTextContent(response) : undefined).toBe(initialResponseText);
+    expect(errors.at(-1)).toBeUndefined();
+  } finally {
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+    await nextTurn();
+    unsubscribeErrors();
+    proof.dispose();
+  }
+});
