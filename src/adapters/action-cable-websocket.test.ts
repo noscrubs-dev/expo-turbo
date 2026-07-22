@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import { SubscriptionError } from "../core/errors"
 import {
+  ACTION_CABLE_STALE_THRESHOLD_MS,
   ACTION_CABLE_SUBSCRIPTION_RETRY_MS,
   ActionCableV1WebSocketAdapter,
   type ActionCableWebSocket,
@@ -75,11 +76,17 @@ interface TimerRecord {
   readonly callback: () => void
   cleared: boolean
   readonly delayMs: number
+  fired: boolean
   readonly handle: object
 }
 
 class ManualClock {
+  nowMs = 0
   readonly timers: TimerRecord[] = []
+
+  advance(ms: number): void {
+    this.nowMs += ms
+  }
 
   clearTimeout(handle: unknown): void {
     const timer = this.timers.find((candidate) => candidate.handle === handle)
@@ -88,14 +95,20 @@ class ManualClock {
 
   setTimeout(callback: () => void, delayMs: number): unknown {
     const handle = Object.freeze({})
-    this.timers.push({ callback, cleared: false, delayMs, handle })
+    this.timers.push({ callback, cleared: false, delayMs, fired: false, handle })
     return handle
+  }
+
+  now(): number {
+    return this.nowMs
   }
 
   fire(index: number): void {
     const timer = this.timers[index]
     if (!timer) throw new Error("Expected subscription retry timer")
-    if (!timer.cleared) timer.callback()
+    if (timer.cleared || timer.fired) return
+    timer.fired = true
+    timer.callback()
   }
 }
 
@@ -116,7 +129,7 @@ function callbackEvents(events: string[], name: string): CableCallbacks {
   }
 }
 
-function createAdapter() {
+function createAdapter(heartbeat = false) {
   const clock = new ManualClock()
   const errors: SubscriptionError[] = []
   const socketCalls: { protocols: readonly string[]; url: string }[] = []
@@ -129,6 +142,7 @@ function createAdapter() {
       sockets.push(socket)
       return socket
     },
+    ...(heartbeat ? { heartbeat: { now: () => clock.now() } } : {}),
     onError(error) {
       errors.push(error)
     },
@@ -146,6 +160,14 @@ function socketAt(sockets: readonly FakeSocket[], index: number): FakeSocket {
   const socket = sockets[index]
   if (!socket) throw new Error("Expected socket")
   return socket
+}
+
+function activeTimerIndex(clock: ManualClock, delayMs: number): number {
+  const index = clock.timers.findIndex(
+    (timer) => !timer.cleared && !timer.fired && timer.delayMs === delayMs,
+  )
+  if (index === -1) throw new Error(`Expected active ${delayMs}ms timer`)
+  return index
 }
 
 function confirmation(socket: FakeSocket, identifier: string): void {
@@ -284,6 +306,97 @@ describe("Action Cable v1 WebSocket adapter", () => {
     welcome(socketAt(disposed.sockets, 0))
     disposed.adapter.dispose()
     expect(disposed.clock.timers[0]?.cleared).toBe(true)
+  })
+
+  test("replaces an accepted socket only after the opt-in monitor observes more than the stale threshold", () => {
+    const { adapter, clock, errors, sockets } = createAdapter(true)
+    const events: string[] = []
+    const identifier = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"heartbeat"}'
+
+    adapter.subscribe(identifier, callbackEvents(events, "source"))
+    const original = socketAt(sockets, 0)
+    welcome(original)
+    confirmation(original, identifier)
+
+    const initialHeartbeat = activeTimerIndex(clock, ACTION_CABLE_STALE_THRESHOLD_MS + 1)
+    clock.advance(ACTION_CABLE_STALE_THRESHOLD_MS)
+    clock.fire(initialHeartbeat)
+
+    expect(original.closeCalls).toBe(0)
+    expect(sockets).toHaveLength(1)
+
+    const boundaryHeartbeat = activeTimerIndex(clock, 1)
+    clock.advance(1)
+    clock.fire(boundaryHeartbeat)
+
+    expect(original.closeCalls).toBe(1)
+    expect(sockets).toHaveLength(2)
+    expect(events).toEqual(["source:connected:false", "source:disconnected:true"])
+
+    const replacement = socketAt(sockets, 1)
+    welcome(replacement)
+    confirmation(replacement, identifier)
+
+    expect(events).toEqual([
+      "source:connected:false",
+      "source:disconnected:true",
+      "source:connected:true",
+    ])
+    expect(errors).toEqual([])
+  })
+
+  test("refreshes the monitor on valid messages and releases it with the final source", () => {
+    const { adapter, clock, errors, sockets } = createAdapter(true)
+    const events: string[] = []
+    const identifier = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"ping"}'
+
+    const subscription = adapter.subscribe(identifier, callbackEvents(events, "source"))
+    const socket = socketAt(sockets, 0)
+    welcome(socket)
+    confirmation(socket, identifier)
+    const initialHeartbeat = activeTimerIndex(clock, ACTION_CABLE_STALE_THRESHOLD_MS + 1)
+
+    clock.advance(5_000)
+    socket.emitMessage('{"type":"ping","message":1}')
+
+    expect(clock.timers[initialHeartbeat]?.cleared).toBe(true)
+    const refreshedHeartbeat = activeTimerIndex(clock, ACTION_CABLE_STALE_THRESHOLD_MS + 1)
+    clock.advance(ACTION_CABLE_STALE_THRESHOLD_MS)
+    clock.fire(refreshedHeartbeat)
+
+    expect(socket.closeCalls).toBe(0)
+    const boundaryHeartbeat = activeTimerIndex(clock, 1)
+    subscription.unsubscribe()
+
+    expect(clock.timers[boundaryHeartbeat]?.cleared).toBe(true)
+    expect(socket.closeCalls).toBe(1)
+    expect(events).toEqual(["source:connected:false"])
+    expect(errors).toEqual([])
+  })
+
+  test("does not turn a silent replacement into a reconnect loop", () => {
+    const { adapter, clock, errors, sockets } = createAdapter(true)
+    const events: string[] = []
+    const identifier =
+      '{"channel":"Turbo::StreamsChannel","signed_stream_name":"silent-replacement"}'
+
+    adapter.subscribe(identifier, callbackEvents(events, "source"))
+    const original = socketAt(sockets, 0)
+    welcome(original)
+    confirmation(original, identifier)
+    clock.advance(ACTION_CABLE_STALE_THRESHOLD_MS + 1)
+    clock.fire(activeTimerIndex(clock, ACTION_CABLE_STALE_THRESHOLD_MS + 1))
+
+    const replacement = socketAt(sockets, 1)
+    replacement.emitOpen()
+    clock.advance(ACTION_CABLE_STALE_THRESHOLD_MS + 1)
+    clock.fire(activeTimerIndex(clock, ACTION_CABLE_STALE_THRESHOLD_MS + 1))
+
+    expect(original.closeCalls).toBe(1)
+    expect(replacement.closeCalls).toBe(0)
+    expect(sockets).toHaveLength(2)
+    expect(events).toEqual(["source:connected:false", "source:disconnected:true"])
+    expect(errors).toEqual([])
   })
 
   test("reserves one pending socket across a reentrant factory and closes a socket created after disposal", () => {
@@ -759,5 +872,23 @@ describe("Action Cable v1 WebSocket adapter", () => {
           url: "wss://example.test/cable?ticket=signed-secret",
         }),
     ).toThrow(new SubscriptionError("Action Cable WebSocket URL must be an absolute ws or wss URL"))
+    expect(
+      () =>
+        new ActionCableV1WebSocketAdapter({
+          createSocket: () => new FakeSocket(),
+          heartbeat: { staleThresholdMs: 0 },
+          onError: () => undefined,
+          url: "wss://example.test/cable",
+        }),
+    ).toThrow(new SubscriptionError("Action Cable heartbeat monitor is invalid"))
+    expect(
+      () =>
+        new ActionCableV1WebSocketAdapter({
+          createSocket: () => new FakeSocket(),
+          heartbeat: { now: "not-a-clock" as unknown as () => number },
+          onError: () => undefined,
+          url: "wss://example.test/cable",
+        }),
+    ).toThrow(new SubscriptionError("Action Cable heartbeat monitor is invalid"))
   })
 })
