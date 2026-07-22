@@ -171,6 +171,10 @@ const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
 const GENERIC_ROUTE_URL =
   "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
+const DIRECT_QUERY_PATH =
+  "/--/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
+const DIRECT_QUERY_URL =
+  "https://example.test/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
 
 interface FixtureTimer {
   readonly callback: () => void;
@@ -215,7 +219,10 @@ class TestNavigation implements DemoRouterNavigation {
   setParamsCalls = 0;
   state: DemoRouterState;
 
-  constructor(params?: Readonly<Record<string, unknown>>) {
+  constructor(
+    params?: Readonly<Record<string, unknown>>,
+    path?: string,
+  ) {
     this.state = Object.freeze({
       stale: false,
       type: "stack",
@@ -227,7 +234,7 @@ class TestNavigation implements DemoRouterNavigation {
         Object.freeze({
           key: INITIAL_ROUTE_KEY,
           name: DEMO_ROUTER_ROUTE_NAME,
-          path: "/demo",
+          path,
           params: routeParams(GALLERY_URL, params),
         }),
       ]),
@@ -1586,6 +1593,49 @@ describe("demo app runtime ownership", () => {
       runtime.documentRuntime.history.current,
     );
     expect(renderer?.root.findAll((node) => String(node.type) === "active-route")).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("bootstraps an unmanaged direct query link from Expo Router's route path", async () => {
+    const fixtureFetch = createDemoFixtureFetchAdapter();
+    const requests: TurboRequest[] = [];
+    const runtime = createDemoRuntime({
+      documentFetch: {
+        async fetch(request) {
+          requests.push(request);
+          return fixtureFetch.fetch(request);
+        },
+      },
+    });
+    const navigation = new TestNavigation(
+      routeParams(DIRECT_QUERY_URL, {
+        empty: "",
+        encoded: "",
+        plus: " ",
+        source: "direct",
+        tag: ["a", "b"],
+      }),
+      DIRECT_QUERY_PATH,
+    );
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(routeTree(runtime, navigation));
+      await nextTurn();
+    });
+
+    expect(requests[0]?.url).toBe(DIRECT_QUERY_URL);
+    expect(runtime.session.tree.document.url).toBe(DIRECT_QUERY_URL);
+    expect(runtime.session.tree.getElementById("direct-query-route-document")).toBeDefined();
+    expect(runtime.documentRuntime.history.current?.url).toBe(DIRECT_QUERY_URL);
+    expect(navigation.setParamsCalls).toBe(1);
+    expect(decodeDemoRouterHistoryEntry(navigation.state.routes[0]?.params)).toEqual(
+      runtime.documentRuntime.history.current,
+    );
 
     await act(async () => {
       renderer?.unmount();

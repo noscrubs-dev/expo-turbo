@@ -119,6 +119,15 @@ const GENERIC_ROUTE_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoDocumentLink>
 </Gallery>`;
 
+const DIRECT_QUERY_ROUTE_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="direct-query-route-document" title="Direct Router query reached" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The cold native link reached this document only after the catch-all path and Router-canonical query state agreed, then history metadata was repaired inside the document commit.</DemoText>
+  </DemoCard>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
 const PREVIEW_REVALIDATION_DELAY_MS = 4_000;
 
 export const DEMO_CLOCK: ClockAdapter = {
@@ -161,7 +170,10 @@ export function createDemoFixtureFetchAdapter(
       } else if (url.pathname === "/demo/linked" && url.search === "?autofocus=scroll") {
         xml = AUTOFOCUS_SCROLL_DOCUMENT;
       } else if (url.pathname === "/demo/routes/ios-proof/details") {
-        xml = GENERIC_ROUTE_DOCUMENT;
+        xml =
+          url.searchParams.get("source") === "direct"
+            ? DIRECT_QUERY_ROUTE_DOCUMENT
+            : GENERIC_ROUTE_DOCUMENT;
       } else {
         xml = LINKED_DOCUMENT;
       }
