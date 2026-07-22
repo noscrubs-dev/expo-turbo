@@ -3,6 +3,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
   ACTION_CABLE_V1_JSON_PROTOCOL,
+  ActionCableV1WebSocketAdapter,
   encodeActionCableSubscribe,
   encodeActionCableUnsubscribe,
   type ActionCableWebSocket,
@@ -40,9 +41,8 @@ mock.module("react-native", () => ({
   View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
 }));
 
-const { createDemoLiveCableRuntime, DemoLiveCablePanel, DemoLiveCableProof } = await import(
-  "./demo-live-cable"
-);
+const { createDemoLiveCableRuntime, createNativeActionCableSocket, DemoLiveCablePanel, DemoLiveCableProof } =
+  await import("./demo-live-cable");
 const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html";
 
 const globalWithAct = globalThis as typeof globalThis & {
@@ -156,6 +156,86 @@ class ManualClock implements ClockAdapter {
     if (!timer.cleared) timer.callback();
   }
 }
+
+test("buffers an early native welcome until the Action Cable adapter is listening", async () => {
+  const originalWebSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  const sockets: EagerNativeSocket[] = [];
+
+  class EagerNativeSocket {
+    protocol = ACTION_CABLE_V1_JSON_PROTOCOL;
+    readonly sent: string[] = [];
+    private readonly listeners: Record<ActionCableWebSocketEventType, Set<CableSocketListener>> = {
+      close: new Set(),
+      error: new Set(),
+      message: new Set(),
+      open: new Set(),
+    };
+
+    constructor() {
+      sockets.push(this);
+    }
+
+    addEventListener(type: ActionCableWebSocketEventType, listener: CableSocketListener): void {
+      this.listeners[type].add(listener);
+      if (type !== "message" || this.listeners.message.size !== 1) return;
+      this.emit("open");
+      this.emit("message", { data: '{"type":"welcome"}' });
+    }
+
+    close(): void {}
+
+    removeEventListener(type: ActionCableWebSocketEventType, listener: CableSocketListener): void {
+      this.listeners[type].delete(listener);
+    }
+
+    send(data: string): void {
+      this.sent.push(data);
+      const identifier = JSON.parse(data).identifier;
+      this.emit("message", {
+        data: JSON.stringify({ identifier, type: "confirm_subscription" }),
+      });
+    }
+
+    private emit(
+      type: ActionCableWebSocketEventType,
+      event: Readonly<{ readonly data?: unknown }> = {},
+    ): void {
+      for (const listener of this.listeners[type]) listener(event);
+    }
+  }
+
+  Object.defineProperty(globalThis, "WebSocket", {
+    configurable: true,
+    value: EagerNativeSocket,
+  });
+
+  try {
+    const connected: boolean[] = [];
+    const identifier = '{"channel":"Turbo::StreamsChannel","signed_stream_name":"demo"}';
+    const adapter = new ActionCableV1WebSocketAdapter({
+      createSocket: createNativeActionCableSocket,
+      onError: (error) => {
+        throw error;
+      },
+      url: "ws://demo.example.test/cable",
+    });
+
+    adapter.subscribe(identifier, {
+      connected: (reconnected) => connected.push(reconnected),
+      disconnected: () => undefined,
+      received: () => undefined,
+      rejected: () => undefined,
+    });
+    await nextTurn();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]?.sent).toEqual([encodeActionCableSubscribe(identifier)]);
+    expect(connected).toEqual([false]);
+  } finally {
+    if (originalWebSocket) Object.defineProperty(globalThis, "WebSocket", originalWebSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
+  }
+});
 
 describe("standalone Rails Action Cable proof", () => {
   test("waits for confirmation, applies XML Streams, and releases its socket", async () => {
