@@ -78,8 +78,10 @@ RSpec.describe "standalone demo host" do
       .to start_with("Canonical Rails document rendered at ")
     expect(link&.[]("href")).to eq("/api/expo_turbo/demo/stream?mode=refresh-morph")
     expect(link&.[]("data-turbo-stream")).to eq("")
-    expect(document.at_xpath("//DemoStreamMorphProbe[@id='demo-document-refresh-morph-probe']")&.[]("message"))
+    probe = document.at_xpath("//DemoStreamMorphProbe[@id='demo-document-refresh-morph-probe']")
+    expect(probe&.[]("message"))
       .to eq("Local state survives the Rails document refresh")
+    expect(probe&.[]("increment-label")).to eq("Increment document refresh morph counter")
     expect(document.xpath("//turbo-frame | //turbo-stream | //turbo-cable-stream-source")).to be_empty
   end
 

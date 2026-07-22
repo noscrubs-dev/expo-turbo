@@ -76,8 +76,8 @@ const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 test("preserves local native state through a Rails current-document Refresh Stream morph", async () => {
   const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/refresh_morph_document";
   const streamUrl = "http://demo.example:3000/api/expo_turbo/demo/stream?mode=refresh-morph";
-  const initialDocument = `<Gallery id="demo-document-refresh-morph"><DemoText id="demo-document-refresh-morph-response">Canonical Rails response one</DemoText><DemoDocumentLink id="demo-document-refresh-morph-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph" data-turbo-stream="" accessibility-label="Refresh current Rails document with a state-preserving morph"><DemoText>Refresh current Rails document with a state-preserving morph</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" /></Gallery>`;
-  const refreshedDocument = `<Gallery id="demo-document-refresh-morph"><DemoText id="demo-document-refresh-morph-response">Canonical Rails response two</DemoText><DemoDocumentLink id="demo-document-refresh-morph-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph" data-turbo-stream="" accessibility-label="Refresh current Rails document with a state-preserving morph"><DemoText>Refresh current Rails document with a state-preserving morph</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" /></Gallery>`;
+  const initialDocument = `<Gallery id="demo-document-refresh-morph"><DemoText id="demo-document-refresh-morph-response">Canonical Rails response one</DemoText><DemoDocumentLink id="demo-document-refresh-morph-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph" data-turbo-stream="" accessibility-label="Refresh current Rails document with a state-preserving morph"><DemoText>Refresh current Rails document with a state-preserving morph</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" increment-label="Increment document refresh morph counter" /></Gallery>`;
+  const refreshedDocument = `<Gallery id="demo-document-refresh-morph"><DemoText id="demo-document-refresh-morph-response">Canonical Rails response two</DemoText><DemoDocumentLink id="demo-document-refresh-morph-link" href="/api/expo_turbo/demo/stream?mode=refresh-morph" data-turbo-stream="" accessibility-label="Refresh current Rails document with a state-preserving morph"><DemoText>Refresh current Rails document with a state-preserving morph</DemoText></DemoDocumentLink><DemoStreamMorphProbe id="demo-document-refresh-morph-probe" message="Local state survives the Rails document refresh" increment-label="Increment document refresh morph counter" /></Gallery>`;
   const stream = '<turbo-stream action="refresh" method="morph"></turbo-stream>';
   const requests: RecordedRequest[] = [];
   const clock = new ManualClock();
@@ -136,7 +136,7 @@ test("preserves local native state through a Rails current-document Refresh Stre
 
     act(() => {
       const increment = renderer?.root.findByProps({
-        accessibilityLabel: "Increment HTTP Stream morph counter",
+        accessibilityLabel: "Increment document refresh morph counter",
       });
       increment?.props.onPress();
     });
