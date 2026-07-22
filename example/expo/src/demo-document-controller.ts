@@ -69,6 +69,36 @@ const REFRESHED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   </DemoCard>
 </Gallery>`;
 
+const SAME_PATH_REPLACE_DOCUMENT = `<Gallery id="same-path-replace-root" data-turbo-root="/demo" data-turbo-refresh-method="morph">
+  <DemoCard id="same-path-replace-card" title="Same-path replace morph is ready" style-tokens="tone:info space:comfortable surface:elevated">
+    <DemoText>This document opts into the bounded native morph path for a fragment-free replace that keeps the /demo/linked pathname.</DemoText>
+  </DemoCard>
+  <DemoCard id="same-path-replace-marker-one" title="Root-scroll marker one" style-tokens="space:comfortable">
+    <DemoText>The host control sits below several ordinary application cards so the root reset is visible on a physical device.</DemoText>
+  </DemoCard>
+  <DemoCard id="same-path-replace-marker-two" title="Root-scroll marker two" style-tokens="space:comfortable">
+    <DemoText>The active document keeps its pathname while its query changes and Router history replaces the focused entry.</DemoText>
+  </DemoCard>
+  <DemoCard id="same-path-replace-marker-three" title="Root-scroll marker three" style-tokens="space:comfortable">
+    <DemoText>No cached preview is rendered for this page-refresh-shaped visit; the canonical XML remains authoritative.</DemoText>
+  </DemoCard>
+  <DemoCard id="same-path-replace-marker-four" title="Root-scroll marker four" style-tokens="space:comfortable">
+    <DemoText>The default root metadata resets the owning ScrollView only after React acknowledges the committed tree.</DemoText>
+  </DemoCard>
+  <DemoDocumentLink href="/demo/linked?replace=morph&amp;revision=next" data-turbo-action="replace">
+    <DemoText>Commit a same-path replace morph and reset the owning root scroll.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
+const SAME_PATH_REPLACED_DOCUMENT = `<Gallery id="same-path-replace-root" data-turbo-root="/demo" data-turbo-refresh-method="morph">
+  <DemoCard id="same-path-replace-card" title="Same-path replace morph committed" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The canonical document morphed this stable application card and then reset the owning root ScrollView after React acknowledged it.</DemoText>
+  </DemoCard>
+  <DemoCard id="same-path-replace-result" title="Canonical replace result" style-tokens="space:comfortable">
+    <DemoText>The focused Router history entry now owns revision=next without adding a second stack entry.</DemoText>
+  </DemoCard>
+</Gallery>`;
+
 const HISTORY_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="history-scroll-linked-document" title="Native history scroll restoration is ready" tone="positive" style-tokens="space:comfortable surface:elevated">
     <DemoText>Use the native iOS back action to return to the saved gallery root-scroll checkpoint without another document GET.</DemoText>
@@ -150,7 +180,11 @@ export function createDemoFixtureFetchAdapter(
     async fetch(request: TurboRequest): Promise<TurboResponse> {
       const url = new URL(request.url);
       let xml: string;
-      if (url.pathname === "/demo") {
+      if (url.pathname === "/demo/linked" && url.search === "?replace=morph") {
+        xml = SAME_PATH_REPLACE_DOCUMENT;
+      } else if (url.pathname === "/demo/linked" && url.search === "?replace=morph&revision=next") {
+        xml = SAME_PATH_REPLACED_DOCUMENT;
+      } else if (url.pathname === "/demo") {
         xml = DEMO_DOCUMENT;
       } else if (url.pathname === "/demo/linked" && url.search === "?preview=automatic") {
         xml =

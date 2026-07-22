@@ -76,6 +76,11 @@ type DocumentVisitLoadOptions = DocumentLoadOptions &
 
 export type DocumentVisitStatus = "canceled" | "completed" | "failed" | "initialized" | "started"
 
+interface SamePathReplaceRefresh {
+  readonly renderMethod: DocumentRenderMethod
+  readonly scroll: "preserve" | "reset"
+}
+
 export interface DocumentVisitSnapshot {
   readonly busy: boolean
   readonly previewVisible: boolean
@@ -253,6 +258,7 @@ export class DocumentVisitController {
     }
     let admission: TopLevelLocationDisposition
     let historyPlan: DocumentVisitHistoryPlan | undefined
+    let samePathRefresh: SamePathReplaceRefresh | undefined
     try {
       admission = this.loader.classifyTopLevelSource(source)
       if (action === "restore" && admission.url.includes("#")) {
@@ -274,6 +280,7 @@ export class DocumentVisitController {
         return Promise.resolve(canceled ?? this.beforeVisitCanceled(admission.url))
       }
       if (admission.classification === "visitable") {
+        samePathRefresh = this.samePathReplaceRefresh(action, admission.url)
         historyPlan = this.proposeHistory(action, admission.url)
       }
     } catch (error) {
@@ -297,7 +304,7 @@ export class DocumentVisitController {
       )
     }
     const cache = this.snapshotCache
-    if (cache && new URL(admission.url).hash === "") {
+    if (cache && new URL(admission.url).hash === "" && !samePathRefresh) {
       return this.startPreviewableVisit(
         admission.url,
         options.navigation,
@@ -321,6 +328,9 @@ export class DocumentVisitController {
       undefined,
       documentClaimSerial,
       treeGeneration,
+      undefined,
+      samePathRefresh?.renderMethod,
+      samePathRefresh?.scroll,
     )
   }
 
@@ -1337,6 +1347,20 @@ export class DocumentVisitController {
       throw new StateError("Document history or the active document changed during visit planning")
     }
     return { base: guard.entry, history: guard.history, proposal }
+  }
+
+  private samePathReplaceRefresh(
+    action: VisitAction,
+    destination: string,
+  ): SamePathReplaceRefresh | undefined {
+    if (action !== "replace") return undefined
+    const currentUrl = this.canonicalDocumentUrl(this.loader.currentUrl)
+    if (!currentUrl) return undefined
+    const current = new URL(currentUrl)
+    const requested = new URL(destination)
+    if (requested.hash !== "" || current.pathname !== requested.pathname) return undefined
+    const settings = this.loader.currentRefreshSettings
+    return Object.freeze({ renderMethod: settings.method, scroll: settings.scroll })
   }
 
   private validateHistoryAction(action: VisitAction): void {

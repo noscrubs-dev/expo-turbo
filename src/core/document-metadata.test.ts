@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 
-import { documentCachePolicy, documentVisitControl } from "./document-metadata"
+import {
+  documentCachePolicy,
+  documentRefreshSettings,
+  documentVisitControl,
+} from "./document-metadata"
 import { parseExpoTurboDocument } from "./parser"
 
 function policy(xml: string) {
@@ -51,6 +55,43 @@ describe("document visit-control metadata", () => {
   })
 })
 
+describe("document refresh metadata", () => {
+  test("admits exact root-level morph and preserve settings independently", () => {
+    const morphAndPreserve = refreshSettings(
+      '<Gallery data-turbo-refresh-method="morph" data-turbo-refresh-scroll="preserve" />',
+    )
+    const morphAndReset = refreshSettings('<Gallery data-turbo-refresh-method="morph" />')
+    const replaceAndPreserve = refreshSettings('<Gallery data-turbo-refresh-scroll="preserve" />')
+
+    expect(morphAndPreserve).toEqual({ method: "morph", scroll: "preserve" })
+    expect(morphAndReset).toEqual({ method: "morph", scroll: "reset" })
+    expect(replaceAndPreserve).toEqual({ method: "replace", scroll: "preserve" })
+    expect(Object.isFrozen(morphAndPreserve)).toBe(true)
+    expect(Object.isFrozen(morphAndReset)).toBe(true)
+    expect(Object.isFrozen(replaceAndPreserve)).toBe(true)
+  })
+
+  test("defaults absent, invalid, differently cased, and nested refresh settings", () => {
+    for (const xml of [
+      "<Gallery />",
+      '<Gallery data-turbo-refresh-method="replace" data-turbo-refresh-scroll="reset" />',
+      '<Gallery data-turbo-refresh-method="MORPH" data-turbo-refresh-scroll="PRESERVE" />',
+      '<Gallery data-turbo-refresh-method=" morph " data-turbo-refresh-scroll=" preserve " />',
+      '<Gallery><Nested data-turbo-refresh-method="morph" data-turbo-refresh-scroll="preserve" /></Gallery>',
+    ]) {
+      const settings = refreshSettings(xml)
+      expect(settings).toEqual({ method: "replace", scroll: "reset" })
+      expect(Object.isFrozen(settings)).toBe(true)
+    }
+  })
+})
+
 function visitControl(xml: string) {
   return documentVisitControl(parseExpoTurboDocument(xml, { url: "https://example.test/document" }))
+}
+
+function refreshSettings(xml: string) {
+  return documentRefreshSettings(
+    parseExpoTurboDocument(xml, { url: "https://example.test/document" }),
+  )
 }
