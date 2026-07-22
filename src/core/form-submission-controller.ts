@@ -1199,9 +1199,14 @@ export class FormSubmissionController {
       if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
       const revision = this.session.revision
       try {
-        const report = dispatchGuardedTurboStreamElements(this.session, streams, this.options, {
-          shouldContinue: () => this.ownership.retains(lease),
-        })
+        const report = await dispatchGuardedTurboStreamElements(
+          this.session,
+          streams,
+          this.options,
+          {
+            shouldContinue: () => this.ownership.retains(lease),
+          },
+        )
         return Object.freeze({
           ...metadata,
           application: "stream",
@@ -1279,7 +1284,7 @@ export class FormSubmissionController {
           )
         }
         commitPreparedFrameMutation(this.session, mutation)
-        const streams = dispatchPreparedFrameResponseStreams(
+        const streams = await dispatchPreparedFrameResponseStreams(
           this.session,
           preparedFrame,
           this.options,
@@ -1465,7 +1470,7 @@ export class FormSubmissionController {
           this.options.snapshotCache?.clear()
         }
       }
-      const streamReport = dispatchEmbeddedTurboStreamElements(
+      const streamReport = await dispatchEmbeddedTurboStreamElements(
         this.session,
         streams,
         this.options,

@@ -149,7 +149,7 @@ describe("document refresh controller", () => {
 
   test("dispatches a plain refresh after Turbo's trailing debounce and ignores target content", async () => {
     const { clock, pending, refresh, session, visits } = harness()
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="refresh" method="replace" target="missing"><template><Ignored/></template></turbo-stream>',
       { refresh },
@@ -184,13 +184,13 @@ describe("document refresh controller", () => {
     expect(session.tree.getElementById("old")).toBeUndefined()
   })
 
-  test("uses replacement refresh semantics for every non-morph method value", () => {
+  test("uses replacement refresh semantics for every non-morph method value", async () => {
     const values = [undefined, "replace", "", "unknown", "MORPH"]
 
     for (const method of values) {
       const { clock, pending, refresh, session } = harness()
       const methodAttribute = method === undefined ? "" : ` method=${JSON.stringify(method)}`
-      const report = dispatchTurboStreamFragment(
+      const report = await dispatchTurboStreamFragment(
         session,
         `<turbo-stream action="refresh"${methodAttribute}/>`,
         { refresh },
@@ -204,13 +204,17 @@ describe("document refresh controller", () => {
     }
   })
 
-  test("debounces to the latest refresh and suppresses a recent originating request at execution", () => {
+  test("debounces to the latest refresh and suppresses a recent originating request at execution", async () => {
     const { clock, pending, refresh, session } = harness()
 
-    dispatchTurboStreamFragment(session, '<turbo-stream action="refresh" request-id="older"/>', {
-      refresh,
-    })
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
+      session,
+      '<turbo-stream action="refresh" request-id="older"/>',
+      {
+        refresh,
+      },
+    )
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="refresh" request-id="originating"/>',
       { refresh },
@@ -228,7 +232,7 @@ describe("document refresh controller", () => {
     const visiting = active.visits.visit("/slow")
     expect(active.pending).toHaveLength(1)
 
-    dispatchTurboStreamFragment(active.session, '<turbo-stream action="refresh"/>', {
+    await dispatchTurboStreamFragment(active.session, '<turbo-stream action="refresh"/>', {
       refresh: active.refresh,
     })
     active.clock.fire(1)
@@ -244,7 +248,7 @@ describe("document refresh controller", () => {
     expect(active.session.tree.getElementById("visited")).toBeDefined()
 
     const stale = harness()
-    dispatchTurboStreamFragment(stale.session, '<turbo-stream action="refresh"/>', {
+    await dispatchTurboStreamFragment(stale.session, '<turbo-stream action="refresh"/>', {
       refresh: stale.refresh,
     })
     stale.session.replaceTree(
@@ -257,10 +261,10 @@ describe("document refresh controller", () => {
     expect(stale.session.tree.getElementById("new-owner")).toBeDefined()
   })
 
-  test("accepts bounded morph and scroll policies while continuing later sibling actions", () => {
+  test("accepts bounded morph and scroll policies while continuing later sibling actions", async () => {
     const { clock, refresh, session } = harness()
     const actionErrors: string[] = []
-    const report = dispatchTurboStreamFragment(
+    const report = await dispatchTurboStreamFragment(
       session,
       `<turbo-stream action="refresh" method="morph"/>
        <turbo-stream action="refresh" scroll="preserve"/>
@@ -275,7 +279,7 @@ describe("document refresh controller", () => {
     expect(session.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("preserves only exact refresh scroll=preserve and otherwise requests a reset", () => {
+  test("preserves only exact refresh scroll=preserve and otherwise requests a reset", async () => {
     for (const [attribute, expected] of [
       ["", "reset"],
       [' scroll="preserve"', "preserve"],
@@ -298,7 +302,7 @@ describe("document refresh controller", () => {
         clock,
       )
 
-      const report = dispatchTurboStreamFragment(
+      const report = await dispatchTurboStreamFragment(
         session,
         `<turbo-stream action="refresh"${attribute}/>`,
         { refresh },
@@ -316,7 +320,7 @@ describe("document refresh controller", () => {
     const old = session.tree.getElementById("old")
     const oldIdentity = session.getNodeSnapshot("id:old")?.identity
 
-    dispatchTurboStreamFragment(session, '<turbo-stream action="refresh" method="morph"/>', {
+    await dispatchTurboStreamFragment(session, '<turbo-stream action="refresh" method="morph"/>', {
       refresh,
     })
     clock.fire(0)
@@ -340,9 +344,9 @@ describe("document refresh controller", () => {
     expect(session.tree.getElementById("added")).toBeDefined()
   })
 
-  test("fails closed without an active refresh controller and after disposal", () => {
+  test("fails closed without an active refresh controller and after disposal", async () => {
     const { refresh, session } = harness()
-    const missing = dispatchTurboStreamFragment(session, '<turbo-stream action="refresh"/>')
+    const missing = await dispatchTurboStreamFragment(session, '<turbo-stream action="refresh"/>')
     expect(missing.actions[0]?.status).toBe("error")
     expect(missing.actions[0]?.error?.message).toContain("requires a document refresh controller")
 
@@ -363,7 +367,7 @@ describe("document refresh controller", () => {
 
   test("routes asynchronous refresh failures to the configured observer", async () => {
     const { clock, errors, pending, refresh, session } = harness()
-    dispatchTurboStreamFragment(session, '<turbo-stream action="refresh"/>', { refresh })
+    await dispatchTurboStreamFragment(session, '<turbo-stream action="refresh"/>', { refresh })
     clock.fire(0)
     pending[0]?.reject(new Error("private transport details"))
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -373,7 +377,7 @@ describe("document refresh controller", () => {
     expect(errors[0]?.message).toBe("Document request failed")
   })
 
-  test("defers one reconnect reconciliation until the active visit settles", () => {
+  test("defers one reconnect reconciliation until the active visit settles", async () => {
     for (const status of ["completed", "failed", "canceled"] as const) {
       const visits = new ReconnectVisitStub()
       const requests: unknown[] = []
@@ -396,7 +400,7 @@ describe("document refresh controller", () => {
     }
   })
 
-  test("drops a deferred reconnect reconciliation after disposal", () => {
+  test("drops a deferred reconnect reconciliation after disposal", async () => {
     const visits = new ReconnectVisitStub()
     const requests: unknown[] = []
     const reconciler = new DocumentReconnectReconciler(
@@ -415,7 +419,7 @@ describe("document refresh controller", () => {
     )
   })
 
-  test("waits through a reentrant newer visit before handing off once", () => {
+  test("waits through a reentrant newer visit before handing off once", async () => {
     const visits = new ReconnectVisitStub()
     const requests: unknown[] = []
     let startNewerVisit = true
@@ -438,7 +442,7 @@ describe("document refresh controller", () => {
     expect(requests).toEqual([{ baseUrl: "https://example.test/current", scroll: "preserve" }])
   })
 
-  test("redacts a deferred reconnect handoff failure", () => {
+  test("redacts a deferred reconnect handoff failure", async () => {
     const visits = new ReconnectVisitStub()
     const errors: Error[] = []
     const reconciler = new DocumentReconnectReconciler(

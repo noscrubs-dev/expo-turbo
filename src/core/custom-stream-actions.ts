@@ -33,7 +33,7 @@ export interface DefineStreamActionConfig<Name extends string, Schema extends z.
   readonly action: Name
   readonly handler: (
     context: CustomStreamActionContext<z.output<Schema>>,
-  ) => CustomStreamActionResult | undefined
+  ) => CustomStreamActionResult | PromiseLike<CustomStreamActionResult | undefined> | undefined
   readonly schema: Schema
 }
 
@@ -44,7 +44,7 @@ export interface DefinedStreamAction<
   readonly action: Name
   readonly handler: (
     context: CustomStreamActionContext<z.output<Schema>>,
-  ) => CustomStreamActionResult | undefined
+  ) => CustomStreamActionResult | PromiseLike<CustomStreamActionResult | undefined> | undefined
   decodeParams(params: Readonly<Record<string, string>>): z.output<Schema>
 }
 

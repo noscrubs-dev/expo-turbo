@@ -150,6 +150,8 @@ export {
   type StreamActionStatus,
   type StreamDispatchOptions,
   type StreamDispatchReport,
+  type StreamRenderScheduleContext,
+  type StreamRenderScheduler,
 } from "./streams"
 export {
   attributeValue,

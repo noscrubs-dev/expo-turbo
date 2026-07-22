@@ -742,7 +742,7 @@ function renderPreloadingDocumentLinks(
 }
 
 describe("React protocol renderer", () => {
-  test("renders registered nodes while omitting comments, templates, Streams, and sources", () => {
+  test("renders registered nodes while omitting comments, templates, Streams, and sources", async () => {
     const tree = parseExpoTurboDocument(`<Gallery>
       <!-- ignored -->
       <turbo-frame id="frame"><DemoText>Frame text</DemoText></turbo-frame>
@@ -835,8 +835,8 @@ describe("React protocol renderer", () => {
     )
     expect(JSON.stringify(renderer?.toJSON())).not.toContain("turbo-cable-stream-source")
 
-    act(() => {
-      subscriptions[0]?.callbacks.received(
+    await act(async () => {
+      await subscriptions[0]?.callbacks.received(
         '<turbo-stream action="update" target="status"><template>fresh</template></turbo-stream>',
       )
     })
@@ -987,7 +987,7 @@ describe("React protocol renderer", () => {
     })
   })
 
-  test("resolves explicit semantic tokens without treating structural class as native style", () => {
+  test("resolves explicit semantic tokens without treating structural class as native style", async () => {
     type TestStyle = Readonly<Record<string, string>>
     const resolved: Readonly<{ component: string; tokens: readonly string[] }>[] = []
     const styles = defineStyleAdapter<"tone:info", TestStyle>({
@@ -1101,7 +1101,7 @@ describe("React protocol renderer", () => {
     expect(missingAdapterErrors[0]?.error.message).toContain("provider adapter")
   })
 
-  test("keeps node snapshots stable and rerenders only the changed registered subtree", () => {
+  test("keeps node snapshots stable and rerenders only the changed registered subtree", async () => {
     const counters = { left: 0, right: 0 }
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -1121,14 +1121,14 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("Updated")
   })
 
-  test("renders an ordered Stream update through the same document session", () => {
+  test("renders an ordered Stream update through the same document session", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument('<Gallery><DemoText id="copy">Before</DemoText></Gallery>'),
     )
     const renderer = render(session, registryWithCounters())
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="update" target="copy"><template>After</template></turbo-stream>',
       )
@@ -1292,8 +1292,8 @@ describe("React protocol renderer", () => {
     expect(frameScope.state.get("recorded")).toBeUndefined()
     expect(formScope.state.get("recorded")).toBe("first")
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="update" target="form"><template><ScopedTrigger value="second"/></template></turbo-stream>',
       )
@@ -1305,8 +1305,8 @@ describe("React protocol renderer", () => {
     })
     expect(formScope.state.get("recorded")).toBe("second")
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="form"><template><DemoForm id="form"><ScopedTrigger value="replacement"/></DemoForm></template></turbo-stream>',
       )
@@ -1858,8 +1858,8 @@ describe("React protocol renderer", () => {
         .entries.find((entry) => entry.name === "local"),
     ).toEqual({ name: "local", value: "component-local" })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="submit"><template><NativeSubmitter id="submit" name="commit" value="replacement" formaction="/profile/replacement" formmethod="post" /></template></turbo-stream>',
       )
@@ -1920,8 +1920,8 @@ describe("React protocol renderer", () => {
       primary.requestPlan({ protocol: { requestId: "updated-request" } }).entries[0],
     ).toEqual({ name: "item", value: "updated" })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="update" target="form"><template><CaptureForm slot="updated"/><NativeValue id="next" name="next" value="child-update"/></template></turbo-stream>',
       )
@@ -1943,8 +1943,8 @@ describe("React protocol renderer", () => {
       }),
     ).toThrow(TargetError)
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="form"><template><NativeForm id="form"><CaptureForm slot="replacement"/><NativeValue id="replacement-value" name="fresh" value="replacement"/></NativeForm></template></turbo-stream>',
       )
@@ -2557,8 +2557,8 @@ describe("React protocol renderer", () => {
       },
     })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="form"><template><NativeForm id="form" action="/replacement" method="get"><CaptureForm slot="replacement"/><NativeValue id="fresh" name="fresh" value="F"/></NativeForm></template></turbo-stream>',
       )
@@ -2578,8 +2578,8 @@ describe("React protocol renderer", () => {
       { name: "commit", value: "external" },
     ])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="remove" target="form"></turbo-stream>',
       )
@@ -2587,8 +2587,8 @@ describe("React protocol renderer", () => {
     expect(errors.some((event) => event.error.message.includes("missing form owner"))).toBe(true)
     expect(JSON.stringify(activeRenderer.toJSON())).toContain("missing form owner")
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="append" target="gallery"><template><NativeForm id="form" action="/reinserted" method="get"><CaptureForm slot="reinserted"/><NativeValue id="reinserted-value" name="reinserted" value="G"/></NativeForm></template></turbo-stream>',
       )
@@ -3373,7 +3373,7 @@ describe("React protocol renderer", () => {
     if (!request || !submission) throw new Error("in-flight replacement was not captured")
 
     await act(async () => {
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="replace" target="form"><template><TerminalForm id="form" action="/replacement" method="get"><CaptureTerminalForm slot="replacement" /></TerminalForm></template></turbo-stream>',
       )
@@ -3419,8 +3419,8 @@ describe("React protocol renderer", () => {
       "failed",
     ])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="replace" target="form"><template><TerminalForm id="form" action="/replacement" method="get"><CaptureTerminalForm slot="replacement" /></TerminalForm></template></turbo-stream>',
       )
@@ -3661,7 +3661,7 @@ describe("React protocol renderer", () => {
     expect(fetches).toBe(1)
   })
 
-  test("reports a form control without an active nearest or explicit owner", () => {
+  test("reports a form control without an active nearest or explicit owner", async () => {
     function OrphanControl(): ReactNode {
       useExpoTurboFormControl({ kind: "value", name: "orphan", value: "value" })
       return createElement("orphan")
@@ -3704,7 +3704,7 @@ describe("React protocol renderer", () => {
     }
   })
 
-  test("reports an explicit form scope without provider form controls", () => {
+  test("reports an explicit form scope without provider form controls", async () => {
     function UnconfiguredForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
       return createElement(ExpoTurboFormScope, null, props.children)
     }
@@ -3736,7 +3736,7 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("provider form controls")
   })
 
-  test("runs registered component disposal before a Stream removes its logical node", () => {
+  test("runs registered component disposal before a Stream removes its logical node", async () => {
     const disposed: string[] = []
     function Disposable({ label }: { label: string }): ReactNode {
       useNodeDisposal(() => disposed.push(label))
@@ -3771,14 +3771,14 @@ describe("React protocol renderer", () => {
     })
     if (!renderer) throw new Error("renderer was not created")
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="resource"><template><Disposable id="resource" label="new"/></template></turbo-stream>',
       )
     })
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="remove" target="resource"/>',
       )
@@ -3787,7 +3787,7 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual(["old", "new"])
   })
 
-  test("preserves update identity and remounts same-id replacements exactly once", () => {
+  test("preserves update identity and remounts same-id replacements exactly once", async () => {
     let nextInstance = 0
     const disposed: number[] = []
     const unmounted: number[] = []
@@ -3825,8 +3825,8 @@ describe("React protocol renderer", () => {
     const instance = () => renderer.root.findByType("section").props.instance
 
     expect(instance()).toBe(1)
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="update" target="same"><template>Updated</template></turbo-stream>',
       )
@@ -3835,8 +3835,8 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual([])
     expect(unmounted).toEqual([])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="same"><template><Stateful id="same">Replaced</Stateful></template></turbo-stream>',
       )
@@ -3845,8 +3845,8 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual([1])
     expect(unmounted).toEqual([1])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="append" target="gallery"><template><Stateful id="same">Collision</Stateful></template></turbo-stream>',
       )
@@ -3878,7 +3878,7 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1, 2, 3, 4])
   })
 
-  test("keeps compatible native component state through exact Stream child and outer morph", () => {
+  test("keeps compatible native component state through exact Stream child and outer morph", async () => {
     let nextInstance = 0
     const disposed: number[] = []
     const unmounted: number[] = []
@@ -3917,8 +3917,8 @@ describe("React protocol renderer", () => {
       renderer.root.findAllByType("section").map((section) => section.props.instance as number)
 
     expect(instances()).toEqual([1, 2, 3])
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="update" target="panel" method="morph"><template><Stateful id="right" title="Right"/><Stateful id="left" title="After"/></template></turbo-stream>',
       )
@@ -3930,8 +3930,8 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual([])
     expect(unmounted).toEqual([])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="panel" method="morph"><template><Stateful id="panel" title="Outer"><Stateful id="left" title="Left"/><Stateful id="right" title="Right"/></Stateful></template></turbo-stream>',
       )
@@ -6204,7 +6204,7 @@ describe("React protocol renderer", () => {
     }
   })
 
-  test("fails closed when a before-prefetch listener fails", () => {
+  test("fails closed when a before-prefetch listener fails", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     const requests: TurboRequest[] = []
     lifecycle.subscribe("before-prefetch", () => {
@@ -6758,7 +6758,7 @@ describe("React protocol renderer", () => {
     expect(activeNodeSubscriptions.get("id:other")).toBe(1)
 
     await act(async () => {
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         insertedTarget.session,
         '<turbo-stream action="append" target="sibling"><template><turbo-frame id="late" disabled="" /></template></turbo-stream>',
       )
@@ -6832,7 +6832,7 @@ describe("React protocol renderer", () => {
     ])
 
     await act(async () => {
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         harness.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentLink id="streamed" href="/app/streamed" data-turbo-preload="" /></template></turbo-stream>',
       )
@@ -6869,7 +6869,7 @@ describe("React protocol renderer", () => {
           { url: "https://example.test/app/current" },
         ),
       )
-      applyFrameResponse(
+      await applyFrameResponse(
         harness.session,
         "replacement-frame",
         '<turbo-frame id="replacement-frame"><DocumentLink href="/app/framed" data-turbo-frame="_top" data-turbo-preload="" /></turbo-frame>',
@@ -7085,7 +7085,7 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
-  test("types document anchor scrolling as synchronous", () => {
+  test("types document anchor scrolling as synchronous", async () => {
     const adapter = {
       scrollTo(_id: string, _alignment: "start") {
         return undefined
@@ -10122,8 +10122,8 @@ describe("React protocol renderer", () => {
     })
     const started = harness.controller.state
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         harness.session,
         '<turbo-stream action="replace" target="top-link"><template><DocumentLink id="top-link" disabled="" href="/replacement" /></template></turbo-stream>',
       )
@@ -10203,7 +10203,7 @@ describe("React protocol renderer", () => {
     expect(await visit).toMatchObject({ status: "canceled" })
   })
 
-  test("provides the nearest connected Frame binding to boundaries and descendants", () => {
+  test("provides the nearest connected Frame binding to boundaries and descendants", async () => {
     function FrameProbe({ label }: { label: string }): ReactNode {
       const frame = useExpoTurboFrame()
       return createElement("section", {
@@ -10285,7 +10285,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("inherits XML direction through document and Frame boundaries without remounting siblings", () => {
+  test("inherits XML direction through document and Frame boundaries without remounting siblings", async () => {
     const unmounts: string[] = []
     function DirectionProbe({ label }: { label: string }): ReactNode {
       const direction = useExpoTurboDirection()
@@ -10391,7 +10391,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("fails closed when a Frame has an invalid shared dir value", () => {
+  test("fails closed when a Frame has an invalid shared dir value", async () => {
     const errors: ExpoTurboRenderError[] = []
     const renderer = render(
       new DocumentSession(
@@ -10414,7 +10414,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("recovers a document after its root dir is repaired", () => {
+  test("recovers a document after its root dir is repaired", async () => {
     const errors: ExpoTurboRenderError[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument('<Gallery id="root" dir="sideways"><DemoText>Repaired</DemoText></Gallery>'),
@@ -10512,7 +10512,7 @@ describe("React protocol renderer", () => {
     return { autofocus, focused, mounted, registry, session }
   }
 
-  test("focuses the first available initial document candidate once across StrictMode and providers", () => {
+  test("focuses the first available initial document candidate once across StrictMode and providers", async () => {
     const fixture = documentAutofocusFixture(
       `<Gallery>
         <DocumentFocusTarget id="unavailable" focus-key="unavailable" autofocus="" />
@@ -10572,7 +10572,7 @@ describe("React protocol renderer", () => {
     act(() => first?.unmount())
   })
 
-  test("consumes missing document adapters and focuses each whole-tree generation, not standalone Streams", () => {
+  test("consumes missing document adapters and focuses each whole-tree generation, not standalone Streams", async () => {
     const fixture = documentAutofocusFixture(
       '<Gallery id="gallery"><DocumentFocusTarget id="initial" focus-key="initial" focusable="" autofocus="" /></Gallery>',
     )
@@ -10603,8 +10603,8 @@ describe("React protocol renderer", () => {
     })
     expect(fixture.focused).toEqual(["id:replacement"])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="streamed" focus-key="streamed" focusable="" autofocus="" /></template></turbo-stream>',
       )
@@ -10619,7 +10619,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("focuses the first mounted candidate once after an inert insertion morph Stream message", () => {
+  test("focuses the first mounted candidate once after an inert insertion morph Stream message", async () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     let focusedId: string | undefined
     let activeFocusChecks = 0
@@ -10636,8 +10636,8 @@ describe("React protocol renderer", () => {
     }
     const renderer = render(fixture.session, fixture.registry, { autofocus, strict: true })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         `<turbo-stream action="append" target="gallery" method="morph"><template>
           <DocumentFocusTarget id="first" focus-key="first" focusable="" autofocus="" />
@@ -10652,8 +10652,8 @@ describe("React protocol renderer", () => {
     expect(activeFocusChecks).toBe(1)
     expect(fixture.focused).toEqual(["id:first"])
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="preserved" focus-key="preserved" focusable="" autofocus="" /></template></turbo-stream>',
       )
@@ -10664,7 +10664,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("focuses a retained exact standalone Stream morph candidate", () => {
+  test("focuses a retained exact standalone Stream morph candidate", async () => {
     const fixture = documentAutofocusFixture(
       '<Gallery><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" /></Gallery>',
     )
@@ -10681,8 +10681,8 @@ describe("React protocol renderer", () => {
     }
     const renderer = render(fixture.session, fixture.registry, { autofocus })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="replace" target="candidate" method="morph"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
       )
@@ -10695,7 +10695,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("preserves the first standalone Stream autofocus intent across a batched later message", () => {
+  test("preserves the first standalone Stream autofocus intent across a batched later message", async () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     let focusedId: string | undefined
     const scrolls: string[] = []
@@ -10717,16 +10717,16 @@ describe("React protocol renderer", () => {
       },
     })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="first" focus-key="first" focusable="" autofocus="" /></template></turbo-stream>',
       )
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="unrelated" focus-key="unrelated" focusable="" /></template></turbo-stream>',
       )
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="later" focus-key="later" focusable="" autofocus="" /></template></turbo-stream>',
       )
@@ -10739,7 +10739,7 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
-  test("consumes stale standalone Stream autofocus before a later same-id replacement", () => {
+  test("consumes stale standalone Stream autofocus before a later same-id replacement", async () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     const autofocus: AutofocusAdapter = {
       ...fixture.autofocus,
@@ -10747,12 +10747,12 @@ describe("React protocol renderer", () => {
     }
     const renderer = render(fixture.session, fixture.registry, { autofocus })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
       )
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="replace" target="candidate"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" /></template></turbo-stream>',
       )
@@ -10787,7 +10787,7 @@ describe("React protocol renderer", () => {
       const renderer = render(fixture.session, fixture.registry, { autofocus, onError: (event) => errors.push(event) })
 
       await act(async () => {
-        dispatchTurboStreamFragment(
+        await dispatchTurboStreamFragment(
           fixture.session,
           '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
         )
@@ -10803,7 +10803,7 @@ describe("React protocol renderer", () => {
     }
   })
 
-  test("reports a throwing standalone Stream autofocus observer once", () => {
+  test("reports a throwing standalone Stream autofocus observer once", async () => {
     const fixture = documentAutofocusFixture('<Gallery id="gallery" />')
     const fallbacks: ExpoTurboRenderError[] = []
     let reports = 0
@@ -10825,8 +10825,8 @@ describe("React protocol renderer", () => {
       },
     })
 
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         fixture.session,
         '<turbo-stream action="append" target="gallery"><template><DocumentFocusTarget id="candidate" focus-key="candidate" focusable="" autofocus="" /></template></turbo-stream>',
       )
@@ -10952,7 +10952,7 @@ describe("React protocol renderer", () => {
     }
   })
 
-  test("contains a throwing document autofocus observer once behind a redacted fallback", () => {
+  test("contains a throwing document autofocus observer once behind a redacted fallback", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery><DemoText id="candidate" autofocus="">After</DemoText></Gallery>',
@@ -11113,7 +11113,7 @@ describe("React protocol renderer", () => {
         '<turbo-frame id="frame"><DemoText id="candidate" autofocus="">After</DemoText></turbo-frame>',
       )
       await loaded
-      dispatchTurboStreamFragment(
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="candidate"><template><DemoText id="candidate">New owner</DemoText></template></turbo-stream>',
       )
@@ -11656,7 +11656,7 @@ describe("React protocol renderer", () => {
     expect(probeUnmounts).toEqual([1])
   })
 
-  test("keeps one Frame controller owner through StrictMode effect replay", () => {
+  test("keeps one Frame controller owner through StrictMode effect replay", async () => {
     const requests: TurboRequest[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -11711,7 +11711,7 @@ describe("React protocol renderer", () => {
     expect(requests.every((request) => request.signal?.aborted)).toBe(true)
   })
 
-  test("renders a matching Frame response without replacing its mounted wrapper", () => {
+  test("renders a matching Frame response without replacing its mounted wrapper", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery><turbo-frame id="frame"><DemoText>Before</DemoText></turbo-frame></Gallery>',
@@ -11720,8 +11720,8 @@ describe("React protocol renderer", () => {
     const frame = session.tree.getElementById("frame")
     const renderer = render(session, registryWithCounters())
 
-    act(() => {
-      applyFrameResponse(
+    await act(async () => {
+      await applyFrameResponse(
         session,
         "frame",
         '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
@@ -11812,8 +11812,8 @@ describe("React protocol renderer", () => {
       changed = controller.setSource("/slow")
     })
     expect(pending).toHaveLength(3)
-    act(() => {
-      dispatchTurboStreamFragment(
+    await act(async () => {
+      await dispatchTurboStreamFragment(
         session,
         '<turbo-stream action="replace" target="frame"><template><turbo-frame id="frame" src="/replacement"><DemoText>Replacement</DemoText></turbo-frame></template></turbo-stream>',
       )
@@ -11833,8 +11833,8 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Late")
     expect(JSON.stringify(renderer.toJSON())).toContain("Replacement")
 
-    act(() => {
-      dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="frame"/>')
+    await act(async () => {
+      await dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="frame"/>')
     })
     expect(pending[3]?.request.signal?.aborted).toBe(true)
     expect(replacementController.state).toMatchObject({ connected: false, status: "canceled" })
@@ -11849,7 +11849,7 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain("Late replacement")
   })
 
-  test("contains transient host Frame boundary errors and retries on controller state", () => {
+  test("contains transient host Frame boundary errors and retries on controller state", async () => {
     function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
       if (props.state.status === "loading") throw new Error("Broken loading boundary")
       return createElement("div", { status: props.state.status }, props.children)
@@ -11953,7 +11953,7 @@ describe("React protocol renderer", () => {
     expect(await controller.loaded).toMatchObject({ status: "canceled" })
   })
 
-  test("contains unknown components behind an actionable retryable error surface", () => {
+  test("contains unknown components behind an actionable retryable error surface", async () => {
     const errors: ExpoTurboRenderError[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument('<Gallery><Unknown id="unknown" /></Gallery>'),

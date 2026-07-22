@@ -13,7 +13,7 @@ function session(xml: string, lifecycle: MorphLifecycle): DocumentSession {
 }
 
 describe("morph lifecycle", () => {
-  test("validates nominal lifecycle ownership and uses stable listener snapshots", () => {
+  test("validates nominal lifecycle ownership and uses stable listener snapshots", async () => {
     expect(() => new MorphLifecycle({ onObserverError: "invalid" as never })).toThrow()
     expect(
       () =>
@@ -39,14 +39,14 @@ describe("morph lifecycle", () => {
       return undefined
     })
     const document = session('<Gallery id="gallery"><Item id="item" /></Gallery>', lifecycle)
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       document,
       '<turbo-stream action="update" target="gallery" method="morph"><template><Item id="item" /></template></turbo-stream>',
     )
     expect(calls).toEqual(["first", "second"])
   })
 
-  test("vetoes matched elements, attribute changes, and removals while notifying committed elements", () => {
+  test("vetoes matched elements, attribute changes, and removals while notifying committed elements", async () => {
     const lifecycle = new MorphLifecycle()
     const events: string[] = []
     lifecycle.subscribe("before-morph-element", (event) => {
@@ -73,9 +73,11 @@ describe("morph lifecycle", () => {
       '<Gallery id="gallery"><Gone id="gone" /><Item id="item" value="old" retained="yes"><Child id="child" /></Item><Middle id="middle" /><Blocked id="blocked"><Old /></Blocked><Tail id="tail" /></Gallery>',
       lifecycle,
     )
-    const report = dispatchTurboStreamFragment(
-      document,
-      '<turbo-stream action="update" target="gallery" method="morph"><template><Item id="item" value="new" added="yes"><Child id="child" /></Item><Blocked id="blocked"><New /></Blocked></template></turbo-stream>',
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="gallery" method="morph"><template><Item id="item" value="new" added="yes"><Child id="child" /></Item><Blocked id="blocked"><New /></Blocked></template></turbo-stream>',
+      )
     ).actions[0]
 
     expect(report?.status).toBe("applied")
@@ -107,7 +109,7 @@ describe("morph lifecycle", () => {
     ])
   })
 
-  test("shares the lifecycle across Frame and current-document morph entrypoints", () => {
+  test("shares the lifecycle across Frame and current-document morph entrypoints", async () => {
     const lifecycle = new MorphLifecycle()
     const seen: string[] = []
     lifecycle.subscribe("before-morph-element", (event) => {
@@ -146,7 +148,7 @@ describe("morph lifecycle", () => {
     ])
   })
 
-  test("rejects reentrant session mutation from a cancellable listener without committing", () => {
+  test("rejects reentrant session mutation from a cancellable listener without committing", async () => {
     const lifecycle = new MorphLifecycle()
     const document = session(
       '<Gallery id="gallery"><Item id="item" value="old" /></Gallery>',
@@ -157,9 +159,11 @@ describe("morph lifecycle", () => {
       return undefined
     })
 
-    const report = dispatchTurboStreamFragment(
-      document,
-      '<turbo-stream action="update" target="gallery" method="morph"><template><Item id="item" value="new" /></template></turbo-stream>',
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="gallery" method="morph"><template><Item id="item" value="new" /></template></turbo-stream>',
+      )
     ).actions[0]
 
     expect(report?.status).toBe("error")

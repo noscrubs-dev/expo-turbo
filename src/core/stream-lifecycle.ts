@@ -17,10 +17,12 @@ export interface StreamRenderContext {
   readonly index: number
   readonly newStream: ProtocolElement
   readonly session: DocumentSession
-  renderDefault(): StreamRenderResult
+  renderDefault(): Promise<StreamRenderResult>
 }
 
-export type StreamRenderer = (context: StreamRenderContext) => StreamRenderResult
+export type StreamRenderer = (
+  context: StreamRenderContext,
+) => PromiseLike<StreamRenderResult> | StreamRenderResult
 
 export interface BeforeStreamRenderEventDetail {
   readonly action: string

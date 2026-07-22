@@ -88,7 +88,7 @@ describe("Frame controller registry visits", () => {
     await controller.connect()
     expect(registry.findMounted(original)).toBe(controller)
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="replace" target="named"><template><turbo-frame id="named" /></template></turbo-stream>',
     )
@@ -109,7 +109,7 @@ describe("Frame controller registry visits", () => {
     const frame = session.tree.getElementById("named")
     if (frame?.kind !== "frame") throw new Error("fixture Frame is missing")
     const report = recordFrameAutofocusReport(
-      applyFrameResponse(
+      await applyFrameResponse(
         session,
         "named",
         '<turbo-frame id="named"><Field id="field" autofocus="" /></turbo-frame>',
@@ -122,7 +122,7 @@ describe("Frame controller registry visits", () => {
     expect(notifyMountedFrameAutofocus(registry, report)).toBe(false)
     await controller.connect()
     expect(notifyMountedFrameAutofocus(registry, report)).toBe(true)
-    applyFrameResponse(
+    await applyFrameResponse(
       session,
       "outer",
       '<turbo-frame id="outer"><Changed id="unrelated" /></turbo-frame>',
@@ -130,7 +130,7 @@ describe("Frame controller registry visits", () => {
     expect(consumeFrameAutofocus(controller, controller.state.revision)).toEqual(["id:field"])
 
     const stale = recordFrameAutofocusReport(
-      applyFrameResponse(
+      await applyFrameResponse(
         session,
         "named",
         '<turbo-frame id="named"><Field id="same" autofocus="" /></turbo-frame>',
@@ -139,7 +139,7 @@ describe("Frame controller registry visits", () => {
       frame,
       activeFrameAutofocusCandidates(session, frame),
     )
-    applyFrameResponse(
+    await applyFrameResponse(
       session,
       "named",
       '<turbo-frame id="named"><Field id="same" /></turbo-frame>',
@@ -147,7 +147,7 @@ describe("Frame controller registry visits", () => {
     expect(notifyMountedFrameAutofocus(registry, stale)).toBe(false)
     expect(consumeFrameAutofocus(controller, controller.state.revision)).toBeUndefined()
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="replace" target="named"><template><turbo-frame id="named" /></template></turbo-stream>',
     )
@@ -601,14 +601,14 @@ describe("Frame controller registry visits", () => {
     const originalLoad = original.connect()
 
     expect(pending).toHaveLength(1)
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="update" target="frame"><template><Updated/></template></turbo-stream>',
     )
     expect(registry.get("frame")).toBe(original)
     expect(pending[0]?.request.signal?.aborted).toBe(false)
 
-    dispatchTurboStreamFragment(
+    await dispatchTurboStreamFragment(
       session,
       '<turbo-stream action="replace" target="frame"><template><turbo-frame id="frame" src="/new"><Replacement/></turbo-frame></template></turbo-stream>',
     )
@@ -636,7 +636,7 @@ describe("Frame controller registry visits", () => {
       "Replacement",
     )
 
-    dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="frame"/>')
+    await dispatchTurboStreamFragment(session, '<turbo-stream action="remove" target="frame"/>')
     expect(pending[1]?.request.signal?.aborted).toBe(true)
     expect(replacement.state).toMatchObject({ connected: false, status: "canceled" })
     expect(() => registry.get("frame")).toThrow(FrameMissingError)

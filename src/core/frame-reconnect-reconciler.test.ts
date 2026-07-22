@@ -176,7 +176,7 @@ async function settle(): Promise<void> {
 }
 
 describe("Frame reconnect reconciler", () => {
-  test("gives a document-level source precedence over Frame refreshes", () => {
+  test("gives a document-level source precedence over Frame refreshes", async () => {
     const { connections, document, frames, reconciler, refreshes } = fixture()
     const outer = new FrameStub()
     frames.controllers.set(frame(document, "outer"), outer)
@@ -295,7 +295,7 @@ describe("Frame reconnect reconciler", () => {
     expect(staleOuter.reloadCalls).toBe(0)
   })
 
-  test("does not promote unmounted, disabled, or source-less Frames to a document refresh", () => {
+  test("does not promote unmounted, disabled, or source-less Frames to a document refresh", async () => {
     const { connections, document, frames, reconciler, refreshes } = fixture()
     const outer = new FrameStub()
     outer.disabled = true
@@ -398,7 +398,7 @@ describe("Frame reconnect reconciler", () => {
     expect(errors).toEqual([])
   })
 
-  test("fails closed for invalid handoffs and stops deferred work on disposal", () => {
+  test("fails closed for invalid handoffs and stops deferred work on disposal", async () => {
     const { connections, document, frames, reconciler } = fixture()
     const outer = new FrameStub()
     frames.controllers.set(frame(document, "outer"), outer)

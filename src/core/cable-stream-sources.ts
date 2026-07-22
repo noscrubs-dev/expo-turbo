@@ -6,7 +6,7 @@ import {
 import { ExpoTurboError, StateError, SubscriptionError } from "./errors"
 import type { DocumentSession } from "./session"
 import {
-  dispatchTurboStreamFragment,
+  dispatchGuardedTurboStreamFragment,
   type StreamDispatchOptions,
   type StreamDispatchReport,
 } from "./streams"
@@ -64,7 +64,7 @@ export interface ObservableCableStreamSourceCollection extends CableStreamSource
 
 export interface CableStreamSourceRegistryOptions {
   readonly onError: (error: ExpoTurboError) => void
-  readonly onMessage?: (report: StreamDispatchReport) => void
+  readonly onMessage?: (report: StreamDispatchReport) => PromiseLike<void> | void
   /**
    * Optional source-aware reconciliation after an adapter has re-confirmed a
    * server-directed reconnect. This remains separate from Stream `refresh`
@@ -176,9 +176,12 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
   })
   private readonly connectionListeners = new Set<CableStreamSourceConnectionListener>()
   private dispatching = false
+  private drainPromise: Promise<void> | undefined
   private readonly messages: QueuedMessage[] = []
   private readonly onError: (error: ExpoTurboError) => void
-  private readonly onMessage: ((report: StreamDispatchReport) => void) | undefined
+  private readonly onMessage:
+    | ((report: StreamDispatchReport) => PromiseLike<void> | void)
+    | undefined
   private readonly reconnectRefresh: CableReconnectRequester | undefined
   private reconnectCycle = 0
   private reconciledReconnectCycle = 0
@@ -454,20 +457,27 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
     }
   }
 
-  private receive(transport: TransportRecord, message: unknown): void {
-    if (!this.active || !transport.active || !this.hasOwners(transport)) return
+  private receive(transport: TransportRecord, message: unknown): Promise<void> {
+    if (!this.active || !transport.active || !this.hasOwners(transport)) return Promise.resolve()
     const target = this.sourceTarget(transport)
     if (typeof message !== "string") {
       this.report(redactedSubscriptionError("Cable stream messages must be strings", target))
-      return
+      return Promise.resolve()
     }
     if (this.messages.length >= MAX_PENDING_CABLE_MESSAGES) {
       this.report(redactedSubscriptionError("Cable stream message queue limit exceeded", target))
-      return
+      return Promise.resolve()
     }
     this.messages.push({ message, transport })
-    if (this.dispatching) return
+    if (this.dispatching) return this.drainPromise ?? Promise.resolve()
 
+    const draining = this.drainMessages()
+    this.drainPromise = draining
+    return draining
+  }
+
+  private async drainMessages(): Promise<void> {
+    if (this.dispatching) return
     this.dispatching = true
     try {
       while (this.messages.length > 0) {
@@ -482,15 +492,19 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
         }
         const messageTarget = this.sourceTarget(queued.transport)
         try {
-          const report = dispatchTurboStreamFragment(
+          const report = await dispatchGuardedTurboStreamFragment(
             this.session,
             queued.message,
             this.streamOptions,
+            {
+              shouldContinue: () =>
+                this.active && queued.transport.active && this.hasOwners(queued.transport),
+            },
           )
           if (this.onMessage) {
             try {
               const result = this.onMessage(report)
-              if (result !== undefined) consumeUnexpectedResult(result)
+              if (result !== undefined) await result
             } catch {
               this.report(
                 redactedSubscriptionError(
@@ -508,6 +522,7 @@ export class CableStreamSourceRegistry implements ObservableCableStreamSourceCol
       }
     } finally {
       this.dispatching = false
+      this.drainPromise = undefined
     }
   }
 

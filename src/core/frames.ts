@@ -195,12 +195,12 @@ export interface FrameResponseReport {
   readonly streams: StreamDispatchReport
 }
 
-export function applyFrameResponse(
+export async function applyFrameResponse(
   session: DocumentSession,
   frameId: string,
   xml: string,
   options: ApplyFrameResponseOptions = {},
-): FrameResponseReport {
+): Promise<FrameResponseReport> {
   if (!frameId.trim()) throw new FrameMissingError("Frame id must not be blank")
   const activeFrame = session.tree.getElementById(frameId)
   if (activeFrame?.kind !== "frame") {
@@ -213,5 +213,5 @@ export function applyFrameResponse(
     ...(options.finalUrl ? { url: options.finalUrl } : {}),
     ...(options.limits ? { limits: options.limits } : {}),
   })
-  return commitPreparedFrameResponse(session, activeFrame, prepared, options)
+  return await commitPreparedFrameResponse(session, activeFrame, prepared, options)
 }
