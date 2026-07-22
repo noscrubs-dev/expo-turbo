@@ -6,6 +6,7 @@
       <DemoText id="demo-form-error"><%= ERB::Util.html_escape(error) %></DemoText>
     <% end %>
     <DemoFormSubmitter id="demo-form-submit" label="Save first name" name="commit" value="save" />
+    <DemoFormSubmitter id="demo-form-text-plain" formenctype="text/plain" label="Save first name as text/plain" name="commit" value="save" />
     <DemoFormSubmitter id="demo-form-complete" label="Complete without replacing Frame" name="commit" value="no-content" />
   </DemoForm>
 <% end %>

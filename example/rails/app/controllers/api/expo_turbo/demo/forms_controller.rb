@@ -6,7 +6,10 @@ module Api
       class FormsController < ApplicationController
         FRAME_ID = "demo-form-frame"
         MAX_FIRST_NAME_BYTES = 120
+        MAX_TEXT_PLAIN_BODY_BYTES = 1_048_576
+        TEXT_PLAIN_MEDIA_TYPE = "text/plain"
         URL_ENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
+        TEXT_PLAIN_FORM = /\Aprofile\[first_name\]=(?<first_name>[^\r\n]*)\r\ncommit=(?<commit>save)\r\n\z/
 
         rescue_from ActionController::BadRequest, ActionController::ParameterMissing, with: :render_bad_form_request
 
@@ -17,10 +20,13 @@ module Api
         end
 
         def create
-          return head :unsupported_media_type unless request.media_type == URL_ENCODED_MEDIA_TYPE
+          return head :unsupported_media_type unless [URL_ENCODED_MEDIA_TYPE, TEXT_PLAIN_MEDIA_TYPE].include?(request.media_type)
 
-          first_name = params.expect(profile: [:first_name]).fetch(:first_name)
-          commit = params.expect(:commit)
+          submitted = submitted_form
+          return head :bad_request unless submitted
+
+          first_name = submitted.fetch(:first_name)
+          commit = submitted.fetch(:commit)
           return head :bad_request unless valid_first_name?(first_name)
           return head :bad_request unless ["save", "no-content"].include?(commit)
 
@@ -46,6 +52,31 @@ module Api
         def render_bad_form_request
           expo_turbo_vary_by_frame!
           head :bad_request
+        end
+
+        def submitted_form
+          case request.media_type
+          when URL_ENCODED_MEDIA_TYPE
+            {
+              first_name: params.expect(profile: [:first_name]).fetch(:first_name),
+              commit: params.expect(:commit)
+            }
+          when TEXT_PLAIN_MEDIA_TYPE
+            parse_text_plain_form
+          end
+        end
+
+        def parse_text_plain_form
+          raw = request.raw_post
+          return unless raw.is_a?(String) && raw.bytesize <= MAX_TEXT_PLAIN_BODY_BYTES
+
+          body = raw.dup.force_encoding(Encoding::UTF_8)
+          return unless body.valid_encoding?
+
+          match = TEXT_PLAIN_FORM.match(body)
+          return unless match
+
+          {first_name: match[:first_name], commit: match[:commit]}
         end
 
         def valid_first_name?(first_name)
