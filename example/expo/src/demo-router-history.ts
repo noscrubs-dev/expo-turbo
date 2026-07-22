@@ -613,6 +613,9 @@ export class DemoRouterHistoryBridge
   private nativeLinkRestorationSequence = 0;
   private readonly openExternalUrl: (url: string) => Promise<void> | void;
   private pendingExpoGoLink: string | undefined;
+  private pendingRecoveredExpoGoAnchor:
+    | Readonly<{ anchor: string; documentUrl: string }>
+    | undefined;
   private pendingEntry: DocumentHistoryEntry | undefined;
   private terminal = false;
   private readonly traversalListeners = new Set<(entry: DocumentHistoryEntry) => void>();
@@ -732,6 +735,17 @@ export class DemoRouterHistoryBridge
     return recovery.anchor;
   }
 
+  /** Transfers an anchor recovered while Expo Router was creating its destination route. */
+  takePendingRecoveredExpoGoAnchor(): string | undefined {
+    const pending = this.pendingRecoveredExpoGoAnchor;
+    if (!pending) return undefined;
+    this.pendingRecoveredExpoGoAnchor = undefined;
+    const state = this.readRouteState();
+    const documentUrl = state.kind === "managed" ? state.entry.url : state.url;
+    if (documentUrl !== pending.documentUrl) return undefined;
+    return pending.anchor;
+  }
+
   reconcile(): void {
     if (this.terminal) throw new StateError("Demo Router history failed closed");
     if (!this.attachment?.active) {
@@ -843,6 +857,7 @@ export class DemoRouterHistoryBridge
     this.error = undefined;
     this.emittedEntry = undefined;
     this.pendingExpoGoLink = undefined;
+    this.pendingRecoveredExpoGoAnchor = undefined;
     this.pendingEntry = undefined;
   }
 
@@ -991,7 +1006,17 @@ export class DemoRouterHistoryBridge
     const value = this.pendingExpoGoLink;
     if (!value) return;
     const recovery = this.recoverExpoGoLink(value);
-    if (recovery.handled) this.pendingExpoGoLink = undefined;
+    if (!recovery.handled) return;
+    this.pendingExpoGoLink = undefined;
+    if (!recovery.anchor) return;
+    const target = expoGoTarget(value);
+    if (!target) return;
+    const documentUrl = new URL(target.href);
+    documentUrl.hash = "";
+    this.pendingRecoveredExpoGoAnchor = Object.freeze({
+      anchor: recovery.anchor,
+      documentUrl: documentUrl.href,
+    });
   }
 
   private repairCurrentRoute(

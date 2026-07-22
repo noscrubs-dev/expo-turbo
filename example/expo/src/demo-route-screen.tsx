@@ -114,6 +114,7 @@ export function DemoCompatibilityGallery() {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
       onContentSizeChange={() => {
+        runtime.documentAnchorScroll.confirmDeferredAnchorContentSize();
         runtime.autofocusScroll.remeasure();
         runtime.visibility.remeasureAll();
         runtime.frameAutoscroll.remeasure();

@@ -123,7 +123,7 @@ function ActiveDemoRouterRouteOwner({
                 handledIncomingLink.current = pendingIncomingLink.sequence;
                 return runtime.navigation.handleExpoGoLinkEvent(pendingIncomingLink.url);
               })()
-            : undefined;
+            : runtime.navigation.takePendingRecoveredExpoGoAnchor();
         initialAnchor.current = runtime.navigation.readInitialExpoGoAnchor(initialUrl);
         let documentUrl = runtime.session.tree.document.url;
         if (!documentUrl) throw new StateError("The Expo Turbo demo has no active document URL");

@@ -68,7 +68,15 @@ describe("DemoDocumentAnchorScrollRegistry", () => {
     registry.notifyDeferredAnchorLayout();
 
     expect(calls).toEqual([{ x: 0, y: 430 }]);
+    registry.confirmDeferredAnchorContentSize();
+    expect(calls).toEqual([
+      { x: 0, y: 430 },
+      { x: 0, y: 430 },
+    ]);
     registry.setDocumentContentOffset(64);
-    expect(calls).toEqual([{ x: 0, y: 430 }]);
+    expect(calls).toEqual([
+      { x: 0, y: 430 },
+      { x: 0, y: 430 },
+    ]);
   });
 });

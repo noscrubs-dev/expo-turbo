@@ -94,6 +94,13 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
     this.flushDeferredAnchor();
   }
 
+  /** Re-applies one deferred target after the root ScrollView accepts its final content size. */
+  confirmDeferredAnchorContentSize(): void {
+    const targetId = this.pendingDeferredTarget;
+    if (!targetId || !this.scrollToTarget(targetId)) return;
+    this.pendingDeferredTarget = undefined;
+  }
+
   setDocumentOffset(offset: number | undefined): void {
     if (this.disposed) return;
     if (offset !== undefined && !isNonNegativeFinite(offset)) {
@@ -114,8 +121,7 @@ export class DemoDocumentAnchorScrollRegistry implements DocumentAnchorScrollAda
 
   private flushDeferredAnchor(): void {
     const targetId = this.pendingDeferredTarget;
-    if (!targetId || !this.scrollToTarget(targetId)) return;
-    this.pendingDeferredTarget = undefined;
+    if (targetId) this.scrollToTarget(targetId);
   }
 
   private scrollToTarget(id: string): boolean {
