@@ -7156,20 +7156,101 @@ describe("React protocol renderer", () => {
     act(() => stale.renderer.unmount())
   })
 
-  test("rejects same-document anchors across Frame scopes and explicit targets", async () => {
+  test("resolves explicit and inherited Frame targets for same-document anchors", async () => {
     const scrolls: string[] = []
     const harness = renderDocumentLinks(
       `<Gallery>
-        <DemoText id="top-frame-target">Top Frame</DemoText>
-        <DemoText id="blank-frame-target">Blank Frame</DemoText>
-        <DemoText id="named-frame-target">Named Frame</DemoText>
-        <DemoText id="frame-source-target">Frame Source</DemoText>
-        <DocumentLink href="#top-frame-target" data-turbo-frame="_top" />
-        <DocumentLink href="#blank-frame-target" data-turbo-frame="" />
-        <DocumentLink href="#named-frame-target" data-turbo-frame="named" />
-        <turbo-frame id="source-frame"><DocumentLink href="#frame-source-target" /></turbo-frame>
-        <turbo-frame id="frame-target"><DemoText>Frame Target</DemoText></turbo-frame>
-        <DocumentLink href="#frame-target" />
+        <DemoText id="top-target">Top</DemoText>
+        <DemoText id="blank-top-target">Blank top</DemoText>
+        <DemoText id="missing-top-target">Missing top</DemoText>
+        <DemoText id="disabled-top-target">Disabled top</DemoText>
+        <turbo-frame id="disabled" disabled="" />
+        <turbo-frame id="named">
+          <DemoText id="named-explicit-target">Named explicit</DemoText>
+          <DemoText id="named-default-target">Named default</DemoText>
+          <DemoText id="named-top-target">Named top</DemoText>
+        </turbo-frame>
+        <turbo-frame id="outer">
+          <DemoText id="outer-target">Outer</DemoText>
+          <turbo-frame id="inner">
+            <DemoText id="inner-target">Inner</DemoText>
+            <DemoText id="inner-missing-target">Inner missing fallback</DemoText>
+            <DocumentLink href="#inner-target" data-turbo-frame="_self" />
+            <DocumentLink href="#outer-target" data-turbo-frame="_parent" />
+            <DocumentLink href="#top-target" data-turbo-frame="_top" />
+            <DocumentLink href="#named-explicit-target" data-turbo-frame="named" />
+            <DocumentLink href="#inner-missing-target" data-turbo-frame="missing" />
+          </turbo-frame>
+        </turbo-frame>
+        <turbo-frame id="default-source" target="named">
+          <DocumentLink href="#named-default-target" />
+        </turbo-frame>
+        <DocumentLink href="#named-top-target" data-turbo-frame="named" />
+        <DocumentLink href="#blank-top-target" data-turbo-frame="" />
+        <DocumentLink href="#missing-top-target" data-turbo-frame="missing" />
+        <DocumentLink href="#disabled-top-target" data-turbo-frame="disabled" />
+      </Gallery>`,
+      async () => {
+        throw new Error("targeted same-document anchors must not fetch")
+      },
+      "https://example.test/current",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentAnchorScroll: {
+          scrollTo(id) {
+            scrolls.push(id)
+          },
+        },
+      }),
+    )
+
+    for (const href of [
+      "#inner-target",
+      "#outer-target",
+      "#top-target",
+      "#named-explicit-target",
+      "#named-default-target",
+      "#named-top-target",
+      "#inner-missing-target",
+      "#blank-top-target",
+      "#missing-top-target",
+      "#disabled-top-target",
+    ]) {
+      await expect(harness.activation(href)()).resolves.toMatchObject({
+        kind: "anchor",
+        status: "requested",
+      })
+    }
+    expect(scrolls).toEqual([
+      "inner-target",
+      "outer-target",
+      "top-target",
+      "named-explicit-target",
+      "named-default-target",
+      "named-top-target",
+      "inner-missing-target",
+      "blank-top-target",
+      "missing-top-target",
+      "disabled-top-target",
+    ])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("rejects same-document anchors whose resolved Frame scope does not own the target", async () => {
+    const scrolls: string[] = []
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DemoText id="top-from-frame">Top from Frame</DemoText>
+        <DemoText id="top-targeted-named">Top targeted named</DemoText>
+        <turbo-frame id="source-frame"><DocumentLink href="#top-from-frame" /></turbo-frame>
+        <turbo-frame id="named"><DemoText id="named-from-top">Named from top</DemoText></turbo-frame>
+        <DocumentLink href="#top-targeted-named" data-turbo-frame="named" />
+        <DocumentLink href="#named-from-top" />
+        <DocumentLink href="#named" data-turbo-frame="named" />
       </Gallery>`,
       async () => {
         throw new Error("same-document anchor must not fetch")
@@ -7188,13 +7269,7 @@ describe("React protocol renderer", () => {
       }),
     )
 
-    for (const href of [
-      "#top-frame-target",
-      "#blank-frame-target",
-      "#named-frame-target",
-      "#frame-source-target",
-      "#frame-target",
-    ]) {
+    for (const href of ["#top-from-frame", "#top-targeted-named", "#named-from-top", "#named"]) {
       await expect(harness.activation(href)()).rejects.toBeInstanceOf(TargetError)
     }
     expect(scrolls).toEqual([])

@@ -980,6 +980,9 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       </DemoAnchorTarget>
     </DemoCard>
   </turbo-frame>
+  <DemoDocumentLink href="#frame-native-anchor-target" data-turbo-frame="link-frame">
+    <DemoText>Jump from the document into the named Frame anchor target.</DemoText>
+  </DemoDocumentLink>
   <DemoCard id="nested-visibility-card" title="Nested lazy Frame visibility" style-tokens="tone:info space:compact">
     <DemoText>The nested region below owns a second clipping viewport. Its Frame remains idle until it is visible inside both this region and the gallery scroll view.</DemoText>
     <DemoScrollRegion id="nested-scroll-region">
