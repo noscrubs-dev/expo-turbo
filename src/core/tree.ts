@@ -772,8 +772,8 @@ export class DocumentTree {
 
   /**
    * Reconciles children for the narrow native Stream `update method="morph"` contract.
-   * Same-parent compatible ordinary application elements retain their node identity
-   * by stable ID or deterministic anonymous sibling ordinal.
+   * Compatible ordinary application elements retain their node identity by stable
+   * ID or bounded anonymous matching under one retained parent.
    */
   private morphStreamUpdateChildren(
     parent: ProtocolElement,
@@ -1100,7 +1100,7 @@ export class DocumentTree {
       else anonymousByShape.set(shape, [child])
     }
     const assignedAnonymous = new Set<ProtocolElement>()
-    for (const source of sources) {
+    for (const [sourceIndex, source] of sources.entries()) {
       if (!isElement(source)) continue
       const id = attributeValue(source, "id")
       if (id !== undefined) {
@@ -1129,7 +1129,7 @@ export class DocumentTree {
       const current =
         candidates.find((candidate) =>
           this.morphIdSetsIntersect(candidate, source, planning.idSets),
-        ) ?? candidates.find((candidate) => !planning.idSets.has(candidate))
+        ) ?? this.anonymousMorphFallback(candidates, sources, sourceIndex, shape, planning.idSets)
       if (!current) continue
       assignedAnonymous.add(current)
       currentForSource.set(source, current)
@@ -1347,6 +1347,34 @@ export class DocumentTree {
       if (sourceIds.has(id)) return true
     }
     return false
+  }
+
+  private anonymousMorphFallback(
+    candidates: readonly ProtocolElement[],
+    sources: readonly ProtocolNode[],
+    sourceIndex: number,
+    shape: string,
+    idSets: ReadonlyMap<ProtocolElement, ReadonlySet<string>>,
+  ): ProtocolElement | undefined {
+    const fallback = candidates.find((candidate) => !idSets.has(candidate))
+    if (!fallback) return undefined
+
+    let nextSourceIndex = sourceIndex + 1
+    let futureSoftMatches = 0
+    for (const candidate of candidates) {
+      const nextSource = sources[nextSourceIndex]
+      if (
+        candidate.kind === "element" &&
+        nextSource?.kind === "element" &&
+        attributeValue(nextSource, "id") === undefined &&
+        anonymousMorphShapeKey(nextSource) === shape
+      ) {
+        futureSoftMatches += 1
+        nextSourceIndex += 1
+        if (futureSoftMatches >= 2) return undefined
+      }
+    }
+    return fallback
   }
 
   private insertRetainedMorphPlan(
