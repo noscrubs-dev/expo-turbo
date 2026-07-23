@@ -45,7 +45,9 @@ the pinned official `@hotwired/turbo@8.0.23` package in `happy-dom` against the
 same initial markup and sibling Stream messages as the Expo tree. It compares
 the full normalized result for all seven structural built-in actions, target
 precedence, absent templates, direct-child ID collision replacement, payload
-cloning, and the admitted selector surface. Refresh remains a named native
+cloning, the admitted selector surface, outer and child Stream morphs,
+permanent-node moves, anonymous reconciliation, and stable-ID reordering.
+Refresh remains a named native
 equivalent because its owning-session GET/render contract is not a structural
 DOM action. The separate native-equivalent morph record proves compatible
 outer `replace`, child `update`, and selector child morphing retain the declared
