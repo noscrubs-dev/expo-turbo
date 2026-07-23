@@ -4,6 +4,7 @@ import type { ClockAdapter, TurboRequest } from "../adapters"
 import {
   applyFrameResponse,
   buildFormRequest,
+  DocumentHistory,
   DocumentRequestLoader,
   DocumentSession,
   DocumentVisitController,
@@ -554,6 +555,113 @@ test("matches upstream Turbo for a redirected document link visit", async () => 
     expect(expoResult.status).toBe("committed")
     expect(expoRequest?.url).toBe(browserRequestUrl)
     expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo advance and replace history writes", async () => {
+  const initialDocument =
+    '<main id="root"><a id="advance-link" href="/next">Next</a><p id="initial">Initial</p></main>'
+  const nextDocument =
+    '<main id="root"><a id="replace-link" href="/final" data-turbo-action="replace">Final</a><p id="next">Next</p></main>'
+  const finalDocument = '<main id="root"><p id="final">Final</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoHistoryWrites: string[] = []
+  const restorationIdentifiers = ["initial", "next", "final"]
+  const history = new DocumentHistory(
+    {
+      next() {
+        const identifier = restorationIdentifiers.shift()
+        if (!identifier) throw new Error("History differential exhausted its identifiers")
+        return identifier
+      },
+    },
+    {
+      write(method) {
+        expoHistoryWrites.push(method)
+        return undefined
+      },
+    },
+  )
+  history.initialize({ kind: "unmanaged", url: "https://example.test/demo" })
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async (request) => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => (request.url.endsWith("/next") ? nextDocument : finalDocument),
+        url: request.url,
+      }),
+    },
+    { next: () => "request-history" },
+  )
+  const visits = new DocumentVisitController(loader, realClock, { history })
+  await visits.visit("/next", { action: "advance" })
+  await visits.visit("/final", { action: "replace" })
+
+  const originalFetch = browser.fetch
+  browser.history.replaceState({}, "", "/demo")
+  const browserHistoryLength = browser.history.length
+  browser.fetch = async (input) => {
+    const url = String(input)
+    const document = url.endsWith("/next") ? nextDocument : finalDocument
+    return new browser.Response(`<html><body>${document}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const advanceLink = browser.document.getElementById("advance-link")
+    if (!(advanceLink instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser advance history link is missing")
+    }
+    advanceLink.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(browser.location.href).toBe("https://example.test/next")
+    expect(browser.history.length).toBe(browserHistoryLength + 1)
+
+    const replaceLink = browser.document.getElementById("replace-link")
+    if (!(replaceLink instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser replace history link is missing")
+    }
+    replaceLink.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const finalHistoryEntry = history.current
+    if (!finalHistoryEntry) throw new Error("Expo history differential lost its current entry")
+    const browserTurboState = (
+      browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
+    )?.turbo
+    expect(expoHistoryWrites).toEqual(["replace", "push", "replace"])
+    expect(browser.location.href).toBe(finalHistoryEntry.url)
+    expect(browser.history.length).toBe(browserHistoryLength + 1)
+    expect(browserTurboState?.restorationIndex).toBe(finalHistoryEntry.restorationIndex)
     expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
       normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
     )
