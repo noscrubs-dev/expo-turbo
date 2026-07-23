@@ -267,6 +267,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-23**:
 
+- Changed: Froze and independently verified the paired non-publishing `0.1.0` npm and RubyGem candidate from exact public commit `0163220`.
+- Why: Stable publication must reuse one proven artifact pair rather than rebuild different bytes after host validation.
+- Impact: Candidate run `30021116358`, checksums, and offline provenance are recorded publicly as a superseded pipeline proof. The final gated commit still requires a new frozen pair before stable publication.
+
+**2026-07-23**:
+
 - Changed: Added a Maestro-only Android Release flow through the native Files picker and real Rails multipart retry boundary.
 - Why: The fallback Blob proved React Native multipart transport but did not prove Android's provider-backed document result or cached Expo `File`.
 - Impact: The Release emulator selects the checked-in text fixture from Android Files, submits it to Rails, receives matching `422` XML, and retains the selected filename for retry. Physical Android evidence remains open.
