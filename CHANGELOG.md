@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add explicit host delegation for browser `target` and `download` links. `ExpoTurboProvider.documentLinks` receives frozen canonical browsing-context or download requests, including an optional authored filename, while disabled links still win and an absent adapter still fails closed. These links bypass Turbo click, visit, Frame, fetch, request-ID, and prefetch ownership; concrete native browsing/download implementations remain host work.
+
 - Add exact one-use Frame response preload. `FramePreloader` safely warms a cache keyed by Frame ID and fragment-free URL without mutating live state; marked semantic Frame links preload automatically, and `FrameRequestLoader` consumes the response through its normal lifecycle without a second fetch. This does not claim provisional Frame preview rendering or canonical revalidation.
 - Add direct and cross-document Frame fragment navigation. Frame GETs strip fragments from transport and canonical `src`, while promoted `advance`/`replace` history retains the fragment; after a matching response commits and renders, the React binding revalidates the target inside the exact destination Frame before requesting host-native scrolling.
 - Await asynchronous `before-stream-render` renderer overrides, one-shot default-render wrappers, and custom Stream actions across direct, Cable, Frame, form, and embedded sources. Hosts may inject a `streamRenderScheduler` for the native pre-render scheduling point corresponding to Turbo's `nextRepaint()` boundary; canceled actions skip it, sibling actions remain serialized, hostile thenables are bounded, and a failure after session mutation remains fatal committed truth.

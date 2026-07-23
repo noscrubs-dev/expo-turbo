@@ -122,6 +122,27 @@ export interface NavigationAdapter {
   visit(url: string, action: VisitAction): void | Promise<void>
 }
 
+export interface DocumentLinkBrowsingContextRequest {
+  readonly target: string
+  readonly url: string
+}
+
+export interface DocumentLinkDownloadRequest {
+  readonly filename?: string
+  readonly url: string
+}
+
+/**
+ * Optional host-owned equivalents for browser link behavior that Turbo leaves
+ * to the browser. React Native has no implicit browsing contexts or downloads,
+ * so an authored `target` or `download` link is admitted only through this
+ * explicit adapter.
+ */
+export interface DocumentLinkAdapter {
+  download(request: DocumentLinkDownloadRequest): void | Promise<void>
+  openBrowsingContext(request: DocumentLinkBrowsingContextRequest): void | Promise<void>
+}
+
 export interface CableCallbacks {
   connected(reconnected: boolean): void
   disconnected(willAttemptReconnect?: boolean): void
