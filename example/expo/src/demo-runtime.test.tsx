@@ -172,6 +172,7 @@ const GALLERY_QUERY_LINKED_URL =
   "https://example.test/demo/linked?source=gallery&tag=a&tag=b&empty=";
 const PREVIEW_URL = "https://example.test/demo/linked?preview=automatic";
 const PRESS_IN_PREFETCH_URL = "https://example.test/demo/linked?prefetch=reuse";
+const PRESS_IN_PREFETCH_FINAL_URL = "https://example.test/demo/linked?prefetch=reused";
 const REFRESH_SCENARIO_URL = "https://example.test/demo/linked?refresh=scroll";
 const HISTORY_SCROLL_URL = "https://example.test/demo/linked?history=scroll";
 const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll";
@@ -705,7 +706,8 @@ describe("demo app runtime ownership", () => {
     expect(requests.filter((request) => request.url === PRESS_IN_PREFETCH_URL)).toHaveLength(1);
     expect(runtime.session.tree.getElementById("press-in-prefetch-reused")).toBeDefined();
     expect(runtime.session.tree.getElementById("press-in-prefetch-missed")).toBeUndefined();
-    expect(runtime.documentRuntime.history.current?.url).toBe(PRESS_IN_PREFETCH_URL);
+    expect(runtime.documentRuntime.history.current?.url).toBe(PRESS_IN_PREFETCH_FINAL_URL);
+    expect(runtime.session.tree.document.url).toBe(PRESS_IN_PREFETCH_FINAL_URL);
 
     await act(async () => {
       renderer?.unmount();

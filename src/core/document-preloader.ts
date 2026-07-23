@@ -1,6 +1,6 @@
 import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
 import { documentCachePolicy } from "./document-metadata"
-import type { DocumentPrefetchCache } from "./document-prefetch-cache"
+import type { DocumentPrefetchCache, DocumentPrefetchedResponse } from "./document-prefetch-cache"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
@@ -70,7 +70,7 @@ interface ActiveDocumentPreload {
     durable: boolean
     leases: number
     prefetchCommitted: boolean
-    prefetchTree?: ReturnType<typeof parseExpoTurboDocument>
+    prefetchResponse?: DocumentPrefetchedResponse
   }
   readonly url: string
 }
@@ -206,7 +206,13 @@ export class DocumentPreloader {
             active.state.prefetchCommitted = true
             this.prefetchCache.putPending(
               active.url,
-              active.promise.then(() => active.state.prefetchTree),
+              active.promise.then(
+                () => active.state.prefetchResponse,
+                (error: unknown) => {
+                  if (active.state.prefetchResponse) return active.state.prefetchResponse
+                  throw error
+                },
+              ),
               () => this.cancelActive(active),
             )
           } else {
@@ -408,18 +414,8 @@ export class DocumentPreloader {
       throw new RequestError("Document preload response metadata is invalid", { method: "GET" })
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
-    if (
-      typeof responseStatus !== "number" ||
-      !Number.isInteger(responseStatus) ||
-      responseStatus < 200 ||
-      responseStatus >= 300
-    ) {
-      throw new RequestError("Document preload requires a successful response", {
-        method: "GET",
-        ...(typeof responseStatus === "number" && Number.isInteger(responseStatus)
-          ? { responseStatus }
-          : {}),
-      })
+    if (typeof responseStatus !== "number" || !Number.isInteger(responseStatus)) {
+      throw new RequestError("Document preload response status is invalid", { method: "GET" })
     }
     if (typeof responseUrl !== "string" || responseUrl.trim() === "") {
       throw new RequestError("Document preload response requires a final URL", {
@@ -433,7 +429,7 @@ export class DocumentPreloader {
         responseStatus,
       })
     }
-    resolveSameOriginProtocolUrl(responseUrl, request.url, request.url)
+    const finalUrl = resolveSameOriginProtocolUrl(responseUrl, request.url, request.url)
 
     let contentType: string | undefined
     try {
@@ -444,11 +440,6 @@ export class DocumentPreloader {
       throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`)
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
-    if (contentType !== EXPO_TURBO_MIME_TYPE) {
-      throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
-        contentType: contentType ?? "missing",
-      })
-    }
 
     let text: TurboResponse["text"]
     try {
@@ -479,6 +470,28 @@ export class DocumentPreloader {
       })
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
+    const finalDisposition = classifyTopLevelLocation(this.session.tree, finalUrl)
+    if (finalDisposition.classification === "visitable" && typeof xml === "string") {
+      state.prefetchResponse = Object.freeze({
+        body: xml,
+        ...(contentType !== undefined ? { contentType } : {}),
+        redirected: redirected || finalUrl !== request.url,
+        requestId,
+        responseStatus,
+        url: finalUrl,
+      })
+    }
+    if (responseStatus < 200 || responseStatus >= 300) {
+      throw new RequestError("Document preload requires a successful response", {
+        method: "GET",
+        responseStatus,
+      })
+    }
+    if (contentType !== EXPO_TURBO_MIME_TYPE) {
+      throw new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
+        contentType: contentType ?? "missing",
+      })
+    }
     if (typeof xml !== "string" || xml.trim() === "") {
       throw new RequestError("Document preload requires a nonempty XML response", {
         method: "GET",
@@ -497,7 +510,6 @@ export class DocumentPreloader {
       throw new ParseError("Document preload XML could not be parsed", location ? { location } : {})
     }
     if (controller.signal.aborted) return this.canceled(requestId, request.url)
-    state.prefetchTree = tree
     const cacheable = documentCachePolicy(tree).cacheable
     if (cacheable && state.durable) {
       let superseded: boolean

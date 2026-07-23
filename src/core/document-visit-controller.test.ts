@@ -179,6 +179,17 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
   }
 }
 
+function prefetched(body: string, url = "https://example.test/next") {
+  return Object.freeze({
+    body,
+    contentType: EXPO_TURBO_MIME_TYPE,
+    redirected: false,
+    requestId: "prefetch-1",
+    responseStatus: 200,
+    url,
+  })
+}
+
 function harness(
   options: Readonly<{
     clock?: ManualClock
@@ -235,7 +246,7 @@ function harness(
 
 describe("Document visit controller", () => {
   test("waits for and commits one prefetched response without a second request", async () => {
-    let resolvePrefetch: ((tree: DocumentTree) => void) | undefined
+    let resolvePrefetch: ((response: ReturnType<typeof prefetched>) => void) | undefined
     const prefetchCache = new DocumentPrefetchCache()
     prefetchCache.putPending(
       "https://example.test/next",
@@ -247,14 +258,15 @@ describe("Document visit controller", () => {
 
     const visiting = current.controller.visit("/next")
     expect(current.pending).toHaveLength(0)
-    resolvePrefetch?.(
-      parseExpoTurboDocument('<Gallery><Next id="next" /></Gallery>', {
-        url: "https://example.test/next",
-      }),
-    )
+    resolvePrefetch?.(prefetched('<Gallery><Next id="next" /></Gallery>'))
 
     expect(await visiting).toEqual({
       source: "prefetch",
+      classification: "success",
+      redirected: false,
+      requestId: "prefetch-1",
+      requestedUrl: "https://example.test/next",
+      responseStatus: 200,
       status: "committed",
       url: "https://example.test/next",
     })
@@ -272,8 +284,78 @@ describe("Document visit controller", () => {
     await second
   })
 
+  test("retains final URL, redirect history, request ID, and status through response reuse", async () => {
+    const prefetchCache = new DocumentPrefetchCache()
+    const finalUrl = "https://example.test/redirected"
+    prefetchCache.put("https://example.test/next", {
+      ...prefetched('<Gallery><Redirected id="redirected" /></Gallery>', finalUrl),
+      redirected: true,
+      responseStatus: 201,
+    })
+    const history = historyFixture()
+    const lifecycle = new DocumentVisitLifecycle()
+    const visits: Array<Readonly<{ action: VisitAction; url: string }>> = []
+    lifecycle.subscribe("visit", (event) => {
+      visits.push({ action: event.detail.action, url: event.detail.url })
+    })
+    const current = harness({
+      history: history.history,
+      prefetchCache,
+      visitLifecycle: lifecycle,
+    })
+
+    expect(await current.controller.visit("/next")).toEqual({
+      classification: "success",
+      redirected: true,
+      requestId: "prefetch-1",
+      requestedUrl: "https://example.test/next",
+      responseStatus: 201,
+      source: "prefetch",
+      status: "committed",
+      url: finalUrl,
+    })
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.session.recentRequestIds.has("prefetch-1")).toBe(true)
+    expect(current.session.tree.document.url).toBe(finalUrl)
+    expect(current.session.tree.getElementById("redirected")).toBeDefined()
+    expect(history.history.current?.url).toBe(finalUrl)
+    expect(history.writes.map(({ entry, method }) => ({ method, url: entry.url }))).toEqual([
+      { method: "push", url: finalUrl },
+    ])
+    expect(visits).toEqual([
+      { action: "advance", url: "https://example.test/next" },
+      { action: "replace", url: finalUrl },
+    ])
+  })
+
+  test("applies a reused client-error response through the ordinary document outcome path", async () => {
+    const prefetchCache = new DocumentPrefetchCache()
+    prefetchCache.put("https://example.test/invalid", {
+      ...prefetched(
+        '<Gallery><ValidationError id="validation-error" /></Gallery>',
+        "https://example.test/invalid",
+      ),
+      responseStatus: 422,
+    })
+    const current = harness({ prefetchCache })
+
+    expect(await current.controller.visit("/invalid")).toEqual({
+      classification: "client-error",
+      redirected: false,
+      requestId: "prefetch-1",
+      requestedUrl: "https://example.test/invalid",
+      responseStatus: 422,
+      source: "prefetch",
+      status: "committed",
+      url: "https://example.test/invalid",
+    })
+    expect(current.controller.state.status).toBe("failed")
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.session.tree.getElementById("validation-error")).toBeDefined()
+  })
+
   test("cancels a visit while its committed prefetch response is still pending", async () => {
-    let resolvePrefetch: ((tree: DocumentTree) => void) | undefined
+    let resolvePrefetch: ((response: ReturnType<typeof prefetched>) => void) | undefined
     const prefetchCache = new DocumentPrefetchCache()
     prefetchCache.putPending(
       "https://example.test/next",
@@ -285,11 +367,7 @@ describe("Document visit controller", () => {
 
     const visiting = current.controller.visit("/next")
     current.controller.cancel()
-    resolvePrefetch?.(
-      parseExpoTurboDocument('<Gallery><Late id="late" /></Gallery>', {
-        url: "https://example.test/next",
-      }),
-    )
+    resolvePrefetch?.(prefetched('<Gallery><Late id="late" /></Gallery>'))
 
     expect(await visiting).toEqual({
       source: "prefetch",
