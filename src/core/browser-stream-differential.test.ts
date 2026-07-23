@@ -4,6 +4,7 @@ import type { ClockAdapter, TurboRequest } from "../adapters"
 import {
   applyFrameResponse,
   buildFormRequest,
+  ContentTypeError,
   DocumentHistory,
   DocumentRequestLoader,
   DocumentSession,
@@ -751,7 +752,10 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
   }
 })
 
-test("matches upstream Turbo for a 204 document response", async () => {
+test.each([
+  { body: "", status: 201 },
+  { body: null, status: 204 },
+])("matches upstream Turbo for an empty $status document response", async ({ body, status }) => {
   const initialDocument =
     '<main id="root"><a id="empty-link" href="/empty">Empty</a><p id="old">Old</p></main>'
   const session = new DocumentSession(
@@ -763,7 +767,7 @@ test("matches upstream Turbo for a 204 document response", async () => {
       fetch: async () => ({
         headers: {},
         redirected: false,
-        status: 204,
+        status,
         text: async () => "",
         url: "https://example.test/empty",
       }),
@@ -785,7 +789,7 @@ test("matches upstream Turbo for a 204 document response", async () => {
   const visits = new DocumentVisitController(loader, realClock, { history })
   const expoResult = await visits.visit("/empty")
   const originalFetch = browser.fetch
-  browser.fetch = async () => new browser.Response(null, { status: 204 })
+  browser.fetch = async () => new browser.Response(body, { status })
   ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
   browser.history.replaceState({}, "", "/demo")
   turbo.start()
@@ -820,6 +824,88 @@ test("matches upstream Turbo for a 204 document response", async () => {
     )
   } finally {
     browser.fetch = originalFetch
+    turbo.session.stop()
+    await browser.happyDOM.abort()
+  }
+})
+
+test("matches upstream Turbo for an inadmissible document response MIME", async () => {
+  const initialDocument =
+    '<main id="root"><a id="wrong-mime-link" href="/wrong-mime">Wrong MIME</a><p id="old">Old</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async () => ({
+        headers: { "Content-Type": "application/json" },
+        redirected: false,
+        status: 200,
+        text: async () => '{"replacement":true}',
+        url: "https://example.test/wrong-mime",
+      }),
+    },
+    { next: () => "request-wrong-mime" },
+  )
+  const restorationIdentifiers = ["wrong-mime-initial", "wrong-mime-destination"]
+  const history = new DocumentHistory(
+    {
+      next() {
+        const identifier = restorationIdentifiers.shift()
+        if (!identifier) throw new Error("Wrong-MIME differential exhausted its identifiers")
+        return identifier
+      },
+    },
+    { write: () => undefined },
+  )
+  history.initialize({ kind: "unmanaged", url: "https://example.test/demo" })
+  const visits = new DocumentVisitController(loader, realClock, { history })
+  const expoVisit = visits.visit("/wrong-mime")
+  const originalFetch = browser.fetch
+  const originalConsoleError = console.error
+  browser.fetch = async () =>
+    new browser.Response('{"replacement":true}', {
+      headers: { "Content-Type": "application/json" },
+      status: 200,
+    })
+  console.error = () => undefined
+  ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
+  browser.history.replaceState({}, "", "/demo")
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const responseHandled = new Promise<void>((resolve) => {
+      browser.document.addEventListener("turbo:before-fetch-response", () => resolve(), {
+        once: true,
+      })
+    })
+    const link = browser.document.getElementById("wrong-mime-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser wrong-MIME differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await responseHandled
+    await Promise.resolve()
+
+    await expect(expoVisit).rejects.toBeInstanceOf(ContentTypeError)
+    expect(visits.state.status).toBe("failed")
+    expect(browser.location.href).toBe("https://example.test/wrong-mime")
+    expect(history.current?.url).toBe(browser.location.href)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    console.error = originalConsoleError
     turbo.session.stop()
     await browser.happyDOM.abort()
   }
