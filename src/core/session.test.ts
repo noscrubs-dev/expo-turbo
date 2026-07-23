@@ -3,6 +3,10 @@ import { describe, expect, test } from "bun:test"
 import type { TurboResponse } from "../adapters"
 import { consumeDocumentAutofocus } from "./document-autofocus-internal"
 import { DocumentRequestLoader } from "./document-loader"
+import {
+  notifyDocumentMorphFrameReloads,
+  registerDocumentMorphFrameReloader,
+} from "./document-morph-frame-reload-internal"
 import { morphCurrentDocument } from "./document-session-morph-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { type DisposalError, TargetError } from "./errors"
@@ -137,6 +141,63 @@ describe("document session snapshots", () => {
     expect(states).toEqual([{ generation: 1, preview: false }])
     expect(changed).toEqual(["retained", "document"])
     expect(disposed).toEqual(["removed"])
+  })
+
+  test("retains only outermost compatible refresh-morph Frames for post-render reload", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><turbo-frame id="outer" src="/outer" refresh="morph"><turbo-frame id="nested" src="/nested" refresh="morph"><Panel id="nested-old"/></turbo-frame><Panel id="outer-old"/></turbo-frame><turbo-frame id="omitted" src="/omitted" refresh="morph"><Panel id="omitted-old"/></turbo-frame><turbo-frame id="changed" src="/old" refresh="morph"><Panel id="changed-old"/></turbo-frame><turbo-frame id="plain" src="/plain"><Panel id="plain-old"/></turbo-frame><turbo-cable-stream-source id="source" channel="Before"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const outer = document.tree.getElementById("outer")
+    const nested = document.tree.getElementById("nested")
+    const omitted = document.tree.getElementById("omitted")
+    const changed = document.tree.getElementById("changed")
+    const plain = document.tree.getElementById("plain")
+    const source = document.tree.getElementById("source")
+    if (
+      outer?.kind !== "frame" ||
+      nested?.kind !== "frame" ||
+      omitted?.kind !== "frame" ||
+      changed?.kind !== "frame" ||
+      plain?.kind !== "frame" ||
+      source?.kind !== "stream-source"
+    ) {
+      throw new Error("Expected document morph Frame fixtures")
+    }
+    const reloads: (readonly ProtocolElement[])[] = []
+    registerDocumentMorphFrameReloader(document, (frames) => reloads.push(frames))
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><turbo-frame id="outer" src="/outer" refresh="morph"><Panel id="incoming-ignored"/></turbo-frame><turbo-frame id="changed" src="/new" refresh="morph"><Panel id="changed-new"/></turbo-frame><turbo-frame id="plain" src="/plain"><Panel id="plain-new"/></turbo-frame><turbo-cable-stream-source id="source" channel="After"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+
+    expect(document.tree.getElementById("outer")).toBe(outer)
+    expect(document.tree.getElementById("nested")).toBe(nested)
+    expect(document.tree.getElementById("omitted")).toBe(omitted)
+    expect(document.tree.getElementById("outer-old")).toBeDefined()
+    expect(document.tree.getElementById("omitted-old")).toBeDefined()
+    expect(document.tree.getElementById("incoming-ignored")).toBeUndefined()
+    expect(document.tree.getElementById("changed")).not.toBe(changed)
+    expect(document.tree.getElementById("changed-old")).toBeUndefined()
+    expect(document.tree.getElementById("changed-new")).toBeDefined()
+    expect(document.tree.getElementById("plain")).not.toBe(plain)
+    expect(document.tree.getElementById("plain-old")).toBeUndefined()
+    expect(document.tree.getElementById("plain-new")).toBeDefined()
+    const currentSource = document.tree.getElementById("source")
+    expect(currentSource).not.toBe(source)
+    expect(currentSource && attributeValue(currentSource, "channel")).toBe("After")
+    expect(reloads).toEqual([])
+
+    notifyDocumentMorphFrameReloads(document, document.tree.document, document.treeGeneration)
+    expect(reloads).toEqual([[outer, omitted]])
+    notifyDocumentMorphFrameReloads(document, document.tree.document, document.treeGeneration)
+    expect(reloads).toEqual([[outer, omitted]])
   })
 
   test("reparents a stable application identity during a current-document morph", () => {

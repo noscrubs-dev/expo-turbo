@@ -42,6 +42,7 @@ import {
 import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal"
 import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
 import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
+import { notifyDocumentMorphFrameReloads } from "../core/document-morph-frame-reload-internal"
 import type {
   DocumentPreloadLeaseRequester,
   DocumentPreloadRequester,
@@ -3058,6 +3059,7 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
       throw error
     }
     const rendered = acknowledgement?.finish() ?? false
+    notifyDocumentMorphFrameReloads(session, props.document, props.generation)
     if (!rendered) {
       discardDocumentRefreshScroll(session, props.generation)
       return

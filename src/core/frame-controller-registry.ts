@@ -1,4 +1,5 @@
 import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters"
+import { registerDocumentMorphFrameReloader } from "./document-morph-frame-reload-internal"
 import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller"
 import { FrameMissingError, TargetError } from "./errors"
 import {
@@ -86,6 +87,7 @@ export class FrameControllerRegistry
   implements FrameControllerCollection, MountedFrameControllerLookup
 {
   private readonly controllers = new Map<string, FrameControllerRecord>()
+  private readonly unregisterDocumentMorphFrameReloader: () => void
 
   constructor(
     private readonly session: DocumentSession,
@@ -104,6 +106,12 @@ export class FrameControllerRegistry
       if (!current?.controller.state.connected) return false
       return stageFrameAutofocusReport(current.controller, report, this.session, current.node, true)
     })
+    this.unregisterDocumentMorphFrameReloader = registerDocumentMorphFrameReloader(
+      this.session,
+      (frames) => {
+        this.reloadDocumentMorphFrames(frames)
+      },
+    )
   }
 
   get(frameId: string): FrameController {
@@ -252,6 +260,7 @@ export class FrameControllerRegistry
   }
 
   dispose(): void {
+    this.unregisterDocumentMorphFrameReloader()
     for (const [frameId, record] of [...this.controllers]) {
       this.release(frameId, record, true)
     }
@@ -283,6 +292,44 @@ export class FrameControllerRegistry
         // A stale child must not turn an already-rendered outer Frame into a failed load.
       }
     }
+  }
+
+  private reloadDocumentMorphFrames(frames: readonly ProtocolElement[]): void {
+    for (const frame of frames) {
+      if (!this.currentDocumentMorphFrame(frame)) continue
+      const controller = this.findMounted(frame)
+      if (!controller) continue
+      try {
+        void controller.reload().catch(() => undefined)
+      } catch {
+        // A stale Frame must not turn an already-rendered document into a failed visit.
+      }
+    }
+  }
+
+  private currentDocumentMorphFrame(frame: ProtocolElement): boolean {
+    if (
+      frame.kind !== "frame" ||
+      attributeValue(frame, "disabled") !== undefined ||
+      !attributeValue(frame, "src")?.trim() ||
+      attributeValue(frame, "refresh") !== "morph" ||
+      attributeValue(frame, "data-turbo-permanent") !== undefined
+    ) {
+      return false
+    }
+    let current = frame.parent
+    while (current && current.kind !== "document") {
+      if (attributeValue(current, "data-turbo-permanent") !== undefined) return false
+      if (
+        current.kind === "frame" &&
+        attributeValue(current, "src")?.trim() &&
+        attributeValue(current, "refresh") === "morph"
+      ) {
+        return false
+      }
+      current = current.parent
+    }
+    return true
   }
 
   private currentNestedMorphFrame(frame: ProtocolElement, outer: ProtocolElement): boolean {

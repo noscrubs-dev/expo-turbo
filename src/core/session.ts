@@ -4,6 +4,7 @@ import {
   stageDocumentAutofocus,
   suppressDocumentAutofocus,
 } from "./document-autofocus-internal"
+import { stageDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal"
 import { stageDocumentRefreshScroll } from "./document-refresh-scroll-internal"
 import { registerDocumentSessionMorpher } from "./document-session-morph-internal"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
@@ -148,17 +149,18 @@ export class DocumentSession {
 
   private morphCurrentDocument(tree: DocumentTree): void {
     this.assertMutationAllowed()
-    const changed = morphCurrentDocumentRoot(this.currentTree, tree)
+    const morph = morphCurrentDocumentRoot(this.currentTree, tree)
     const generation = this.currentTreeGeneration + 1
     this.currentTreeGeneration = generation
     this.currentTreeState = Object.freeze({ generation, preview: false })
     suppressDocumentAutofocus(this)
     stageDocumentRefreshScroll(this, this.currentTree, generation)
+    stageDocumentMorphFrameReloads(this, this.currentTree.document, generation, morph.reloadFrames)
     const disposalErrors = this.flushDisposals()
     this.currentRevision += 1
     pruneStandaloneStreamAutofocus(this)
     this.snapshots.clear()
-    const keys = new Set([...changed, this.currentTree.document.key])
+    const keys = new Set([...morph.changed, this.currentTree.document.key])
     this.reportErrors(disposalErrors, [
       ...this.notify(keys),
       ...this.notifyListeners(this.treeStateListeners),

@@ -339,14 +339,14 @@ type MorphPlan =
   | MorphRetainPlan
   | MorphReusePlan
 
-interface FrameRefreshMorphResult {
+interface MorphFrameReloadResult {
   readonly changed: readonly string[]
-  readonly nestedFrames: readonly ProtocolElement[]
+  readonly reloadFrames: readonly ProtocolElement[]
 }
 
-interface FrameRefreshMorphContext {
-  readonly nestedFrames: ProtocolElement[]
-  readonly outerFrame: ProtocolElement
+interface MorphFrameReloadContext {
+  readonly outerFrame?: ProtocolElement
+  readonly reloadFrames: ProtocolElement[]
   readonly seenFrames: Set<ProtocolElement>
 }
 
@@ -371,14 +371,14 @@ type StreamChildMorpher = (
 type FrameRefreshMorpher = (
   frame: ProtocolElement,
   responseFrame: ProtocolElement,
-) => FrameRefreshMorphResult
+) => MorphFrameReloadResult
 
 type FramePermanentReplacer = (
   frame: ProtocolElement,
   responseFrame: ProtocolElement,
 ) => readonly string[]
 
-type DocumentRefreshMorpher = (source: DocumentTree) => readonly string[]
+type DocumentRefreshMorpher = (source: DocumentTree) => MorphFrameReloadResult
 
 const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
@@ -428,7 +428,7 @@ export function morphFrameRefreshChildren(
   tree: DocumentTree,
   frame: ProtocolElement,
   responseFrame: ProtocolElement,
-): FrameRefreshMorphResult {
+): MorphFrameReloadResult {
   const morph = frameRefreshMorphers.get(tree)
   if (!morph) throw new TargetError("Native Frame refresh morph requires an active document tree")
   return morph(frame, responseFrame)
@@ -449,7 +449,7 @@ export function replaceFrameChildrenPreservingPermanents(
 export function morphCurrentDocumentRoot(
   tree: DocumentTree,
   source: DocumentTree,
-): readonly string[] {
+): MorphFrameReloadResult {
   const morph = documentRefreshMorphers.get(tree)
   if (!morph)
     throw new TargetError("Native document refresh morph requires an active document tree")
@@ -844,13 +844,13 @@ export class DocumentTree {
   }
 
   /**
-   * Reconciles children for the narrow native Frame `reload()` + `refresh="morph"` contract.
+   * Reconciles children for the native Frame `reload()` + `refresh="morph"` contract.
    * The mounted Frame wrapper always retains its identity and attributes.
    */
   private morphFrameRefreshChildren(
     frame: ProtocolElement,
     responseFrame: ProtocolElement,
-  ): FrameRefreshMorphResult {
+  ): MorphFrameReloadResult {
     assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(frame)
     const frameId = attributeValue(frame, "id")
@@ -866,9 +866,9 @@ export class DocumentTree {
     }
 
     this.assertMorphSources(frame, responseFrame.children)
-    const context: FrameRefreshMorphContext = {
-      nestedFrames: [],
+    const context: MorphFrameReloadContext = {
       outerFrame: frame,
+      reloadFrames: [],
       seenFrames: new Set(),
     }
     this.buildMorphPlans(frame, responseFrame.children, context, false)
@@ -878,16 +878,17 @@ export class DocumentTree {
     )
     return Object.freeze({
       changed: Object.freeze([...changed]),
-      nestedFrames: Object.freeze([...context.nestedFrames]),
+      reloadFrames: Object.freeze([...context.reloadFrames]),
     })
   }
 
   /**
-   * Reconciles the one ordinary application root admitted by a bounded native
-   * current-document refresh morph. Protocol wrappers are deliberately excluded
-   * because their browser refresh semantics need separate lifecycle contracts.
+   * Reconciles one ordinary application root during a native current-document
+   * refresh morph. Outermost eligible refresh-morph Frames retain their mounted
+   * identity for a post-render reload; other protocol descendants are replaced
+   * structurally.
    */
-  private morphCurrentDocumentRoot(sourceTree: DocumentTree): readonly string[] {
+  private morphCurrentDocumentRoot(sourceTree: DocumentTree): MorphFrameReloadResult {
     assertDocumentTreeMutationAllowed(this)
     const sourceUrl = sourceTree.document.url
     if (sourceUrl !== undefined && (typeof sourceUrl !== "string" || sourceUrl.trim() === "")) {
@@ -906,17 +907,23 @@ export class DocumentTree {
         "Native document refresh morph requires one compatible nonpermanent application root",
       )
     }
-    this.assertDocumentMorphApplicationSubtree(currentRoot)
-    this.assertDocumentMorphApplicationSubtree(sourceRoot)
-
     this.assertMorphSources(currentRoot, sourceRoot.children)
-    this.buildMorphPlans(currentRoot, sourceRoot.children, undefined, false)
-    if (!this.beforeMorphElement(currentRoot, sourceRoot)) return []
+    const context: MorphFrameReloadContext = {
+      reloadFrames: [],
+      seenFrames: new Set(),
+    }
+    this.buildMorphPlans(currentRoot, sourceRoot.children, context, false)
+    if (!this.beforeMorphElement(currentRoot, sourceRoot)) {
+      return Object.freeze({
+        changed: Object.freeze([]),
+        reloadFrames: Object.freeze([]),
+      })
+    }
     const attributes = this.admitMorphAttributes(currentRoot, sourceRoot)
     const changed = [
       ...this.commitMorphPlans(
         currentRoot,
-        this.buildMorphPlans(currentRoot, sourceRoot.children),
+        this.buildMorphPlans(currentRoot, sourceRoot.children, context),
         sourceRoot,
         attributes,
       ),
@@ -925,7 +932,10 @@ export class DocumentTree {
       this.retargetDocumentUrl(sourceUrl)
       changed.push(this.document.key)
     }
-    return changed
+    return Object.freeze({
+      changed: Object.freeze(changed),
+      reloadFrames: Object.freeze([...context.reloadFrames]),
+    })
   }
 
   private documentMorphRoot(document: ProtocolDocument): ProtocolElement | undefined {
@@ -941,18 +951,6 @@ export class DocumentTree {
       return undefined
     }
     return root
-  }
-
-  private assertDocumentMorphApplicationSubtree(root: ProtocolElement): void {
-    let protocolNode: ProtocolElement | undefined
-    walk(root, (node) => {
-      if (!protocolNode && isElement(node) && node.kind !== "element") protocolNode = node
-    })
-    if (!protocolNode) return
-    const target = attributeValue(protocolNode, "id")
-    throw new TargetError("Native document refresh morph does not support protocol descendants", {
-      ...(target ? { target } : {}),
-    })
   }
 
   replaceNodeWithClones(node: ProtocolNode, sources: readonly ProtocolNode[]): readonly string[] {
@@ -1073,7 +1071,7 @@ export class DocumentTree {
   private buildMorphPlans(
     parent: ProtocolElement,
     sources: readonly ProtocolNode[],
-    frameRefresh?: FrameRefreshMorphContext,
+    frameRefresh?: MorphFrameReloadContext,
     dispatchLifecycle = true,
     planning = this.createMorphPlanningContext(parent, sources),
     currentChildren = parent.children,
@@ -1457,7 +1455,7 @@ export class DocumentTree {
   private shouldReloadNestedFrameWithMorph(
     current: ProtocolElement,
     source: ProtocolNode | undefined,
-    context: FrameRefreshMorphContext,
+    context: MorphFrameReloadContext,
   ): boolean {
     const id = attributeValue(current, "id")
     const sourceUrl = attributeValue(current, "src")
@@ -1503,10 +1501,10 @@ export class DocumentTree {
     }
   }
 
-  private recordNestedFrameReload(frame: ProtocolElement, context: FrameRefreshMorphContext): void {
+  private recordNestedFrameReload(frame: ProtocolElement, context: MorphFrameReloadContext): void {
     if (context.seenFrames.has(frame)) return
     context.seenFrames.add(frame)
-    context.nestedFrames.push(frame)
+    context.reloadFrames.push(frame)
   }
 
   private assertMorphCloneIds(source: ProtocolNode, replacementRoot?: ProtocolElement): void {
