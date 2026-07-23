@@ -1504,6 +1504,42 @@ export class DocumentVisitController {
         if (!rendered && render) this.loader.discardDocumentRefreshScroll(render.commit.generation)
         if (epoch !== this.visitEpoch || this.status !== "started") return report
         if (
+          report.status === "empty" &&
+          report.classification === "success" &&
+          historyPlan &&
+          report.url !== historyPlan.base.url &&
+          !historyGuard &&
+          !continuation
+        ) {
+          try {
+            if (report.url !== historyPlan.proposal.entry.url) {
+              historyPlan = {
+                base: historyPlan.base,
+                history: historyPlan.history,
+                proposal: historyPlan.history.retargetProposal(historyPlan.proposal, report.url),
+              }
+            }
+            this.assertHistoryPlan(historyPlan)
+            if (snapshotCache) {
+              if (this.visitLifecycle) this.notifyBeforeCache()
+              if (attemptEpoch !== undefined) this.assertAttemptEpoch(attemptEpoch)
+              this.assertHistoryPlan(historyPlan)
+              this.loader.captureCurrentSnapshot(snapshotCache)
+              this.assertHistoryPlan(historyPlan)
+            }
+            historyPlan.history.commitProposal(historyPlan.proposal)
+            this.loader.retargetCurrentDocument(report.url)
+          } catch (error) {
+            const reported =
+              error instanceof Error
+                ? error
+                : new StateError("Empty document visit history commit failed")
+            this.finishAfterDocumentRender(render, rendered, epoch, "failed", false)
+            this.notifyError(reported)
+            throw reported
+          }
+        }
+        if (
           redirectFollowupUrl &&
           report.status === "committed" &&
           report.classification === "success" &&
