@@ -119,11 +119,13 @@ import {
   discardPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
+  type PreparedFrameBeforeRender,
   type PreparedFrameResponse,
   prepareFrameBeforeRender,
   prepareFrameMutation,
   prepareFrameResponseTree,
   renderPreparedFrameMutation,
+  waitForPreparedFrameBeforeRender,
 } from "./frame-response-application"
 import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
 import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
@@ -1282,13 +1284,25 @@ export class FormSubmissionController {
         })
         let selectedRenderMethod: FrameRenderMethod = "replace"
         if (promotedHistory || this.options.frameLifecycle) {
-          const acquired = this.ownership.commitFrame(lease, () => {
-            const beforeFrameRenderer = prepareFrameBeforeRender(
+          let beforeFrameRender: PreparedFrameBeforeRender | undefined
+          const admitted = this.ownership.commitFrame(lease, () => {
+            beforeFrameRender = prepareFrameBeforeRender(
               this.options.frameLifecycle,
               preparedFrame,
               candidate.url,
             )
-            selectedRenderMethod = renderPreparedFrameMutation(preparedFrame, beforeFrameRenderer)
+          })
+          if (!admitted) return this.canceled(candidate, destination)
+          if (
+            beforeFrameRender?.event.paused &&
+            !(await waitForPreparedFrameBeforeRender(beforeFrameRender, lease.controller.signal))
+          ) {
+            return this.canceled(candidate, destination)
+          }
+          if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+
+          const acquired = this.ownership.commitFrame(lease, () => {
+            selectedRenderMethod = renderPreparedFrameMutation(preparedFrame, beforeFrameRender)
             if (selectedRenderMethod === "morph") {
               discardPreparedFrameMutation(mutation)
               mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {

@@ -54,10 +54,12 @@ import {
   discardPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
+  type PreparedFrameBeforeRender,
   prepareFrameBeforeRender,
   prepareFrameMutation,
   prepareFrameResponseTree,
   renderPreparedFrameMutation,
+  waitForPreparedFrameBeforeRender,
 } from "./frame-response-application"
 import type { FrameResponseReport } from "./frames"
 import { parseExpoTurboDocument } from "./parser"
@@ -784,8 +786,9 @@ export class FrameRequestLoader {
             let callbackEntered = false
             let callbackContractError: RequestError | undefined
             let beforeFrameRenderEntered = false
+            let beforeFrameRender: PreparedFrameBeforeRender | undefined
             try {
-              const acquired = this.ownership.commitFrame(lease, () => {
+              const admitted = this.ownership.commitFrame(lease, () => {
                 callbackEntered = true
                 const result = loadOptions.beforeFrameCommit?.(candidate)
                 if (result !== undefined) {
@@ -801,15 +804,31 @@ export class FrameRequestLoader {
                   throw callbackContractError
                 }
                 beforeFrameRenderEntered = true
-                const beforeFrameRenderer = prepareFrameBeforeRender(
+                beforeFrameRender = prepareFrameBeforeRender(
                   this.frameLifecycle,
                   prepared,
                   candidate.url,
                   responseRenderMethod,
                 )
+              })
+              if (!admitted) return this.canceled(frameId, requestIds, responseUrl, active)
+              if (
+                beforeFrameRender?.event.paused &&
+                !(await waitForPreparedFrameBeforeRender(
+                  beforeFrameRender,
+                  active.controller.signal,
+                ))
+              ) {
+                return this.canceled(frameId, requestIds, responseUrl, active)
+              }
+              if (!this.owns(frameId, active)) {
+                return this.canceled(frameId, requestIds, responseUrl, active)
+              }
+
+              const acquired = this.ownership.commitFrame(lease, () => {
                 const selectedRenderMethod = renderPreparedFrameMutation(
                   prepared,
-                  beforeFrameRenderer,
+                  beforeFrameRender,
                   responseRenderMethod,
                 )
                 if (selectedRenderMethod !== responseRenderMethod) {

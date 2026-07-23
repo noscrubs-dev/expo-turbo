@@ -2,11 +2,13 @@ import type { FrameAutoscrollBehavior, ScrollAlignment } from "../adapters"
 import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
 import { FrameMissingError, StateError, TargetError } from "./errors"
 import {
+  type BeforeFrameRenderEvent,
   createBeforeFrameRenderEvent,
   FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH,
   type FrameLifecycle,
   type FrameRenderer,
   type FrameRenderMethod,
+  waitUntilBeforeFrameRenderResumed,
 } from "./frame-lifecycle"
 import { type ParseLimits, parseExpoTurboDocument } from "./parser"
 import type { DocumentSession } from "./session"
@@ -78,6 +80,11 @@ export interface FrameAutoscrollIntent {
 }
 
 const preparedFrameMutations = new WeakMap<PreparedFrameMutation, PreparedFrameMutationState>()
+
+export interface PreparedFrameBeforeRender {
+  readonly event: BeforeFrameRenderEvent
+  readonly renderer: FrameRenderer
+}
 
 const defaultFrameRenderer: FrameRenderer = (context) => context.renderDefault()
 
@@ -281,26 +288,36 @@ export function discardPreparedFrameMutation(mutation: PreparedFrameMutation): v
 }
 
 /**
- * Dispatches the synchronous native before-render hook while the caller holds
- * exact Frame request ownership. The selected renderer must complete before
- * history and the package-owned Frame mutation may proceed.
+ * Dispatches the native before-render hook while the caller holds exact Frame
+ * request ownership. The caller may release its commit transaction while a
+ * listener-requested pause is pending, but must retain the request lease and
+ * reacquire commit ownership before using the selected renderer.
  */
 export function prepareFrameBeforeRender(
   lifecycle: FrameLifecycle | undefined,
   prepared: PreparedFrameResponse,
   url: string,
   renderMethod: FrameRenderMethod = "replace",
-): FrameRenderer | undefined {
+): PreparedFrameBeforeRender | undefined {
   if (!lifecycle) return undefined
-  return lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](
-    createBeforeFrameRenderEvent(
-      prepared.frameId,
-      prepared.responseFrame,
-      url,
-      defaultFrameRenderer,
-      renderMethod,
-    ),
+  const event = createBeforeFrameRenderEvent(
+    prepared.frameId,
+    prepared.responseFrame,
+    url,
+    defaultFrameRenderer,
+    renderMethod,
   )
+  const renderer = lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](event)
+  return Object.freeze({ event, renderer })
+}
+
+export function waitForPreparedFrameBeforeRender(
+  prepared: PreparedFrameBeforeRender | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  return prepared
+    ? waitUntilBeforeFrameRenderResumed(prepared.event, signal)
+    : Promise.resolve(!signal?.aborted)
 }
 
 /**
@@ -310,10 +327,11 @@ export function prepareFrameBeforeRender(
  */
 export function renderPreparedFrameMutation(
   prepared: PreparedFrameResponse,
-  renderer: FrameRenderer | undefined,
+  beforeRender: PreparedFrameBeforeRender | undefined,
   defaultRenderMethod: FrameRenderMethod = "replace",
 ): FrameRenderMethod {
-  if (!renderer) return defaultRenderMethod
+  if (!beforeRender) return defaultRenderMethod
+  const { renderer } = beforeRender
 
   const frameId = prepared.frameId
   let selectedRenderMethod: FrameRenderMethod | undefined
