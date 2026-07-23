@@ -172,7 +172,7 @@
       "id": "forms.response-matrix",
       "area": "forms",
       "disposition": "exact",
-      "rationale": "Matching Frame and document XML, Streams, 204, 201, redirects, 422, errors, wrong MIME, abort, visit-control promotion, and unsafe redirect safety have explicit outcomes. The official Turbo differential proves authoritative matching-Frame 422/500 application, Stream application, prevented missing-Frame handling with canonical source publication, one-response visit-control promotion, inert Frame-form 204 handling, and adapter-followed redirected Frame success.",
+      "rationale": "Matching Frame and document XML, Streams, 204, 201, redirects, 422, errors, wrong MIME, abort, visit-control promotion, and unsafe redirect safety have explicit outcomes. The official Turbo differential proves authoritative matching-Frame 422/500 application, Stream application, prevented missing-Frame handling with canonical source publication, one-response visit-control promotion, inert Frame-form 204 handling, adapter-followed redirected Frame success, and top-level GET form document application.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/form-submission-controller.test.ts"
@@ -356,7 +356,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request plus matching-Frame 422/500, Stream, prevented missing-Frame, and visit-control-promoted responses, history, and document-response browser differential, standalone iOS simulator and Android emulator Release builds, and installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request plus matching-Frame 422/500, Stream, prevented missing-Frame, visit-control-promoted, and top-level GET document responses, history, and document-response browser differential, standalone iOS simulator and Android emulator Release builds, and installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",

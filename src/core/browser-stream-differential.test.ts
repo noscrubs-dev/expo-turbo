@@ -1792,6 +1792,90 @@ test("matches upstream Turbo for a redirected Frame form success", async () => {
   }
 })
 
+test("matches upstream Turbo for a top-level GET form document response", async () => {
+  const initialDocument =
+    '<main id="root"><form id="search" action="/search" method="get"><button id="submit-search" type="submit">Search</button></form><p id="old">Old</p></main>'
+  const nextDocument =
+    '<main id="root"><form id="search" action="/search" method="get"><button type="submit">Search again</button></form><p id="result">Found</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("search")
+  if (!form) throw new Error("Expo document GET form is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  let expoRequest: TurboRequest | undefined
+  const expoResult = await new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => nextDocument,
+        url: "https://example.test/search",
+      }
+    },
+  }).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-document-get-form" },
+      signal,
+    }),
+  )
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(`<html><body>${nextDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/search",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserForm = browser.document.getElementById("search")
+    const submitter = browser.document.getElementById("submit-search")
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser document GET form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser document GET form submitter is missing")
+    }
+    browserForm.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "document",
+      responseStatus: 200,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo for an ordinary document link visit", async () => {
   const initialDocument =
     '<main id="root"><a id="next-link" href="/next">Next</a><p id="old">Old</p></main>'
