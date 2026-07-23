@@ -28,17 +28,22 @@ function installBrowserGlobals(): void {
     CSS: browser.CSS,
     CustomEvent: browser.CustomEvent,
     DOMParser: browser.DOMParser,
+    Document: browser.Document,
     Element: browser.Element,
     Event: browser.Event,
     EventTarget: browser.EventTarget,
     FormData: browser.FormData,
     HTMLAnchorElement: browser.HTMLAnchorElement,
+    HTMLBodyElement: browser.HTMLBodyElement,
     HTMLButtonElement: browser.HTMLButtonElement,
     HTMLElement: browser.HTMLElement,
     HTMLFormElement: browser.HTMLFormElement,
+    HTMLHeadElement: browser.HTMLHeadElement,
     HTMLIFrameElement: browser.HTMLIFrameElement,
     HTMLInputElement: browser.HTMLInputElement,
+    HTMLOptionElement: browser.HTMLOptionElement,
     HTMLTemplateElement: browser.HTMLTemplateElement,
+    HTMLTextAreaElement: browser.HTMLTextAreaElement,
     IntersectionObserver: browser.IntersectionObserver,
     MutationObserver: browser.MutationObserver,
     Node: browser.Node,
@@ -202,6 +207,45 @@ test("matches upstream Turbo absent-template action semantics", async () => {
       '<turbo-stream action="before" target="before-target"></turbo-stream>',
       '<turbo-stream action="after" target="after-target"></turbo-stream>',
     ].join(""),
+  )
+
+  expect(result.expo).toEqual(result.browser)
+})
+
+test("matches upstream Turbo for replace and update morphs", async () => {
+  const result = await runDifferential(
+    '<main id="root"><section id="replace-target" class="before"><div id="stable"><span>Before</span></div><p id="removed">Remove</p></section><section id="update-target" class="owned"><div id="move">Move</div><div id="old">Old</div></section></main>',
+    [
+      '<turbo-stream action="replace" target="replace-target" method="morph"><template><section id="replace-target" class="after"><div id="stable"><strong>After</strong></div><p id="added">Added</p></section></template></turbo-stream>',
+      '<turbo-stream action="update" target="update-target" method="morph"><template><div id="new">New</div><div id="move">Moved</div></template></turbo-stream>',
+    ].join(""),
+  )
+
+  expect(result.expo).toEqual(result.browser)
+})
+
+test("matches upstream Turbo permanent-node preservation during a morph", async () => {
+  const result = await runDifferential(
+    '<main id="root"><section id="target"><div id="left"><article id="permanent" data-turbo-permanent=""><span id="client-owned">Client</span></article></div><div id="right"></div></section></main>',
+    '<turbo-stream action="update" target="target" method="morph"><template><div id="left"></div><div id="right"><article id="permanent" data-turbo-permanent="" class="server"><span id="server-owned">Server</span></article></div></template></turbo-stream>',
+  )
+
+  expect(result.expo).toEqual(result.browser)
+})
+
+test("matches upstream Turbo anonymous child reconciliation during a morph", async () => {
+  const result = await runDifferential(
+    '<main id="root"><section id="target"><div class="row"><span>One</span></div><div class="row"><span>Two</span></div></section></main>',
+    '<turbo-stream action="update" target="target" method="morph"><template><div class="row first"><span>One updated</span></div><div class="row second"><span>Two updated</span></div><hr /></template></turbo-stream>',
+  )
+
+  expect(result.expo).toEqual(result.browser)
+})
+
+test("matches upstream Turbo stable-ID child reordering during a morph", async () => {
+  const result = await runDifferential(
+    '<main id="root"><section id="target"><div class="row"><input id="one" value="before-one" /></div><div class="row"><input id="two" value="before-two" /></div></section></main>',
+    '<turbo-stream action="update" target="target" method="morph"><template><div class="row second"><input id="two" value="after-two" /></div><div class="row first"><input id="one" value="after-one" /></div></template></turbo-stream>',
   )
 
   expect(result.expo).toEqual(result.browser)
