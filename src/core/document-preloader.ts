@@ -35,7 +35,7 @@ export type DocumentPreloadReport =
   | Readonly<{
       requestId: string
       responseStatus: number
-      status: "cached" | "not-cacheable" | "prevented" | "superseded"
+      status: "cached" | "not-cacheable" | "prefetched" | "prevented" | "superseded"
       url: string
     }>
   | Readonly<{
@@ -53,6 +53,7 @@ export interface DocumentPreloadRequester {
 }
 
 export interface DocumentPreloadLease {
+  readonly activationPromise?: Promise<DocumentPreloadReport>
   readonly promise: Promise<DocumentPreloadReport>
   commit(): void
   release(): void
@@ -69,6 +70,7 @@ interface ActiveDocumentPreload {
     cacheCommitProtected: boolean
     durable: boolean
     leases: number
+    activationPromise?: Promise<DocumentPreloadReport>
     prefetchCommitted: boolean
     prefetchResponse?: DocumentPrefetchedResponse
   }
@@ -196,6 +198,16 @@ export class DocumentPreloader {
     try {
       const active = this.begin(source, false)
       active.state.leases += 1
+      active.state.activationPromise ??= active.promise.catch((error: unknown) => {
+        const response = active.state.prefetchResponse
+        if (!this.prefetchCache || !response) throw error
+        return Object.freeze({
+          requestId: response.requestId,
+          responseStatus: response.responseStatus,
+          status: "prefetched" as const,
+          url: active.url,
+        })
+      })
       let retained = true
       const settle = (durable: boolean) => {
         if (!retained) return
@@ -232,6 +244,7 @@ export class DocumentPreloader {
         }
       }
       return Object.freeze({
+        activationPromise: active.state.activationPromise,
         commit: () => settle(true),
         promise: active.promise,
         release: () => settle(false),

@@ -591,6 +591,12 @@ describe("document preloader", () => {
     )
 
     await expect(lease.promise).rejects.toBeInstanceOf(RequestError)
+    await expect(lease.activationPromise).resolves.toEqual({
+      requestId: "preload-1",
+      responseStatus: 422,
+      status: "prefetched",
+      url: "https://example.test/app/invalid",
+    })
     expect(await prefetched?.promise).toEqual({
       body: '<Gallery><ValidationError id="validation-error" /></Gallery>',
       contentType: EXPO_TURBO_MIME_TYPE,
@@ -600,6 +606,53 @@ describe("document preloader", () => {
       url: "https://example.test/app/invalid",
     })
     expect(snapshotCache.has("https://example.test/app/invalid")).toBe(false)
+  })
+
+  test("settles activation-facing leases for captured responses and rejects uncaptured failures", async () => {
+    const captured = [
+      response("<Gallery />", "https://example.test/app/status", { status: 503 }),
+      response("<Gallery />", "https://example.test/app/mime", {
+        headers: { "Content-Type": "application/json" },
+      }),
+      response(" \n ", "https://example.test/app/empty"),
+      response("<Gallery>", "https://example.test/app/malformed"),
+    ]
+
+    for (const fixture of captured) {
+      const preloader = new DocumentPreloader(
+        session(),
+        { fetch: async () => fixture },
+        requestIds(),
+        new DocumentSnapshotCache(),
+        { prefetchCache: new DocumentPrefetchCache() },
+      )
+      const lease = preloader.retain(new URL(fixture.url).pathname)
+
+      await expect(lease.promise).rejects.toBeInstanceOf(Error)
+      await expect(lease.activationPromise).resolves.toEqual({
+        requestId: "preload-1",
+        responseStatus: fixture.status,
+        status: "prefetched",
+        url: fixture.url,
+      })
+    }
+
+    const preloader = new DocumentPreloader(
+      session(),
+      {
+        fetch: async () => response("<Gallery />", "https://other.test/app/cross-origin"),
+      },
+      requestIds(),
+      new DocumentSnapshotCache(),
+      { prefetchCache: new DocumentPrefetchCache() },
+    )
+    const lease = preloader.retain("/app/cross-origin")
+
+    const outcomes = await Promise.allSettled([lease.promise, lease.activationPromise])
+    expect(outcomes).toEqual([
+      { reason: expect.any(TargetError), status: "rejected" },
+      { reason: expect.any(TargetError), status: "rejected" },
+    ])
   })
 
   test("does not let a released lease cancel a reentrant retry", async () => {
