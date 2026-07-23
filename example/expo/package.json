@@ -9,6 +9,7 @@
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.1",
     "expo-linking": "~57.0.4",
+    "expo-network": "~57.0.1",
     "expo-router": "~57.0.8",
     "expo-status-bar": "~57.0.1",
     "expo-turbo": "file:../..",

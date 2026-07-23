@@ -10,6 +10,8 @@ import {
   type ActionCableWebSocket,
   type ActionCableWebSocketEventType,
   type ClockAdapter,
+  type NetworkReachabilityAdapter,
+  type NetworkReachabilityState,
 } from "expo-turbo/adapters";
 import { EXPO_TURBO_MIME_TYPE, nodeTextContent } from "expo-turbo/core";
 import { createElement, StrictMode } from "react";
@@ -95,6 +97,10 @@ class FakeActionCableSocket implements ActionCableWebSocket {
     this.emit("open");
   }
 
+  emitClose(): void {
+    this.emit("close");
+  }
+
   emitMessage(data: unknown): void {
     this.emit("message", { data });
   }
@@ -124,6 +130,32 @@ class FakeDemoLiveCableLifecycle implements DemoLiveCableLifecycle {
   }
 
   emit(state: DemoLiveCableLifecycleState): void {
+    this.state = state;
+    for (const listener of this.listeners) listener(state);
+  }
+}
+
+class FakeDemoLiveCableNetwork implements NetworkReachabilityAdapter {
+  private readonly listeners = new Set<(state: NetworkReachabilityState) => void>();
+
+  constructor(private state: NetworkReachabilityState = "online") {}
+
+  getState(): NetworkReachabilityState {
+    return this.state;
+  }
+
+  get listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  subscribe(listener: (state: NetworkReachabilityState) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  emit(state: NetworkReachabilityState): void {
     this.state = state;
     for (const listener of this.listeners) listener(state);
   }
@@ -1075,6 +1107,111 @@ describe("standalone Rails Action Cable proof", () => {
     const recreatedSocket = sockets[1];
     if (!recreatedSocket) throw new Error("missing recreated Action Cable socket");
     expect(recreatedSocket.closeCalls).toBe(1);
+  });
+
+  test("recovers one stable runtime after reachability loss and bounded transport retry", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const identifier = JSON.stringify({
+      channel: "Turbo::StreamsChannel",
+      signed_stream_name: "signed-demo-stream",
+    });
+    const document =
+      '<Gallery id="demo-document"><turbo-frame id="demo-frame" src="/api/expo_turbo/demo/frame"><DemoText>Loading</DemoText></turbo-frame></Gallery>';
+    const frame =
+      '<turbo-frame id="demo-frame"><DemoText id="demo-stream-message">Network recovery</DemoText><turbo-cable-stream-source id="demo-stream-source" channel="Turbo::StreamsChannel" signed-stream-name="signed-demo-stream" /></turbo-frame>';
+    const clock = new ManualClock();
+    const network = new FakeDemoLiveCableNetwork();
+    const sockets: FakeActionCableSocket[] = [];
+    const proof = await createDemoLiveCableRuntime({
+      clock,
+      createSocket() {
+        const socket = new FakeActionCableSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetch: async (url) => ({
+        headers: {
+          forEach(callback: (value: string, name: string) => void): void {
+            callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+          },
+        },
+        redirected: false,
+        status: 200,
+        text: async () => (url === documentUrl ? document : frame),
+        url,
+      }),
+      network,
+      origin: "http://demo.example:3000",
+    });
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(createElement(DemoLiveCablePanel, { proof }));
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
+      });
+      const original = sockets[0];
+      if (!original) throw new Error("missing original Action Cable socket");
+      await act(async () => {
+        original.emitOpen();
+        original.emitMessage('{"type":"welcome"}');
+        original.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await Promise.resolve();
+      });
+
+      expect(network.listenerCount).toBe(1);
+      act(() => network.emit("offline"));
+      expect(original.closeCalls).toBe(1);
+      expect(sockets).toHaveLength(1);
+      act(() => network.emit("online"));
+      expect(sockets).toHaveLength(2);
+
+      const onlineSocket = sockets[1];
+      if (!onlineSocket) throw new Error("missing online Action Cable socket");
+      act(() => onlineSocket.emitClose());
+      const retryTimerIndex = clock.timers.findIndex(
+        (timer) => timer.delayMs === 1_000 && !timer.cleared,
+      );
+      expect(retryTimerIndex).toBeGreaterThanOrEqual(0);
+      act(() => clock.fire(retryTimerIndex));
+      expect(sockets).toHaveLength(3);
+
+      const recovered = sockets[2];
+      if (!recovered) throw new Error("missing recovered Action Cable socket");
+      await act(async () => {
+        recovered.emitOpen();
+        recovered.emitMessage('{"type":"welcome"}');
+        recovered.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await nextTurn();
+        await proof.frames.get("demo-frame").loaded;
+        await nextTurn();
+      });
+      expect(sockets).toHaveLength(4);
+      const reconciled = sockets[3];
+      if (!reconciled) throw new Error("missing reconciled Action Cable socket");
+      await act(async () => {
+        reconciled.emitOpen();
+        reconciled.emitMessage('{"type":"welcome"}');
+        reconciled.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await Promise.resolve();
+      });
+      expect(
+        renderer?.root.findByProps({ accessibilityLabel: "Broadcast XML replace" }).props.disabled,
+      ).toBe(false);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+      await nextTurn();
+    }
   });
 
   test("disposes a runtime that resolves after its pending owner unmounts", async () => {

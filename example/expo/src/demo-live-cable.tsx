@@ -8,6 +8,8 @@ import {
   type ClockAdapter,
   type LifecycleAdapter,
   type LifecycleState,
+  type NetworkReachabilityAdapter,
+  type NetworkReachabilityState,
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
@@ -60,12 +62,19 @@ const nativeClock: ClockAdapter = {
   now: Date.now,
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 };
+const DEMO_CABLE_RETRY_POLICY = Object.freeze({
+  initialDelayMs: 1_000,
+  maxAttempts: 5,
+  maxDelayMs: 30_000,
+  multiplier: 2,
+});
 
 export interface DemoLiveCableRuntimeOptions {
   readonly clock?: ClockAdapter;
   readonly createSocket?: ActionCableWebSocketAdapterOptions["createSocket"];
   readonly fetch?: DemoLiveFetch;
   readonly lifecycle?: LifecycleAdapter;
+  readonly network?: NetworkReachabilityAdapter;
   readonly origin: string;
 }
 
@@ -80,6 +89,7 @@ export interface DemoLiveProtectedCableRuntimeOptions {
   readonly createSocket?: NativeActionCableSocketFactory;
   readonly fetch?: DemoLiveFetch;
   readonly lifecycle?: LifecycleAdapter;
+  readonly network?: NetworkReachabilityAdapter;
   readonly origin: string;
 }
 
@@ -235,6 +245,44 @@ const nativeDemoLiveCableLifecycle: DemoLiveCableLifecycle = Object.freeze({
   },
 });
 
+type ExpoNetworkState = Readonly<{
+  readonly isConnected?: boolean;
+  readonly isInternetReachable?: boolean;
+}>;
+
+type ExpoNetworkModule = Readonly<{
+  addNetworkStateListener(listener: (state: ExpoNetworkState) => void): Readonly<{ remove(): void }>;
+  getNetworkStateAsync(): Promise<ExpoNetworkState>;
+}>;
+
+function asDemoLiveNetworkState(state: ExpoNetworkState): NetworkReachabilityState {
+  return state.isConnected === false || state.isInternetReachable === false ? "offline" : "online";
+}
+
+export async function createNativeDemoLiveCableNetwork(): Promise<NetworkReachabilityAdapter> {
+  const network = (await import("expo-network")) as ExpoNetworkModule;
+  let state: NetworkReachabilityState;
+  try {
+    state = asDemoLiveNetworkState(await network.getNetworkStateAsync());
+  } catch {
+    throw new StateError("The native network state is unavailable");
+  }
+  return Object.freeze({
+    getState: () => state,
+    subscribe(listener: (nextState: NetworkReachabilityState) => void) {
+      const subscription = network.addNetworkStateListener((event) => {
+        const nextState = asDemoLiveNetworkState(event);
+        if (nextState === state) return;
+        state = nextState;
+        listener(nextState);
+      });
+      return () => {
+        subscription.remove();
+      };
+    },
+  });
+}
+
 export function resolveDemoLiveCableEndpoints(origin: string): DemoLiveCableEndpoints {
   return resolveDemoLiveCableEndpointsFor(origin, {
     broadcastPath: BROADCAST_PATH,
@@ -351,6 +399,7 @@ async function createDemoLiveCableRuntimeFor(
     { onError: reportError },
   );
   const cable = new LifecycleCableAdapter({
+    clock,
     createCable: () =>
       new ActionCableV1WebSocketAdapter({
         clock,
@@ -360,7 +409,9 @@ async function createDemoLiveCableRuntimeFor(
         url: endpoints.cableUrl,
       }),
     lifecycle: options.lifecycle ?? nativeDemoLiveCableLifecycle,
+    network: options.network,
     onError: reportError,
+    retry: DEMO_CABLE_RETRY_POLICY,
   });
   const streamSources = new CableStreamSourceRegistry(session, cable, {
     onError: reportError,
@@ -471,6 +522,7 @@ export async function createDemoLiveProtectedCableRuntime(
       createSocket: (url, protocols) => createSocket(url, protocols, headers),
       fetch,
       lifecycle: options.lifecycle,
+      network: options.network,
       origin: options.origin,
     },
     {
@@ -529,7 +581,7 @@ const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
 const DEMO_PROTECTED_STREAM_SOURCE_KEY = "id:demo-protected-stream-source";
 const protectedCablePanelOptions = Object.freeze({
   description:
-    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the adapter's bounded injected-clock heartbeat monitor, but is not a production user, revocation, rotation, generic heartbeat, network, Android-interaction, or physical-device policy.",
+    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation, rotation, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
   sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,
@@ -538,7 +590,7 @@ const protectedCablePanelOptions = Object.freeze({
 
 export function DemoLiveCablePanel({
   description =
-    "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while an explicit server reconnect still reloads only that active Frame. This example host pauses the panel runtime in AppState background and reboots it on active, and opts into the adapter's bounded injected-clock heartbeat monitor; it has no user document navigation, server-owned Frame form, auth, generic lifecycle/network/backoff policy, or unbounded client retry.",
+    "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while any re-confirmed lifecycle or network transport reloads only that active Frame. This example host injects AppState, Expo Network, a bounded stale monitor, and five finite exponential retry attempts; it has no user document navigation, server-owned Frame form, production auth, or unbounded client retry.",
   proof,
   refreshButtonLabel = "Refresh canonical document",
   replaceButtonLabel = "Broadcast XML replace",
@@ -650,7 +702,11 @@ export function DemoLiveCableProof({
   panelOptions,
 }: DemoLiveCableProofProps) {
   const startRuntime = useCallback(
-    () => createRuntime?.() ?? createDemoLiveCableRuntime({ lifecycle, origin }),
+    async () => {
+      if (createRuntime) return createRuntime();
+      const network = await createNativeDemoLiveCableNetwork();
+      return createDemoLiveCableRuntime({ lifecycle, network, origin });
+    },
     [createRuntime, lifecycle, origin],
   );
   const [backgrounded, setBackgrounded] = useState(() => lifecycle.getState() !== "active");
@@ -727,7 +783,11 @@ export function DemoLiveProtectedCableProof({
   origin,
 }: Readonly<Omit<DemoLiveCableProofProps, "panelOptions">>) {
   const startRuntime = useCallback(
-    () => createRuntime?.() ?? createDemoLiveProtectedCableRuntime({ lifecycle, origin }),
+    async () => {
+      if (createRuntime) return createRuntime();
+      const network = await createNativeDemoLiveCableNetwork();
+      return createDemoLiveProtectedCableRuntime({ lifecycle, network, origin });
+    },
     [createRuntime, lifecycle, origin],
   );
 
