@@ -334,6 +334,7 @@ describe("document refresh controller", () => {
     expect(session.tree).toBe(tree)
     expect(session.tree.getElementById("old")).toBe(old)
     expect(session.getNodeSnapshot("id:old")?.identity).toBe(oldIdentity)
+    expect(session.getNodeSnapshot("id:old")?.morphRevision).toBe(1)
     expect(session.tree.getElementById("old")?.attributes).toContainEqual({
       localName: "tone",
       name: "tone",

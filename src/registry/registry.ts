@@ -34,6 +34,7 @@ export type AttributeBinding<Props> = {
 }[StringKey<Props>]
 
 export type ComponentChildren = "nodes" | "none" | "text"
+export type ComponentMorphState = "preserve" | "reset"
 export type ComponentRenderer<Props> = ComponentType<Props & Readonly<{ children?: ReactNode }>>
 
 export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodObject> {
@@ -43,6 +44,7 @@ export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodO
   readonly component: ComponentRenderer<z.output<Schema>>
   readonly formContainer?: FormContainerRole
   readonly formOwner?: boolean
+  readonly morphState?: ComponentMorphState
   readonly schema: Schema
   readonly tag: Tag
 }
@@ -60,6 +62,7 @@ export interface RegistryComponent {
   readonly component: unknown
   readonly formContainer?: FormContainerRole
   readonly formOwner: boolean
+  readonly morphState: ComponentMorphState
   readonly tag: string
   decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
 }
@@ -89,6 +92,15 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     config.formContainer !== "legend"
   ) {
     throw new RegistryError("Component form container must be datalist, fieldset, or legend", {
+      target: config.tag,
+    })
+  }
+  if (
+    config.morphState !== undefined &&
+    config.morphState !== "preserve" &&
+    config.morphState !== "reset"
+  ) {
+    throw new RegistryError("Component morphState must be preserve or reset", {
       target: config.tag,
     })
   }
@@ -123,6 +135,7 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     },
     ...(config.formContainer !== undefined ? { formContainer: config.formContainer } : {}),
     formOwner: config.formOwner === true,
+    morphState: config.morphState ?? "preserve",
     schema: config.schema,
     tag: config.tag,
   })
@@ -181,6 +194,7 @@ export interface ComponentCapability {
   readonly children: ComponentChildren
   readonly formContainer?: FormContainerRole
   readonly formOwner: boolean
+  readonly morphState: ComponentMorphState
   readonly tag: string
 }
 
@@ -338,6 +352,7 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
             ? { formContainer: component.formContainer }
             : {}),
           formOwner: component.formOwner,
+          morphState: component.morphState,
           tag: component.tag,
         })
       })

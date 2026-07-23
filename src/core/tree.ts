@@ -371,6 +371,21 @@ const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const frameRefreshMorphers = new WeakMap<DocumentTree, FrameRefreshMorpher>()
 const framePermanentReplacers = new WeakMap<DocumentTree, FramePermanentReplacer>()
 const documentRefreshMorphers = new WeakMap<DocumentTree, DocumentRefreshMorpher>()
+const morphRevisions = new WeakMap<DocumentTree, WeakMap<ProtocolElement, number>>()
+
+/** @internal Renderer state-policy input; not re-exported from `expo-turbo/core`. */
+export function nodeMorphRevision(tree: DocumentTree, node: ProtocolNode): number {
+  return isElement(node) ? (morphRevisions.get(tree)?.get(node) ?? 0) : 0
+}
+
+function advanceNodeMorphRevision(tree: DocumentTree, node: ProtocolElement): void {
+  let revisions = morphRevisions.get(tree)
+  if (!revisions) {
+    revisions = new WeakMap()
+    morphRevisions.set(tree, revisions)
+  }
+  revisions.set(node, (revisions.get(node) ?? 0) + 1)
+}
 
 /** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
 export function morphStreamUpdateChildren(
@@ -1447,6 +1462,9 @@ export class DocumentTree {
       this.rebuildIndexes()
       throw error
     }
+
+    for (const [current] of transaction.completed) advanceNodeMorphRevision(this, current)
+    if (source) advanceNodeMorphRevision(this, parent)
 
     const lifecycle = documentTreeMorphLifecycle(this)
     if (lifecycle) {
