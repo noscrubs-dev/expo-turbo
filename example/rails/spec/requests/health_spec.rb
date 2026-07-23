@@ -256,6 +256,57 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:bad_request)
   end
 
+  it "serves the document response matrix with exact status and content-type boundaries" do
+    {
+      "document-client-error" => :unprocessable_content,
+      "document-server-error" => :internal_server_error
+    }.each do |scenario, status|
+      get "/api/expo_turbo/demo/response_scenarios/#{scenario}"
+
+      document = ExpoTurbo::Rails::Testing.parse_document(response.body)
+      expect(response).to have_http_status(status)
+      expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+      expect(document.at_xpath("//DemoText[@id='demo-response-status']")&.text)
+        .to eq("Handled Rails XML response #{Rack::Utils.status_code(status)}")
+    end
+
+    get "/api/expo_turbo/demo/response_scenarios/empty"
+    expect(response).to have_http_status(:no_content)
+    expect(response.body).to be_empty
+
+    get "/api/expo_turbo/demo/response_scenarios/wrong-mime"
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq("text/plain")
+
+    get "/api/expo_turbo/demo/response_scenarios/unknown"
+    expect(response).to have_http_status(:not_found)
+  end
+
+  it "serves matching, missing, and bounded delayed Frame responses" do
+    frame_headers = {"Turbo-Frame" => "demo-response-frame"}
+
+    get "/api/expo_turbo/demo/response_scenarios/frame", headers: frame_headers
+    frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    expect(response).to have_http_status(:ok)
+    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(frame.name).to eq("turbo-frame")
+    expect(frame["id"]).to eq("demo-response-frame")
+
+    get "/api/expo_turbo/demo/response_scenarios/missing-frame", headers: frame_headers
+    missing = ExpoTurbo::Rails::Testing.parse_document(response.body).root
+    expect(response).to have_http_status(:ok)
+    expect(missing["id"]).to eq("another-frame")
+
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    get "/api/expo_turbo/demo/response_scenarios/delayed-frame", params: {delay_ms: 5_000}, headers: frame_headers
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    expect(response).to have_http_status(:ok)
+    expect(elapsed).to be_between(0.9, 3.0)
+
+    get "/api/expo_turbo/demo/response_scenarios/frame"
+    expect(response).to have_http_status(:bad_request)
+  end
+
   it "delivers fixed public XML replace and refresh Streams through the Redis-backed Expo Action Cable namespace" do
     adapter = ActionCable.server.pubsub
     deliveries = Queue.new
