@@ -15,7 +15,10 @@
       "area": "drive",
       "disposition": "native-equivalent",
       "rationale": "Native ownership, redirects, response classification, cancellation, and renderer acknowledgement replace the browser navigation and DOM rendering surfaces.",
-      "evidence": ["src/core/document-visit-controller.test.ts"]
+      "evidence": [
+        "src/core/browser-stream-differential.test.ts",
+        "src/core/document-visit-controller.test.ts"
+      ]
     },
     {
       "id": "drive.history-restoration",
@@ -129,6 +132,7 @@
       "disposition": "native-equivalent",
       "rationale": "Semantic links implement visit actions, Frame capture, method/Stream promotion, confirmation, disabled and opt-out behavior, while host adapters own external contexts.",
       "evidence": [
+        "src/core/browser-stream-differential.test.ts",
         "src/core/form-link-submission.test.ts",
         "example/expo/src/renderer.test.ts"
       ]
@@ -348,7 +352,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager Frame-extraction, and form-request browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager Frame-extraction, form-request, and ordinary document-link browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
