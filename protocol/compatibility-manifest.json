@@ -314,8 +314,8 @@
       "id": "accessibility.physical-evidence",
       "area": "accessibility",
       "disposition": "incomplete",
-      "rationale": "Logical disabled, busy, pending, confirmation, retry, and announcement surfaces exist, but VoiceOver, TalkBack, and browser screen-reader evidence remains open.",
-      "evidence": ["README.md"]
+      "rationale": "Logical disabled, busy, pending, confirmation, retry, and announcement surfaces exist. The rendered web gallery has a clean WCAG A/AA axe audit, a named Chrome accessibility tree, and verified polite/assertive recovery-region transitions; physical VoiceOver, TalkBack, and manual browser screen-reader speech/navigation remain open.",
+      "evidence": ["README.md", "docs/web-accessibility-0.1.0.md"]
     },
     {
       "id": "rails.public-gem-demo",
