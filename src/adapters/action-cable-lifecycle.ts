@@ -3,6 +3,7 @@ import type {
   CableAdapter,
   CableCallbacks,
   CableSubscription,
+  ClockAdapter,
   LifecycleAdapter,
   LifecycleState,
   Unsubscribe,
@@ -13,9 +14,30 @@ export interface DisposableCableAdapter extends CableAdapter {
 }
 
 export interface LifecycleCableAdapterOptions {
+  readonly clock?: Pick<ClockAdapter, "clearTimeout" | "setTimeout">
   readonly createCable: () => DisposableCableAdapter
   readonly lifecycle: LifecycleAdapter
+  readonly network?: NetworkReachabilityAdapter
   readonly onError: (error: SubscriptionError) => void | PromiseLike<void>
+  readonly retry?: CableRetryPolicy
+}
+
+export type NetworkReachabilityState = "offline" | "online"
+
+export interface NetworkReachabilityAdapter {
+  getState(): NetworkReachabilityState
+  subscribe(listener: (state: NetworkReachabilityState) => void): Unsubscribe
+}
+
+export interface CableRetryPolicy {
+  /** Delay before the first retry. */
+  readonly initialDelayMs: number
+  /** Maximum number of transport recreation attempts in one failure cycle. */
+  readonly maxAttempts: number
+  /** Upper bound for one retry delay. */
+  readonly maxDelayMs: number
+  /** Exponential delay multiplier. */
+  readonly multiplier: number
 }
 
 interface LifecycleCableRecord {
@@ -34,6 +56,39 @@ function lifecycleError(message: string): SubscriptionError {
 
 function isLifecycleState(value: unknown): value is LifecycleState {
   return value === "active" || value === "background" || value === "inactive"
+}
+
+function isNetworkState(value: unknown): value is NetworkReachabilityState {
+  return value === "offline" || value === "online"
+}
+
+function validateRetryPolicy(value: CableRetryPolicy | undefined): CableRetryPolicy | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw lifecycleError("Action Cable retry policy is invalid")
+  }
+  let initialDelayMs: number
+  let maxAttempts: number
+  let maxDelayMs: number
+  let multiplier: number
+  try {
+    ;({ initialDelayMs, maxAttempts, maxDelayMs, multiplier } = value)
+  } catch {
+    throw lifecycleError("Action Cable retry policy could not be read")
+  }
+  if (
+    !Number.isFinite(initialDelayMs) ||
+    initialDelayMs < 0 ||
+    !Number.isSafeInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    !Number.isFinite(maxDelayMs) ||
+    maxDelayMs < initialDelayMs ||
+    !Number.isFinite(multiplier) ||
+    multiplier < 1
+  ) {
+    throw lifecycleError("Action Cable retry policy is invalid")
+  }
+  return Object.freeze({ initialDelayMs, maxAttempts, maxDelayMs, multiplier })
 }
 
 function snapshotCallbacks(callbacks: CableCallbacks): CableCallbacks {
@@ -71,8 +126,9 @@ function snapshotCallbacks(callbacks: CableCallbacks): CableCallbacks {
 
 /**
  * Keeps logical Cable subscriptions stable while a host lifecycle suspends and
- * recreates the credential-bearing transport. Credentials, AppState mapping,
- * network policy, and retry/backoff remain host-owned.
+ * recreates the credential-bearing transport. Credentials and platform state
+ * mapping remain host-owned. Hosts may inject reachability and a bounded retry
+ * policy without exposing credentials to the package.
  */
 export class LifecycleCableAdapter implements CableAdapter {
   private active = true
@@ -81,21 +137,34 @@ export class LifecycleCableAdapter implements CableAdapter {
   private readonly records = new Set<LifecycleCableRecord>()
   private state: LifecycleState
   private readonly createCable: LifecycleCableAdapterOptions["createCable"]
+  private readonly clock: LifecycleCableAdapterOptions["clock"]
   private readonly lifecycle: LifecycleAdapter
+  private readonly network: NetworkReachabilityAdapter | undefined
+  private networkState: NetworkReachabilityState = "online"
   private readonly onError: LifecycleCableAdapterOptions["onError"]
+  private readonly retry: CableRetryPolicy | undefined
+  private retryAttempts = 0
+  private retryHandle: unknown
   private unsubscribeLifecycle: Unsubscribe = () => undefined
+  private unsubscribeNetwork: Unsubscribe = () => undefined
 
   constructor(options: LifecycleCableAdapterOptions) {
     if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw lifecycleError("Action Cable lifecycle options are invalid")
     }
     let createCable: LifecycleCableAdapterOptions["createCable"]
+    let clock: LifecycleCableAdapterOptions["clock"]
     let lifecycle: LifecycleCableAdapterOptions["lifecycle"]
+    let network: LifecycleCableAdapterOptions["network"]
     let onError: LifecycleCableAdapterOptions["onError"]
+    let retry: LifecycleCableAdapterOptions["retry"]
     try {
+      clock = options.clock
       createCable = options.createCable
       lifecycle = options.lifecycle
+      network = options.network
       onError = options.onError
+      retry = options.retry
     } catch {
       throw lifecycleError("Action Cable lifecycle options could not be read")
     }
@@ -107,6 +176,17 @@ export class LifecycleCableAdapter implements CableAdapter {
     }
     if (typeof onError !== "function") {
       throw lifecycleError("Action Cable lifecycle requires an error observer")
+    }
+    const retryPolicy = validateRetryPolicy(retry)
+    if (
+      retryPolicy &&
+      (!clock ||
+        typeof clock !== "object" ||
+        Array.isArray(clock) ||
+        typeof clock.clearTimeout !== "function" ||
+        typeof clock.setTimeout !== "function")
+    ) {
+      throw lifecycleError("Action Cable retry policy requires a clock")
     }
     let getState: LifecycleAdapter["getState"]
     let subscribe: LifecycleAdapter["subscribe"]
@@ -130,9 +210,50 @@ export class LifecycleCableAdapter implements CableAdapter {
     }
 
     this.createCable = createCable
+    this.clock = clock
     this.lifecycle = lifecycle
+    this.network = network
     this.onError = onError
+    this.retry = retryPolicy
     this.state = state
+    if (network !== undefined) {
+      if (!network || typeof network !== "object" || Array.isArray(network)) {
+        throw lifecycleError("Action Cable network adapter is invalid")
+      }
+      let getNetworkState: NetworkReachabilityAdapter["getState"]
+      let subscribeNetwork: NetworkReachabilityAdapter["subscribe"]
+      try {
+        getNetworkState = network.getState
+        subscribeNetwork = network.subscribe
+      } catch {
+        throw lifecycleError("Action Cable network adapter is invalid")
+      }
+      if (typeof getNetworkState !== "function" || typeof subscribeNetwork !== "function") {
+        throw lifecycleError("Action Cable network adapter is invalid")
+      }
+      let networkState: unknown
+      try {
+        networkState = getNetworkState.call(network)
+      } catch {
+        throw lifecycleError("Action Cable network state could not be read")
+      }
+      if (!isNetworkState(networkState)) {
+        throw lifecycleError("Action Cable network state is invalid")
+      }
+      this.networkState = networkState
+      try {
+        const unsubscribe = subscribeNetwork.call(network, (nextState) => {
+          this.transitionNetwork(nextState)
+        })
+        if (typeof unsubscribe !== "function") {
+          throw lifecycleError("Action Cable network subscription is invalid")
+        }
+        this.unsubscribeNetwork = unsubscribe
+      } catch (error) {
+        if (error instanceof SubscriptionError) throw error
+        throw lifecycleError("Action Cable network subscription failed")
+      }
+    }
     try {
       const unsubscribe = subscribe.call(lifecycle, (nextState) => {
         this.transition(nextState)
@@ -142,6 +263,11 @@ export class LifecycleCableAdapter implements CableAdapter {
       }
       this.unsubscribeLifecycle = unsubscribe
     } catch (error) {
+      try {
+        this.unsubscribeNetwork()
+      } catch {
+        // Constructor failure still releases every valid subscription it owns.
+      }
       if (error instanceof SubscriptionError) throw error
       throw lifecycleError("Action Cable lifecycle subscription failed")
     }
@@ -162,10 +288,15 @@ export class LifecycleCableAdapter implements CableAdapter {
       subscription: undefined,
     }
     this.records.add(record)
-    if (this.state === "active") {
+    if (this.canConnect()) {
       try {
         this.attach(record)
       } catch (error) {
+        if (this.retry) {
+          this.reportTransportFailure(error)
+          this.scheduleRetry()
+          return this.subscriptionFor(record)
+        }
         record.active = false
         this.records.delete(record)
         this.releaseIdleCable()
@@ -174,14 +305,7 @@ export class LifecycleCableAdapter implements CableAdapter {
       }
     }
 
-    let unsubscribed = false
-    return Object.freeze({
-      unsubscribe: () => {
-        if (unsubscribed) return
-        unsubscribed = true
-        this.unsubscribeRecord(record)
-      },
-    })
+    return this.subscriptionFor(record)
   }
 
   dispose(): void {
@@ -192,6 +316,12 @@ export class LifecycleCableAdapter implements CableAdapter {
     } catch {
       this.report(lifecycleError("Action Cable lifecycle disposal failed"))
     }
+    try {
+      this.unsubscribeNetwork()
+    } catch {
+      this.report(lifecycleError("Action Cable network disposal failed"))
+    }
+    this.cancelRetry()
     this.releaseCable(false)
     for (const record of this.records) record.active = false
     this.records.clear()
@@ -206,23 +336,44 @@ export class LifecycleCableAdapter implements CableAdapter {
     if (nextState === this.state) return
     this.state = nextState
     if (nextState !== "active") {
+      this.cancelRetry()
       this.releaseCable(true)
       return
     }
+    this.retryAttempts = 0
+    this.activate()
+  }
+
+  private transitionNetwork(nextState: unknown): void {
+    if (!this.active) return
+    if (!isNetworkState(nextState)) {
+      this.report(lifecycleError("Action Cable network state is invalid"))
+      return
+    }
+    if (nextState === this.networkState) return
+    this.networkState = nextState
+    if (nextState === "offline") {
+      this.cancelRetry()
+      this.releaseCable(true)
+      return
+    }
+    this.retryAttempts = 0
+    this.activate()
+  }
+
+  private activate(): void {
+    if (!this.canConnect() || this.records.size === 0 || this.retryHandle !== undefined) return
     try {
       for (const record of this.records) this.attach(record)
     } catch (error) {
-      this.releaseCable(false)
-      this.report(
-        error instanceof SubscriptionError
-          ? error
-          : lifecycleError("Action Cable lifecycle activation failed"),
-      )
+      this.releaseCable(this.retry !== undefined)
+      this.reportTransportFailure(error)
+      if (this.retry) this.scheduleRetry()
     }
   }
 
   private attach(record: LifecycleCableRecord): void {
-    if (!this.active || !record.active || record.attached || this.state !== "active") return
+    if (!this.active || !record.active || record.attached || !this.canConnect()) return
     const cable = this.ensureCable()
     const generation = this.generation
     record.attached = true
@@ -231,13 +382,20 @@ export class LifecycleCableAdapter implements CableAdapter {
         connected: (reconnected) => {
           if (!this.owns(record, generation)) return
           record.connected = true
+          this.retryAttempts = 0
+          this.cancelRetry()
           this.invoke(record, "connected", record.everConnected || reconnected)
           record.everConnected = true
         },
         disconnected: (willAttemptReconnect) => {
           if (!this.owns(record, generation)) return
-          record.connected = false
-          this.invoke(record, "disconnected", willAttemptReconnect)
+          if (willAttemptReconnect || !this.retry) {
+            record.connected = false
+            this.invoke(record, "disconnected", willAttemptReconnect)
+            return
+          }
+          this.releaseCable(true)
+          this.scheduleRetry()
         },
         received: (message) => {
           if (!this.owns(record, generation)) return
@@ -298,7 +456,65 @@ export class LifecycleCableAdapter implements CableAdapter {
 
   private releaseIdleCable(): void {
     if (this.records.size !== 0) return
+    this.cancelRetry()
+    this.retryAttempts = 0
     this.releaseCable(false)
+  }
+
+  private canConnect(): boolean {
+    return this.active && this.state === "active" && this.networkState === "online"
+  }
+
+  private scheduleRetry(): void {
+    if (!this.retry || !this.clock || !this.canConnect() || this.records.size === 0) return
+    if (this.retryHandle !== undefined) return
+    if (this.retryAttempts >= this.retry.maxAttempts) {
+      this.releaseCable(false)
+      for (const record of this.records) {
+        if (record.active) this.invoke(record, "disconnected", false)
+      }
+      this.report(lifecycleError("Action Cable retry attempts exhausted"))
+      return
+    }
+    const delayMs = Math.min(
+      this.retry.maxDelayMs,
+      this.retry.initialDelayMs * this.retry.multiplier ** this.retryAttempts,
+    )
+    this.retryHandle = this.clock.setTimeout(() => {
+      this.retryHandle = undefined
+      this.retryAttempts += 1
+      this.activate()
+    }, delayMs)
+  }
+
+  private cancelRetry(): void {
+    if (this.retryHandle === undefined || !this.clock) return
+    const handle = this.retryHandle
+    this.retryHandle = undefined
+    try {
+      this.clock.clearTimeout(handle)
+    } catch {
+      this.report(lifecycleError("Action Cable retry cancellation failed"))
+    }
+  }
+
+  private reportTransportFailure(error: unknown): void {
+    this.report(
+      error instanceof SubscriptionError
+        ? error
+        : lifecycleError("Action Cable lifecycle activation failed"),
+    )
+  }
+
+  private subscriptionFor(record: LifecycleCableRecord): CableSubscription {
+    let unsubscribed = false
+    return Object.freeze({
+      unsubscribe: () => {
+        if (unsubscribed) return
+        unsubscribed = true
+        this.unsubscribeRecord(record)
+      },
+    })
   }
 
   private unsubscribeRecord(record: LifecycleCableRecord): void {
