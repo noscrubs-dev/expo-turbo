@@ -1978,6 +1978,106 @@ test("matches upstream Turbo for a redirected generated-form document response",
   }
 })
 
+test("matches upstream Turbo generated-form document redirect safety", async () => {
+  const initialDocument =
+    '<main id="root"><a id="save-link" href="/profile?source=generated" data-turbo-method="post">Save</a><p id="old">Old</p></main>'
+  const unsafeResponse =
+    '<main id="root"><a href="/demo">Save again</a><p id="unsafe-result">Unsafe result</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  let expoError: unknown
+  try {
+    const submissions = new FormSubmissionController(session, {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => unsafeResponse,
+          url: "https://example.test/profile",
+        }
+      },
+    })
+    await new FormLinkSubmissionController(session, submissions, {
+      next: () => "request-generated-document-unsafe",
+    }).submit("id:save-link", "/profile?source=generated")
+  } catch (error) {
+    expoError = error
+  }
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  let browserError: unknown
+  const originalFetch = browser.fetch
+  const originalConsoleError = console.error
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(`<html><body>${unsafeResponse}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/profile",
+    })
+    return response
+  }
+  console.error = (error) => {
+    browserError = error
+  }
+  browser.history.replaceState({}, "", "/demo")
+  const browserInitialUrl = browser.location.href
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("save-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser unsafe generated-form document link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoError).toBeInstanceOf(Error)
+    expect((expoError as Error).message).toMatch(/must redirect/)
+    expect(browserError).toBeInstanceOf(Error)
+    expect((browserError as Error).message).toMatch(/must redirect/)
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body?.value).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(session.tree.document.url).toBe("https://example.test/demo")
+    expect(browser.location.href).toBe(browserInitialUrl)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+    expect(session.tree.getElementById("unsafe-result")).toBeUndefined()
+    expect(browser.document.getElementById("unsafe-result")).toBeNull()
+  } finally {
+    console.error = originalConsoleError
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 for (const responseStatus of [422, 500] as const) {
   test(`matches upstream Turbo for an authoritative generated-form document ${responseStatus} response`, async () => {
     const initialDocument =
