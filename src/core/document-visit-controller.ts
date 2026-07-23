@@ -21,6 +21,7 @@ import {
   type DocumentSnapshotPreviewOptions,
   DocumentSnapshotRestoreCommitError,
   type DocumentSnapshotRestoreOptions,
+  type DocumentSnapshotRestoreReport,
   type DocumentTreeCommitCandidate,
 } from "./document-loader"
 import {
@@ -49,6 +50,7 @@ import {
   BeforeVisitEvent,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER,
   DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
@@ -69,6 +71,7 @@ import {
   requestLifecycleDefaultHandlingPrevented,
   settleRequestOperation,
 } from "./request-lifecycle"
+import type { DocumentTree } from "./tree"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
@@ -270,9 +273,15 @@ function admitVisitPresentation(
 }
 
 type DocumentSnapshotRestoreLifecycleOptions = DocumentSnapshotRestoreOptions &
-  Readonly<{ [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined }>
+  Readonly<{
+    [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
+    beforeRender?: (tree: DocumentTree) => boolean | PromiseLike<boolean>
+  }>
 type DocumentSnapshotPreviewLifecycleOptions = DocumentSnapshotPreviewOptions &
-  Readonly<{ [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined }>
+  Readonly<{
+    [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
+    beforeRender?: (tree: DocumentTree) => boolean | PromiseLike<boolean>
+  }>
 
 export class DocumentVisitController {
   private attemptEpoch = 0
@@ -568,54 +577,66 @@ export class DocumentVisitController {
       let epoch: number | undefined
       let render: PreparedDocumentRender | undefined
       try {
-        const report = this.loader.restoreSnapshot(cache, restoredEntry.url, this.requestOwner, {
-          ...(this.visitLifecycle
-            ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
-            : {}),
-          beforeClaim: () => {
-            this.assertDocumentClaimSerial(documentClaimSerial)
-            this.assertTreeGeneration(treeGeneration)
-            if (traversalEpoch !== this.traversalEpoch) {
-              throw new StateError("Document snapshot traversal was superseded before ownership")
-            }
-            return undefined
-          },
-          beforeTreeCommit: () => {
-            if (traversalEpoch !== this.traversalEpoch) {
-              throw new StateError("Document snapshot traversal was superseded")
-            }
-            if (history.current !== restoredEntry) {
-              throw new StateError("Document history changed during snapshot restoration")
-            }
-            this.loader.captureCurrentSnapshot(cache)
-            if (traversalEpoch !== this.traversalEpoch || history.current !== restoredEntry) {
-              throw new StateError("Document history changed during snapshot restoration")
-            }
-            if (this.visitLifecycle) {
-              render = this.trackDocumentRender(
-                this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
-                  ...(restorationData.scrollPosition
-                    ? { historyScroll: restorationData.scrollPosition }
-                    : {}),
-                  preview: false,
-                  url: restoredEntry.url,
-                }),
-                epoch,
-              )
-            }
-          },
-          onRestoreStart: () => {
-            if (traversalEpoch !== this.traversalEpoch) {
-              throw new StateError("Document snapshot traversal was superseded")
-            }
-            this.previewContinuationEpoch = undefined
-            epoch = ++this.visitEpoch
-            this.progressVisible = false
-            this.status = "started"
-            this.publish()
-            this.notifyVisit(restoredEntry.url, "restore", epoch, direction)
-          },
-        } as DocumentSnapshotRestoreLifecycleOptions)
+        const restoration = this.loader.restoreSnapshot(
+          cache,
+          restoredEntry.url,
+          this.requestOwner,
+          {
+            ...(this.visitLifecycle
+              ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
+              : {}),
+            beforeClaim: () => {
+              this.assertDocumentClaimSerial(documentClaimSerial)
+              this.assertTreeGeneration(treeGeneration)
+              if (traversalEpoch !== this.traversalEpoch) {
+                throw new StateError("Document snapshot traversal was superseded before ownership")
+              }
+              return undefined
+            },
+            ...(this.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER]()
+              ? {
+                  beforeRender: (tree: DocumentTree) =>
+                    this.beforeSnapshotRender(tree, restoredEntry.url),
+                }
+              : {}),
+            beforeTreeCommit: () => {
+              if (traversalEpoch !== this.traversalEpoch) {
+                throw new StateError("Document snapshot traversal was superseded")
+              }
+              if (history.current !== restoredEntry) {
+                throw new StateError("Document history changed during snapshot restoration")
+              }
+              this.loader.captureCurrentSnapshot(cache)
+              if (traversalEpoch !== this.traversalEpoch || history.current !== restoredEntry) {
+                throw new StateError("Document history changed during snapshot restoration")
+              }
+              if (this.visitLifecycle) {
+                render = this.trackDocumentRender(
+                  this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
+                    ...(restorationData.scrollPosition
+                      ? { historyScroll: restorationData.scrollPosition }
+                      : {}),
+                    preview: false,
+                    url: restoredEntry.url,
+                  }),
+                  epoch,
+                )
+              }
+            },
+            onRestoreStart: () => {
+              if (traversalEpoch !== this.traversalEpoch) {
+                throw new StateError("Document snapshot traversal was superseded")
+              }
+              this.previewContinuationEpoch = undefined
+              epoch = ++this.visitEpoch
+              this.progressVisible = false
+              this.status = "started"
+              this.publish()
+              this.notifyVisit(restoredEntry.url, "restore", epoch, direction)
+            },
+          } as DocumentSnapshotRestoreLifecycleOptions,
+        )
+        const report = restoration instanceof Promise ? await restoration : restoration
         if (report.status !== "miss") {
           this.reconcileTraversal(restoredEntry)
           if (epoch !== undefined && epoch === this.visitEpoch) {
@@ -772,9 +793,9 @@ export class DocumentVisitController {
     let previewFinalizationError: DocumentSnapshotPreviewCommitError | undefined
     let previewGeneration: number | undefined
     let render: PreparedDocumentRender | undefined
-    let report: ReturnType<DocumentRequestLoader["previewSnapshot"]> | undefined
+    let report: DocumentSnapshotRestoreReport | undefined
     try {
-      report = this.loader.previewSnapshot(cache, source, this.requestOwner, {
+      const preview = this.loader.previewSnapshot(cache, source, this.requestOwner, {
         ...(this.visitLifecycle
           ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
           : {}),
@@ -785,6 +806,11 @@ export class DocumentVisitController {
           if (historyPlan) this.assertHistoryPlan(historyPlan)
           return undefined
         },
+        ...(this.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER]()
+          ? {
+              beforeRender: (tree: DocumentTree) => this.beforeSnapshotRender(tree, source),
+            }
+          : {}),
         beforeTreeCommit: () => {
           this.assertAttemptEpoch(attemptEpoch)
           if (historyPlan) this.assertHistoryPlan(historyPlan)
@@ -820,6 +846,7 @@ export class DocumentVisitController {
           return undefined
         },
       } as DocumentSnapshotPreviewLifecycleOptions)
+      report = preview instanceof Promise ? await preview : preview
     } catch (error) {
       const reported =
         error instanceof Error ? error : new StateError("Document snapshot preview failed")
@@ -1090,7 +1117,7 @@ export class DocumentVisitController {
     let epoch: number | undefined
     let render: PreparedDocumentRender | undefined
     try {
-      const report = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
+      const restoration = this.loader.restoreSnapshot(cache, source, this.requestOwner, {
         ...(this.visitLifecycle
           ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
           : {}),
@@ -1102,6 +1129,11 @@ export class DocumentVisitController {
           this.assertHistoryPlan(historyPlan)
           return undefined
         },
+        ...(this.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER]()
+          ? {
+              beforeRender: (tree: DocumentTree) => this.beforeSnapshotRender(tree, source),
+            }
+          : {}),
         beforeTreeCommit: () => {
           this.assertHistoryPlan(historyPlan)
           this.loader.captureCurrentSnapshot(cache)
@@ -1133,6 +1165,7 @@ export class DocumentVisitController {
           return undefined
         },
       } as DocumentSnapshotRestoreLifecycleOptions)
+      const report = restoration instanceof Promise ? await restoration : restoration
       if (report.status === "miss") {
         this.assertRestoreEpoch(restoreEpoch)
         this.assertDocumentClaimSerial(documentClaimSerial)
@@ -1650,6 +1683,17 @@ export class DocumentVisitController {
   private notifyBeforeCache(): undefined {
     this.visitLifecycle?.[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent())
     return undefined
+  }
+
+  private beforeSnapshotRender(tree: DocumentTree, url: string): boolean | PromiseLike<boolean> {
+    const lifecycle = this.visitLifecycle
+    if (!lifecycle) return true
+    return runBeforeDocumentRender(lifecycle, {
+      currentDocument: this.loader.currentDocument,
+      newDocument: tree.document,
+      renderMethod: "replace",
+      url,
+    })
   }
 
   private notifyVisit(

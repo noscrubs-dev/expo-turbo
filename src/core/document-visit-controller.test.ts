@@ -991,6 +991,10 @@ describe("Document visit controller", () => {
     explicitLifecycle.subscribe("before-cache", () => {
       explicitEvents.push("before-cache")
     })
+    explicitLifecycle.subscribe("before-render", (event) => {
+      explicitEvents.push(`before-render:${event.detail.renderMethod}`)
+      return undefined
+    })
     const explicitCache = new DocumentSnapshotCache()
     explicitCache.put(
       "https://example.test/older",
@@ -1008,7 +1012,12 @@ describe("Document visit controller", () => {
       source: "snapshot",
       status: "restored",
     })
-    expect(explicitEvents).toEqual(["before", "visit:restore", "before-cache"])
+    expect(explicitEvents).toEqual([
+      "before",
+      "visit:restore",
+      "before-cache",
+      "before-render:replace",
+    ])
     expect(explicit.pending).toHaveLength(0)
 
     const traversalLifecycle = new DocumentVisitLifecycle()
@@ -1021,6 +1030,10 @@ describe("Document visit controller", () => {
     })
     traversalLifecycle.subscribe("before-cache", () => {
       traversalEvents.push("before-cache")
+    })
+    traversalLifecycle.subscribe("before-render", (event) => {
+      traversalEvents.push(`before-render:${event.detail.renderMethod}`)
+      return undefined
     })
     const traversalCache = new DocumentSnapshotCache()
     traversalCache.put(
@@ -1042,7 +1055,7 @@ describe("Document visit controller", () => {
         url: "https://example.test/back",
       }),
     ).toMatchObject({ source: "snapshot", status: "restored" })
-    expect(traversalEvents).toEqual(["visit:restore", "before-cache"])
+    expect(traversalEvents).toEqual(["visit:restore", "before-cache", "before-render:replace"])
     expect(traversal.pending).toHaveLength(0)
   })
 
@@ -1173,6 +1186,104 @@ describe("Document visit controller", () => {
     expect(await visiting).toMatchObject({ status: "canceled" })
     expect(current.session.tree).toBe(originalTree)
     expect(current.session.tree.getElementById("not-committed")).toBeUndefined()
+  })
+
+  test("pauses cached preview admission before history, tree, or canonical fetch", async () => {
+    const url = "https://example.test/next"
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      url,
+      parseExpoTurboDocument('<Gallery><Preview id="preview" /></Gallery>', { url }),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    let resume: () => undefined = () => undefined
+    let reached!: () => void
+    const paused = new Promise<void>((resolve) => {
+      reached = resolve
+    })
+    let canonicalStarted!: () => void
+    const canonical = new Promise<void>((resolve) => {
+      canonicalStarted = resolve
+    })
+    const current = harness({
+      fetch: (request) =>
+        new Promise<TurboResponse>((resolve) => {
+          current.pending.push({ request, resolve })
+          canonicalStarted()
+        }),
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    const originalTree = current.session.tree
+    let renderCount = 0
+    lifecycle.subscribe("before-render", (event) => {
+      renderCount += 1
+      if (renderCount !== 1) return undefined
+      expect(event.detail.currentDocument).toBe(originalTree.document)
+      expect(event.detail.newDocument.children[0]?.kind).toBe("element")
+      expect(event.detail.renderMethod).toBe("replace")
+      expect(event.detail.url).toBe(url)
+      event.pause()
+      resume = () => {
+        event.resume()
+        return undefined
+      }
+      reached()
+      return undefined
+    })
+
+    const visiting = current.controller.visit("/next")
+    await paused
+
+    expect(current.session.tree).toBe(originalTree)
+    expect(current.session.tree.getElementById("preview")).toBeUndefined()
+    expect(current.pending).toHaveLength(0)
+    resume()
+    await canonical
+
+    expect(current.session.tree.getElementById("preview")).toBeDefined()
+    expect(current.session.treeState.preview).toBe(true)
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', { url }),
+    )
+    expect(await visiting).toMatchObject({ status: "committed" })
+    expect(current.session.tree.getElementById("canonical")).toBeDefined()
+    expect(renderCount).toBe(2)
+  })
+
+  test("lets before-render cancel explicit cached restoration atomically", async () => {
+    const url = "https://example.test/restored"
+    const snapshotCache = new DocumentSnapshotCache()
+    snapshotCache.put(
+      url,
+      parseExpoTurboDocument(
+        '<Gallery data-turbo-cache-control="no-preview"><Restored id="restored" /></Gallery>',
+        { url },
+      ),
+    )
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-render", (event) => {
+      expect(event.detail.url).toBe(url)
+      event.preventDefault()
+      return undefined
+    })
+    const fixture = historyFixture()
+    const current = harness({
+      history: fixture.history,
+      snapshotCache,
+      visitLifecycle: lifecycle,
+    })
+    const originalTree = current.session.tree
+
+    expect(await current.controller.visit("/restored", { action: "restore" })).toEqual({
+      source: "snapshot",
+      status: "canceled",
+      url,
+    })
+    expect(current.session.tree).toBe(originalTree)
+    expect(current.session.tree.getElementById("restored")).toBeUndefined()
+    expect(fixture.writes).toHaveLength(0)
+    expect(current.controller.state.status).toBe("canceled")
   })
 
   test("lets a visit observer cancel exact ownership before fetch", async () => {

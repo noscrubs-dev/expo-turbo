@@ -152,6 +152,7 @@ type InternalDocumentLoadOptions = DocumentLoadOptions &
 
 type InternalDocumentSnapshotOptions = Readonly<{
   [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
+  beforeRender?: (tree: DocumentTree) => boolean | PromiseLike<boolean>
 }>
 
 export interface DocumentRequestLoaderOptions {
@@ -204,6 +205,7 @@ export class DocumentSnapshotPreviewCommitError extends StateError {
 interface DocumentSnapshotApplicationOptions {
   readonly [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]?: () => undefined
   readonly beforeClaim?: () => undefined
+  readonly beforeRender?: (tree: DocumentTree) => boolean | PromiseLike<boolean>
   readonly beforeTreeCommit?: () => undefined
   readonly onStart?: () => undefined
 }
@@ -253,6 +255,10 @@ export class DocumentRequestLoader {
     return this.session.tree.document.url
   }
 
+  get currentDocument(): DocumentTree["document"] {
+    return this.session.tree.document
+  }
+
   get currentRefreshSettings(): DocumentRefreshSettings {
     return documentRefreshSettings(this.session.tree)
   }
@@ -294,7 +300,7 @@ export class DocumentRequestLoader {
     url: string,
     owner?: object,
     options: DocumentSnapshotRestoreOptions = {},
-  ): DocumentSnapshotRestoreReport {
+  ): DocumentSnapshotRestoreReport | Promise<DocumentSnapshotRestoreReport> {
     return this.applySnapshot(cache, url, owner, {
       ...((options as InternalDocumentSnapshotOptions)[DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]
         ? {
@@ -304,6 +310,9 @@ export class DocumentRequestLoader {
           }
         : {}),
       ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
+      ...((options as InternalDocumentSnapshotOptions).beforeRender
+        ? { beforeRender: (options as InternalDocumentSnapshotOptions).beforeRender }
+        : {}),
       ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
       ...(options.onRestoreStart ? { onStart: options.onRestoreStart } : {}),
     })
@@ -314,7 +323,7 @@ export class DocumentRequestLoader {
     url: string,
     owner?: object,
     options: DocumentSnapshotPreviewOptions = {},
-  ): DocumentSnapshotRestoreReport {
+  ): DocumentSnapshotRestoreReport | Promise<DocumentSnapshotRestoreReport> {
     return this.applySnapshot(
       cache,
       url,
@@ -328,6 +337,9 @@ export class DocumentRequestLoader {
             }
           : {}),
         ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
+        ...((options as InternalDocumentSnapshotOptions).beforeRender
+          ? { beforeRender: (options as InternalDocumentSnapshotOptions).beforeRender }
+          : {}),
         ...(options.beforeTreeCommit ? { beforeTreeCommit: options.beforeTreeCommit } : {}),
         ...(options.onPreviewStart ? { onStart: options.onPreviewStart } : {}),
       },
@@ -341,7 +353,7 @@ export class DocumentRequestLoader {
     owner: object | undefined,
     options: DocumentSnapshotApplicationOptions,
     preview = false,
-  ): DocumentSnapshotRestoreReport {
+  ): DocumentSnapshotRestoreReport | Promise<DocumentSnapshotRestoreReport> {
     const restoredUrl = this.resolveSource(url)
     const cached =
       preview && "getPreview" in cache ? cache.getPreview(restoredUrl) : cache.get(restoredUrl)
@@ -407,6 +419,64 @@ export class DocumentRequestLoader {
           return canceled
         }
       }
+      if (options.beforeRender) {
+        return this.applySnapshotAfterRenderAdmission(
+          active,
+          tree,
+          options,
+          preview,
+          canceled,
+          committed,
+        )
+      }
+      return this.commitSnapshot(active, tree, options, preview, canceled, committed)
+    } catch (error) {
+      this.release(active)
+      if (error instanceof ExpoTurboError) throw error
+      throw new StateError(`Document snapshot ${preview ? "preview" : "restore"} failed`)
+    }
+  }
+
+  private async applySnapshotAfterRenderAdmission(
+    active: ActiveDocumentOperation,
+    tree: DocumentTree,
+    options: DocumentSnapshotApplicationOptions,
+    preview: boolean,
+    canceled: DocumentSnapshotRestoreReport,
+    committed: DocumentSnapshotRestoreReport,
+  ): Promise<DocumentSnapshotRestoreReport> {
+    try {
+      const admission = await settleRequestOperation(active.controller.signal, () =>
+        options.beforeRender?.(tree),
+      )
+      if (admission.status === "canceled") {
+        this.release(active)
+        return canceled
+      }
+      if (admission.status === "rejected") throw admission.error
+      if (!admission.value || !this.owns(active)) {
+        this.release(active)
+        return canceled
+      }
+      return this.commitSnapshot(active, tree, options, preview, canceled, committed)
+    } catch (error) {
+      this.release(active)
+      if (error instanceof ExpoTurboError) throw error
+      throw new StateError(
+        `Document snapshot ${preview ? "preview" : "restore"} before-render lifecycle failed`,
+      )
+    }
+  }
+
+  private commitSnapshot(
+    active: ActiveDocumentOperation,
+    tree: DocumentTree,
+    options: DocumentSnapshotApplicationOptions,
+    preview: boolean,
+    canceled: DocumentSnapshotRestoreReport,
+    committed: DocumentSnapshotRestoreReport,
+  ): DocumentSnapshotRestoreReport {
+    try {
       beginDocumentNavigation(this.session)
       if (options.beforeTreeCommit) {
         const lease = active.lease
