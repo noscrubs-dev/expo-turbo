@@ -257,6 +257,10 @@ describe("Frame lifecycle", () => {
             calls.push("default")
             return undefined
           },
+          renderMorph() {
+            calls.push("morph")
+            return undefined
+          },
         }),
       ),
     ).toBeUndefined()

@@ -1732,6 +1732,53 @@ describe("FormSubmissionController", () => {
     expect(permanentDisposals).toBe(0)
   })
 
+  test("lets before-frame-render select bounded morphing for a matching Frame form response", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoPanel id="stable" tone="before" /></DemoForm></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("frame")
+    const stable = session.tree.getElementById("stable")
+    if (frame?.kind !== "frame" || !stable) throw new Error("invalid fixture")
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-frame-render", (event) => {
+      events.push(`before:${event.detail.renderMethod}`)
+      event.detail.render = (context) => context.renderMorph()
+      return undefined
+    })
+    lifecycle.subscribe("before-frame-morph", () => {
+      events.push("morph")
+      return undefined
+    })
+
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoPanel id="stable" tone="after" /><ValidationError id="error" /></DemoForm></turbo-frame>',
+            { status: 422 },
+          ),
+      },
+      { frameLifecycle: lifecycle },
+    ).submit(proposal(registry(session, "form"), "frame-morph-422"))
+
+    expect(result).toMatchObject({
+      application: "frame",
+      classification: "client-error",
+      status: "applied",
+    })
+    expect(session.tree.getElementById("frame")).toBe(frame)
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(attributeValue(stable, "tone")).toBe("after")
+    expect(session.tree.getElementById("error")).toBeDefined()
+    expect(events).toEqual(["before:replace", "morph"])
+  })
+
   test("shares each exact Frame lane with GET requests in both directions", async () => {
     {
       const session = fixture()

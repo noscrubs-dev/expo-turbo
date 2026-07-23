@@ -51,6 +51,7 @@ import {
   activeFrameAutofocusCandidates,
   assertPreparedFrameMutationCurrent,
   commitPreparedFrameMutation,
+  discardPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
   prepareFrameBeforeRender,
@@ -761,7 +762,7 @@ export class FrameRequestLoader {
           const documentUrl = historyPlan
             ? frameHistoryDocumentUrl(historyPlan, this.session, frame, candidate)
             : undefined
-          const mutation = prepareFrameMutation(this.session, frame, prepared, {
+          let mutation = prepareFrameMutation(this.session, frame, prepared, {
             ...(documentUrl ? { documentUrl } : {}),
             finalUrl: responseUrl,
             renderMethod: responseRenderMethod,
@@ -806,9 +807,21 @@ export class FrameRequestLoader {
                   candidate.url,
                   responseRenderMethod,
                 )
-                renderPreparedFrameMutation(prepared, beforeFrameRenderer)
+                const selectedRenderMethod = renderPreparedFrameMutation(
+                  prepared,
+                  beforeFrameRenderer,
+                  responseRenderMethod,
+                )
+                if (selectedRenderMethod !== responseRenderMethod) {
+                  discardPreparedFrameMutation(mutation)
+                  mutation = prepareFrameMutation(this.session, frame, prepared, {
+                    ...(documentUrl ? { documentUrl } : {}),
+                    finalUrl: responseUrl,
+                    renderMethod: selectedRenderMethod,
+                  })
+                }
                 assertPreparedFrameMutationCurrent(this.session, mutation)
-                if (responseRenderMethod === "morph" && this.frameLifecycle) {
+                if (selectedRenderMethod === "morph" && this.frameLifecycle) {
                   this.frameLifecycle[FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](
                     new BeforeFrameMorphEvent({
                       currentFrame: frame,
@@ -825,7 +838,7 @@ export class FrameRequestLoader {
                 const renderResult = loadOptions[FRAME_RENDER_PREPARE_OPTION]?.(
                   frame,
                   candidate,
-                  responseRenderMethod,
+                  selectedRenderMethod,
                 )
                 if (renderResult !== undefined) {
                   callbackContractError = new RequestError(

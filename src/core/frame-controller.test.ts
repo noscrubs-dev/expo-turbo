@@ -771,6 +771,74 @@ describe("Frame controller", () => {
     }
   })
 
+  test("lets before-frame-render select bounded morphing for an ordinary Frame visit", async () => {
+    const lifecycle = new FrameLifecycle()
+    const events: string[] = []
+    let override = false
+    lifecycle.subscribe("before-frame-render", (event) => {
+      events.push(`before:${event.detail.renderMethod}`)
+      if (override) event.detail.render = (context) => context.renderMorph()
+      return undefined
+    })
+    lifecycle.subscribe("before-frame-morph", () => {
+      events.push("morph")
+      return undefined
+    })
+    const { controller, pending, session } = harness('src="/frame"', undefined, {
+      frameLifecycle: lifecycle,
+    })
+
+    const initial = controller.connect()
+    pending[0]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="before" /></turbo-frame>'),
+    )
+    await initial
+    const stable = session.tree.getElementById("stable")
+    if (!stable) throw new Error("initial Frame response did not commit")
+    events.length = 0
+    override = true
+
+    const visited = controller.visit("/frame")
+    pending[1]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="after" /></turbo-frame>'),
+    )
+    await visited
+
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(attributeValue(stable, "tone")).toBe("after")
+    expect(events).toEqual(["before:replace", "morph"])
+  })
+
+  test("rejects an invalid selected morph before changing the active Frame", async () => {
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => context.renderMorph()
+      return undefined
+    })
+    const { controller, pending, session } = harness('src="/frame"', undefined, {
+      frameLifecycle: lifecycle,
+    })
+    const initial = controller.connect()
+    pending[0]?.resolve(response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'))
+    await initial
+    const frame = session.tree.getElementById("details")
+    const stable = session.tree.getElementById("stable")
+    if (frame?.kind !== "frame" || !stable) throw new Error("initial Frame response did not commit")
+    const children = frame.children
+
+    const visited = controller.visit("/frame")
+    pending[1]?.resolve(
+      response(
+        '<turbo-frame id="details" data-turbo-permanent=""><Stable id="stable" /></turbo-frame>',
+      ),
+    )
+
+    await expect(visited).rejects.toMatchObject({ code: "target" })
+    expect(session.tree.getElementById("details")).toBe(frame)
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(frame.children).toBe(children)
+  })
+
   test("captures direct reload morph intent before the response arrives", async () => {
     const { controller, pending, session } = harness('src="/frame" refresh="morph"')
     const initial = controller.connect()

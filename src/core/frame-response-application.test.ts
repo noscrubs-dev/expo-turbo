@@ -803,4 +803,41 @@ describe("prepared Frame mutations", () => {
     expect(secondFrame.children.filter(isElement)[0]?.tagName).toBe("Old")
     expect(() => commitPreparedFrameMutation(secondSession, secondMutation)).not.toThrow()
   })
+
+  test("lets a before-frame-render wrapper select the bounded morph renderer", () => {
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>',
+    )
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => context.renderMorph()
+      return undefined
+    })
+
+    const renderer = prepareFrameBeforeRender(lifecycle, prepared, "https://example.test/details")
+
+    expect(renderPreparedFrameMutation(prepared, renderer)).toBe("morph")
+  })
+
+  test("keeps renderDefault bound to the response's prepared render method", () => {
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>',
+    )
+    const lifecycle = new FrameLifecycle()
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.detail.render = (context) => context.renderDefault()
+      return undefined
+    })
+
+    const renderer = prepareFrameBeforeRender(
+      lifecycle,
+      prepared,
+      "https://example.test/details",
+      "morph",
+    )
+
+    expect(renderPreparedFrameMutation(prepared, renderer, "morph")).toBe("morph")
+  })
 })
