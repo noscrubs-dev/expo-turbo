@@ -111,6 +111,7 @@ export interface DemoLiveCableRuntime {
   readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
   readonly streamSources: CableStreamSourceRegistry;
+  rotateCableCredentials(): void;
   subscribeErrors(listener: (error: Error | undefined) => void): () => void;
   dispose(): void;
 }
@@ -120,6 +121,7 @@ export type DemoLiveCableLifecycle = LifecycleAdapter;
 
 export interface DemoLiveCablePanelOptions {
   readonly description?: string;
+  readonly rotateCredentialsButtonLabel?: string | false;
   readonly refreshButtonLabel?: string | false;
   readonly replaceButtonLabel?: string;
   readonly sourceKey?: string;
@@ -462,6 +464,9 @@ async function createDemoLiveCableRuntimeFor(
     documentUrl: endpoints.documentUrl,
     formLinks,
     frames,
+    rotateCableCredentials(): void {
+      cable.rotateCredentials();
+    },
     dispose(): void {
       if (disposed) return;
       disposed = true;
@@ -602,6 +607,7 @@ const protectedCablePanelOptions = Object.freeze({
     "This native-only panel fetches a fresh short-lived standalone Rails ticket with no-store caching for each credential-bearing transport generation, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation teardown, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
+  rotateCredentialsButtonLabel: "Rotate protected Cable ticket",
   sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,
   title: "Header-ticket Action Cable proof",
 } satisfies DemoLiveCablePanelOptions);
@@ -611,6 +617,7 @@ export function DemoLiveCablePanel({
     "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while any re-confirmed lifecycle or network transport reloads only that active Frame. This example host injects AppState, Expo Network, a bounded stale monitor, and five finite exponential retry attempts; it has no user document navigation, server-owned Frame form, production auth, or unbounded client retry.",
   proof,
   ownsRuntime = true,
+  rotateCredentialsButtonLabel = false,
   refreshButtonLabel = "Refresh canonical document",
   replaceButtonLabel = "Broadcast XML replace",
   sourceKey = DEMO_STREAM_SOURCE_KEY,
@@ -718,6 +725,30 @@ export function DemoLiveCablePanel({
                 : connected
                   ? refreshButtonLabel
                   : "Waiting for Action Cable…"}
+            </Text>
+          </Pressable>
+        ) : null}
+        {rotateCredentialsButtonLabel ? (
+          <Pressable
+            accessibilityLabel={rotateCredentialsButtonLabel}
+            accessibilityRole="button"
+            disabled={broadcasting !== undefined || !connected}
+            onPress={() => {
+              setRecovered(false);
+              proof.clearError();
+              setError(undefined);
+              proof.rotateCableCredentials();
+            }}
+            style={({ pressed }) => ({
+              alignItems: "center",
+              backgroundColor: pressed ? "#5b4522" : "#765a2c",
+              borderRadius: 12,
+              opacity: broadcasting !== undefined || !connected ? 0.65 : 1,
+              padding: 14,
+            })}
+          >
+            <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+              {rotateCredentialsButtonLabel}
             </Text>
           </Pressable>
         ) : null}
