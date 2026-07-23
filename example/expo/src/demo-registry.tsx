@@ -357,6 +357,7 @@ function DemoFormSurface({ children }: { children?: ReactNode }) {
       accessibilityLabel={form.state.busy ? "Form submitting" : "Form ready"}
       accessibilityState={form.accessibilityState}
       accessible={false}
+      role="form"
       style={{
         backgroundColor: "#f6f8fa",
         borderColor: "#c8d1dc",
@@ -464,7 +465,7 @@ function DemoFormInputComponent({
   const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
   const autofocusScroll = useDemoAutofocusScrollTarget(control.nodeKey, inputRef);
   return (
-    <View style={{ direction: nativeLayoutDirection(direction), gap: 6, opacity: control.disabled ? 0.55 : 1 }}>
+    <View style={{ direction: nativeLayoutDirection(direction), gap: 6 }}>
       <Text style={{ color: "#435160", fontSize: 13, writingDirection: direction ?? "auto" }}>{label}</Text>
       <TextInput
         accessibilityHint={!validity.valid ? validity.message : undefined}
@@ -477,7 +478,7 @@ function DemoFormInputComponent({
         onLayout={autofocusScroll.onLayout}
         ref={inputRef}
         style={{
-          backgroundColor: "white",
+          backgroundColor: control.disabled ? "#f6f8fa" : "white",
           borderColor: validity.valid ? "#9eb0c3" : "#a62525",
           borderRadius: 10,
           borderWidth: 1,
