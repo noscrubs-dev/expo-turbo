@@ -25,6 +25,12 @@ RSpec.describe "shared protocol fixtures" do
     controller_class.new.expo_turbo_stream
   end
 
+  def frame(id, **attributes, &block)
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create
+    controller.view_context.expo_turbo_frame_tag(id, **attributes, &block)
+  end
+
   def fixture_path(file)
     unless file.is_a?(String) && ExpoTurboProtocolFixturesSpec::FIXTURE_PATH.match?(file)
       raise ArgumentError, "Protocol fixtures must be local XML files under protocol/fixtures"
@@ -163,6 +169,23 @@ RSpec.describe "shared protocol fixtures" do
     XML
 
     expect(normalized_stream_fragment(rendered)).to eq(expected)
+  end
+
+  it "emits the shared Frame envelope through the Rails helper" do
+    expected = fixture("frame-envelope").fetch("expect").fetch("normalized").fetch("nodes")
+    rendered = frame(
+      "details",
+      src: "/frames/details",
+      target: "_top",
+      loading: :lazy,
+      disabled: true,
+      autoscroll: true,
+      refresh: :morph,
+      recurse: "details child",
+      data: {turbo_action: :advance}
+    ) { '<DemoCard id="details-card">Loaded details</DemoCard>'.html_safe }
+
+    expect(normalized_document(rendered.to_s)).to eq(expected)
   end
 
   it "emits every shared built-in Stream envelope through the Rails helper" do

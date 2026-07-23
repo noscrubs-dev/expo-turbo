@@ -5,16 +5,20 @@ public TypeScript package and Rails gem. It pins the protocol and upstream
 baselines, records fixture provenance, and describes each fixture's document or
 Stream-fragment envelope plus its expected outcome.
 
-The current `fixtures/` set proves one namespaced document, a basic sibling
-Stream fragment, every built-in Turbo Stream envelope (`append`, `prepend`,
-`replace`, `update`, `remove`, `before`, `after`, and `refresh`), exact
-`target`/`targets`, morph, request-ID, scroll, and template-root metadata, plus
-unsafe DOCTYPE/non-XML-whitespace Stream-text rejections. TypeScript and Ruby
-tests load the same manifest and XML bytes. Both normalize accepted trees to
-the declared language-neutral AST or compact Stream-envelope records, and both
-exercise every declared rejection. The Rails helper must also emit the exact
-shared basic and all-actions records. Fixture readers are test-only; neither
-package ships protocol sources as runtime assets.
+The current `fixtures/` set proves one namespaced document, the complete
+meaningful Frame envelope, a basic sibling Stream fragment, every built-in Turbo
+Stream envelope (`append`, `prepend`, `replace`, `update`, `remove`, `before`,
+`after`, and `refresh`), exact `target`/`targets`, morph, request-ID, scroll, and
+template-root metadata, plus unsafe DOCTYPE/non-XML-whitespace Stream-text
+rejections. TypeScript and Ruby tests load the same manifest and XML bytes. Both
+normalize accepted trees to the declared language-neutral AST or compact
+Stream-envelope records, and both exercise every declared rejection. The Rails
+helpers must also emit the exact shared Frame, basic Stream, and all-actions
+records. The Frame record covers canonical identity/source, target, loading,
+disabledness, autoscroll, morph refresh, recurse tokens, visit action, and
+ordered application children; it is an envelope contract rather than evidence
+for every Frame loading or native-device lifecycle path. Fixture readers are
+test-only; neither package ships protocol sources as runtime assets.
 
 Document fixture normalization represents its sole document root; sibling Stream
 fixture normalization represents its sibling Stream elements. Compact
