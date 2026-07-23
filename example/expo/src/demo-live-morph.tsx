@@ -2,6 +2,7 @@ import type { FetchAdapter } from "expo-turbo/adapters"
 import {
   DocumentSession,
   ExpoTurboError,
+  FrameLifecycle,
   FrameControllerRegistry,
   FrameRequestLoader,
   parseExpoTurboDocument,
@@ -40,6 +41,7 @@ export interface DemoLiveMorphRuntime {
   readonly frames: FrameControllerRegistry
   reloadOuter(): Promise<void>
   readonly session: DocumentSession
+  visitOuterWithMorph(): Promise<void>
 }
 
 type DemoLiveMorphInitialization = Readonly<{
@@ -81,11 +83,24 @@ export function createDemoLiveMorphRuntime(
   )
   const transport: FetchAdapter = createDemoLiveFetchAdapter(fetch)
   let frameRequestId = 0
+  let selectOuterVisitMorph = false
+  const frameLifecycle = new FrameLifecycle()
+  frameLifecycle.subscribe("before-frame-render", (event) => {
+    if (event.detail.frameId === OUTER_FRAME_ID && selectOuterVisitMorph) {
+      event.detail.render = (context) => context.renderMorph()
+    }
+    return undefined
+  })
   const frames = new FrameControllerRegistry(
     session,
-    new FrameRequestLoader(session, transport, {
-      next: () => `demo-live-morph-frame-${++frameRequestId}`,
-    }),
+    new FrameRequestLoader(
+      session,
+      transport,
+      {
+        next: () => `demo-live-morph-frame-${++frameRequestId}`,
+      },
+      { frameLifecycle },
+    ),
   )
   let disposed = false
 
@@ -103,6 +118,16 @@ export function createDemoLiveMorphRuntime(
       await outer.reload()
     },
     session,
+    async visitOuterWithMorph(): Promise<void> {
+      const outer = frames.get(OUTER_FRAME_ID)
+      await outer.connect()
+      selectOuterVisitMorph = true
+      try {
+        await outer.visit(endpoints.outerUrl)
+      } finally {
+        selectOuterVisitMorph = false
+      }
+    },
   })
 }
 
@@ -145,15 +170,24 @@ export function DemoLiveMorphRuntimeProvider({
 
 export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRuntime }>) {
   const [error, setError] = useState<Error | undefined>()
-  const [reloading, setReloading] = useState(false)
+  const [pendingAction, setPendingAction] = useState<"reload" | "visit" | undefined>()
   const reloadOuter = () => {
-    if (reloading) return
-    setReloading(true)
+    if (pendingAction) return
+    setPendingAction("reload")
     setError(undefined)
     void proof
       .reloadOuter()
       .catch((nextError) => setError(asDisplayError(nextError)))
-      .finally(() => setReloading(false))
+      .finally(() => setPendingAction(undefined))
+  }
+  const visitOuterWithMorph = () => {
+    if (pendingAction) return
+    setPendingAction("visit")
+    setError(undefined)
+    void proof
+      .visitOuterWithMorph()
+      .catch((nextError) => setError(asDisplayError(nextError)))
+      .finally(() => setPendingAction(undefined))
   }
 
   return (
@@ -172,7 +206,8 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
       <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
         This native-only proof reloads an outer Rails Frame with refresh morph. Its nested morph
         Frame keeps the mounted wrapper and ignores the outer response&apos;s stale inner payload,
-        then reloads itself after the outer Frame has rendered and loaded.
+        then reloads itself after the outer Frame has rendered and loaded. The second control sends
+        an ordinary Frame visit and selects the same bounded renderer through before-frame-render.
       </Text>
       <DemoLiveMorphRuntimeProvider proof={proof}>
         <ExpoTurboRoot />
@@ -180,18 +215,37 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
       <Pressable
         accessibilityLabel="Reload outer morph Frame"
         accessibilityRole="button"
-        disabled={reloading}
+        disabled={pendingAction !== undefined}
         onPress={reloadOuter}
         style={({ pressed }) => ({
           alignItems: "center",
-          backgroundColor: pressed || reloading ? "#33556f" : "#285589",
+          backgroundColor: pressed || pendingAction ? "#33556f" : "#285589",
           borderRadius: 12,
-          opacity: reloading ? 0.65 : 1,
+          opacity: pendingAction ? 0.65 : 1,
           padding: 14,
         })}
       >
         <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
-          {reloading ? "Reloading outer Frame…" : "Reload outer morph Frame"}
+          {pendingAction === "reload" ? "Reloading outer Frame…" : "Reload outer morph Frame"}
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityLabel="Visit outer Frame with morph renderer"
+        accessibilityRole="button"
+        disabled={pendingAction !== undefined}
+        onPress={visitOuterWithMorph}
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed || pendingAction ? "#4f5260" : "#626675",
+          borderRadius: 12,
+          opacity: pendingAction ? 0.65 : 1,
+          padding: 14,
+        })}
+      >
+        <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+          {pendingAction === "visit"
+            ? "Visiting outer Frame…"
+            : "Visit outer Frame with morph renderer"}
         </Text>
       </Pressable>
       {error ? (

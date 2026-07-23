@@ -96,6 +96,39 @@ liveTest("runs the Rails nested Frame morph cascade through the native renderer"
     expect(nodeTextContent(innerBefore)).toContain("Inner Frame response")
     expect(JSON.stringify(renderer?.toJSON())).toContain("Outer Frame response")
     expect(JSON.stringify(renderer?.toJSON())).toContain("Inner Frame response")
+
+    const outerVersion = proof.session.tree.getElementById("morph-outer-version")
+    if (!outerVersion) throw new Error("The Rails outer morph response is missing")
+    await act(async () => {
+      await proof.visitOuterWithMorph()
+      await proof.frames.get(INNER_FRAME_ID).loaded
+    })
+
+    expect(requests).toHaveLength(4)
+    expect(requests[2]).toMatchObject({
+      request: {
+        headers: {
+          Accept: EXPO_TURBO_MIME_TYPE,
+          "Turbo-Frame": OUTER_FRAME_ID,
+          "X-Turbo-Request-Id": "demo-live-morph-frame-3",
+        },
+        method: "GET",
+      },
+      url: outerUrl,
+    })
+    expect(requests[3]).toMatchObject({
+      request: {
+        headers: {
+          Accept: EXPO_TURBO_MIME_TYPE,
+          "Turbo-Frame": INNER_FRAME_ID,
+          "X-Turbo-Request-Id": "demo-live-morph-frame-4",
+        },
+        method: "GET",
+      },
+      url: innerUrl,
+    })
+    expect(proof.session.tree.getElementById("morph-outer-version")).toBe(outerVersion)
+    expect(proof.session.tree.getElementById(INNER_FRAME_ID)).toBe(innerBefore)
   } finally {
     await act(async () => {
       renderer?.unmount()

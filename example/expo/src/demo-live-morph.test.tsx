@@ -152,6 +152,63 @@ test("renders the standalone Rails nested Frame morph proof", async () => {
 
     expect(nodeTextContent(innerBefore)).toContain("Inner Frame response")
     expect(JSON.stringify(renderer?.toJSON())).toContain("Inner Frame response")
+
+    const outerVersion = proof.session.tree.getElementById("morph-outer-version")
+    if (!outerVersion) throw new Error("The first outer Frame response is missing")
+    act(() => {
+      const button = renderer?.root.findByProps({
+        accessibilityLabel: "Visit outer Frame with morph renderer",
+      })
+      if (!button?.props.onPress) throw new Error("The controlled morph visit button did not render")
+      ;(button.props as PressableProps).onPress?.()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const visitedOuter = takePending(
+      pending,
+      "The ordinary outer Frame visit did not request the Rails morph endpoint",
+    )
+    expect(visitedOuter).toMatchObject({
+      request: {
+        headers: { Accept: EXPO_TURBO_MIME_TYPE, "Turbo-Frame": OUTER_FRAME_ID },
+        method: "GET",
+      },
+      url: outerUrl,
+    })
+    await act(async () => {
+      visitedOuter.resolve(
+        response(
+          `<turbo-frame id="${OUTER_FRAME_ID}" src="${OUTER_PATH}" refresh="morph"><Gallery id="morph-shell"><DemoText id="morph-outer-version">Outer Frame controlled visit response</DemoText><turbo-frame id="${INNER_FRAME_ID}" loading="lazy" refresh="morph" src="${INNER_PATH}"><DemoText id="morph-inner-stale">This nested response is intentionally ignored before its own reload</DemoText></turbo-frame></Gallery></turbo-frame>`,
+          outerUrl,
+        ),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await nextTurn()
+
+    expect(proof.session.tree.getElementById("morph-outer-version")).toBe(outerVersion)
+    expect(nodeTextContent(outerVersion)).toContain("controlled visit response")
+    expect(proof.session.tree.getElementById(INNER_FRAME_ID)).toBe(innerBefore)
+    expect(nodeTextContent(innerBefore)).toContain("Inner Frame response")
+
+    const visitedInner = takePending(
+      pending,
+      "The controlled outer morph visit did not cascade to the nested Frame",
+    )
+    await act(async () => {
+      visitedInner.resolve(
+        response(
+          `<turbo-frame id="${INNER_FRAME_ID}" src="${INNER_PATH}" refresh="morph"><DemoText id="morph-inner-version">Inner Frame controlled visit cascade</DemoText></turbo-frame>`,
+          innerUrl,
+        ),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(nodeTextContent(innerBefore)).toContain("controlled visit cascade")
   } finally {
     await act(async () => {
       renderer?.unmount()
