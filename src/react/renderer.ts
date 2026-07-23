@@ -282,15 +282,16 @@ const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 const DirectionContext = createContext<ProtocolDirection | undefined>(undefined)
+const DirectionFallbackContext = createContext<"ltr" | "rtl">("ltr")
 const bidi = bidiFactory()
 
-function inferredFormControlDirection(value: string): "ltr" | "rtl" {
+function inferredFormControlDirection(value: string, emptyFallback: "ltr" | "rtl"): "ltr" | "rtl" {
   for (const character of value) {
     const type = bidi.getBidiCharTypeName(character)
     if (type === "L") return "ltr"
     if (type === "R" || type === "AL") return "rtl"
   }
-  return "ltr"
+  return value === "" ? emptyFallback : "ltr"
 }
 const providerDisposableOwners = new WeakMap<object, number>()
 const announcedFormTerminalRevisions = new WeakMap<
@@ -620,6 +621,7 @@ export interface ExpoTurboProviderProps {
   readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
   readonly documentPreloader?: DocumentPreloadRequester
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
+  readonly defaultDirection?: "ltr" | "rtl"
   readonly frameAutoscroll?: FrameAutoscrollAdapter
   readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>
   readonly framePreloader?: FramePreloadRequester
@@ -725,7 +727,11 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   return createElement(
     RendererContext.Provider,
     { value },
-    createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+    createElement(
+      DirectionFallbackContext.Provider,
+      { value: props.defaultDirection ?? "ltr" },
+      createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+    ),
   )
 }
 
@@ -1117,6 +1123,7 @@ export function useExpoTurboFormControl(
   const { registry } = useResolvedFormRegistry()
   const nodeKey = useContext(ProtocolNodeContext)
   const direction = useContext(DirectionContext)
+  const directionFallback = useContext(DirectionFallbackContext)
   const registration = useRef<FormControlRegistration | undefined>(undefined)
   if (!nodeKey) throw new RegistryError("Expo Turbo form controls require a component node")
   const node = session.tree.getNodeByKey(nodeKey)
@@ -1129,7 +1136,7 @@ export function useExpoTurboFormControl(
       direction === "ltr" || direction === "rtl"
         ? direction
         : descriptor.kind === "value"
-          ? inferredFormControlDirection(descriptor.value)
+          ? inferredFormControlDirection(descriptor.value, directionFallback)
           : undefined
     if (
       (descriptor.kind !== "value" && descriptor.kind !== "hidden") ||
@@ -1143,7 +1150,7 @@ export function useExpoTurboFormControl(
       ...descriptor,
       directionality: Object.freeze({ name: dirname, value: resolvedDirection }),
     })
-  }, [descriptor, direction, dirname])
+  }, [descriptor, direction, directionFallback, dirname])
   const descriptorRef = useRef(effectiveDescriptor)
 
   const subscribe = useCallback(
@@ -2350,8 +2357,11 @@ function RegisteredElement(
 ): ReactNode {
   const { autofocus, autofocusScroll, registry } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
+  const inheritedFallback = useContext(DirectionFallbackContext)
   const decoded: DecodedComponent = registry.decode(props.node)
   const direction = decoded.protocol.direction ?? inheritedDirection
+  const directionFallback =
+    direction === "ltr" || direction === "rtl" ? direction : inheritedFallback
   let children: ReactNode
   if (decoded.definition.children === "text") children = decoded.text ?? ""
   else if (decoded.definition.children === "nodes") children = renderChildren(decoded.children)
@@ -2372,12 +2382,16 @@ function RegisteredElement(
       ? createElement(component, { ...componentProps, key })
       : createElement(component, { ...componentProps, key }, children)
   return createElement(
-    DirectionContext.Provider,
-    { value: direction },
+    DirectionFallbackContext.Provider,
+    { value: directionFallback },
     createElement(
-      ProtocolNodeContext.Provider,
-      { value: props.node.key },
-      createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+      DirectionContext.Provider,
+      { value: direction },
+      createElement(
+        ProtocolNodeContext.Provider,
+        { value: props.node.key },
+        createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+      ),
     ),
   )
 }
@@ -2386,8 +2400,15 @@ function ProtocolDirectionBoundary(
   props: Readonly<{ children?: ReactNode; node: ProtocolElement }>,
 ): ReactNode {
   const inheritedDirection = useContext(DirectionContext)
+  const inheritedFallback = useContext(DirectionFallbackContext)
   const direction = protocolDirection(props.node) ?? inheritedDirection
-  return createElement(DirectionContext.Provider, { value: direction }, props.children)
+  const directionFallback =
+    direction === "ltr" || direction === "rtl" ? direction : inheritedFallback
+  return createElement(
+    DirectionFallbackContext.Provider,
+    { value: directionFallback },
+    createElement(DirectionContext.Provider, { value: direction }, props.children),
+  )
 }
 
 function RootProtocolDirectionBoundary(
