@@ -6,6 +6,7 @@ import {
   type ActionCableWebSocketAdapterOptions,
   type ActionCableWebSocketEventType,
   type ClockAdapter,
+  type DisposableCableAdapter,
   type LifecycleAdapter,
   type LifecycleState,
   type NetworkReachabilityAdapter,
@@ -295,6 +296,14 @@ interface DemoLiveCablePaths {
   readonly documentPath: string;
 }
 
+type DemoLiveCableFactory = (
+  context: Readonly<{
+    clock: ClockAdapter;
+    endpoints: DemoLiveCableEndpoints;
+    onError: (error: Error | undefined) => void;
+  }>,
+) => DisposableCableAdapter | PromiseLike<DisposableCableAdapter>;
+
 function resolveDemoLiveCableEndpointsFor(
   origin: string,
   paths: DemoLiveCablePaths,
@@ -320,6 +329,7 @@ export async function createDemoLiveCableRuntime(
 async function createDemoLiveCableRuntimeFor(
   options: DemoLiveCableRuntimeOptions,
   paths: DemoLiveCablePaths,
+  createCable?: DemoLiveCableFactory,
 ): Promise<DemoLiveCableRuntime> {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new StateError("Standalone Rails demo options are invalid");
@@ -400,14 +410,16 @@ async function createDemoLiveCableRuntimeFor(
   );
   const cable = new LifecycleCableAdapter({
     clock,
-    createCable: () =>
-      new ActionCableV1WebSocketAdapter({
-        clock,
-        createSocket: options.createSocket ?? createNativeActionCableSocket,
-        heartbeat: { now: () => clock.now() },
-        onError: reportError,
-        url: endpoints.cableUrl,
-      }),
+    createCable: createCable
+      ? () => createCable({ clock, endpoints, onError: reportError })
+      : () =>
+          new ActionCableV1WebSocketAdapter({
+            clock,
+            createSocket: options.createSocket ?? createNativeActionCableSocket,
+            heartbeat: { now: () => clock.now() },
+            onError: reportError,
+            url: endpoints.cableUrl,
+          }),
     lifecycle: options.lifecycle ?? nativeDemoLiveCableLifecycle,
     network: options.network,
     onError: reportError,
@@ -495,31 +507,39 @@ export async function createDemoLiveProtectedCableRuntime(
     broadcastPath: PROTECTED_BROADCAST_PATH,
     documentPath: PROTECTED_DOCUMENT_PATH,
   });
-  const response = await fetch(new URL(PROTECTED_TICKET_PATH, endpoints.documentUrl).toString(), {
-    headers: { Accept: "text/plain" },
-    method: "GET",
-  });
-  if (response.status !== 200) {
-    throw new RequestError("The standalone Rails protected Cable ticket request failed", {
-      responseStatus: response.status,
-    });
-  }
-  let ticket: string;
-  try {
-    ticket = await response.text();
-  } catch {
-    throw new RequestError("The standalone Rails protected Cable ticket response failed");
-  }
-  if (ticket === "" || ticket.trim() !== ticket) {
-    throw new RequestError("The standalone Rails protected Cable ticket is invalid");
-  }
-  const headers = Object.freeze({ [NATIVE_CABLE_TICKET_HEADER]: ticket });
   const createSocket = options.createSocket ?? createNativeActionCableSocket;
+  const createProtectedCable: DemoLiveCableFactory = async ({ clock, onError }) => {
+    const response = await fetch(new URL(PROTECTED_TICKET_PATH, endpoints.documentUrl).toString(), {
+      headers: { Accept: "text/plain" },
+      method: "GET",
+    });
+    if (response.status !== 200) {
+      throw new RequestError("The standalone Rails protected Cable ticket request failed", {
+        responseStatus: response.status,
+      });
+    }
+    let ticket: string;
+    try {
+      ticket = await response.text();
+    } catch {
+      throw new RequestError("The standalone Rails protected Cable ticket response failed");
+    }
+    if (ticket === "" || ticket.trim() !== ticket) {
+      throw new RequestError("The standalone Rails protected Cable ticket is invalid");
+    }
+    const headers = Object.freeze({ [NATIVE_CABLE_TICKET_HEADER]: ticket });
+    return new ActionCableV1WebSocketAdapter({
+      clock,
+      createSocket: (url, protocols) => createSocket(url, protocols, headers),
+      heartbeat: { now: () => clock.now() },
+      onError,
+      url: endpoints.cableUrl,
+    });
+  };
 
   return createDemoLiveCableRuntimeFor(
     {
       clock: options.clock,
-      createSocket: (url, protocols) => createSocket(url, protocols, headers),
       fetch,
       lifecycle: options.lifecycle,
       network: options.network,
@@ -529,6 +549,7 @@ export async function createDemoLiveProtectedCableRuntime(
       broadcastPath: PROTECTED_BROADCAST_PATH,
       documentPath: PROTECTED_DOCUMENT_PATH,
     },
+    createProtectedCable,
   );
 }
 
@@ -578,7 +599,7 @@ const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
 const DEMO_PROTECTED_STREAM_SOURCE_KEY = "id:demo-protected-stream-source";
 const protectedCablePanelOptions = Object.freeze({
   description:
-    "This native-only panel first fetches one short-lived standalone Rails ticket with no-store caching, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation, rotation, Android-interaction, or physical-device policy.",
+    "This native-only panel fetches a fresh short-lived standalone Rails ticket with no-store caching for each credential-bearing transport generation, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation teardown, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
   sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,

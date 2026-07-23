@@ -15,7 +15,7 @@ export interface DisposableCableAdapter extends CableAdapter {
 
 export interface LifecycleCableAdapterOptions {
   readonly clock?: Pick<ClockAdapter, "clearTimeout" | "setTimeout">
-  readonly createCable: () => DisposableCableAdapter
+  readonly createCable: () => DisposableCableAdapter | PromiseLike<DisposableCableAdapter>
   readonly lifecycle: LifecycleAdapter
   readonly network?: NetworkReachabilityAdapter
   readonly onError: (error: SubscriptionError) => void | PromiseLike<void>
@@ -48,6 +48,10 @@ interface LifecycleCableRecord {
   everConnected: boolean
   readonly identifier: string
   subscription: CableSubscription | undefined
+}
+
+interface PendingCableFactory {
+  readonly generation: number
 }
 
 function lifecycleError(message: string): SubscriptionError {
@@ -142,6 +146,7 @@ export class LifecycleCableAdapter implements CableAdapter {
   private readonly network: NetworkReachabilityAdapter | undefined
   private networkState: NetworkReachabilityState = "online"
   private readonly onError: LifecycleCableAdapterOptions["onError"]
+  private pendingCable: PendingCableFactory | undefined
   private readonly retry: CableRetryPolicy | undefined
   private retryAttempts = 0
   private retryHandle: unknown
@@ -375,6 +380,7 @@ export class LifecycleCableAdapter implements CableAdapter {
   private attach(record: LifecycleCableRecord): void {
     if (!this.active || !record.active || record.attached || !this.canConnect()) return
     const cable = this.ensureCable()
+    if (!cable) return
     const generation = this.generation
     record.attached = true
     try {
@@ -414,30 +420,41 @@ export class LifecycleCableAdapter implements CableAdapter {
     }
   }
 
-  private ensureCable(): DisposableCableAdapter {
+  private ensureCable(): DisposableCableAdapter | undefined {
     if (this.cable) return this.cable
-    let cable: DisposableCableAdapter
+    if (this.pendingCable) return undefined
+    let candidate: DisposableCableAdapter | PromiseLike<DisposableCableAdapter>
     try {
-      cable = this.createCable()
+      candidate = this.createCable()
     } catch {
       throw lifecycleError("Action Cable lifecycle adapter factory failed")
     }
-    if (
-      !cable ||
-      (typeof cable !== "object" && typeof cable !== "function") ||
-      Array.isArray(cable) ||
-      typeof cable.subscribe !== "function" ||
-      typeof cable.dispose !== "function"
-    ) {
+    if (this.isCable(candidate)) {
+      this.cable = candidate
+      return candidate
+    }
+    let then: unknown
+    try {
+      then = (candidate as PromiseLike<DisposableCableAdapter> | undefined)?.then
+    } catch {
+      throw lifecycleError("Action Cable lifecycle adapter factory failed")
+    }
+    if (typeof then !== "function") {
       throw lifecycleError("Action Cable lifecycle adapter factory returned an invalid adapter")
     }
-    this.cable = cable
-    return cable
+    const pending = Object.freeze({ generation: this.generation })
+    this.pendingCable = pending
+    void Promise.resolve(candidate).then(
+      (cable) => this.resolvePendingCable(pending, cable),
+      () => this.rejectPendingCable(pending),
+    )
+    return undefined
   }
 
   private releaseCable(willAttemptReconnect: boolean): void {
     const cable = this.cable
     this.cable = undefined
+    this.pendingCable = undefined
     this.generation += 1
     for (const record of this.records) {
       if (!record.active || !record.attached) continue
@@ -446,12 +463,7 @@ export class LifecycleCableAdapter implements CableAdapter {
       record.connected = false
       this.invoke(record, "disconnected", willAttemptReconnect)
     }
-    if (!cable) return
-    try {
-      cable.dispose()
-    } catch {
-      this.report(lifecycleError("Action Cable lifecycle transport disposal failed"))
-    }
+    if (cable) this.disposeCable(cable)
   }
 
   private releaseIdleCable(): void {
@@ -463,6 +475,73 @@ export class LifecycleCableAdapter implements CableAdapter {
 
   private canConnect(): boolean {
     return this.active && this.state === "active" && this.networkState === "online"
+  }
+
+  private resolvePendingCable(pending: PendingCableFactory, cable: unknown): void {
+    if (this.pendingCable !== pending) {
+      if (this.isCable(cable)) this.disposeCable(cable)
+      return
+    }
+    this.pendingCable = undefined
+    if (!this.isCable(cable)) {
+      this.settlePendingFactoryFailure(
+        lifecycleError("Action Cable lifecycle adapter factory returned an invalid adapter"),
+      )
+      return
+    }
+    if (
+      !this.active ||
+      pending.generation !== this.generation ||
+      !this.canConnect() ||
+      this.records.size === 0
+    ) {
+      this.disposeCable(cable)
+      return
+    }
+    this.cable = cable
+    this.activate()
+  }
+
+  private rejectPendingCable(pending: PendingCableFactory): void {
+    if (this.pendingCable !== pending) return
+    this.pendingCable = undefined
+    if (!this.active || pending.generation !== this.generation || !this.canConnect()) return
+    this.settlePendingFactoryFailure(
+      lifecycleError("Action Cable lifecycle adapter factory failed"),
+    )
+  }
+
+  private settlePendingFactoryFailure(error: SubscriptionError): void {
+    this.report(error)
+    if (this.retry) {
+      this.scheduleRetry()
+      return
+    }
+    for (const record of this.records) {
+      if (record.active) this.invoke(record, "disconnected", false)
+    }
+  }
+
+  private isCable(value: unknown): value is DisposableCableAdapter {
+    try {
+      return (
+        value !== null &&
+        (typeof value === "object" || typeof value === "function") &&
+        !Array.isArray(value) &&
+        typeof (value as Partial<DisposableCableAdapter>).subscribe === "function" &&
+        typeof (value as Partial<DisposableCableAdapter>).dispose === "function"
+      )
+    } catch {
+      return false
+    }
+  }
+
+  private disposeCable(cable: DisposableCableAdapter): void {
+    try {
+      cable.dispose()
+    } catch {
+      this.report(lifecycleError("Action Cable lifecycle transport disposal failed"))
+    }
   }
 
   private scheduleRetry(): void {
