@@ -352,7 +352,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/204/422/500 Frame-navigation, form-request, history, and document-response browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request, history, and document-response browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
