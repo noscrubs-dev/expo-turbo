@@ -88,6 +88,7 @@
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.10",
+    "bidi-js": "1.0.3",
     "css-select": "7.0.0",
     "zod": "4.4.3"
   },
