@@ -283,11 +283,9 @@ function anonymousMorphShapeKey(element: ProtocolElement): string {
 }
 
 function isCompatibleDocumentMorphRoot(current: ProtocolElement, source: ProtocolElement): boolean {
-  const currentId = attributeValue(current, "id")
   return (
     current.kind === "element" &&
     source.kind === "element" &&
-    currentId === attributeValue(source, "id") &&
     current.tagName === source.tagName &&
     current.localName === source.localName &&
     current.namespaceUri === source.namespaceUri &&
@@ -905,6 +903,15 @@ export class DocumentTree {
     ) {
       throw new TargetError(
         "Native document refresh morph requires one compatible nonpermanent application root",
+      )
+    }
+    const sourceRootId = attributeValue(sourceRoot, "id")
+    const activeSourceRootId =
+      sourceRootId === undefined ? undefined : this.idIndex.get(sourceRootId)
+    if (sourceRootId !== undefined && activeSourceRootId && activeSourceRootId !== currentRoot) {
+      throw new TargetError(
+        `Native document refresh morph root id ${JSON.stringify(sourceRootId)} collides with an active descendant`,
+        { target: sourceRootId },
       )
     }
     this.assertMorphSources(currentRoot, sourceRoot.children)
