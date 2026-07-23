@@ -10,5 +10,14 @@ maestro --device <simulator-uuid> test \
   .maestro/gallery-smoke.yaml
 ```
 
+With the standalone Rails host running on the origin compiled into Metro, the
+controlled ordinary Frame-morph proof is:
+
+```sh
+maestro --device <simulator-uuid> test \
+  -e EXPO_URL=exp://<metro-lan-address>:8082/--/demo \
+  .maestro/live-frame-morph.yaml
+```
+
 The flows are interaction evidence, not part of package or Expo bundle CI. Keep
 them deterministic, text-addressable, and isolated from a developer's simulator.
