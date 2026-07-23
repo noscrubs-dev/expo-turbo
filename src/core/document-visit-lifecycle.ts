@@ -269,6 +269,9 @@ export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_RENDER_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-render-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER = Symbol(
+  "expo-turbo.document-visit-lifecycle.has-before-render",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-prefetch-dispatch",
 )
@@ -418,6 +421,10 @@ export class DocumentVisitLifecycle {
       throw new StateError("Before-document-render listener must return undefined")
     }
     return event.detail.render
+  }
+
+  [DOCUMENT_VISIT_LIFECYCLE_HAS_BEFORE_RENDER](): boolean {
+    return (this.listeners.get("before-render")?.size ?? 0) > 0
   }
 
   [DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](event: VisitEvent): void {
