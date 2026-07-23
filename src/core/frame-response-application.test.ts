@@ -475,6 +475,40 @@ describe("prepared Frame mutations", () => {
     expect(session.getNodeSnapshot(permanentFrame.key)?.morphRevision).toBe(0)
   })
 
+  test("moves an opaque permanent Cable source during a direct Frame reload morph", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph"><Group id="left"><turbo-cable-stream-source id="source" channel="ClientChannel" data-room="client" data-turbo-permanent=""/></Group><Group id="right"/></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const source = session.tree.getElementById("source")
+    if (frame?.kind !== "frame" || source?.kind !== "stream-source") {
+      throw new Error("invalid permanent Cable source fixture")
+    }
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Group id="left"/><Group id="right"><turbo-cable-stream-source id="source" channel="ServerChannel" data-room="server"/></Group></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, frame, prepared, {
+        finalUrl: "https://example.test/final",
+        renderMethod: "morph",
+      }),
+    )
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("missing permanent Cable source destination")
+    expect(session.tree.getElementById("source")).toBe(source)
+    expect(source.parent).toBe(right)
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(attributeValue(source, "data-room")).toBe("client")
+    expect(session.getNodeSnapshot(source.key)?.morphRevision).toBe(0)
+  })
+
   test("matches anonymous Frame wrappers through stable descendant ID sets", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

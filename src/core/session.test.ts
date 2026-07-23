@@ -408,6 +408,33 @@ describe("document session snapshots", () => {
     expect(reloads).toEqual([])
   })
 
+  test("moves and preserves an opaque permanent Cable source during a current-document morph", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"><turbo-cable-stream-source id="source" channel="ClientChannel" data-room="client" data-turbo-permanent=""/></Group><Group id="right"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const source = document.tree.getElementById("source")
+    if (source?.kind !== "stream-source") throw new Error("Expected permanent Cable source")
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"/><Group id="right"><turbo-cable-stream-source id="source" channel="ServerChannel" data-room="server"/></Group></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    const right = document.tree.getElementById("right")
+    if (!right) throw new Error("Expected permanent Cable source destination")
+    expect(document.tree.getElementById("source")).toBe(source)
+    expect(source.parent).toBe(right)
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(attributeValue(source, "data-room")).toBe("client")
+    expect(document.getNodeSnapshot(source.key)?.morphRevision).toBe(0)
+  })
+
   test("matches anonymous document wrappers through stable descendant ID sets", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
