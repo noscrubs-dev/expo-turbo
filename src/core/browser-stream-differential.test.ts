@@ -1979,6 +1979,97 @@ test("matches upstream Turbo for a redirected generated-form document response",
 })
 
 for (const responseStatus of [422, 500] as const) {
+  test(`matches upstream Turbo for an authoritative generated-form document ${responseStatus} response`, async () => {
+    const initialDocument =
+      '<main id="root"><a id="save-link" href="/profile?source=generated" data-turbo-method="post">Save</a><p id="old">Old</p></main>'
+    const errorDocument = `<main id="root"><a id="save-link" href="/profile?source=generated" data-turbo-method="post">Save again</a><p id="form-error">Status ${responseStatus}</p></main>`
+    const responseUrl = "https://example.test/profile"
+    const session = new DocumentSession(
+      parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+    )
+    let expoRequest: TurboRequest | undefined
+    const submissions = new FormSubmissionController(session, {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: responseStatus,
+          text: async () => errorDocument,
+          url: responseUrl,
+        }
+      },
+    })
+    const links = new FormLinkSubmissionController(session, submissions, {
+      next: () => `request-generated-document-${responseStatus}`,
+    })
+    const expoResult = await links.submit("id:save-link", "/profile?source=generated")
+
+    let browserRequestUrl: string | undefined
+    let browserRequestMethod: string | undefined
+    let browserRequestBody: string | undefined
+    let browserFrameHeader: string | null | undefined
+    const originalFetch = browser.fetch
+    browser.fetch = async (input, init) => {
+      browserRequestUrl = String(input)
+      browserRequestMethod = init?.method
+      browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+      const requestHeaders = init?.headers as { get?: unknown } | undefined
+      browserFrameHeader =
+        typeof requestHeaders?.get === "function"
+          ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+          : new browser.Headers(init?.headers).get("Turbo-Frame")
+      const response = new browser.Response(`<html><body>${errorDocument}</body></html>`, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        status: responseStatus,
+      })
+      Object.defineProperty(response, "url", {
+        configurable: true,
+        value: responseUrl,
+      })
+      return response
+    }
+    browser.history.replaceState({}, "", "/demo")
+    turbo.start()
+    try {
+      browser.document.body.innerHTML = initialDocument
+      const link = browser.document.getElementById("save-link")
+      if (!(link instanceof browser.HTMLAnchorElement)) {
+        throw new Error("Browser authoritative generated-form document link is missing")
+      }
+      link.dispatchEvent(
+        new browser.MouseEvent("click", {
+          bubbles: true,
+          button: 0,
+          cancelable: true,
+          composed: true,
+        }),
+      )
+      await browser.happyDOM.waitUntilComplete()
+
+      expect(expoResult).toMatchObject({
+        application: "document",
+        destination: { kind: "document" },
+        effectiveMethod: "POST",
+        responseStatus,
+        status: "applied",
+      })
+      expect(expoRequest?.url).toBe(browserRequestUrl)
+      expect(expoRequest?.method).toBe(browserRequestMethod)
+      expect(expoRequest?.body?.value).toBe(browserRequestBody)
+      expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+      expect(session.tree.document.url).toBe(browser.location.href)
+      expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+        normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+      )
+    } finally {
+      browser.fetch = originalFetch
+      turbo.session.stop()
+    }
+  })
+}
+
+for (const responseStatus of [422, 500] as const) {
   test(`matches upstream Turbo for an authoritative Frame form ${responseStatus} response`, async () => {
     const initialDocument =
       '<main id="root"><turbo-frame id="details" class="mounted"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'
