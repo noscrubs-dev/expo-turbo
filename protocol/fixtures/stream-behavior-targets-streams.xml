@@ -1,0 +1,2 @@
+<turbo-stream action="update" target="one" targets=".group"><template><Exact/></template></turbo-stream>
+<turbo-stream action="append" targets=".group"><template><Badge tone="new"/></template></turbo-stream>

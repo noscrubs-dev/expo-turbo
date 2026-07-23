@@ -292,5 +292,53 @@
         "kind": "authored"
       }
     }
+  ],
+  "behaviorFixtures": [
+    {
+      "id": "stream-ordered-isolation",
+      "kind": "stream-mutation",
+      "documentFile": "fixtures/stream-behavior-ordered-document.xml",
+      "streamFile": "fixtures/stream-behavior-ordered-streams.xml",
+      "expectedDocumentFile": "fixtures/stream-behavior-ordered-expected.xml",
+      "expectedReports": [
+        {"action": "append", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "unknown", "status": "error", "matchedTargets": 0, "appliedTargets": 0},
+        {"action": "before", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "after", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "remove", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "append", "status": "applied", "matchedTargets": 1, "appliedTargets": 1}
+      ],
+      "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
+    },
+    {
+      "id": "stream-target-precedence-and-cloning",
+      "kind": "stream-mutation",
+      "documentFile": "fixtures/stream-behavior-targets-document.xml",
+      "streamFile": "fixtures/stream-behavior-targets-streams.xml",
+      "expectedDocumentFile": "fixtures/stream-behavior-targets-expected.xml",
+      "expectedReports": [
+        {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "append", "status": "applied", "matchedTargets": 2, "appliedTargets": 2}
+      ],
+      "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
+    },
+    {
+      "id": "stream-absent-template-semantics",
+      "kind": "stream-mutation",
+      "documentFile": "fixtures/stream-behavior-empty-document.xml",
+      "streamFile": "fixtures/stream-behavior-empty-streams.xml",
+      "expectedDocumentFile": "fixtures/stream-behavior-empty-expected.xml",
+      "expectedReports": [
+        {"action": "append", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
+        {"action": "prepend", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
+        {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "replace", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "before", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
+        {"action": "after", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
+        {"action": "remove", "status": "applied", "matchedTargets": 1, "appliedTargets": 1}
+      ],
+      "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
+    }
   ]
 }

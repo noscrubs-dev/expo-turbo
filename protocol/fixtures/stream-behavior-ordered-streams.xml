@@ -1,0 +1,7 @@
+<turbo-stream action="append" target="items"><template><Item id="old"/><Item id="new"/></template></turbo-stream>
+<turbo-stream action="unknown" target="items"><template><Ignored/></template></turbo-stream>
+<turbo-stream action="before" target="marker"><template><Item id="before"/></template></turbo-stream>
+<turbo-stream action="after" target="marker"><template><Item id="after"/></template></turbo-stream>
+<turbo-stream action="update" target="victim"><template><Replacement id="replacement"/></template></turbo-stream>
+<turbo-stream action="remove" target="marker"></turbo-stream>
+<turbo-stream action="append" target="gallery"><template><Tail id="tail"/></template></turbo-stream>

@@ -1,0 +1,7 @@
+<turbo-stream action="append" target="append"></turbo-stream>
+<turbo-stream action="prepend" target="prepend"></turbo-stream>
+<turbo-stream action="update" target="update"></turbo-stream>
+<turbo-stream action="replace" target="replace"></turbo-stream>
+<turbo-stream action="before" target="before"></turbo-stream>
+<turbo-stream action="after" target="after"></turbo-stream>
+<turbo-stream action="remove" target="remove"></turbo-stream>
