@@ -68,7 +68,7 @@
       "id": "frames.extraction-targeting",
       "area": "frames",
       "disposition": "exact",
-      "rationale": "Matching extraction, nearest and named targets, _self, _parent, _top, missing responses, and visit-control promotion follow the pinned Turbo behavior.",
+      "rationale": "Matching extraction, nearest and named targets, _self, _parent, _top, prevented missing responses with canonical source publication and cancellable metadata, and visit-control promotion follow the pinned Turbo behavior.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/frame-loader.test.ts",

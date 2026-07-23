@@ -1,5 +1,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { type Element as HappyElement, type Node as HappyNode, Window } from "happy-dom"
+import {
+  type Element as HappyElement,
+  type Event as HappyEvent,
+  type Node as HappyNode,
+  Window,
+} from "happy-dom"
 import type { ClockAdapter, TurboRequest } from "../adapters"
 import {
   applyFrameResponse,
@@ -13,6 +18,7 @@ import {
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
   FrameController,
+  FrameLifecycle,
   FrameRequestLoader,
   isElement,
   type ProtocolElement,
@@ -588,6 +594,122 @@ test("matches upstream Turbo empty and error Frame response outcomes", async () 
       browser.fetch = originalFetch
       turbo.session.stop()
     }
+  }
+})
+
+test("matches upstream Turbo prevented missing-Frame handling", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><a id="frame-missing-link" href="/frame/missing">Missing</a><p id="old">Old</p></turbo-frame></main>'
+  const missingResponse = '<main><p id="outside">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoEvents: unknown[] = []
+  const lifecycle = new FrameLifecycle()
+  lifecycle.subscribe("frame-missing", (event) => {
+    expoEvents.push({
+      frameId: event.detail.frameId,
+      response: event.detail.response,
+      type: event.type,
+    })
+    event.preventDefault()
+  })
+  const loader = new FrameRequestLoader(
+    session,
+    {
+      fetch: async () => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => missingResponse,
+        url: "https://example.test/frame/missing",
+      }),
+    },
+    { next: () => "request-frame-missing" },
+    { frameLifecycle: lifecycle },
+  )
+  const controller = new FrameController(session, "details", loader)
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!expoFrameBefore) throw new Error("Expo missing-Frame target is missing")
+  const expoResult = await controller.visit("/frame/missing")
+
+  const browserEvents: unknown[] = []
+  let browserFrameListenerTarget: HappyElement | undefined
+  const handleBrowserMissing = (received: HappyEvent) => {
+    const event = received as unknown as CustomEvent<{
+      response: Response
+      visit(location: string): void
+    }>
+    browserEvents.push({
+      frameId: (event.target as Element | null)?.id,
+      response: {
+        redirected: event.detail.response.redirected,
+        status: event.detail.response.status,
+        url: event.detail.response.url,
+      },
+      type: event.type.replace("turbo:", ""),
+    })
+    event.preventDefault()
+  }
+  const originalFetch = browser.fetch
+  browser.fetch = async () => {
+    const response = new browser.Response(missingResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/frame/missing",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const link = browser.document.getElementById("frame-missing-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser missing-Frame target is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser missing-Frame link is missing")
+    }
+    browserFrameBefore.addEventListener("turbo:frame-missing", handleBrowserMissing)
+    browserFrameListenerTarget = browserFrameBefore
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Missing-Frame differential lost its target")
+    }
+    expect(expoResult?.status).toBe("prevented")
+    expect(expoEvents).toEqual(browserEvents)
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser missing-Frame differential result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browserFrameAfter.hasAttribute("complete")).toBe(true)
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browserFrameListenerTarget?.removeEventListener("turbo:frame-missing", handleBrowserMissing)
+    browser.fetch = originalFetch
+    turbo.session.stop()
   }
 })
 
