@@ -626,7 +626,7 @@ const DEMO_STREAM_SOURCE_KEY = "id:demo-stream-source";
 const DEMO_PROTECTED_STREAM_SOURCE_KEY = "id:demo-protected-stream-source";
 const protectedCablePanelOptions = Object.freeze({
   description:
-    "This native-only panel fetches a fresh short-lived standalone Rails ticket with no-store caching for each credential-bearing transport generation, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation teardown, Android-interaction, or physical-device policy.",
+    "This native-only panel fetches a fresh short-lived standalone Rails ticket with no-store caching for each credential-bearing transport generation, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. One local-only control rotates the client generation; another invalidates prior ticket generations and remotely disconnects the demo subject before bounded fresh admission. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production identity, tenant, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
   revokeCredentialsButtonLabel: "Revoke protected Cable ticket",
