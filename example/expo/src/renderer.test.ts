@@ -4606,6 +4606,93 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1])
   })
 
+  test("reloads a retained top-level refresh-morph Frame after the document render commits", async () => {
+    const currentUrl = "https://example.test/current"
+    const pending: { resolve: (response: TurboResponse) => void }[] = []
+    const frameRequests: TurboRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="refreshable" src="/refreshable" refresh="morph" loading="lazy"><DemoLeft id="inside" title="before"/></turbo-frame></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              pending.push({ resolve })
+            }),
+        },
+        { next: () => "document-frame-morph-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          async fetch(request): Promise<TurboResponse> {
+            frameRequests.push(request)
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () =>
+                '<turbo-frame id="refreshable"><DemoLeft id="inside" title="after"/></turbo-frame>',
+              url: request.url,
+            }
+          },
+        },
+        { next: () => "document-frame-reload-request" },
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      documentController: controller,
+      frames,
+    })
+    const renderedCard = () => renderer.root.findByProps({ side: "left" }).props
+    const frameController = frames.get("refreshable")
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(renderedCard()).toMatchObject({ title: "before" })
+    expect(frameController.state.connected).toBe(true)
+    expect(frameRequests).toEqual([])
+
+    let refreshing: Promise<unknown> | undefined
+    act(() => {
+      refreshing = controller.refreshCurrent(currentUrl, "morph")
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Gallery><turbo-frame id="refreshable" src="/refreshable" refresh="morph" loading="lazy"><DemoLeft id="incoming" title="ignored"/></turbo-frame></Gallery>',
+        url: currentUrl,
+      })
+      await refreshing
+      await frameController.loaded
+    })
+
+    expect(frameRequests).toHaveLength(1)
+    expect(frameRequests[0]?.url).toBe("https://example.test/refreshable")
+    expect(renderedCard()).toMatchObject({ title: "after" })
+    expect(session.tree.getElementById("incoming")).toBeUndefined()
+
+    act(() => renderer.unmount())
+    frames.dispose()
+  })
+
   test("resets only an acknowledged successful current-document refresh", async () => {
     const currentUrl = "https://example.test/current"
     const pending: { resolve: (response: TurboResponse) => void }[] = []

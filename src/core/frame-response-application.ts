@@ -249,7 +249,7 @@ export function commitPreparedFrameMutation(
     const changed = morph
       ? [...morph.changed]
       : [...replaceFrameChildrenPreservingPermanents(tree, state.activeFrame, state.responseFrame)]
-    if (morph) nestedFrames = morph.nestedFrames
+    if (morph) nestedFrames = morph.reloadFrames
     if (state.finalUrl) tree.setAttribute(state.activeFrame, "src", state.finalUrl)
     if (state.documentUrl !== undefined && tree.document.url !== state.documentUrl) {
       tree.retargetDocumentUrl(state.documentUrl)

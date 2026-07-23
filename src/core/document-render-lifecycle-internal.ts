@@ -1,4 +1,5 @@
 import type { DocumentScrollPosition } from "./document-history"
+import { notifyDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal"
 import {
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
@@ -311,6 +312,9 @@ function finishAcknowledgement(
     return false
   }
   settle(binding, pending, outcome)
+  if (outcome === "rendered") {
+    notifyDocumentMorphFrameReloads(session, document, pending.commit.generation)
+  }
   return outcome === "rendered"
 }
 

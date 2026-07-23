@@ -136,7 +136,7 @@ describe("morph lifecycle", () => {
       '<Gallery id="root"><Aside id="aside" tone="new" /></Gallery>',
       { url: "https://example.test/two" },
     )
-    page.mutate((tree) => morphCurrentDocumentRoot(tree, source))
+    page.mutate((tree) => morphCurrentDocumentRoot(tree, source).changed)
 
     expect(seen).toEqual([
       "before:card",

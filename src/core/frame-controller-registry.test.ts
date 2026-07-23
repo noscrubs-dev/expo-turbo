@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 
 import type { NavigationAdapter, TurboRequest, TurboResponse, VisitAction } from "../adapters"
+import { notifyDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal"
+import { morphCurrentDocument } from "./document-session-morph-internal"
 import { FrameMissingError, TargetError } from "./errors"
 import {
   consumeFrameAutofocus,
@@ -77,6 +79,67 @@ function harness(documentUrl = "https://example.test/document"): Harness {
 }
 
 describe("Frame controller registry visits", () => {
+  test("reloads retained outermost refresh-morph Frames only after document render acknowledgement", async () => {
+    const requests: TurboRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><turbo-frame id="outer" src="/outer" refresh="morph" loading="lazy"><Panel id="before"/></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        async fetch(request): Promise<TurboResponse> {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: false,
+            status: 200,
+            text: async () => '<turbo-frame id="outer"><Panel id="after"/></turbo-frame>',
+            url: request.url,
+          }
+        },
+      },
+      { next: () => "document-morph-frame-reload" },
+    )
+    const registry = new FrameControllerRegistry(session, loader)
+    const controller = registry.get("outer")
+    await controller.connect()
+
+    morphCurrentDocument(
+      session,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><turbo-frame id="outer" src="/outer" refresh="morph" loading="lazy"><Panel id="incoming-ignored"/></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+
+    expect(requests).toEqual([])
+    expect(session.tree.getElementById("before")).toBeDefined()
+    expect(session.tree.getElementById("incoming-ignored")).toBeUndefined()
+
+    notifyDocumentMorphFrameReloads(session, session.tree.document, session.treeGeneration)
+    await controller.loaded
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.url).toBe("https://example.test/outer")
+    expect(session.tree.getElementById("before")).toBeUndefined()
+    expect(session.tree.getElementById("after")).toBeDefined()
+    registry.dispose()
+
+    morphCurrentDocument(
+      session,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><turbo-frame id="outer" src="/outer" refresh="morph" loading="lazy"><Panel id="disposed-incoming"/></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    notifyDocumentMorphFrameReloads(session, session.tree.document, session.treeGeneration)
+    await Promise.resolve()
+    expect(requests).toHaveLength(1)
+  })
+
   test("finds only the exact mounted connected Frame controller without creating one", async () => {
     const { registry, session } = harness()
     const original = session.tree.getElementById("named")
