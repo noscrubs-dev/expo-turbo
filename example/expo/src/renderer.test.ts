@@ -4606,6 +4606,103 @@ describe("React protocol renderer", () => {
     expect(unmounted).toEqual([1])
   })
 
+  test("renders an incompatible current-document root around a retained logical descendant", async () => {
+    const currentUrl = "https://example.test/current"
+    const pending: { resolve: (response: TurboResponse) => void }[] = []
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    let nextInstance = 0
+    function RefreshProbe(props: Readonly<{ title: string }>): ReactNode {
+      const [instance] = useState(() => ++nextInstance)
+      useEffect(
+        () => () => {
+          unmounted.push(instance)
+        },
+        [instance],
+      )
+      useNodeDisposal(() => disposed.push(instance))
+      return createElement("section", { instance, title: props.title })
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: (props) => host("div", props),
+            schema: z.object({}),
+            tag: "Screen",
+          }),
+          defineComponent({
+            attributes: { title: { codec: stringCodec, prop: "title" } },
+            children: "none",
+            component: RefreshProbe,
+            schema: z.object({ title: z.string() }),
+            tag: "RefreshProbe",
+          }),
+        ],
+        name: "document-refresh-root-replacement",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><RefreshProbe id="probe" title="before"/></Gallery>',
+        { url: currentUrl },
+      ),
+    )
+    const probe = session.tree.getElementById("probe")
+    const identity = session.getNodeSnapshot("id:probe")?.identity
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: () =>
+            new Promise<TurboResponse>((resolve) => {
+              pending.push({ resolve })
+            }),
+        },
+        { next: () => "document-refresh-root-replacement-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const renderer = render(session, registry, { documentController: controller })
+
+    let refreshing: Promise<unknown> | undefined
+    act(() => {
+      refreshing = controller.refreshCurrent(currentUrl, "morph")
+    })
+    await act(async () => {
+      pending[0]?.resolve({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () =>
+          '<Screen id="screen"><RefreshProbe id="probe" title="after"/></Screen>',
+        url: currentUrl,
+      })
+      await refreshing
+    })
+
+    expect(renderer.root.findByType("div")).toBeDefined()
+    expect(renderer.root.findByType("section").props).toMatchObject({
+      instance: 2,
+      title: "after",
+    })
+    expect(session.tree.getElementById("probe")).toBe(probe)
+    expect(session.getNodeSnapshot("id:probe")?.identity).toBe(identity)
+    expect(disposed).toEqual([1])
+    expect(unmounted).toEqual([1])
+
+    act(() => renderer.unmount())
+    expect(disposed).toEqual([1, 2])
+    expect(unmounted).toEqual([1, 2])
+  })
+
   test("reloads a retained top-level refresh-morph Frame after the document render commits", async () => {
     const currentUrl = "https://example.test/current"
     const pending: { resolve: (response: TurboResponse) => void }[] = []
