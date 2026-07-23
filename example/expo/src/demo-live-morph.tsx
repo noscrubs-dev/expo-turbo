@@ -40,7 +40,9 @@ export interface DemoLiveMorphRuntime {
   readonly endpoints: DemoLiveMorphEndpoints
   readonly frames: FrameControllerRegistry
   reloadOuter(): Promise<void>
+  resumeOuterVisit(): void
   readonly session: DocumentSession
+  visitOuterPaused(onPaused: () => void): Promise<void>
   visitOuterWithMorph(): Promise<void>
 }
 
@@ -83,11 +85,21 @@ export function createDemoLiveMorphRuntime(
   )
   const transport: FetchAdapter = createDemoLiveFetchAdapter(fetch)
   let frameRequestId = 0
+  let pauseOuterVisit = false
+  let pausedOuterRender: (() => void) | undefined
+  let reportOuterPaused: (() => void) | undefined
   let selectOuterVisitMorph = false
   const frameLifecycle = new FrameLifecycle()
   frameLifecycle.subscribe("before-frame-render", (event) => {
-    if (event.detail.frameId === OUTER_FRAME_ID && selectOuterVisitMorph) {
+    if (event.detail.frameId !== OUTER_FRAME_ID) return undefined
+    if (selectOuterVisitMorph) {
       event.detail.render = (context) => context.renderMorph()
+    }
+    if (pauseOuterVisit) {
+      event.detail.render = (context) => context.renderMorph()
+      event.pause()
+      pausedOuterRender = () => event.resume()
+      reportOuterPaused?.()
     }
     return undefined
   })
@@ -108,6 +120,8 @@ export function createDemoLiveMorphRuntime(
     dispose(): void {
       if (disposed) return
       disposed = true
+      pausedOuterRender?.()
+      pausedOuterRender = undefined
       frames.dispose()
     },
     endpoints,
@@ -117,7 +131,29 @@ export function createDemoLiveMorphRuntime(
       await outer.connect()
       await outer.reload()
     },
+    resumeOuterVisit(): void {
+      const resume = pausedOuterRender
+      if (!resume) throw new StateError("The outer Frame visit is not paused")
+      pausedOuterRender = undefined
+      resume()
+    },
     session,
+    async visitOuterPaused(onPaused: () => void): Promise<void> {
+      if (typeof onPaused !== "function") {
+        throw new StateError("The outer Frame pause observer is invalid")
+      }
+      const outer = frames.get(OUTER_FRAME_ID)
+      await outer.connect()
+      pauseOuterVisit = true
+      reportOuterPaused = onPaused
+      try {
+        await outer.visit(endpoints.outerUrl)
+      } finally {
+        pauseOuterVisit = false
+        pausedOuterRender = undefined
+        reportOuterPaused = undefined
+      }
+    },
     async visitOuterWithMorph(): Promise<void> {
       const outer = frames.get(OUTER_FRAME_ID)
       await outer.connect()
@@ -170,7 +206,8 @@ export function DemoLiveMorphRuntimeProvider({
 
 export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRuntime }>) {
   const [error, setError] = useState<Error | undefined>()
-  const [pendingAction, setPendingAction] = useState<"reload" | "visit" | undefined>()
+  const [paused, setPaused] = useState(false)
+  const [pendingAction, setPendingAction] = useState<"pause" | "reload" | "visit" | undefined>()
   const reloadOuter = () => {
     if (pendingAction) return
     setPendingAction("reload")
@@ -179,6 +216,28 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
       .reloadOuter()
       .catch((nextError) => setError(asDisplayError(nextError)))
       .finally(() => setPendingAction(undefined))
+  }
+  const visitOuterPaused = () => {
+    if (pendingAction) return
+    setPendingAction("pause")
+    setPaused(false)
+    setError(undefined)
+    void proof
+      .visitOuterPaused(() => setPaused(true))
+      .catch((nextError) => setError(asDisplayError(nextError)))
+      .finally(() => {
+        setPaused(false)
+        setPendingAction(undefined)
+      })
+  }
+  const resumeOuterVisit = () => {
+    if (!paused) return
+    setPaused(false)
+    try {
+      proof.resumeOuterVisit()
+    } catch (nextError) {
+      setError(asDisplayError(nextError))
+    }
   }
   const visitOuterWithMorph = () => {
     if (pendingAction) return
@@ -208,6 +267,8 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
         Frame keeps the mounted wrapper and ignores the outer response&apos;s stale inner payload,
         then reloads itself after the outer Frame has rendered and loaded. The second control sends
         an ordinary Frame visit and selects the same bounded renderer through before-frame-render.
+        The final controls pause a Rails response before any tree commit and resume that exact visit
+        explicitly.
       </Text>
       <DemoLiveMorphRuntimeProvider proof={proof}>
         <ExpoTurboRoot />
@@ -248,6 +309,46 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
             : "Visit outer Frame with morph renderer"}
         </Text>
       </Pressable>
+      <Pressable
+        accessibilityLabel={
+          paused ? "Outer Frame render paused" : "Visit outer Frame and pause before render"
+        }
+        accessibilityRole="button"
+        disabled={pendingAction !== undefined}
+        onPress={visitOuterPaused}
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed || pendingAction ? "#5c3f65" : "#7b4689",
+          borderRadius: 12,
+          opacity: pendingAction ? 0.65 : 1,
+          padding: 14,
+        })}
+      >
+        <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+          {pendingAction === "pause"
+            ? paused
+              ? "Outer Frame render paused"
+              : "Waiting to pause outer Frame…"
+            : "Visit outer Frame and pause before render"}
+        </Text>
+      </Pressable>
+      {paused ? (
+        <Pressable
+          accessibilityLabel="Resume paused outer Frame render"
+          accessibilityRole="button"
+          onPress={resumeOuterVisit}
+          style={({ pressed }) => ({
+            alignItems: "center",
+            backgroundColor: pressed ? "#17613e" : "#1f7a4f",
+            borderRadius: 12,
+            padding: 14,
+          })}
+        >
+          <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+            Resume paused outer Frame render
+          </Text>
+        </Pressable>
+      ) : null}
       {error ? (
         <Text selectable style={{ color: "#a62525" }}>
           {error.name}: {error.message}

@@ -1,0 +1,46 @@
+appId: host.exp.Exponent
+---
+- launchApp:
+    clearState: true
+- openLink: ${EXPO_URL}
+- waitForAnimationToEnd
+- tapOn:
+    text: Open
+    optional: true
+- extendedWaitUntil:
+    visible: Expo Turbo Compatibility
+    timeout: 120000
+- tapOn:
+    text: Continue
+    optional: true
+- tapOn:
+    text: Close
+    optional: true
+- hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Nested Frame refresh morph
+    direction: DOWN
+    timeout: 120000
+- scrollUntilVisible:
+    element:
+      text: Visit outer Frame and pause before render
+    direction: DOWN
+    timeout: 30000
+- tapOn: Visit outer Frame and pause before render
+- extendedWaitUntil:
+    visible: Outer Frame render paused
+    timeout: 30000
+- assertVisible: Reload the outer Frame to begin the morph cascade
+- tapOn: Resume paused outer Frame render
+- scrollUntilVisible:
+    element:
+      text: Outer Frame response
+    direction: UP
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Inner Frame response
+    direction: DOWN
+    timeout: 30000

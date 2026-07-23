@@ -95,7 +95,9 @@
       "rationale": "before-frame-render supports bounded renderer replacement plus pause and resume before commit; render, load, missing, and morph use logical read-only handles instead of DOM elements.",
       "evidence": [
         "src/core/frame-lifecycle.test.ts",
-        "src/core/frame-controller.test.ts"
+        "src/core/frame-controller.test.ts",
+        "example/expo/src/demo-live-morph.test.tsx",
+        ".maestro/live-frame-render-pause.yaml"
       ]
     },
     {
