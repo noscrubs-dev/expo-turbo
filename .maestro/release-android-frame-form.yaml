@@ -14,18 +14,10 @@ appId: dev.noscrubs.expoturbo.example
 - hideKeyboard
 - scrollUntilVisible:
     element:
-      text: Nested Frame refresh morph
+      text: Standalone Rails Frame form
     direction: DOWN
     timeout: 240000
     speed: 80
-    visibilityPercentage: 50
-    centerElement: true
-- scrollUntilVisible:
-    element:
-      text: Standalone Rails Frame form
-    direction: UP
-    timeout: 60000
-    speed: 30
     visibilityPercentage: 50
     centerElement: true
 - scrollUntilVisible:

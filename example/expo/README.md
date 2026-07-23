@@ -73,6 +73,20 @@ The iPhone 17 Pro simulator and Pixel 2 API 33 emulator Release builds plus
 closes simulator/emulator release admission only; physical iOS/Android evidence
 remains required.
 
+For an Android Release build that includes the optional live Rails panels, keep
+the demo origin in the environment that runs Gradle's JavaScript bundle task:
+
+```sh
+bunx expo prebuild --platform android --no-install
+cd android
+EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN=http://<host>:3000 ./gradlew assembleRelease
+```
+
+When changing that origin without recreating the generated Android project,
+rerun `:app:createBundleReleaseJsAndAssets` with `--rerun-tasks` before
+`assembleRelease`; Gradle otherwise considers the previously generated bundle
+up to date.
+
 Before running the Android picker flow, place its checked-in fixture in the
 emulator's Downloads provider and index it:
 
