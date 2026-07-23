@@ -25,7 +25,10 @@
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
-    "plugins": ["expo-router", "./plugins/with-demo-cleartext-android.cjs"],
+    "plugins": [
+      ["expo-router", { "origin": "https://example.test" }],
+      "./plugins/with-demo-cleartext-android.cjs"
+    ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
