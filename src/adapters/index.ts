@@ -180,11 +180,16 @@ export interface AutofocusAdapter {
   canFocus(id: string): boolean
   focus(id: string): void
   /**
-   * Optional logical-focus snapshot used by standalone Stream messages. A
-   * returned id preserves existing host focus; `undefined` allows one stream
+   * Optional logical-focus snapshot used by standalone Stream autofocus. A
+   * returned id preserves existing host focus; `undefined` allows one admitted
    * autofocus attempt after the exact React commit.
    */
   getFocusedId?(): string | undefined
+  /**
+   * Optional logical-focus snapshot used to retain focus when native morphing
+   * keeps a logical node but React must remount it under a different parent.
+   */
+  getMorphFocusedId?(): string | undefined
 }
 
 /**

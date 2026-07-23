@@ -71,6 +71,10 @@ export class DemoFocusRegistry implements AutofocusAdapter, FocusAdapter {
     return this.focusedId;
   }
 
+  getMorphFocusedId(): string | undefined {
+    return this.focusedId;
+  }
+
   handleBlur(id: string, eventToken: object): void {
     this.assertActive();
     if (this.eventTokens.get(id) !== eventToken) return;

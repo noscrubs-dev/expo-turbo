@@ -4158,6 +4158,135 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
+  test("restores exact retained focus after a cross-parent morph remount", async () => {
+    const mounted = new Set<string>()
+    const focusCalls: string[] = []
+    const scrollCalls: string[] = []
+    let focusedId: string | undefined = "id:field"
+    let moveFocusDuringCommit = false
+    function Focusable(props: Readonly<{ title: string }>): ReactNode {
+      const nodeKey = "id:field"
+      useLayoutEffect(() => {
+        mounted.add(nodeKey)
+        if (moveFocusDuringCommit) focusedId = "id:other"
+        return () => {
+          mounted.delete(nodeKey)
+          if (focusedId === nodeKey) focusedId = undefined
+        }
+      }, [])
+      return createElement("focusable", { title: props.title })
+    }
+    function Container(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement("container", null, props.children)
+    }
+    const focusable = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "none",
+      component: Focusable,
+      schema: z.object({ title: z.string() }),
+      tag: "Focusable",
+    })
+    const container = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: Container,
+      schema: z.object({}),
+      tag: "Container",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [container, focusable],
+        name: "stream-morph-reparent-focus",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Container id="panel"><Container id="left"><Focusable id="field" title="Before"/></Container><Container id="right"/></Container></Gallery>',
+      ),
+    )
+    const field = session.tree.getElementById("field")
+    if (!field) throw new Error("cross-parent morph focus field is missing")
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: (nodeKey) => mounted.has(nodeKey),
+        focus: (nodeKey) => {
+          focusedId = nodeKey
+          focusCalls.push(nodeKey)
+        },
+        getFocusedId: () => focusedId,
+        getMorphFocusedId: () => focusedId,
+      },
+      autofocusScroll: {
+        canScroll: (nodeKey) => mounted.has(nodeKey),
+        scrollTo: (nodeKey) => {
+          scrollCalls.push(nodeKey)
+        },
+      },
+    })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Container id="left"/><Container id="right"><Focusable id="field" title="After"/></Container></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("field")).toBe(field)
+    expect(focusedId).toBe("id:field")
+    expect(focusCalls).toEqual(["id:field"])
+    expect(scrollCalls).toEqual(["id:field"])
+
+    moveFocusDuringCommit = true
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Container id="left"><Focusable id="field" title="Again"/></Container><Container id="right"/></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("field")).toBe(field)
+    expect(focusedId).toBe("id:other")
+    expect(focusCalls).toEqual(["id:field"])
+    expect(scrollCalls).toEqual(["id:field"])
+    act(() => renderer.unmount())
+  })
+
+  test("redacts retained morph focus snapshot failures after the tree commits", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><DemoText id="field">Before</DemoText></Gallery>',
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    let failSnapshot = false
+    const renderer = render(session, registryWithCounters(), {
+      autofocus: {
+        canFocus: () => true,
+        focus: () => undefined,
+        getMorphFocusedId: () => {
+          if (failSnapshot) throw new Error("secret retained focus")
+          return "id:field"
+        },
+      },
+      onError: (event) => errors.push(event),
+    })
+    failSnapshot = true
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="gallery" method="morph"><template><DemoText id="field">After</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error).toBeInstanceOf(StateError)
+    expect(String(errors[0]?.error)).not.toContain("secret")
+    act(() => renderer.unmount())
+  })
+
   test("applies component-declared preserve and reset state policies during morph", async () => {
     let nextInstance = 0
     const canFocusCalls: string[] = []
