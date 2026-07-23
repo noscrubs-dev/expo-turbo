@@ -545,7 +545,11 @@ describe("standalone Rails Action Cable proof", () => {
   });
 
   test("fetches a fresh protected Rails header ticket for each socket generation", async () => {
-    const tickets = ["short-lived-ticket-1", "short-lived-ticket-2"] as const;
+    const tickets = [
+      "short-lived-ticket-1",
+      "short-lived-ticket-2",
+      "short-lived-ticket-3",
+    ] as const;
     const ticketUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_ticket";
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_document";
     const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_frame";
@@ -707,6 +711,17 @@ describe("standalone Rails Action Cable proof", () => {
         url: "ws://demo.example:3000/cable",
       });
       expect(socketCalls[0]?.headers).not.toEqual(socketCalls[1]?.headers);
+
+      proof.rotateCableCredentials();
+      await nextTurn();
+      await nextTurn();
+      expect(requests.filter((request) => request.url === ticketUrl)).toHaveLength(3);
+      expect(socketCalls[2]).toEqual({
+        headers: { "X-Expo-Turbo-Demo-Ticket": tickets[2] },
+        protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
+        url: "ws://demo.example:3000/cable",
+      });
+      expect(socketCalls[1]?.headers).not.toEqual(socketCalls[2]?.headers);
     } finally {
       await act(async () => {
         renderer?.unmount();
@@ -720,6 +735,7 @@ describe("standalone Rails Action Cable proof", () => {
     expect(socket.sent).toEqual([encodeActionCableSubscribe(identifier)]);
     expect(socket.closeCalls).toBe(1);
     expect(sockets[1]?.closeCalls).toBe(1);
+    expect(sockets[2]?.closeCalls).toBe(1);
   });
 
   test("applies an ordered HTTP Stream response from a Rails-authored link", async () => {
