@@ -498,6 +498,115 @@ test("matches upstream Turbo redirected Frame source canonicalization", async ()
   }
 })
 
+test("matches upstream Turbo Frame recurse extraction", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><a id="frame-recurse-link" href="/frame/recurse">Recurse</a><p id="old">Old</p></turbo-frame></main>'
+  const primaryResponse =
+    '<main><turbo-frame id="bridge" src="/frame/nested" recurse="other details"></turbo-frame><p id="outside-primary">Outside</p></main>'
+  const nestedResponse =
+    '<main><turbo-frame id="bridge"><turbo-frame id="details"><p id="recursive">Recursive</p></turbo-frame></turbo-frame><p id="outside-nested">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoRequests: TurboRequest[] = []
+  let requestId = 0
+  const loader = new FrameRequestLoader(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => (expoRequests.length === 1 ? primaryResponse : nestedResponse),
+          url: request.url,
+        }
+      },
+    },
+    { next: () => `request-frame-recurse-${++requestId}` },
+  )
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!expoFrameBefore) throw new Error("Expo recurse Frame target is missing")
+  const expoResult = await loader.load("details", "/frame/recurse")
+
+  const browserRequests: Array<Readonly<{ frame: string | null; url: string }>> = []
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    const url = String(input)
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    const frame =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    browserRequests.push(Object.freeze({ frame, url }))
+    const response = new browser.Response(
+      url === "https://example.test/frame/recurse" ? primaryResponse : nestedResponse,
+      {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        status: 200,
+      },
+    )
+    Object.defineProperty(response, "url", { configurable: true, value: url })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const link = browser.document.getElementById("frame-recurse-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser recurse Frame target is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser recurse Frame link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Frame recurse differential lost its target")
+    }
+    expect(expoResult).toMatchObject({
+      requestIds: ["request-frame-recurse-1", "request-frame-recurse-2"],
+      status: "completed",
+      url: "https://example.test/frame/recurse",
+    })
+    expect(
+      expoRequests.map(({ headers, url }) => ({
+        frame: headers["Turbo-Frame"] ?? null,
+        url,
+      })),
+    ).toEqual(browserRequests)
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser recurse Frame differential result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("outside-primary")).toBeNull()
+    expect(browser.document.getElementById("outside-nested")).toBeNull()
+    expect(session.tree.getElementById("outside-primary")).toBeUndefined()
+    expect(session.tree.getElementById("outside-nested")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo empty and error Frame response outcomes", async () => {
   const fixtures = [
     {

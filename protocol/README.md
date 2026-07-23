@@ -48,10 +48,12 @@ precedence, absent templates, direct-child ID collision replacement, payload
 cloning, the admitted selector surface, outer and child Stream morphs,
 permanent-node moves, anonymous reconciliation, stable-ID reordering, and one
 real eager Frame fetch whose matching children exclude unrelated response
-content. Ordinary, redirected, empty `204`, matching `422`, and matching `500`
+content. Ordinary, redirected, recurse, empty `204`, matching `422`, and matching `500`
 captured-link Frame navigation additionally compare the exact GET and
 `Turbo-Frame` header, mounted-wrapper identity and attributes, matching children,
-unrelated-response exclusion, and canonical `src`. Empty responses preserve
+unrelated-response exclusion, and canonical `src`. Recurse compares the primary
+target request plus the intermediary-Frame request before both runtimes extract
+the nested final target. Empty responses preserve
 current children while adopting the absolute request URL; matching error
 responses install their authoritative children. Browser Frame `complete`
 attributes and native completion state stay
