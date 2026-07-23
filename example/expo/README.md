@@ -2,7 +2,7 @@
 
 This private Expo SDK 57 application is the standalone native consumer and future compatibility gallery for `expo-turbo`. It owns its manifest and Bun lockfile, is not part of a package-manager workspace, and resolves the public package root through `file:../..`.
 
-The Rails-backed nested Frame morph panel exposes both automatic direct `reload()` morphing and a normal Frame visit whose stable `before-frame-render` listener selects the package-owned bounded morph renderer. Both paths retain the mounted outer/nested Frame identities and run the acknowledged nested canonical reload cascade; the ordinary visit additionally proves stable application-node identity across the controlled override.
+The Rails-backed nested Frame morph panel exposes automatic direct `reload()` morphing, a normal Frame visit whose stable `before-frame-render` listener selects the package-owned bounded morph renderer, and an explicitly paused ordinary visit. The paused path keeps the prior outer/nested content visible until the host resumes that exact admitted response, after which it commits and runs the acknowledged nested canonical reload cascade.
 
 `.maestro/live-frame-morph.yaml` drives that ordinary visit through Expo Go on
 iOS and asserts both visible Rails responses. It deliberately reacquires the

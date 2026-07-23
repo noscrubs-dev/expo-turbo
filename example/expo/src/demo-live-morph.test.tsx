@@ -209,6 +209,75 @@ test("renders the standalone Rails nested Frame morph proof", async () => {
       await Promise.resolve()
     })
     expect(nodeTextContent(innerBefore)).toContain("controlled visit cascade")
+
+    act(() => {
+      const button = renderer?.root.findByProps({
+        accessibilityLabel: "Visit outer Frame and pause before render",
+      })
+      if (!button?.props.onPress) throw new Error("The paused Frame visit button did not render")
+      ;(button.props as PressableProps).onPress?.()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const pausedOuter = takePending(
+      pending,
+      "The paused outer Frame visit did not request the Rails morph endpoint",
+    )
+    await act(async () => {
+      pausedOuter.resolve(
+        response(
+          `<turbo-frame id="${OUTER_FRAME_ID}" src="${OUTER_PATH}" refresh="morph"><Gallery id="morph-shell"><DemoText id="morph-outer-version">Outer Frame resumed response</DemoText><turbo-frame id="${INNER_FRAME_ID}" loading="lazy" refresh="morph" src="${INNER_PATH}"><DemoText id="morph-inner-stale">This nested response is intentionally ignored before its own reload</DemoText></turbo-frame></Gallery></turbo-frame>`,
+          outerUrl,
+        ),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(nodeTextContent(outerVersion)).toContain("controlled visit response")
+    expect(nodeTextContent(innerBefore)).toContain("controlled visit cascade")
+    expect(pending).toHaveLength(0)
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Outer Frame render paused")
+    expect(
+      renderer?.root.findByProps({
+        accessibilityLabel: "Resume paused outer Frame render",
+      }),
+    ).toBeDefined()
+
+    act(() => {
+      const button = renderer?.root.findByProps({
+        accessibilityLabel: "Resume paused outer Frame render",
+      })
+      if (!button?.props.onPress) throw new Error("The paused Frame resume button did not render")
+      ;(button.props as PressableProps).onPress?.()
+    })
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await nextTurn()
+
+    expect(nodeTextContent(outerVersion)).toContain("resumed response")
+    expect(proof.session.tree.getElementById(INNER_FRAME_ID)).toBe(innerBefore)
+    expect(nodeTextContent(innerBefore)).toContain("controlled visit cascade")
+
+    const resumedInner = takePending(
+      pending,
+      "The resumed outer Frame visit did not cascade to the nested Frame",
+    )
+    await act(async () => {
+      resumedInner.resolve(
+        response(
+          `<turbo-frame id="${INNER_FRAME_ID}" src="${INNER_PATH}" refresh="morph"><DemoText id="morph-inner-version">Inner Frame resumed visit cascade</DemoText></turbo-frame>`,
+          innerUrl,
+        ),
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(nodeTextContent(innerBefore)).toContain("resumed visit cascade")
   } finally {
     await act(async () => {
       renderer?.unmount()
