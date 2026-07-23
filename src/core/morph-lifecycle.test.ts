@@ -179,6 +179,37 @@ describe("morph lifecycle", () => {
     )
   })
 
+  test("keeps permanent moves opaque and silent while notifying retained descendants", async () => {
+    const lifecycle = new MorphLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-morph-element", (event) => {
+      events.push(`before:${attributeValue(event.detail.currentElement, "id")}`)
+      return undefined
+    })
+    lifecycle.subscribe("morph-element", (event) => {
+      events.push(`after:${attributeValue(event.detail.currentElement, "id")}`)
+      return undefined
+    })
+    const document = session(
+      '<Gallery id="gallery"><Group id="left"><Panel id="permanent" data-turbo-permanent=""/></Group><Old id="wrapper"><Field id="field"/></Old><Group id="right"/></Gallery>',
+      lifecycle,
+    )
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="gallery" method="morph"><template><Group id="left"/><New id="wrapper"><Field id="field" tone="after"/></New><Group id="right"><Panel id="permanent"/></Group></template></turbo-stream>',
+    )
+
+    expect(document.tree.getElementById("permanent")?.parent).toBe(
+      document.tree.getElementById("right"),
+    )
+    expect(events.filter((event) => event.endsWith(":permanent"))).toEqual([])
+    expect(events.filter((event) => event.endsWith(":field"))).toEqual([
+      "before:field",
+      "after:field",
+    ])
+  })
+
   test("rejects reentrant session mutation from a cancellable listener without committing", async () => {
     const lifecycle = new MorphLifecycle()
     const document = session(

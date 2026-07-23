@@ -318,29 +318,25 @@ describe("Turbo Stream dispatcher", () => {
     expect(scope.state.isDisposed).toBe(true)
   })
 
-  test("rejects protocol and permanent reparenting atomically", async () => {
-    for (const child of [
-      '<turbo-frame id="moving"><DemoText id="content"/></turbo-frame>',
-      '<DemoPanel id="moving" data-turbo-permanent=""><DemoText id="content"/></DemoPanel>',
-    ]) {
-      const document = session(
-        `<Gallery><DemoForm id="form"><DemoGroup id="left">${child}</DemoGroup><DemoGroup id="right"/></DemoForm><Later id="later"/></Gallery>`,
+  test("rejects protocol reparenting atomically", async () => {
+    const child = '<turbo-frame id="moving"><DemoText id="content"/></turbo-frame>'
+    const document = session(
+      `<Gallery><DemoForm id="form"><DemoGroup id="left">${child}</DemoGroup><DemoGroup id="right"/></DemoForm><Later id="later"/></Gallery>`,
+    )
+    const moving = document.tree.getElementById("moving")
+    const before = document.getNodeSnapshot("id:form")
+
+    const reports = (
+      await dispatchTurboStreamFragment(
+        document,
+        `<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right">${child}</DemoGroup></template></turbo-stream><turbo-stream action="remove" target="later"/>`,
       )
-      const moving = document.tree.getElementById("moving")
-      const before = document.getNodeSnapshot("id:form")
+    ).actions
 
-      const reports = (
-        await dispatchTurboStreamFragment(
-          document,
-          `<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right">${child}</DemoGroup></template></turbo-stream><turbo-stream action="remove" target="later"/>`,
-        )
-      ).actions
-
-      expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
-      expect(document.tree.getElementById("moving")).toBe(moving)
-      expect(document.getNodeSnapshot("id:form")).toBe(before)
-      expect(document.tree.getElementById("later")).toBeUndefined()
-    }
+    expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+    expect(document.tree.getElementById("moving")).toBe(moving)
+    expect(document.getNodeSnapshot("id:form")).toBe(before)
+    expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
   test("retains matched permanent application subtrees while morphing surrounding siblings", async () => {
@@ -407,6 +403,141 @@ describe("Turbo Stream dispatcher", () => {
     expect(attributeValue(afterOuterLocked, "value")).toBe("current")
     expect(childIds(afterOuterMorph)).toEqual(["permanent", "editable", "copy"])
     expect(disposals).toBe(0)
+  })
+
+  test("moves permanent application subtrees without morphing their client-owned contents", async () => {
+    for (const action of ["update", "replace"] as const) {
+      for (const destinationFirst of [false, true]) {
+        const document = session(
+          '<Gallery><DemoForm id="form"><DemoGroup id="left"><DemoPanel id="permanent" data-turbo-permanent="" tone="client"><DemoInput id="locked" value="client"/></DemoPanel></DemoGroup><DemoGroup id="right"/></DemoForm></Gallery>',
+        )
+        const permanent = document.tree.getElementById("permanent")
+        const locked = document.tree.getElementById("locked")
+        if (!permanent || !locked) throw new Error("permanent move fixture is missing")
+        const snapshot = document.getNodeSnapshot(permanent.key)
+        const scope = new DocumentStateScopes(document).scopeFor(permanent.key, "form", {
+          draft: "kept",
+        })
+        let disposals = 0
+        document.registerDisposal(permanent.key, () => {
+          disposals += 1
+        })
+
+        const left = '<DemoGroup id="left"/>'
+        const right =
+          '<DemoGroup id="right"><DemoPanel id="permanent" tone="server"><DemoInput id="locked" value="server"/></DemoPanel></DemoGroup>'
+        const children = destinationFirst ? `${right}${left}` : `${left}${right}`
+        const payload =
+          action === "replace" ? `<DemoForm id="form">${children}</DemoForm>` : children
+        const report = (
+          await dispatchTurboStreamFragment(
+            document,
+            `<turbo-stream action="${action}" target="form" method="morph"><template>${payload}</template></turbo-stream>`,
+          )
+        ).actions[0]
+
+        expect(report?.status, `${action}:${destinationFirst}`).toBe("applied")
+        const movedRight = document.tree.getElementById("right")
+        if (!movedRight) throw new Error("permanent move destination is missing")
+        expect(document.tree.getElementById("permanent")).toBe(permanent)
+        expect(document.tree.getElementById("locked")).toBe(locked)
+        expect(permanent.parent).toBe(movedRight)
+        expect(attributeValue(permanent, "tone")).toBe("client")
+        expect(attributeValue(locked, "value")).toBe("client")
+        expect(document.getNodeSnapshot(permanent.key)?.identity).toBe(snapshot?.identity)
+        expect(document.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
+        expect(scope.state.get("draft")).toBe("kept")
+        expect(scope.state.isDisposed).toBe(false)
+        expect(disposals).toBe(0)
+      }
+    }
+  })
+
+  test("admits new permanent nodes and preserves nested permanent state opaquely", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoPanel id="outer" data-turbo-permanent="" tone="client"><DemoPanel id="nested" data-turbo-permanent="" tone="nested-client"/></DemoPanel><DemoText id="becomes-permanent" tone="before"/></DemoForm></Gallery>',
+    )
+    const outer = document.tree.getElementById("outer")
+    const nested = document.tree.getElementById("nested")
+    const promoted = document.tree.getElementById("becomes-permanent")
+    if (!outer || !nested || !promoted) throw new Error("permanent admission fixture is missing")
+
+    const first = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoPanel id="outer" data-turbo-permanent="" tone="server"><DemoPanel id="nested" data-turbo-permanent="" tone="nested-server"/></DemoPanel><DemoText id="becomes-permanent" data-turbo-permanent="" tone="after"/><DemoText id="new-permanent" data-turbo-permanent="" tone="new"/></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(first?.status).toBe("applied")
+    expect(document.tree.getElementById("outer")).toBe(outer)
+    expect(document.tree.getElementById("nested")).toBe(nested)
+    expect(attributeValue(outer, "tone")).toBe("client")
+    expect(attributeValue(nested, "tone")).toBe("nested-client")
+    expect(document.tree.getElementById("becomes-permanent")).toBe(promoted)
+    expect(attributeValue(promoted, "data-turbo-permanent")).toBe("")
+    expect(attributeValue(promoted, "tone")).toBe("after")
+    const added = document.tree.getElementById("new-permanent")
+    if (!added) throw new Error("new permanent node is missing")
+    expect(attributeValue(added, "tone")).toBe("new")
+
+    const second = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoText id="new-permanent" tone="ignored"/></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(second?.status).toBe("applied")
+    expect(document.tree.getElementById("outer")).toBe(outer)
+    expect(document.tree.getElementById("becomes-permanent")).toBe(promoted)
+    expect(document.tree.getElementById("new-permanent")).toBe(added)
+    expect(attributeValue(added, "tone")).toBe("new")
+  })
+
+  test("rejects an incompatible permanent identity atomically", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoPanel id="permanent" data-turbo-permanent=""><DemoText id="locked"/></DemoPanel></DemoForm><Later id="later"/></Gallery>',
+    )
+    const permanent = document.tree.getElementById("permanent")
+    const before = document.getNodeSnapshot("id:form")
+
+    const reports = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoText id="permanent"/></template></turbo-stream><turbo-stream action="remove" target="later"/>',
+      )
+    ).actions
+
+    expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+    expect(document.tree.getElementById("permanent")).toBe(permanent)
+    expect(document.getNodeSnapshot("id:form")).toBe(before)
+    expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("rejects active permanent nodes without an ordinary stable identity", async () => {
+    for (const invalid of [
+      '<DemoText data-turbo-permanent=""/>',
+      '<turbo-frame id="permanent-frame" data-turbo-permanent=""/>',
+    ]) {
+      const document = session(
+        `<Gallery><DemoForm id="form">${invalid}<DemoText id="kept"/></DemoForm><Later id="later"/></Gallery>`,
+      )
+      const form = document.tree.getElementById("form")
+      const before = document.getNodeSnapshot("id:form")
+
+      const reports = (
+        await dispatchTurboStreamFragment(
+          document,
+          '<turbo-stream action="update" target="form" method="morph"><template><DemoText id="kept"/></template></turbo-stream><turbo-stream action="remove" target="later"/>',
+        )
+      ).actions
+
+      expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+      expect(document.tree.getElementById("form")).toBe(form)
+      expect(document.getNodeSnapshot("id:form")).toBe(before)
+      expect(document.tree.getElementById("later")).toBeUndefined()
+    }
   })
 
   test("reorders compatible IDs, retains anonymous ordinals, and remounts incompatible children", async () => {
@@ -504,7 +635,7 @@ describe("Turbo Stream dispatcher", () => {
     expect(disposed).toEqual(["frame", "source"])
   })
 
-  test("remounts an incompatible replacement subtree without retaining its descendant IDs", async () => {
+  test("remounts an incompatible replacement ancestor while retaining stable descendants", async () => {
     const document = session(
       '<Gallery><DemoPanel id="panel"><Old id="root"><DemoGroup id="before"><DemoInput id="field"/></DemoGroup></Old></DemoPanel></Gallery>',
     )
@@ -521,14 +652,18 @@ describe("Turbo Stream dispatcher", () => {
     ).actions[0]
     const currentRoot = document.tree.getElementById("root")
     const currentField = document.tree.getElementById("field")
-    if (!currentRoot || !currentField) throw new Error("morphed replacement subtree is missing")
+    const after = document.tree.getElementById("after")
+    if (!currentRoot || !currentField || !after) {
+      throw new Error("morphed replacement subtree is missing")
+    }
 
     expect(report).toMatchObject({ appliedTargets: 1, status: "applied" })
     expect(currentRoot).not.toBe(root)
-    expect(currentField).not.toBe(field)
+    expect(currentField).toBe(field)
     expect(document.tree.getElementById("before")).toBeUndefined()
     expect(document.tree.getElementById("after")).toBeDefined()
-    expect(scope.state.isDisposed).toBe(true)
+    expect(currentField.parent).toBe(after)
+    expect(scope.state.isDisposed).toBe(false)
   })
 
   test("rejects unsupported child morph boundaries atomically and continues later Streams", async () => {
@@ -552,26 +687,9 @@ describe("Turbo Stream dispatcher", () => {
           '<turbo-stream action="update" target="frame" method="morph"><template><DemoText/></template></turbo-stream>',
       },
       {
-        name: "unmatched active permanent node",
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/></template></turbo-stream>',
-        permanent: true,
-      },
-      {
-        name: "unmatched permanent payload node",
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText id="incoming-permanent" data-turbo-permanent=""/></template></turbo-stream>',
-      },
-      {
         name: "permanent payload node without an id",
         stream:
           '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText data-turbo-permanent=""/></template></turbo-stream>',
-      },
-      {
-        name: "nested permanent payload node",
-        permanent: true,
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText id="permanent" data-turbo-permanent=""><DemoText id="nested" data-turbo-permanent=""/></DemoText></template></turbo-stream>',
       },
       {
         name: "permanent protocol payload node",
