@@ -4,7 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
-- Sign the exact paired npm and RubyGems candidate artifacts with GitHub/Sigstore build provenance. The candidate retains an offline verification bundle beside its checksum manifest, and stable publication verifies both subjects against the originating public repository before either registry write or source tag.
+- Sign the exact paired npm and RubyGems candidate artifacts with GitHub/Sigstore build provenance. The candidate retains an offline verification bundle beside its checksum manifest, stable publication verifies both subjects against the originating public repository before either registry write or source tag, and the release artifact transport runs on pinned Node 24 action releases.
 
 - Preserve stable-ID `data-turbo-permanent` application elements across every implemented Stream, direct Frame reload, and current-document morph path. A compatible current permanent may move between ordinary parents while keeping its exact attributes, nested subtree, state, focus key, and zero morph revision even when the incoming marker is absent; a directly omitted permanent remains in place, incoming-only markers are admitted normally, and an outer permanent owns nested permanent state opaquely. Permanent protocol nodes, missing IDs, incompatible same-ID permanent identities, omitted unmatched permanent-bearing ancestors, duplicate IDs, and out-of-root moves still fail atomically.
 
