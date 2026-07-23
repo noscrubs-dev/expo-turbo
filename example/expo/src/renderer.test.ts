@@ -4103,6 +4103,61 @@ describe("React protocol renderer", () => {
     expect([...unmounted].sort()).toEqual([1, 2, 3])
   })
 
+  test("keeps logical ownership but remounts a native component moved across parents", async () => {
+    let nextInstance = 0
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    function Stateful(props: Readonly<{ children?: ReactNode; title: string }>): ReactNode {
+      const [instance] = useState(() => ++nextInstance)
+      useEffect(
+        () => () => {
+          unmounted.push(instance)
+        },
+        [instance],
+      )
+      useNodeDisposal(() => disposed.push(instance))
+      return createElement("section", { instance, title: props.title }, props.children)
+    }
+    const stateful = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "nodes",
+      component: Stateful,
+      schema: z.object({ title: z.string() }),
+      tag: "Stateful",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [stateful],
+        name: "stream-morph-reparent-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Stateful id="panel" title="Panel"><Stateful id="left" title="Left"><Stateful id="field" title="Before"/></Stateful><Stateful id="right" title="Right"/></Stateful></Gallery>',
+      ),
+    )
+    const renderer = render(session, componentRegistry)
+    const field = session.tree.getElementById("field")
+    if (!field) throw new Error("cross-parent morph field is missing")
+    const fieldInstance = () =>
+      renderer.root.findAllByType("section").find((node) => node.props.title === "After")?.props
+        .instance as number | undefined
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Stateful id="left" title="Left"/><Stateful id="right" title="Right"><Stateful id="field" title="After"/></Stateful></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("field")).toBe(field)
+    expect(fieldInstance()).toBe(5)
+    expect(disposed).toEqual([3])
+    expect(unmounted).toEqual([3])
+    act(() => renderer.unmount())
+  })
+
   test("applies component-declared preserve and reset state policies during morph", async () => {
     let nextInstance = 0
     const canFocusCalls: string[] = []
