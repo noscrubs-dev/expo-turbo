@@ -267,6 +267,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-23**:
 
+- Changed: Added a Maestro-only smoke for the installed standalone iOS Release application and documented the independent source-consumer build order.
+- Why: Static Expo exports and Expo Go did not prove that the generated native application could bundle the package's public `dist/` exports and launch without Metro.
+- Impact: A clean detached checkout now builds the root package before the example's `file:../..` install, produces a signed-disabled iPhone Simulator Release app, and passes direct gallery and mounted-Frame assertions through Maestro. Android Release interaction and physical iOS/Android evidence remain open.
+
+**2026-07-23**:
+
 - Changed: Completed the standalone Rails response boundary matrix with canonical `200`, empty `201`, followed `303`, malformed correct-MIME XML, and a bounded delayed document in addition to the existing `204`, `422`, `500`, wrong-MIME, Frame, form, Stream, and Cable cases.
 - Why: The public host needed real transport fixtures for every document loader branch, including redirect final-URL truth, parser failure, and cancellation by a newer request.
 - Impact: Rails request specs assert the exact responses and the real-host native smoke proves successful redirect adoption, empty `201`, malformed XML rejection without tree mutation, and delayed-request cancellation. Product-host authorization remains separate.

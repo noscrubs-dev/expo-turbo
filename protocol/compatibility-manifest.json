@@ -334,10 +334,11 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, and Maestro iOS simulator flows exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, and a standalone iOS simulator Release build driven directly by Maestro exist, but Android Release interaction, complete differential coverage, and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/protocol-fixtures.test.ts",
-        ".maestro/live-frame-morph.yaml"
+        ".maestro/live-frame-morph.yaml",
+        ".maestro/release-gallery-smoke.yaml"
       ]
     },
     {

@@ -13,6 +13,12 @@ asserts the accessible paused state and unchanged prior Frame content, resumes
 through the host control, and observes both Rails responses. Simulator UI
 interaction is Maestro-only.
 
+`.maestro/release-gallery-smoke.yaml` launches the installed standalone
+`Release` application directly, without Expo Go or a development server, and
+asserts the gallery plus its mounted Frame content. The source package must be
+built before the example's independent `file:../..` install so Bun snapshots
+the generated `dist/` exports into that consumer.
+
 The app-lifetime Expo Turbo runtime/provider lives above the Expo Router Stack. `/` replace-redirects to `/demo` without attaching history, and only the focused `[...expoTurboPath]` route attaches the bridge and renders the document root. Its example-owned codec accepts canonical `https://example.test` paths rooted at `/demo` as one through eight safe catch-all segments (each at most 96 characters), rather than a fixed route list. It rejects wrong origins/roots, credentials, fragments, malformed or noncanonical encoding, trailing/empty/dot/control segments, and literal or encoded separators. Static export intentionally includes `/demo`, `/demo/linked`, and the linked generic-route proof `/demo/routes/ios-proof/details`. A complete bridge-managed history entry may supply an exact canonical fragment-free query URL: its full document URL is authoritative in opaque, versioned metadata while the catch-all validates the path, preserving query order, duplicates, empty values, `+`, and percent encoding through managed Router history. The `expoTurboPath` catch-all and three `__expo_turbo_*` fields are reserved; non-reserved external Expo Router query parameters remain host-owned and do not map to document queries. The bridge records the catch-all path plus three namespaced restoration params, rejects malformed, unencoded, noncanonical, or path-mismatched managed metadata, pushes canonical-path advances, replaces focused params in place, rolls back failed writes to an exactly verified captured Router state, and translates pop/restored-state notifications into package traversal restoration. A same-document managed cold start adopts without fetching or writing. A different-document managed cold start gates rendering behind one root-visitable, fragment-free exact GET and commits the exact `2xx`/`4xx`/`5xx` XML tree with managed history without a Router write. An unmanaged direct nested route performs the same guarded GET and initializes history plus same-key route metadata inside the tree-commit boundary. Redirects, empty/wrong-MIME/failed responses, stale route state, or focus loss cannot adopt stale tree/history and remain retryable. The provider also supplies a `DocumentPreloader` backed by the controller's exact snapshot cache, so a rendered semantic link carrying `data-turbo-preload` can feed the next ordinary preview visit without parallel cache state. The gallery now provides one dedicated cached-preview scenario at `/demo/linked?preview=automatic`: it renders the warmed XML snapshot before an intentionally delayed canonical fixture response replaces it. Its `/demo/linked?refresh=scroll` scenario begins with a long ready document; one explicit default Refresh Stream consumes a distinct canonical fixture response and, after React acknowledges it, resets only the owning gallery `ScrollView`. Its exact same-document `#native-anchor-target` fixture registers one direct target, combines the document root, document content, and target layout offsets, and asks only that root `ScrollView` to scroll without a fetch or Router-history write. Its cold `/demo/linked#linked-native-anchor-target` fixture performs the normal guarded document bootstrap before that target is deferred to the same root-only adapter. Its `/demo/linked?history=scroll` fixture captures the gallery root's finite position before the link, then defers native Back reconciliation until the destination document boundary has mounted the renderer and root container; the cached return restores that root position without another document GET. This proves generic nested path mapping, managed query history, reload/back/forward restoration, cached-preview transition, one iOS Simulator root-scroll reset, same-document initial/later Expo Go anchor interaction, a cold linked-document Expo Go anchor, and cached-history root-scroll restoration in iOS Simulator/Expo Go. The direct-query path and bounded native Expo Go root-fragment handoff are now covered; Frame/nested direct fragments, later cross-document events, Android interaction, physical-device, and release-build evidence remain later work.
 
 The gallery's `/demo/linked?replace=morph` fixture proves the deliberately narrow page-refresh path. Its active root carries `data-turbo-refresh-method="morph"`; a lower explicit `data-turbo-action="replace"` link changes only the query to `revision=next`, so the source and destination keep the `/demo/linked` pathname and no fragment. The controller skips a cached preview, performs the canonical GET, morphs only a successful compatible response, replaces the focused native history entry, and resets the registered root `ScrollView` only after React acknowledges the committed tree. Exact root `data-turbo-refresh-scroll="preserve"` would suppress that reset; absent, invalid, differently cased, whitespace-padded, or nested metadata defaults to replacement/reset. An iPhone 17 Pro Simulator/Expo Go flow scrolls to the lower control, commits the morph, and visibly returns to `Same-path replace morph committed` at the root. This does not claim fragments, different-path replaces, `advance`/`restore`, Frames, nested scroll containers, Android interaction, physical-device, or release-build behavior.
@@ -49,6 +55,24 @@ bun run start
 
 `bun run check` runs lint, types, fixture tests, and static web, iOS, and Android exports. The individual `export:web`, `export:ios`, and `export:android` scripts are available when one platform needs a focused bundle-admission check. Those native exports produce Hermes bytecode and catch Metro/runtime dependency regressions; they are not release-build, simulator, or physical-device evidence.
 
+For a source-checkout iOS Release build, keep this ordering before running
+Expo prebuild and the native build:
+
+```sh
+cd ../..
+bun install --frozen-lockfile
+bun run build
+cd example/expo
+bun install --frozen-lockfile
+bunx expo prebuild --platform ios --no-install
+cd ios && pod install
+```
+
+The iPhone 17 Pro simulator Release build and
+`.maestro/release-gallery-smoke.yaml` pass from a clean detached checkout. This
+closes iOS simulator release admission only; Android Release interaction and
+physical iOS/Android evidence remain required.
+
 ## Optional native Rails proofs
 
 With the standalone Rails host running, set the origin before starting Expo:
@@ -69,4 +93,6 @@ A separate native-only nested-morph panel reloads `GET /api/expo_turbo/demo/morp
 
 The example install links its React into the local `file:../..` source checkout so the package and native app resolve one peer instance. Published package consumers use normal peer-dependency resolution and do not need this source-development link.
 
-Start with Expo Go where supported. Release builds and physical iOS/Android evidence remain required before compatibility can be claimed.
+Start with Expo Go where supported. A standalone iOS simulator Release smoke is
+also covered; Android Release interaction and physical iOS/Android evidence
+remain required before compatibility can be claimed.
