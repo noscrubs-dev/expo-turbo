@@ -4,13 +4,16 @@ import {
   type FrameRequestCheckpoint,
 } from "./destination-request-ownership"
 import type { DocumentHistory, DocumentHistoryEntry } from "./document-history"
+import { documentCachePolicy } from "./document-metadata"
 import {
   currentDocumentNavigationEpoch,
   subscribeDocumentNavigation,
 } from "./document-navigation-epoch"
 import type { DocumentSnapshotCache } from "./document-snapshot-cache"
 import {
+  BeforeCacheEvent,
   BeforeVisitEvent,
+  DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   type DocumentVisitLifecycle,
@@ -394,6 +397,9 @@ export function prepareFrameHistoryCommit(
   }
   const tree = session.tree
   const treeGeneration = session.treeGeneration
+  if (snapshotCache && visitLifecycle && documentCachePolicy(tree).cacheable) {
+    visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent())
+  }
   const snapshot = snapshotCache ? tree.clone() : undefined
   if (
     session.tree !== tree ||
@@ -545,6 +551,9 @@ export function stageFrameFormHistoryResponse(
   }
   const tree = session.tree
   const treeGeneration = session.treeGeneration
+  if (state.snapshotCache && state.visitLifecycle && documentCachePolicy(tree).cacheable) {
+    state.visitLifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH](new BeforeCacheEvent())
+  }
   let snapshot: DocumentTree | undefined
   try {
     snapshot = state.snapshotCache ? tree.clone() : undefined
@@ -611,12 +620,12 @@ export function commitFrameFormHistoryPlan(
 
   const current = state.history.current
   if (!current) throw new StateError("Document history is not initialized")
+  const tree = session.tree
+  const treeGeneration = session.treeGeneration
   const proposal =
     state.action === "replace"
       ? state.history.proposeFrameReplace(state.frameScope, responseUrl)
       : state.history.proposeFrameAdvance(state.frameScope, responseUrl)
-  const tree = session.tree
-  const treeGeneration = session.treeGeneration
   if (!formPlanCurrent(state) || state.history.current !== current) {
     throw new StateError("Frame form history changed during proposal creation")
   }

@@ -3619,17 +3619,29 @@ describe("FormSubmissionController", () => {
     session.setAttribute("id:form-a", "method", "post")
     const cache = populatedSnapshotCache(session)
     const order: string[] = []
-    const current = mountedFrameHistoryFixture(session, "frame-a", cache, (method, entry) => {
-      order.push("history")
-      expect(method).toBe("push")
-      expect(entry.url).toBe("https://example.test/frame-a/saved")
-      const frame = session.tree.getElementById("frame-a")
-      if (!frame) throw new Error("fixture Frame is missing during history write")
-      expect(attributeValue(frame, "src")).toBe("https://example.test/frame-a/saved")
-      expect(session.tree.getElementById("old-frame-content")).toBeDefined()
-      expect(session.tree.document.url).toBe("https://example.test/current")
-      return undefined
+    const visitLifecycle = new DocumentVisitLifecycle()
+    let beforeCacheEvents = 0
+    visitLifecycle.subscribe("before-cache", () => {
+      beforeCacheEvents += 1
     })
+    const current = mountedFrameHistoryFixture(
+      session,
+      "frame-a",
+      cache,
+      (method, entry) => {
+        order.push("history")
+        expect(method).toBe("push")
+        expect(entry.url).toBe("https://example.test/frame-a/saved")
+        const frame = session.tree.getElementById("frame-a")
+        if (!frame) throw new Error("fixture Frame is missing during history write")
+        expect(attributeValue(frame, "src")).toBe("https://example.test/frame-a/saved")
+        expect(session.tree.getElementById("old-frame-content")).toBeDefined()
+        expect(session.tree.document.url).toBe("https://example.test/current")
+        return undefined
+      },
+      true,
+      { visitLifecycle },
+    )
     session.mutate((tree) => {
       const frame = tree.getElementById("frame-a")
       if (!frame) throw new Error("fixture Frame is missing")
@@ -3706,6 +3718,53 @@ describe("FormSubmissionController", () => {
     expect(attributeValue(outgoingFrame, "src")).toBe("/frame-a")
     expect(attributeValue(outgoingStatus, "phase")).toBe("latest")
     expect(cache.has("https://example.test/other")).toBe(false)
+    expect(beforeCacheEvents).toBe(1)
+  })
+
+  test("emits before-cache for a safe promoted Frame form before publishing its response source", async () => {
+    const session = fixture()
+    session.setAttribute("id:form-a", "data-turbo-action", "advance")
+    session.setAttribute("id:form-a", "method", "get")
+    const cache = new DocumentSnapshotCache()
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-cache", () => {
+      events.push("before-cache")
+      expect(attributeValue(session.tree.getElementById("frame-a") as never, "src")).toBe(
+        "/frame-a",
+      )
+      session.setAttribute("id:status", "phase", "before-cache")
+    })
+    const current = mountedFrameHistoryFixture(session, "frame-a", cache, undefined, true, {
+      visitLifecycle: lifecycle,
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame-a"><SavedFrame id="saved-frame" /></turbo-frame>',
+            { url: "https://example.test/frame-a/saved" },
+          ),
+      },
+      {
+        frameControllers: current.frameControllers,
+        snapshotCache: cache,
+      },
+    )
+
+    await expect(
+      controller.submit(proposal(registry(session, "form-a"), "safe-frame-history")),
+    ).resolves.toMatchObject({ application: "frame", status: "applied" })
+
+    expect(events).toEqual(["before-cache"])
+    const outgoing = cache.get("https://example.test/current")
+    expect(attributeValue(outgoing?.getElementById("status") as never, "phase")).toBe(
+      "before-cache",
+    )
+    expect(attributeValue(outgoing?.getElementById("frame-a") as never, "src")).toBe("/frame-a")
+    expect(session.tree.getElementById("saved-frame")).toBeDefined()
   })
 
   test("leaves promoted Frame form history uncommitted when before-frame-render declines default", async () => {
