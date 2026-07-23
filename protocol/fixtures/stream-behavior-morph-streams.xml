@@ -1,0 +1,3 @@
+<turbo-stream action="replace" target="replace" method="morph"><template><Panel id="replace" tone="after"><Stable id="replace-stable"/><New id="replace-new"/></Panel></template></turbo-stream>
+<turbo-stream action="update" target="update" method="morph"><template><Stable id="update-stable"/><New id="update-new"/></template></turbo-stream>
+<turbo-stream action="update" targets=".group" method="morph"><template><New tone="selector"/></template></turbo-stream>

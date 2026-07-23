@@ -33,7 +33,10 @@ test-only; neither package ships protocol sources as runtime assets.
 
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral
-conformance slice, not yet a complete browser differential suite.
+conformance slice. The separate native-equivalent morph record proves compatible
+outer `replace`, child `update`, and selector child morphing retain the declared
+target/stable-child identities while removing omitted children. This is not yet
+a complete browser differential suite.
 
 Document fixture normalization represents its sole document root; sibling Stream
 fixture normalization represents its sibling Stream elements. Compact

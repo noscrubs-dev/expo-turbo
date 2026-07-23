@@ -354,6 +354,29 @@
         {"id": "remove", "outcome": "removed"}
       ],
       "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
+    },
+    {
+      "id": "stream-morph-identity",
+      "kind": "stream-mutation",
+      "documentFile": "fixtures/stream-behavior-morph-document.xml",
+      "streamFile": "fixtures/stream-behavior-morph-streams.xml",
+      "expectedDocumentFile": "fixtures/stream-behavior-morph-expected.xml",
+      "expectedReports": [
+        {"action": "replace", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
+        {"action": "update", "status": "applied", "matchedTargets": 2, "appliedTargets": 2}
+      ],
+      "identityAssertions": [
+        {"id": "replace", "outcome": "retained"},
+        {"id": "replace-stable", "outcome": "retained"},
+        {"id": "replace-old", "outcome": "removed"},
+        {"id": "update", "outcome": "retained"},
+        {"id": "update-stable", "outcome": "retained"},
+        {"id": "update-old", "outcome": "removed"},
+        {"id": "one", "outcome": "retained"},
+        {"id": "two", "outcome": "retained"}
+      ],
+      "provenance": {"kind": "native-equivalent", "baseline": "turbo-8.0.23"}
     }
   ]
 }

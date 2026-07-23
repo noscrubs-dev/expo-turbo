@@ -1,0 +1,1 @@
+<Gallery><Panel id="replace" tone="after"><Stable id="replace-stable"/><New id="replace-new"/></Panel><Panel id="update"><Stable id="update-stable"/><New id="update-new"/></Panel><Panel class="group" id="one"><New tone="selector"/></Panel><Panel class="group" id="two"><New tone="selector"/></Panel></Gallery>
