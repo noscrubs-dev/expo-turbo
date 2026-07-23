@@ -6,8 +6,12 @@ require "spec_helper"
 require "expo_turbo/rails/testing"
 
 module ExpoTurboProtocolFixturesSpec
+  EVIDENCE_PATH = %r{\A(?:README\.md|(?:\.maestro|docs|example|protocol|rails|src)/[A-Za-z0-9._/-]+)\z}
+  FEATURE_ID = /\A[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*\z/
   FIXTURE_PATH = %r{\Afixtures/[a-z0-9]+(?:-[a-z0-9]+)*\.xml\z}
   PROTOCOL_DIRECTORY = File.join(File.expand_path("../../..", __dir__), "protocol")
+  REPOSITORY_DIRECTORY = File.dirname(PROTOCOL_DIRECTORY)
+  TEST_EVIDENCE = /(?:\.test\.ts|_spec\.rb)\z/
   XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/"
 end
 
@@ -122,12 +126,38 @@ RSpec.describe "shared protocol fixtures" do
   it "pins the shared protocol compatibility baselines" do
     baselines = manifest.fetch("baselines")
 
-    expect(manifest.fetch("manifestVersion")).to eq(1)
+    expect(manifest.fetch("manifestVersion")).to eq(2)
     expect(manifest.fetch("protocolVersion")).to eq(ExpoTurbo::Rails::PROTOCOL_VERSION)
     expect(baselines.fetch("turbo")).to eq(ExpoTurbo::Rails::TURBO_BASELINE_VERSION)
     expect(baselines.fetch("turboRails").fetch("minimum")).to eq(ExpoTurbo::Rails::TURBO_RAILS_MINIMUM_VERSION)
     expect(baselines.fetch("turboRails").fetch("target")).to eq(ExpoTurbo::Rails::TURBO_RAILS_BASELINE_VERSION)
     expect(baselines.fetch("rails")).to eq(ExpoTurbo::Rails::RAILS_BASELINE_VERSION)
+  end
+
+  it "records unique feature dispositions with live repository evidence" do
+    features = manifest.fetch("features")
+    ids = features.map { |feature| feature.fetch("id") }
+
+    expect(ids.uniq).to eq(ids)
+    expect(features.map { |feature| feature.fetch("disposition") }.uniq.sort)
+      .to eq(%w[exact incomplete n-a native-equivalent])
+    expect(features).to include(a_hash_including("disposition" => "incomplete"))
+
+    features.each do |feature|
+      id = feature.fetch("id")
+      evidence = feature.fetch("evidence")
+      expect(id).to match(ExpoTurboProtocolFixturesSpec::FEATURE_ID)
+      expect(feature.fetch("area")).to eq(id.split(".").first)
+      expect(feature.fetch("rationale").strip.length).to be >= 30
+      expect(evidence).not_to be_empty
+      expect(evidence).to all(match(ExpoTurboProtocolFixturesSpec::EVIDENCE_PATH))
+      if %w[exact native-equivalent].include?(feature.fetch("disposition"))
+        expect(evidence).to include(match(ExpoTurboProtocolFixturesSpec::TEST_EVIDENCE))
+      end
+      evidence.each do |path|
+        expect(File).to exist(File.join(ExpoTurboProtocolFixturesSpec::REPOSITORY_DIRECTORY, path))
+      end
+    end
   end
 
   it "keeps fixture references within the shared XML source directory" do

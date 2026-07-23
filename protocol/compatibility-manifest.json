@@ -1,5 +1,5 @@
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "protocolVersion": "0.1",
   "baselines": {
     "turbo": "8.0.23",
@@ -9,6 +9,335 @@
     },
     "rails": "8.1.3"
   },
+  "features": [
+    {
+      "id": "drive.visit-session",
+      "area": "drive",
+      "disposition": "native-equivalent",
+      "rationale": "Native ownership, redirects, response classification, cancellation, and renderer acknowledgement replace the browser navigation and DOM rendering surfaces.",
+      "evidence": ["src/core/document-visit-controller.test.ts"]
+    },
+    {
+      "id": "drive.history-restoration",
+      "area": "drive",
+      "disposition": "native-equivalent",
+      "rationale": "Injected host history and restoration identifiers reproduce advance, replace, restore, direction, snapshot, and traversal behavior without window.history.",
+      "evidence": [
+        "src/core/document-history.test.ts",
+        "src/core/document-history-traversal.test.ts"
+      ]
+    },
+    {
+      "id": "drive.snapshot-cache",
+      "area": "drive",
+      "disposition": "exact",
+      "rationale": "The bounded ten-entry cache implements preview, no-preview, no-cache, fragment-free keys, unsafe-form invalidation, and restoration fallback.",
+      "evidence": [
+        "src/core/document-snapshot-cache.test.ts",
+        "src/core/document-visit-controller.test.ts"
+      ]
+    },
+    {
+      "id": "drive.preload-prefetch",
+      "area": "drive",
+      "disposition": "native-equivalent",
+      "rationale": "Safe document preload and one-shot press-in prefetch replace browser preload and hover intent on touch-native hosts.",
+      "evidence": [
+        "src/core/document-preloader.test.ts",
+        "example/expo/src/renderer.test.ts"
+      ]
+    },
+    {
+      "id": "drive.hover-prefetch",
+      "area": "drive",
+      "disposition": "n-a",
+      "rationale": "Touch-native React Native has no general browser hover lifecycle; press-in prefetch is the named native equivalent.",
+      "evidence": ["protocol/README.md"]
+    },
+    {
+      "id": "drive.head-assets-scripts",
+      "area": "drive",
+      "disposition": "n-a",
+      "rationale": "React Native has no document head, tracked browser assets, CSP nonce execution, or server-sent script runtime; application code ships in the binary.",
+      "evidence": ["protocol/README.md"]
+    },
+    {
+      "id": "frames.extraction-targeting",
+      "area": "frames",
+      "disposition": "exact",
+      "rationale": "Matching extraction, nearest and named targets, _self, _parent, _top, missing responses, and visit-control promotion follow the pinned Turbo behavior.",
+      "evidence": [
+        "src/core/frame-loader.test.ts",
+        "src/core/frame-controller.test.ts"
+      ]
+    },
+    {
+      "id": "frames.eager-lazy-recurse",
+      "area": "frames",
+      "disposition": "native-equivalent",
+      "rationale": "Mounted controllers implement eager, registered native visibility, cancellation, nested Frames, and bounded recurse without IntersectionObserver.",
+      "evidence": [
+        "src/core/frame-controller.test.ts",
+        "example/expo/src/demo-visibility.test.ts"
+      ]
+    },
+    {
+      "id": "frames.history",
+      "area": "frames",
+      "disposition": "native-equivalent",
+      "rationale": "Injected host history promotes advance and replace Frame navigation and restores mounted Frame state without browser history APIs.",
+      "evidence": ["src/core/frame-history.test.ts"]
+    },
+    {
+      "id": "frames.render-lifecycle",
+      "area": "frames",
+      "disposition": "native-equivalent",
+      "rationale": "before-frame-render supports bounded renderer replacement plus pause and resume before commit; render, load, missing, and morph use logical read-only handles instead of DOM elements.",
+      "evidence": [
+        "src/core/frame-lifecycle.test.ts",
+        "src/core/frame-controller.test.ts"
+      ]
+    },
+    {
+      "id": "frames.refresh-morph",
+      "area": "frames",
+      "disposition": "native-equivalent",
+      "rationale": "Direct refresh=morph and explicitly selected ordinary response morphs retain compatible logical/native identity through the package-owned bounded reconciler.",
+      "evidence": [
+        "src/core/frame-response-application.test.ts",
+        "src/core/frame-controller.test.ts"
+      ]
+    },
+    {
+      "id": "frames.autofocus-autoscroll",
+      "area": "frames",
+      "disposition": "incomplete",
+      "rationale": "Registered focus and root/named scroll adapters are implemented, but arbitrary nested containers, virtualizers, Android interaction, and physical-device evidence remain open.",
+      "evidence": [
+        "src/core/frame-controller.test.ts",
+        "example/expo/src/demo-frame-autoscroll.test.ts"
+      ]
+    },
+    {
+      "id": "links.navigation",
+      "area": "links",
+      "disposition": "native-equivalent",
+      "rationale": "Semantic links implement visit actions, Frame capture, method/Stream promotion, confirmation, disabled and opt-out behavior, while host adapters own external contexts.",
+      "evidence": [
+        "src/core/form-link-submission.test.ts",
+        "example/expo/src/renderer.test.ts"
+      ]
+    },
+    {
+      "id": "links.generic-host-contexts",
+      "area": "links",
+      "disposition": "incomplete",
+      "rationale": "The example has a bounded router and fragment codec, but generic deep-link fragments, downloads, and non-current browsing-context mappings remain host work without device evidence.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "forms.successful-controls",
+      "area": "forms",
+      "disposition": "native-equivalent",
+      "rationale": "Explicit registered native controls reproduce successful-control ordering, disabledness, submitter precedence, repeated names, select, checkable, and multi-entry behavior.",
+      "evidence": ["src/core/forms.test.ts"]
+    },
+    {
+      "id": "forms.encoding-methods",
+      "area": "forms",
+      "disposition": "exact",
+      "rationale": "GET query replacement, URL encoding, text/plain, multipart, Rails method normalization, stream negotiation, and submitter overrides match the pinned contracts.",
+      "evidence": ["src/core/form-request.test.ts"]
+    },
+    {
+      "id": "forms.response-matrix",
+      "area": "forms",
+      "disposition": "exact",
+      "rationale": "Matching Frame and document XML, Streams, 204, 201, redirects, 422, errors, wrong MIME, abort, and unsafe redirect safety have explicit outcomes.",
+      "evidence": ["src/core/form-submission-controller.test.ts"]
+    },
+    {
+      "id": "forms.validation-confirmation",
+      "area": "forms",
+      "disposition": "native-equivalent",
+      "rationale": "Host-owned constraint snapshots, first-invalid native focus, novalidate, confirmation, pending submitters, submits-with, retry, and terminal truth replace browser validity UI.",
+      "evidence": [
+        "src/core/forms.test.ts",
+        "src/core/form-submission-controller.test.ts"
+      ]
+    },
+    {
+      "id": "forms.automatic-control-discovery",
+      "area": "forms",
+      "disposition": "incomplete",
+      "rationale": "React Native components register explicit descriptors; automatic arbitrary XML or DOM control discovery and broader host picker/file profiles are not complete.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "forms.android-multipart",
+      "area": "forms",
+      "disposition": "incomplete",
+      "rationale": "Multipart codecs and the Expo picker adapter are covered in unit/export builds, but Android interaction, release-build, and physical-device upload evidence remain open.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "streams.builtin-actions",
+      "area": "streams",
+      "disposition": "exact",
+      "rationale": "Append, prepend, replace, update, remove, before, after, refresh, target precedence, absent templates, collisions, and independent ordered commits match Turbo 8.0.23.",
+      "evidence": [
+        "src/core/streams.test.ts",
+        "protocol/fixtures/stream-actions.xml"
+      ]
+    },
+    {
+      "id": "streams.selectors",
+      "area": "streams",
+      "disposition": "exact",
+      "rationale": "Case-sensitive XML selectors cover lists, type, ID, class, attributes, combinators, universal, and structural pseudo selectors on the mutable active tree.",
+      "evidence": [
+        "src/core/selector-candidate.test.ts",
+        "src/core/streams.test.ts"
+      ]
+    },
+    {
+      "id": "streams.renderer-lifecycle",
+      "area": "streams",
+      "disposition": "native-equivalent",
+      "rationale": "Cancellable awaited before-stream-render, controlled renderer replacement, scheduler handoff, completion/error events, and sibling isolation preserve logical ordering without browser repaint.",
+      "evidence": [
+        "src/core/stream-lifecycle.test.ts",
+        "src/core/streams.test.ts"
+      ]
+    },
+    {
+      "id": "streams.custom-actions",
+      "area": "streams",
+      "disposition": "native-equivalent",
+      "rationale": "Typed registered custom actions replace arbitrary browser action functions and prohibit server-selected executable code.",
+      "evidence": ["src/core/streams.test.ts"]
+    },
+    {
+      "id": "streams.refresh",
+      "area": "streams",
+      "disposition": "native-equivalent",
+      "rationale": "Current-document refresh implements debounce, recent request-ID suppression, stale-owner checks, replace/morph selection, scroll policy, and canonical reconnect reconciliation.",
+      "evidence": [
+        "src/core/document-refresh-controller.test.ts",
+        "src/core/document-refresh-scroll-internal.test.ts"
+      ]
+    },
+    {
+      "id": "morph.application-identity",
+      "area": "morph",
+      "disposition": "native-equivalent",
+      "rationale": "Stable IDs, compatible keys, permanent application/Frame/Cable nodes, vetoable logical mutations, form state policy, and registered focus preservation map Idiomorph semantics to native nodes.",
+      "evidence": [
+        "src/core/tree.test.ts",
+        "src/core/morph-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "morph.browser-input-selection-scroll",
+      "area": "morph",
+      "disposition": "incomplete",
+      "rationale": "Browser uncontrolled-input selection, the full DOM active-element cursor heuristic, arbitrary scroll capture, and local state across replaced document ancestry remain incomplete.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "cable.wire-subscriptions",
+      "area": "cable",
+      "disposition": "exact",
+      "rationale": "The Action Cable v1 JSON subprotocol, canonical full identifiers, confirmation retry, duplicate-source refcounts, welcome, ping, disconnect, rejection, and message delivery are covered.",
+      "evidence": [
+        "src/adapters/action-cable-wire.test.ts",
+        "src/core/cable-stream-sources.test.ts"
+      ]
+    },
+    {
+      "id": "cable.lifecycle-reconnect",
+      "area": "cable",
+      "disposition": "native-equivalent",
+      "rationale": "Injected AppState/reachability/clock coordination handles heartbeat, stale detection, foreground recovery, finite retries, resubscription, and canonical reconciliation.",
+      "evidence": [
+        "src/adapters/action-cable-lifecycle.test.ts",
+        "src/adapters/action-cable-websocket.test.ts"
+      ]
+    },
+    {
+      "id": "cable.production-auth-device",
+      "area": "cable",
+      "disposition": "incomplete",
+      "rationale": "Host-neutral ticket/header and protected-resource hooks exist, but production credentials, expiry/revocation policy, authenticated host socket integration, and physical lifecycle/network evidence remain open.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "cable.missed-broadcast-replay",
+      "area": "cable",
+      "disposition": "n-a",
+      "rationale": "Action Cable pub/sub has no durable offset replay contract; canonical GET reconciliation after reconnect is the required correctness path.",
+      "evidence": ["protocol/README.md"]
+    },
+    {
+      "id": "events.logical-lifecycle",
+      "area": "events",
+      "disposition": "native-equivalent",
+      "rationale": "Typed document, request, form, Frame, Stream, and morph lifecycles preserve cancellation, pause/resume, controlled mutation, ordering, and redacted detail through logical handles.",
+      "evidence": [
+        "src/core/document-visit-lifecycle.test.ts",
+        "src/core/request-lifecycle.test.ts",
+        "src/core/frame-lifecycle.test.ts"
+      ]
+    },
+    {
+      "id": "events.dom-bubbling-paint",
+      "area": "events",
+      "disposition": "n-a",
+      "rationale": "React Native has no DOM event targets, bubbling/composed path, attribute mutation timing, or browser repaint boundary; logical ordering is the named native contract.",
+      "evidence": ["protocol/README.md"]
+    },
+    {
+      "id": "accessibility.physical-evidence",
+      "area": "accessibility",
+      "disposition": "incomplete",
+      "rationale": "Logical disabled, busy, pending, confirmation, retry, and announcement surfaces exist, but VoiceOver, TalkBack, and browser screen-reader evidence remains open.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "rails.public-gem-demo",
+      "area": "rails",
+      "disposition": "native-equivalent",
+      "rationale": "The opt-in gem, standalone Rails host, XML rendering, TagBuilder, request helpers, Streams, protected channel hooks, and dual turbo-rails matrix are public and host-neutral.",
+      "evidence": [
+        "rails/spec/expo_turbo/rails_spec.rb",
+        "example/rails/spec/requests/health_spec.rb"
+      ]
+    },
+    {
+      "id": "rails.production-host",
+      "area": "rails",
+      "disposition": "incomplete",
+      "rationale": "Final product route/view policy, subject/resource authorization, credentials, and expiry/revocation mapping belong to the production host and are not yet evidenced.",
+      "evidence": ["README.md"]
+    },
+    {
+      "id": "release.device-conformance",
+      "area": "release",
+      "disposition": "incomplete",
+      "rationale": "Unit, integration, export, Rails desktop smoke, and Maestro iOS simulator flows exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "evidence": [
+        "src/core/protocol-fixtures.test.ts",
+        ".maestro/live-frame-morph.yaml"
+      ]
+    },
+    {
+      "id": "release.registry-publication",
+      "area": "release",
+      "disposition": "incomplete",
+      "rationale": "The package and gem build as version 0.1.0, but stable npm and RubyGems publication and clean registry verification have not completed.",
+      "evidence": ["README.md"]
+    }
+  ],
   "fixtures": [
     {
       "id": "document-basic",

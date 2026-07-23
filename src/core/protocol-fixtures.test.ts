@@ -85,6 +85,16 @@ interface StreamBehaviorFixture {
   readonly streamFile: string
 }
 
+type FeatureDisposition = "exact" | "incomplete" | "n-a" | "native-equivalent"
+
+interface CompatibilityFeature {
+  readonly area: string
+  readonly disposition: FeatureDisposition
+  readonly evidence: readonly string[]
+  readonly id: string
+  readonly rationale: string
+}
+
 interface ProtocolManifest {
   readonly baselines: {
     readonly rails: string
@@ -95,14 +105,20 @@ interface ProtocolManifest {
     }
   }
   readonly behaviorFixtures: readonly StreamBehaviorFixture[]
+  readonly features: readonly CompatibilityFeature[]
   readonly fixtures: readonly ProtocolFixture[]
   readonly manifestVersion: number
   readonly protocolVersion: string
 }
 
 const PROTOCOL_ROOT = new URL("../../protocol/", import.meta.url)
+const REPOSITORY_ROOT = new URL("../../", import.meta.url)
 const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/"
 const FIXTURE_PATH = /^fixtures\/[a-z0-9]+(?:-[a-z0-9]+)*\.xml$/
+const FEATURE_ID = /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/
+const EVIDENCE_PATH =
+  /^(?:README\.md|(?:\.maestro|docs|example|protocol|rails|src)\/[A-Za-z0-9._/-]+)$/
+const TEST_EVIDENCE = /(?:\.test\.ts|_spec\.rb)$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
@@ -118,17 +134,47 @@ function fixtureUrl(file: string): URL {
 function validateManifest(value: unknown): ProtocolManifest {
   if (
     !isRecord(value) ||
-    value.manifestVersion !== 1 ||
+    value.manifestVersion !== 2 ||
     typeof value.protocolVersion !== "string"
   ) {
     throw new Error("Protocol compatibility manifest has an invalid version")
   }
   if (
     !isRecord(value.baselines) ||
+    !Array.isArray(value.features) ||
     !Array.isArray(value.fixtures) ||
     !Array.isArray(value.behaviorFixtures)
   ) {
     throw new Error("Protocol compatibility manifest has invalid baselines or fixtures")
+  }
+
+  const featureIds = new Set<string>()
+  for (const feature of value.features) {
+    if (
+      !isRecord(feature) ||
+      typeof feature.id !== "string" ||
+      !FEATURE_ID.test(feature.id) ||
+      featureIds.has(feature.id) ||
+      typeof feature.area !== "string" ||
+      feature.area !== feature.id.split(".")[0] ||
+      !["exact", "incomplete", "n-a", "native-equivalent"].includes(String(feature.disposition)) ||
+      typeof feature.rationale !== "string" ||
+      feature.rationale.trim().length < 30 ||
+      !Array.isArray(feature.evidence) ||
+      feature.evidence.length === 0 ||
+      feature.evidence.some(
+        (path) => typeof path !== "string" || !EVIDENCE_PATH.test(path) || path.includes(".."),
+      )
+    ) {
+      throw new Error("Protocol compatibility manifest has an invalid feature disposition")
+    }
+    if (
+      (feature.disposition === "exact" || feature.disposition === "native-equivalent") &&
+      !feature.evidence.some((path) => typeof path === "string" && TEST_EVIDENCE.test(path))
+    ) {
+      throw new Error(`Supported compatibility feature ${feature.id} requires test evidence`)
+    }
+    featureIds.add(feature.id)
   }
 
   for (const fixture of value.fixtures) {
@@ -276,12 +322,30 @@ describe("shared protocol fixtures", () => {
   test("pin the shared protocol compatibility baselines", async () => {
     const manifest = await loadManifest()
 
-    expect(manifest.manifestVersion).toBe(1)
+    expect(manifest.manifestVersion).toBe(2)
     expect(manifest.protocolVersion).toBe(EXPO_TURBO_PROTOCOL_VERSION)
     expect(manifest.baselines.turbo).toBe(TURBO_BASELINE_VERSION)
     expect(manifest.baselines.turboRails.minimum).toBe(TURBO_RAILS_MINIMUM_VERSION)
     expect(manifest.baselines.turboRails.target).toBe(TURBO_RAILS_BASELINE_VERSION)
     expect(manifest.baselines.rails).toBe(RAILS_BASELINE_VERSION)
+  })
+
+  test("records unique feature dispositions with live repository evidence", async () => {
+    const manifest = await loadManifest()
+    expect(new Set(manifest.features.map((feature) => feature.id)).size).toBe(
+      manifest.features.length,
+    )
+    expect(new Set(manifest.features.map((feature) => feature.disposition))).toEqual(
+      new Set<FeatureDisposition>(["exact", "incomplete", "n-a", "native-equivalent"]),
+    )
+    expect(manifest.features.some((feature) => feature.disposition === "incomplete")).toBe(true)
+
+    for (const feature of manifest.features) {
+      expect(feature.area).toBe(feature.id.split(".").at(0) ?? "")
+      for (const path of feature.evidence) {
+        await expect(readFile(new URL(path, REPOSITORY_ROOT))).resolves.toBeInstanceOf(Buffer)
+      }
+    }
   })
 
   test("keeps fixture references within the shared XML source directory", () => {

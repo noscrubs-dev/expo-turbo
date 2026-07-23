@@ -3,7 +3,14 @@
 `compatibility-manifest.json` is the source-only cross-language contract for the
 public TypeScript package and Rails gem. It pins the protocol and upstream
 baselines, records fixture provenance, and describes each fixture's document or
-Stream-fragment envelope plus its expected outcome. The additive
+Stream-fragment envelope plus its expected outcome. Its `features` section is
+the authoritative current compatibility ledger: every family has one
+`exact`, `native-equivalent`, `n-a`, or `incomplete` disposition, a rationale,
+and repository evidence. TypeScript and Ruby CI reject duplicate or malformed
+IDs, missing evidence files, and supported dispositions without test/spec
+evidence. Keeping `incomplete` rows is intentional: the manifest must expose
+remaining release work rather than infer completion from a passing fixture
+subset. The additive
 `behaviorFixtures` section applies shared initial-document and sibling-Stream
 bytes through the public TypeScript dispatcher, then compares both the complete
 ordered action report and canonical final tree with manifest-owned expectations.
