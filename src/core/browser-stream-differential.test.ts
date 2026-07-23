@@ -7,6 +7,7 @@ import {
   DocumentHistory,
   DocumentRequestLoader,
   DocumentSession,
+  DocumentSnapshotCache,
   DocumentVisitController,
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
@@ -566,7 +567,7 @@ test("matches upstream Turbo for a redirected document link visit", async () => 
   }
 })
 
-test("matches upstream Turbo advance, replace, and back restoration history", async () => {
+test("matches upstream Turbo advance, replace, and traversal history", async () => {
   const initialDocument =
     '<main id="root"><a id="advance-link" href="/next">Next</a><p id="initial">Initial</p></main>'
   const nextDocument =
@@ -617,6 +618,10 @@ test("matches upstream Turbo advance, replace, and back restoration history", as
   const visits = new DocumentVisitController(loader, realClock, { history })
   await visits.visit("/next", { action: "advance" })
   await visits.visit("/final", { action: "replace" })
+  const traversalVisits = new DocumentVisitController(loader, realClock, {
+    history,
+    snapshotCache: new DocumentSnapshotCache(),
+  })
 
   const originalFetch = browser.fetch
   ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
@@ -685,7 +690,7 @@ test("matches upstream Turbo advance, replace, and back restoration history", as
 
     browser.history.back()
     await browser.happyDOM.waitUntilComplete()
-    const restored = await visits.restoreTraversal(initialHistoryEntry)
+    const restored = await traversalVisits.restoreTraversal(initialHistoryEntry)
     const restoredBrowserTurboState = (
       browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
     )?.turbo
@@ -696,6 +701,24 @@ test("matches upstream Turbo advance, replace, and back restoration history", as
     })
     expect(browser.location.href).toBe(initialHistoryEntry.url)
     expect(restoredBrowserTurboState?.restorationIndex).toBe(initialHistoryEntry.restorationIndex)
+    expect(browserRequests).toHaveLength(3)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+
+    browser.history.forward()
+    await browser.happyDOM.waitUntilComplete()
+    const forwarded = await traversalVisits.restoreTraversal(finalHistoryEntry)
+    const forwardedBrowserTurboState = (
+      browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
+    )?.turbo
+
+    expect(forwarded).toMatchObject({
+      direction: "forward",
+      source: "snapshot",
+    })
+    expect(browser.location.href).toBe(finalHistoryEntry.url)
+    expect(forwardedBrowserTurboState?.restorationIndex).toBe(finalHistoryEntry.restorationIndex)
     expect(browserRequests).toHaveLength(3)
     expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
       normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
