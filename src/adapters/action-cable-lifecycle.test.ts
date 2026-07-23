@@ -149,6 +149,95 @@ function createManagedCable(initialState: LifecycleState = "active") {
 }
 
 describe("Action Cable lifecycle adapter", () => {
+  test("attaches every logical subscription after one asynchronous credential factory", async () => {
+    const lifecycle = new FakeLifecycle("active")
+    const cable = new FakeCable()
+    let resolveCable: ((cable: DisposableCableAdapter) => void) | undefined
+    let attempts = 0
+    const adapter = new LifecycleCableAdapter({
+      createCable: () => {
+        attempts += 1
+        return new Promise<DisposableCableAdapter>((resolve) => {
+          resolveCable = resolve
+        })
+      },
+      lifecycle,
+      onError: () => undefined,
+    })
+
+    adapter.subscribe("one", callbacks([]))
+    adapter.subscribe("two", callbacks([]))
+    expect(attempts).toBe(1)
+    expect(cable.records).toEqual([])
+
+    resolveCable?.(cable)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(cable.records.map((record) => record.identifier)).toEqual(["one", "two"])
+  })
+
+  test("disposes a stale asynchronous credential transport and creates a fresh one", async () => {
+    const lifecycle = new FakeLifecycle("active")
+    const resolvers: ((cable: DisposableCableAdapter) => void)[] = []
+    const adapter = new LifecycleCableAdapter({
+      createCable: () =>
+        new Promise<DisposableCableAdapter>((resolve) => {
+          resolvers.push(resolve)
+        }),
+      lifecycle,
+      onError: () => undefined,
+    })
+    const staleCable = new FakeCable()
+    const freshCable = new FakeCable()
+
+    adapter.subscribe("protected", callbacks([]))
+    lifecycle.emit("background")
+    resolvers[0]?.(staleCable)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(staleCable.disposeCalls).toBe(1)
+    expect(staleCable.records).toEqual([])
+
+    lifecycle.emit("active")
+    expect(resolvers).toHaveLength(2)
+    resolvers[1]?.(freshCable)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(freshCable.records.map((record) => record.identifier)).toEqual(["protected"])
+  })
+
+  test("retries a rejected asynchronous credential factory within the same bounds", async () => {
+    const clock = new FakeClock()
+    const errors: SubscriptionError[] = []
+    let attempts = 0
+    const cable = new FakeCable()
+    const adapter = new LifecycleCableAdapter({
+      clock,
+      createCable: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error("credential-secret")
+        return cable
+      },
+      lifecycle: new FakeLifecycle("active"),
+      onError: (error) => {
+        errors.push(error)
+      },
+      retry: { initialDelayMs: 10, maxAttempts: 2, maxDelayMs: 20, multiplier: 2 },
+    })
+
+    adapter.subscribe("protected", callbacks([]))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(errors).toEqual([new SubscriptionError("Action Cable lifecycle adapter factory failed")])
+    expect(clock.timers.size).toBe(1)
+
+    clock.advance(10)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(attempts).toBe(2)
+    expect(cable.records.map((record) => record.identifier)).toEqual(["protected"])
+  })
+
   test("recreates one credential-bearing transport while preserving logical subscriptions", () => {
     const { adapter, cables, errors, lifecycle } = createManagedCable()
     const events: string[] = []
