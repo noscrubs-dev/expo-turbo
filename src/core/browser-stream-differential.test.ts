@@ -2070,6 +2070,92 @@ test("matches upstream Turbo unsafe document form redirect safety", async () => 
   }
 })
 
+for (const responseStatus of [422, 500] as const) {
+  test(`matches upstream Turbo for an authoritative document form ${responseStatus} response`, async () => {
+    const initialDocument =
+      '<main id="root"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></main>'
+    const errorDocument = `<main id="root"><form id="profile" action="/profile" method="post"><p id="form-error">Status ${responseStatus}</p><button type="submit">Save</button></form></main>`
+    const session = new DocumentSession(
+      parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+    )
+    const form = session.tree.getElementById("profile")
+    if (!form) throw new Error("Expo document error form is missing")
+    const controls = new FormControlRegistry(session, form.key)
+    let expoRequest: TurboRequest | undefined
+    const expoResult = await new FormSubmissionController(session, {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: responseStatus,
+          text: async () => errorDocument,
+          url: "https://example.test/profile",
+        }
+      },
+    }).submit((signal) =>
+      controls.submissionProposal({
+        protocol: { requestId: `request-document-form-${responseStatus}` },
+        signal,
+      }),
+    )
+
+    let browserRequestUrl: string | undefined
+    let browserRequestMethod: string | undefined
+    let browserFrameHeader: string | null | undefined
+    const originalFetch = browser.fetch
+    browser.fetch = async (input, init) => {
+      browserRequestUrl = String(input)
+      browserRequestMethod = init?.method
+      const requestHeaders = init?.headers as { get?: unknown } | undefined
+      browserFrameHeader =
+        typeof requestHeaders?.get === "function"
+          ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+          : new browser.Headers(init?.headers).get("Turbo-Frame")
+      const response = new browser.Response(`<html><body>${errorDocument}</body></html>`, {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        status: responseStatus,
+      })
+      Object.defineProperty(response, "url", {
+        configurable: true,
+        value: "https://example.test/profile",
+      })
+      return response
+    }
+    browser.history.replaceState({}, "", "/demo")
+    turbo.start()
+    try {
+      browser.document.body.innerHTML = initialDocument
+      const browserForm = browser.document.getElementById("profile")
+      const browserSubmitter = browser.document.getElementById("submit-profile")
+      if (!(browserForm instanceof browser.HTMLFormElement)) {
+        throw new Error("Browser document error form is missing")
+      }
+      if (!(browserSubmitter instanceof browser.HTMLButtonElement)) {
+        throw new Error("Browser document error form submitter is missing")
+      }
+      browserForm.requestSubmit(browserSubmitter)
+      await browser.happyDOM.waitUntilComplete()
+
+      expect(expoResult).toMatchObject({
+        application: "document",
+        responseStatus,
+        status: "applied",
+      })
+      expect(expoRequest?.url).toBe(browserRequestUrl)
+      expect(expoRequest?.method).toBe(browserRequestMethod)
+      expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+      expect(session.tree.document.url).toBe(browser.location.href)
+      expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+        normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+      )
+    } finally {
+      browser.fetch = originalFetch
+      turbo.session.stop()
+    }
+  })
+}
+
 test("matches upstream Turbo for an ordinary document link visit", async () => {
   const initialDocument =
     '<main id="root"><a id="next-link" href="/next">Next</a><p id="old">Old</p></main>'
