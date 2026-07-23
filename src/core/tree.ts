@@ -302,6 +302,7 @@ interface MorphClonePlan {
 }
 
 interface MorphCreatePlan {
+  readonly anchor?: ProtocolElement
   readonly children: readonly MorphPlan[]
   readonly source: ProtocolElement
   readonly type: "create"
@@ -1038,6 +1039,12 @@ export class DocumentTree {
       }
       if (!isElement(source)) return
       const id = attributeValue(source, "id")
+      if (isTurboPermanent(source) && (source.kind !== "element" || !id?.trim())) {
+        throw new TargetError(
+          "Native morph permanent nodes require an ordinary application element with a stable id",
+          { ...(id ? { target: id } : {}) },
+        )
+      }
       if (id !== undefined) {
         if (!id.trim()) throw new TargetError("Element ids must not be blank")
         if (ids.has(id)) {
@@ -1076,8 +1083,6 @@ export class DocumentTree {
       const id = attributeValue(child, "id")
       if (id !== undefined) currentById.set(id, child)
     }
-    this.assertMatchedPermanentChildren(sources, currentById, currentChildren)
-
     const currentForSource = new Map<ProtocolElement, ProtocolElement>()
     const anonymousByShape = new Map<string, ProtocolElement[]>()
     for (const child of currentChildren) {
@@ -1101,18 +1106,10 @@ export class DocumentTree {
         const sameParent = currentById.get(id)
         const active = this.idIndex.get(id)
         const current = sameParent ?? active
-        if (
-          !sameParent &&
-          active &&
-          (active.kind !== "element" ||
-            source.kind !== "element" ||
-            isTurboPermanent(active) ||
-            isTurboPermanent(source))
-        ) {
-          throw new TargetError(
-            `Native morph cannot reparent protocol or permanent id ${JSON.stringify(id)}`,
-            { target: id },
-          )
+        if (!sameParent && active && (active.kind !== "element" || source.kind !== "element")) {
+          throw new TargetError(`Native morph cannot reparent protocol id ${JSON.stringify(id)}`, {
+            target: id,
+          })
         }
         if (current && !isWithin(current, planning.root)) {
           throw new TargetError(
@@ -1157,7 +1154,22 @@ export class DocumentTree {
         return { current, type: "frame-reload" } as const
       }
       if (isElement(source) && source.kind === "element" && current) {
-        if (isTurboPermanent(current)) return { current, type: "permanent" } as const
+        if (isTurboPermanent(current)) {
+          const currentId = attributeValue(current, "id")
+          if (current.kind !== "element" || !currentId?.trim()) {
+            throw new TargetError(
+              "Native morph permanent nodes require an ordinary application element with a stable id",
+              { ...(currentId ? { target: currentId } : {}) },
+            )
+          }
+          if (!isCompatibleMorphElement(current, source)) {
+            throw new TargetError(
+              "Native morph permanent nodes require one compatible incoming identity",
+              { ...(id ? { target: id } : {}) },
+            )
+          }
+          return { current, type: "permanent" } as const
+        }
         if (
           isCompatibleMorphElement(current, source) ||
           isCompatibleAnonymousMorphElement(current, source)
@@ -1187,18 +1199,13 @@ export class DocumentTree {
         return { current, type: "retain" } as const
       }
 
-      if ((current && hasTurboPermanent(current)) || hasTurboPermanent(source)) {
-        throw new TargetError("Native morph cannot clone a data-turbo-permanent subtree", {
-          ...(id ? { target: id } : {}),
-        })
-      }
       if (
-        !current &&
         isElement(source) &&
         source.kind === "element" &&
         this.hasActiveMorphDescendant(source, planning.root)
       ) {
         return {
+          ...(current ? { anchor: current } : {}),
           children: this.buildMorphPlans(
             source,
             source.children,
@@ -1211,6 +1218,11 @@ export class DocumentTree {
           type: "create",
         } as const
       }
+      if (current && hasTurboPermanent(current)) {
+        throw new TargetError("Native morph cannot clone a data-turbo-permanent subtree", {
+          ...(id ? { target: id } : {}),
+        })
+      }
       this.assertMorphCloneIds(source, current)
       return { ...(current ? { anchor: current } : {}), source, type: "clone" } as const
     })
@@ -1222,6 +1234,27 @@ export class DocumentTree {
     for (const current of missing) {
       if (isElement(current) && planning.incomingIds.has(attributeValue(current, "id") ?? "")) {
         continue
+      }
+      if (isElement(current) && isTurboPermanent(current)) {
+        const id = attributeValue(current, "id")
+        if (current.kind !== "element" || !id?.trim()) {
+          throw new TargetError(
+            "Native morph permanent nodes require an ordinary application element with a stable id",
+            { ...(id ? { target: id } : {}) },
+          )
+        }
+        this.insertRetainedMorphPlan(parent, plans, sourceIndexByCurrent, current, {
+          current,
+          type: "permanent",
+        })
+        continue
+      }
+      if (hasTurboPermanent(current)) {
+        const id = isElement(current) ? attributeValue(current, "id") : undefined
+        throw new TargetError(
+          "Native morph cannot remove an unmatched ancestor of a permanent node",
+          { ...(id ? { target: id } : {}) },
+        )
       }
       if (
         isElement(current) &&
@@ -1298,7 +1331,7 @@ export class DocumentTree {
 
   private morphPlanAnchor(plan: MorphPlan): ProtocolElement | undefined {
     if (plan.type === "clone") return plan.anchor
-    if (plan.type === "create") return undefined
+    if (plan.type === "create") return plan.anchor
     return isElement(plan.current) ? plan.current : undefined
   }
 
@@ -1406,84 +1439,6 @@ export class DocumentTree {
     if (context.seenFrames.has(frame)) return
     context.seenFrames.add(frame)
     context.nestedFrames.push(frame)
-  }
-
-  private assertMatchedPermanentChildren(
-    sources: readonly ProtocolNode[],
-    currentById: ReadonlyMap<string, ProtocolElement>,
-    currentChildren: readonly ProtocolNode[],
-  ): void {
-    const sourceById = new Map<string, ProtocolElement>()
-    for (const source of sources) {
-      if (!isElement(source)) continue
-      const id = attributeValue(source, "id")
-      if (id !== undefined) sourceById.set(id, source)
-    }
-
-    for (const current of currentChildren) {
-      if (!isElement(current) || !hasTurboPermanent(current)) continue
-      const id = attributeValue(current, "id")
-      const source = id === undefined ? undefined : sourceById.get(id)
-      if (
-        !id?.trim() ||
-        current.kind !== "element" ||
-        !source ||
-        source.kind !== "element" ||
-        !isCompatibleMorphElement(current, source)
-      ) {
-        throw new TargetError(
-          "Native morph permanent subtrees require a retained same-parent path",
-          {
-            ...(id ? { target: id } : {}),
-          },
-        )
-      }
-      if (isTurboPermanent(current)) {
-        if (!isTurboPermanent(source)) {
-          throw new TargetError("Native morph permanent nodes must be marked on both sides", {
-            target: id,
-          })
-        }
-        this.assertPermanentSubtree(current, source)
-      }
-    }
-
-    for (const source of sources) {
-      if (!isElement(source) || !hasTurboPermanent(source)) continue
-      const id = attributeValue(source, "id")
-      const current = id === undefined ? undefined : currentById.get(id)
-      if (
-        !id?.trim() ||
-        source.kind !== "element" ||
-        !current ||
-        current.kind !== "element" ||
-        !isCompatibleMorphElement(current, source)
-      ) {
-        throw new TargetError(
-          "Native morph permanent subtrees require a retained same-parent path",
-          {
-            ...(id ? { target: id } : {}),
-          },
-        )
-      }
-      if (isTurboPermanent(source)) {
-        if (!isTurboPermanent(current)) {
-          throw new TargetError("Native morph permanent nodes must be marked on both sides", {
-            target: id,
-          })
-        }
-        this.assertPermanentSubtree(current, source)
-      }
-    }
-  }
-
-  private assertPermanentSubtree(current: ProtocolElement, source: ProtocolElement): void {
-    if (current.children.some(hasTurboPermanent) || source.children.some(hasTurboPermanent)) {
-      const id = attributeValue(current, "id")
-      throw new TargetError("Native morph permanent nodes cannot contain another permanent node", {
-        ...(id ? { target: id } : {}),
-      })
-    }
   }
 
   private assertMorphCloneIds(source: ProtocolNode, replacementRoot?: ProtocolElement): void {

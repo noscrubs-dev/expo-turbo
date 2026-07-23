@@ -403,6 +403,42 @@ describe("prepared Frame mutations", () => {
     expect(attributeValue(field, "tone")).toBe("after")
   })
 
+  test("moves an opaque permanent identity during a direct Frame reload morph", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph"><Group id="left"><Panel id="permanent" data-turbo-permanent="" tone="client"><Field id="locked" value="client"/></Panel></Group><Group id="right"/></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const permanent = session.tree.getElementById("permanent")
+    const locked = session.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || !permanent || !locked) {
+      throw new Error("invalid permanent move fixture")
+    }
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Group id="left"/><Group id="right"><Panel id="permanent" tone="server"><Field id="locked" value="server"/></Panel></Group></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, frame, prepared, {
+        finalUrl: "https://example.test/final",
+        renderMethod: "morph",
+      }),
+    )
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("missing permanent move destination")
+    expect(session.tree.getElementById("permanent")).toBe(permanent)
+    expect(session.tree.getElementById("locked")).toBe(locked)
+    expect(permanent.parent).toBe(right)
+    expect(attributeValue(permanent, "tone")).toBe("client")
+    expect(attributeValue(locked, "value")).toBe("client")
+    expect(session.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
+  })
+
   test("retains eligible nested morph Frames untouched for their own post-render reload", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

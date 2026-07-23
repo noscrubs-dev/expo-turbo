@@ -5228,12 +5228,6 @@ describe("Document visit controller", () => {
         responseXml:
           '<Gallery><Panel id="stable" tone="after"/><turbo-frame id="frame"><Panel/></turbo-frame></Gallery>',
       },
-      {
-        documentXml:
-          '<Gallery><Panel id="stable"/><Panel id="permanent" data-turbo-permanent=""><Locked id="locked"/></Panel></Gallery>',
-        name: "unmatched permanent children",
-        responseXml: '<Gallery><Panel id="stable"/></Gallery>',
-      },
     ] as const) {
       const history = historyFixture()
       const { controller, pending, session } = harness({

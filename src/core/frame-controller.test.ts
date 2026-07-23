@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse, VisibilityAdapter } from "../adapters"
-import { TargetError } from "./errors"
 import { consumeFrameAutofocus, consumeFrameRenderEffects } from "./frame-autofocus-internal"
 import { FrameController } from "./frame-controller"
 import { FrameControllerRegistry } from "./frame-controller-registry"
@@ -845,7 +844,7 @@ describe("Frame controller", () => {
     expect(renderMethods).toEqual(["replace"])
   })
 
-  test("fails an unmatched permanent Frame morph before lifecycle render or structural replacement", async () => {
+  test("admits a newly permanent stable Frame child through the normal morph lifecycle", async () => {
     const lifecycle = new FrameLifecycle()
     const { controller, pending, session } = harness('src="/frame" refresh="morph"', undefined, {
       frameLifecycle: lifecycle,
@@ -861,21 +860,20 @@ describe("Frame controller", () => {
     pending[0]?.resolve(response('<turbo-frame id="details"><Stable id="stable" /></turbo-frame>'))
     await initial
     const stable = session.tree.getElementById("stable")
-    const revision = session.revision
     if (!stable) throw new Error("initial Frame response did not commit")
     events.length = 0
 
-    const rejected = controller.reload()
+    const reloaded = controller.reload()
     pending[1]?.resolve(
       response(
         '<turbo-frame id="details"><Stable id="stable" data-turbo-permanent="" /></turbo-frame>',
       ),
     )
-    await expect(rejected).rejects.toBeInstanceOf(TargetError)
-    expect(controller.state.status).toBe("error")
-    expect(session.revision).toBe(revision)
+    await reloaded
+    expect(controller.state.status).toBe("completed")
     expect(session.tree.getElementById("stable")).toBe(stable)
-    expect(events).toEqual([])
+    expect(attributeValue(stable, "data-turbo-permanent")).toBe("")
+    expect(events).toEqual(["before"])
   })
 
   test("keeps a mounted Frame busy until its exact replacement commits without lifecycle observers", async () => {

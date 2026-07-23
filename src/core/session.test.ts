@@ -167,6 +167,39 @@ describe("document session snapshots", () => {
     expect(attributeValue(field, "tone")).toBe("after")
   })
 
+  test("moves and preserves an opaque permanent identity during a current-document morph", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"><Panel id="permanent" data-turbo-permanent="" tone="client"><Field id="locked" value="client"/></Panel></Group><Group id="right"/><Panel id="unmatched" data-turbo-permanent="" tone="kept"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const permanent = document.tree.getElementById("permanent")
+    const locked = document.tree.getElementById("locked")
+    const unmatched = document.tree.getElementById("unmatched")
+    if (!permanent || !locked || !unmatched) throw new Error("Expected permanent fixtures")
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"/><Group id="right"><Panel id="permanent" tone="server"><Field id="locked" value="server"/></Panel></Group></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    const right = document.tree.getElementById("right")
+    const gallery = document.tree.getElementById("gallery")
+    if (!right || !gallery) throw new Error("Expected permanent destinations")
+    expect(document.tree.getElementById("permanent")).toBe(permanent)
+    expect(document.tree.getElementById("locked")).toBe(locked)
+    expect(document.tree.getElementById("unmatched")).toBe(unmatched)
+    expect(permanent.parent).toBe(right)
+    expect(unmatched.parent).toBe(gallery)
+    expect(attributeValue(permanent, "tone")).toBe("client")
+    expect(attributeValue(locked, "value")).toBe("client")
+    expect(document.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
+  })
+
   test("ignores document-level formatting around a compatible document morph root", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
