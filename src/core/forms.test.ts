@@ -190,6 +190,32 @@ function registryFor(
 }
 
 describe("native form control registry", () => {
+  test("never infers successful controls from server XML without a native registration", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="form" action="/submit" method="post">
+            <DemoInput id="forged-value" name="profile[name]" value="server-selected" />
+            <DemoInput id="forged-check" checked="checked" name="profile[admin]" value="true" />
+            <DemoButton id="forged-submitter" name="commit" value="save" />
+          </DemoForm>
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const registry = registryFor(session)
+
+    expect(registry.successfulEntries()).toEqual([])
+    expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
+
+    registry.register("id:forged-value", {
+      kind: "value",
+      name: "profile[name]",
+      value: "host-owned",
+    })
+    expect(registry.successfulEntries()).toEqual([{ name: "profile[name]", value: "host-owned" }])
+  })
+
   test("collects successful string controls in XML order and appends the submitter", () => {
     const session = formFixture()
     const registry = registryFor(session)

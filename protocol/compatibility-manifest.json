@@ -171,9 +171,9 @@
     {
       "id": "forms.automatic-control-discovery",
       "area": "forms",
-      "disposition": "incomplete",
-      "rationale": "React Native components register explicit descriptors; automatic arbitrary XML or DOM control discovery and broader host picker/file profiles are not complete.",
-      "evidence": ["README.md"]
+      "disposition": "n-a",
+      "rationale": "React Native has no DOM form-control collection. App-installed components explicitly register live native descriptors; server XML attributes alone never synthesize submitted values.",
+      "evidence": ["src/core/forms.test.ts"]
     },
     {
       "id": "forms.android-multipart",
