@@ -1437,6 +1437,180 @@ test("matches upstream Turbo prevented missing-Frame handling for a Frame form",
   }
 })
 
+test("matches upstream Turbo Frame form visit-control response promotion", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'
+  const expoResponse =
+    '<main id="promoted-root" data-turbo-visit-control="reload"><p id="promoted">Promoted</p></main>'
+  const browserResponse =
+    '<html><head><meta name="turbo-visit-control" content="reload"></head><body><main id="promoted-root"><p id="promoted">Promoted</p></main></body></html>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("profile")
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!form || !expoFrameBefore) throw new Error("Expo promoted Frame form fixture is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  let expoRequest: TurboRequest | undefined
+  const expoVisits: unknown[] = []
+  const lifecycle = new FrameLifecycle({
+    visitResponse(request) {
+      expoVisits.push({
+        action: request.action,
+        body: request.body,
+        frameId: request.frameId,
+        reason: request.reason,
+        response: request.response,
+      })
+    },
+  })
+  const expoResult = await new FormSubmissionController(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => expoResponse,
+          url: "https://example.test/profile",
+        }
+      },
+    },
+    { frameLifecycle: lifecycle },
+  ).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-frame-form-promoted" },
+      signal,
+    }),
+  )
+
+  let browserFetches = 0
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const browserVisits: unknown[] = []
+  const originalFetch = browser.fetch
+  const browserSession = turbo.session as typeof turbo.session & {
+    visit(
+      location: URL,
+      options: { response: { redirected: boolean; responseHTML: string; statusCode: number } },
+    ): void
+  }
+  const originalVisit = browserSession.visit
+  Object.defineProperty(browserSession, "visit", {
+    configurable: true,
+    value: (
+      location: URL,
+      options: {
+        response: { redirected: boolean; responseHTML: string; statusCode: number }
+      },
+    ) => {
+      browserVisits.push({
+        response: options.response,
+        url: location.href,
+      })
+    },
+    writable: true,
+  })
+  browser.fetch = async (input, init) => {
+    browserFetches += 1
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(browserResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/profile",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const browserForm = browser.document.getElementById("profile")
+    const submitter = browser.document.getElementById("submit-profile")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser promoted Frame form target is missing")
+    }
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser promoted Frame form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser promoted Frame form submitter is missing")
+    }
+    browserForm.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Frame form visit-control differential lost its mounted Frame")
+    }
+    expect(expoResult).toMatchObject({
+      reason: "visit-control-reload",
+      responseStatus: 200,
+      status: "promoted",
+    })
+    expect(browserFetches).toBe(1)
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(expoVisits).toEqual([
+      {
+        action: "advance",
+        body: expoResponse,
+        frameId: "details",
+        reason: "visit-control-reload",
+        response: {
+          redirected: false,
+          status: 200,
+          url: "https://example.test/profile",
+        },
+      },
+    ])
+    expect(browserVisits).toEqual([
+      {
+        response: {
+          redirected: false,
+          responseHTML: browserResponse,
+          statusCode: 200,
+        },
+        url: "https://example.test/profile",
+      },
+    ])
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter).toBe(expoFrameBefore)
+    const browserFrameResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserFrameResult || typeof browserFrameResult === "string") {
+      throw new Error("Browser promoted Frame form result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserFrameResult,
+      attributes: browserFrameResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("promoted")).toBeNull()
+    expect(session.tree.getElementById("promoted")).toBeUndefined()
+  } finally {
+    Object.defineProperty(browserSession, "visit", {
+      configurable: true,
+      value: originalVisit,
+      writable: true,
+    })
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo for an empty Frame form 204 response", async () => {
   const initialDocument =
     '<main id="root"><turbo-frame id="details" src="/details"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'
