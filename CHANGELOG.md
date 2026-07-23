@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Preserve a targeted mounted `turbo-frame` and its active controller during exact `update method="morph"` Stream reconciliation. Only the Frame's children morph; its wrapper attributes, request/controller ownership, and compatible application/form/state identities remain intact. Frame replacement morphs remain unsupported.
 - Apply exact `method="morph"` Stream `update` and `replace` through selector-addressed ordinary application targets in document order. Selector payloads must remain ID-less under the protocol's document-wide unique-ID invariant; each target receives an independent clone and reconciliation, while ID-bearing multi-target payloads continue to fail before mutation.
 - Preserve an exact-target Stream `replace method="morph"` application root when its `id` changes or is removed. The retained root reconciles that attribute while keeping its logical/native boundary and descendant ownership; a replacement ID already owned by an active descendant fails the isolated action before tree or revision changes.
 - Preserve the compatible ordinary application root across a current-document morph when its `id` is added, changed, or removed. The retained root reconciles that attribute and updates the active ID index without remounting its logical/native boundary; a new root ID that already belongs to an active descendant fails during preflight before history, tree, revision, or disposal changes.
