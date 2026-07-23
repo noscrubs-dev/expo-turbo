@@ -1692,6 +1692,96 @@ test("matches upstream Turbo generated-form Frame visit-control response promoti
   }
 })
 
+test("matches upstream Turbo for an empty generated-form Frame 204 response", async () => {
+  const initialDocument =
+    '<main id="root"><a id="save-link" href="/save?value=no-content" data-turbo-method="post" data-turbo-frame="destination">Save</a><turbo-frame id="destination" src="/old"><p id="old-destination">Old</p></turbo-frame></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoFrameBefore = session.tree.getElementById("destination")
+  if (!expoFrameBefore) throw new Error("Expo empty generated-form Frame is missing")
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: {},
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: request.url,
+      }
+    },
+  })
+  const links = new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-frame-204",
+  })
+  const expoResult = await links.submit("id:save-link", "/save?value=no-content")
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    return new browser.Response(null, { status: 204 })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("destination")
+    const link = browser.document.getElementById("save-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser empty generated-form Frame is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser empty generated-form Frame link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "empty",
+      destination: { frameId: "destination", kind: "frame" },
+      effectiveMethod: "POST",
+      responseStatus: 204,
+      status: "empty",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body?.value).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    const browserFrameAfter = browser.document.getElementById("destination")
+    const expoFrameAfter = session.tree.getElementById("destination")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Empty generated-form differential lost its destination Frame")
+    }
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual(normalizeBrowserNode(browserFrameAfter))
+    expect(browser.document.getElementById("old-destination")).not.toBeNull()
+    expect(session.tree.getElementById("old-destination")).toBeDefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo redirected generated-form Frame success", async () => {
   const initialDocument =
     '<main id="root"><a id="save-link" href="/save?value=accepted" data-turbo-method="post" data-turbo-frame="destination">Save</a><turbo-frame id="destination" class="mounted" src="/old"><p id="old-destination">Old</p></turbo-frame></main>'
