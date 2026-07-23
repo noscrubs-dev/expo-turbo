@@ -492,3 +492,73 @@ test("matches upstream Turbo for an ordinary document link visit", async () => {
     turbo.session.stop()
   }
 })
+
+test("matches upstream Turbo for a redirected document link visit", async () => {
+  const initialDocument =
+    '<main id="root"><a id="redirect-link" href="/redirect">Redirect</a><p id="old">Old</p></main>'
+  const finalDocument =
+    '<main id="root"><a id="back-link" href="/demo">Back</a><p id="final">Final document</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: true,
+          status: 200,
+          text: async () => finalDocument,
+          url: "https://example.test/final",
+        }
+      },
+    },
+    { next: () => "request-redirect" },
+  )
+  const visits = new DocumentVisitController(loader, realClock)
+  const expoResult = await visits.visit("/redirect")
+  let browserRequestUrl: string | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input) => {
+    browserRequestUrl = String(input)
+    const response = new browser.Response(`<html><body>${finalDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperties(response, {
+      redirected: { configurable: true, value: true },
+      url: { configurable: true, value: "https://example.test/final" },
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("redirect-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser redirect differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult.status).toBe("committed")
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})

@@ -53,12 +53,13 @@ platform-owned rather than being normalized into one representation. Browser
 GET and unsafe URL-encoded Frame forms are also submitted through official
 Turbo: their exact URL, method, ordered body, submitter, omitted disabled and
 unchecked controls, and `Turbo-Frame` header are compared with package request
-construction. One ordinary same-origin document link additionally drives an
-official Turbo GET and a package `DocumentVisitController` GET from the same
-source/destination documents; their exact request URL/method and complete
-normalized destination root agree. Refresh remains a named native
+construction. Ordinary and redirected same-origin document links additionally
+drive official Turbo GETs and package `DocumentVisitController` GETs from the
+same source/destination documents; their exact request URLs/methods, complete
+normalized destination roots, and redirected canonical final URL agree.
+Refresh remains a named native
 equivalent because its owning-session GET/render contract is not a structural
-DOM action. Browser history and broader response lifecycles remain outside this
+DOM action. Browser history and broader error lifecycles remain outside this
 bounded comparison. The separate native-equivalent morph record proves compatible
 outer `replace`, child `update`, and selector child morphing retain the declared
 target/stable-child identities while removing omitted children. This is not yet
