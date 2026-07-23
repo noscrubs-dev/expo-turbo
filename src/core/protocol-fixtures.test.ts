@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 
 import {
+  attributeValue,
   EXPO_TURBO_PROTOCOL_VERSION,
+  isElement,
   type ProtocolElement,
   type ProtocolNode,
   parseExpoTurboDocument,
@@ -33,14 +35,25 @@ type NormalizedNode =
       readonly qname: string
     }
 
+interface NormalizedStreamAction {
+  action: string
+  method?: string
+  requestId?: string
+  scroll?: string
+  target?: string
+  targets?: string
+  templateTags: readonly string[]
+}
+
 interface ProtocolFixture {
   readonly envelope: "document" | "stream-fragment"
   readonly expect:
     | {
-        readonly normalized: {
+        readonly outcome: "accepted"
+        readonly normalized?: {
           readonly nodes: readonly NormalizedNode[]
         }
-        readonly outcome: "accepted"
+        readonly streamActions?: readonly NormalizedStreamAction[]
       }
     | {
         readonly outcome: "rejected"
@@ -103,6 +116,12 @@ function validateManifest(value: unknown): ProtocolManifest {
     ) {
       throw new Error(`Protocol fixture ${fixture.id} has an invalid expected outcome`)
     }
+    if (
+      fixture.expect.outcome === "accepted" &&
+      isRecord(fixture.expect.normalized) === Array.isArray(fixture.expect.streamActions)
+    ) {
+      throw new Error(`Protocol fixture ${fixture.id} must declare exactly one accepted assertion`)
+    }
     fixtureUrl(fixture.file)
   }
 
@@ -160,6 +179,30 @@ function normalizeFixture(xml: string, fixture: ProtocolFixture): readonly Norma
     .map(normalizeNode)
 }
 
+function normalizeStreamActions(xml: string): readonly NormalizedStreamAction[] {
+  const tree = parseTurboStreamFragment(xml)
+  return tree.document.children.filter(isElement).map((stream) => {
+    const template = stream.children.find(
+      (node) => isElement(node) && node.tagName === "template",
+    ) as ProtocolElement | undefined
+    const normalized: NormalizedStreamAction = {
+      action: attributeValue(stream, "action") ?? "",
+      templateTags: template?.children.filter(isElement).map((node) => node.tagName) ?? [],
+    }
+    const method = attributeValue(stream, "method")
+    const requestId = attributeValue(stream, "request-id")
+    const scroll = attributeValue(stream, "scroll")
+    const target = attributeValue(stream, "target")
+    const targets = attributeValue(stream, "targets")
+    if (method !== undefined) normalized.method = method
+    if (requestId !== undefined) normalized.requestId = requestId
+    if (scroll !== undefined) normalized.scroll = scroll
+    if (target !== undefined) normalized.target = target
+    if (targets !== undefined) normalized.targets = targets
+    return normalized
+  })
+}
+
 describe("shared protocol fixtures", () => {
   test("pin the shared protocol compatibility baselines", async () => {
     const manifest = await loadManifest()
@@ -191,7 +234,12 @@ describe("shared protocol fixtures", () => {
       if (fixture.expect.outcome !== "accepted") continue
 
       const xml = await readFile(fixtureUrl(fixture.file), "utf8")
-      expect(normalizeFixture(xml, fixture)).toEqual(fixture.expect.normalized.nodes)
+      if (fixture.expect.normalized) {
+        expect(normalizeFixture(xml, fixture)).toEqual(fixture.expect.normalized.nodes)
+      } else {
+        if (!fixture.expect.streamActions) throw new Error(`Missing assertions for ${fixture.id}`)
+        expect(normalizeStreamActions(xml)).toEqual(fixture.expect.streamActions)
+      }
     }
   })
 
