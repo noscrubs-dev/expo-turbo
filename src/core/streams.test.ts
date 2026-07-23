@@ -227,6 +227,122 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("email-error")).toBeDefined()
   })
 
+  test("atomically reparents compatible stable IDs while retaining their ownership", async () => {
+    for (const action of ["update", "replace"] as const) {
+      for (const destinationFirst of [false, true]) {
+        const groups = destinationFirst
+          ? '<DemoGroup id="right"/><DemoGroup id="left"><DemoInput id="field" tone="before"/></DemoGroup>'
+          : '<DemoGroup id="left"><DemoInput id="field" tone="before"/></DemoGroup><DemoGroup id="right"/>'
+        const document = session(`<Gallery><DemoForm id="form">${groups}</DemoForm></Gallery>`)
+        const form = document.tree.getElementById("form")
+        const field = document.tree.getElementById("field")
+        if (!form || !field) throw new Error("reparent morph fixture is missing")
+        const snapshot = document.getNodeSnapshot(field.key)
+        const scopes = new DocumentStateScopes(document)
+        const scope = scopes.scopeFor(field.key, "form", { draft: "kept" })
+        const payload = destinationFirst
+          ? '<DemoForm id="form"><DemoGroup id="right"><DemoInput id="field" tone="after"/></DemoGroup><DemoGroup id="left"/></DemoForm>'
+          : '<DemoForm id="form"><DemoGroup id="left"/><DemoGroup id="right"><DemoInput id="field" tone="after"/></DemoGroup></DemoForm>'
+        const template =
+          action === "replace"
+            ? payload
+            : payload.slice(payload.indexOf(">") + 1, payload.lastIndexOf("</DemoForm>"))
+
+        const report = (
+          await dispatchTurboStreamFragment(
+            document,
+            `<turbo-stream action="${action}" target="form" method="morph"><template>${template}</template></turbo-stream>`,
+          )
+        ).actions[0]
+        const current = document.tree.getElementById("field")
+        const left = document.tree.getElementById("left")
+        const right = document.tree.getElementById("right")
+
+        expect(report?.status, `${action}:${destinationFirst}`).toBe("applied")
+        expect(current, `${action}:${destinationFirst}`).toBe(field)
+        expect(current?.parent, `${action}:${destinationFirst}`).toBe(right)
+        expect(left?.children, `${action}:${destinationFirst}`).not.toContain(field)
+        expect(right?.children, `${action}:${destinationFirst}`).toContain(field)
+        expect(document.getNodeSnapshot(field.key)?.identity).toBe(snapshot?.identity)
+        expect(document.getNodeSnapshot(field.key)?.morphRevision).toBe(1)
+        expect(attributeValue(field, "tone")).toBe("after")
+        expect(scopes.scopeFor(field.key, "form")).toBe(scope)
+        expect(scope.state.get("draft")).toBe("kept")
+        expect(scope.state.isDisposed).toBe(false)
+      }
+    }
+  })
+
+  test("reparents a stable ID through a new anonymous wrapper", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/></DemoForm></Gallery>',
+    )
+    const field = document.tree.getElementById("field")
+    if (!field) throw new Error("reparent morph fixture is missing")
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><DemoGroup><DemoInput id="field" tone="after"/></DemoGroup></DemoGroup></template></turbo-stream>',
+      )
+    ).actions[0]
+    const wrapper = document.tree.getElementById("right")?.children[0]
+    if (wrapper?.kind !== "element") throw new Error("reparent wrapper is missing")
+
+    expect(report?.status).toBe("applied")
+    expect(document.tree.getElementById("field")).toBe(field)
+    expect(field.parent).toBe(wrapper)
+    expect(attributeValue(field, "tone")).toBe("after")
+  })
+
+  test("remounts an incompatible stable ID at its new parent", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/></DemoForm></Gallery>',
+    )
+    const field = document.tree.getElementById("field")
+    if (!field) throw new Error("reparent morph fixture is missing")
+    const scope = new DocumentStateScopes(document).scopeFor(field.key, "form", { draft: "old" })
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><DemoText id="field">Replacement</DemoText></DemoGroup></template></turbo-stream>',
+      )
+    ).actions[0]
+    const replacement = document.tree.getElementById("field")
+    const right = document.tree.getElementById("right")
+
+    expect(report?.status).toBe("applied")
+    expect(replacement).not.toBe(field)
+    expect(replacement?.parent).toBe(right)
+    expect(scope.state.isDisposed).toBe(true)
+  })
+
+  test("rejects protocol and permanent reparenting atomically", async () => {
+    for (const child of [
+      '<turbo-frame id="moving"><DemoText id="content"/></turbo-frame>',
+      '<DemoPanel id="moving" data-turbo-permanent=""><DemoText id="content"/></DemoPanel>',
+    ]) {
+      const document = session(
+        `<Gallery><DemoForm id="form"><DemoGroup id="left">${child}</DemoGroup><DemoGroup id="right"/></DemoForm><Later id="later"/></Gallery>`,
+      )
+      const moving = document.tree.getElementById("moving")
+      const before = document.getNodeSnapshot("id:form")
+
+      const reports = (
+        await dispatchTurboStreamFragment(
+          document,
+          `<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right">${child}</DemoGroup></template></turbo-stream><turbo-stream action="remove" target="later"/>`,
+        )
+      ).actions
+
+      expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+      expect(document.tree.getElementById("moving")).toBe(moving)
+      expect(document.getNodeSnapshot("id:form")).toBe(before)
+      expect(document.tree.getElementById("later")).toBeUndefined()
+    }
+  })
+
   test("retains matched permanent application subtrees while morphing surrounding siblings", async () => {
     const document = session(
       '<Gallery><DemoForm id="form" tone="before"><DemoInput id="editable" tone="before"/><DemoPanel id="permanent" data-turbo-permanent="" tone="kept"><DemoInput id="locked" value="current"/></DemoPanel><DemoText id="copy" tone="before"/></DemoForm></Gallery>',
@@ -477,16 +593,6 @@ describe("Turbo Stream dispatcher", () => {
         stream:
           '<turbo-stream action="update" target="form" method="morph"><template><DemoInput id="outside"/></template></turbo-stream>',
       },
-      {
-        name: "reparented id",
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><DemoInput id="field"/></DemoGroup></template></turbo-stream>',
-      },
-      {
-        name: "reparented id through an unkeyed wrapper",
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoGroup><DemoInput id="field"/></DemoGroup></DemoGroup><DemoGroup id="right"/></template></turbo-stream>',
-      },
     ]
 
     for (const fixtureCase of cases) {
@@ -601,11 +707,6 @@ describe("Turbo Stream dispatcher", () => {
         name: "external id",
         stream:
           '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoInput id="outside"/></DemoForm></template></turbo-stream>',
-      },
-      {
-        name: "reparented id",
-        stream:
-          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="form"><DemoGroup id="left"/><DemoGroup id="right"><DemoInput id="field"/></DemoGroup></DemoForm></template></turbo-stream>',
       },
     ]
 

@@ -139,6 +139,34 @@ describe("document session snapshots", () => {
     expect(disposed).toEqual(["removed"])
   })
 
+  test("reparents a stable application identity during a current-document morph", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="right"/><Group id="left"><Field id="field" tone="before"/></Group></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const field = document.tree.getElementById("field")
+    if (!field) throw new Error("Expected document reparent fixture")
+    const identity = document.getNodeSnapshot(field.key)?.identity
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="right"><Field id="field" tone="after"/></Group><Group id="left"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+
+    const right = document.tree.getElementById("right")
+    if (!right) throw new Error("Expected reparent destination")
+    expect(document.tree.getElementById("field")).toBe(field)
+    expect(field.parent).toBe(right)
+    expect(document.getNodeSnapshot(field.key)?.identity).toBe(identity)
+    expect(document.getNodeSnapshot(field.key)?.morphRevision).toBe(1)
+    expect(attributeValue(field, "tone")).toBe("after")
+  })
+
   test("ignores document-level formatting around a compatible document morph root", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(

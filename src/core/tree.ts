@@ -301,6 +301,12 @@ interface MorphClonePlan {
   readonly type: "clone"
 }
 
+interface MorphCreatePlan {
+  readonly children: readonly MorphPlan[]
+  readonly source: ProtocolElement
+  readonly type: "create"
+}
+
 interface MorphReusePlan {
   readonly attributes: readonly ProtocolAttribute[]
   readonly children: readonly MorphPlan[]
@@ -326,6 +332,7 @@ interface MorphFrameReloadPlan {
 
 type MorphPlan =
   | MorphClonePlan
+  | MorphCreatePlan
   | MorphFrameReloadPlan
   | MorphPermanentPlan
   | MorphRetainPlan
@@ -347,6 +354,11 @@ interface MorphTransaction {
   readonly children: Map<ProtocolParentNode, readonly ProtocolNode[]>
   readonly parents: Map<ProtocolNode, ProtocolParentNode | null>
   readonly completed: Array<readonly [ProtocolElement, ProtocolElement]>
+}
+
+interface MorphPlanningContext {
+  readonly incomingIds: ReadonlySet<string>
+  readonly root: ProtocolElement
 }
 
 type StreamChildMorpher = (
@@ -1055,18 +1067,20 @@ export class DocumentTree {
     sources: readonly ProtocolNode[],
     frameRefresh?: FrameRefreshMorphContext,
     dispatchLifecycle = true,
+    planning = this.createMorphPlanningContext(parent, sources),
+    currentChildren = parent.children,
   ): readonly MorphPlan[] {
     const currentById = new Map<string, ProtocolElement>()
-    for (const child of parent.children) {
+    for (const child of currentChildren) {
       if (!isElement(child)) continue
       const id = attributeValue(child, "id")
       if (id !== undefined) currentById.set(id, child)
     }
-    this.assertMatchedPermanentChildren(parent, sources, currentById)
+    this.assertMatchedPermanentChildren(sources, currentById, currentChildren)
 
     const currentForSource = new Map<ProtocolElement, ProtocolElement>()
     const anonymousByShape = new Map<string, ProtocolElement[]>()
-    for (const child of parent.children) {
+    for (const child of currentChildren) {
       if (
         !isElement(child) ||
         child.kind !== "element" ||
@@ -1084,7 +1098,28 @@ export class DocumentTree {
       if (!isElement(source)) continue
       const id = attributeValue(source, "id")
       if (id !== undefined) {
-        const current = currentById.get(id)
+        const sameParent = currentById.get(id)
+        const active = this.idIndex.get(id)
+        const current = sameParent ?? active
+        if (
+          !sameParent &&
+          active &&
+          (active.kind !== "element" ||
+            source.kind !== "element" ||
+            isTurboPermanent(active) ||
+            isTurboPermanent(source))
+        ) {
+          throw new TargetError(
+            `Native morph cannot reparent protocol or permanent id ${JSON.stringify(id)}`,
+            { target: id },
+          )
+        }
+        if (current && !isWithin(current, planning.root)) {
+          throw new TargetError(
+            `Native morph payload id ${JSON.stringify(id)} is outside the target subtree`,
+            { target: id },
+          )
+        }
         if (current) currentForSource.set(source, current)
         continue
       }
@@ -1139,6 +1174,7 @@ export class DocumentTree {
               source.children,
               frameRefresh,
               dispatchLifecycle,
+              planning,
             ),
             current,
             source,
@@ -1156,15 +1192,37 @@ export class DocumentTree {
           ...(id ? { target: id } : {}),
         })
       }
+      if (
+        !current &&
+        isElement(source) &&
+        source.kind === "element" &&
+        this.hasActiveMorphDescendant(source, planning.root)
+      ) {
+        return {
+          children: this.buildMorphPlans(
+            source,
+            source.children,
+            frameRefresh,
+            dispatchLifecycle,
+            planning,
+            [],
+          ),
+          source,
+          type: "create",
+        } as const
+      }
       this.assertMorphCloneIds(source, current)
       return { ...(current ? { anchor: current } : {}), source, type: "clone" } as const
     })
 
-    const missing = parent.children.filter(
+    const missing = currentChildren.filter(
       (current) => !sourceIndexByCurrent.has(current as ProtocolElement),
     )
 
     for (const current of missing) {
+      if (isElement(current) && planning.incomingIds.has(attributeValue(current, "id") ?? "")) {
+        continue
+      }
       if (
         isElement(current) &&
         frameRefresh &&
@@ -1189,6 +1247,35 @@ export class DocumentTree {
     return plans
   }
 
+  private createMorphPlanningContext(
+    root: ProtocolElement,
+    sources: readonly ProtocolNode[],
+  ): MorphPlanningContext {
+    const incomingIds = new Set<string>()
+    for (const source of sources) {
+      walk(source, (node) => {
+        if (!isElement(node)) return
+        const id = attributeValue(node, "id")
+        if (id !== undefined) incomingIds.add(id)
+      })
+    }
+    return { incomingIds, root }
+  }
+
+  private hasActiveMorphDescendant(source: ProtocolElement, root: ProtocolElement): boolean {
+    let found = false
+    for (const child of source.children) {
+      walk(child, (node) => {
+        if (found || !isElement(node)) return
+        const id = attributeValue(node, "id")
+        const active = id === undefined ? undefined : this.idIndex.get(id)
+        if (active && isWithin(active, root)) found = true
+      })
+      if (found) break
+    }
+    return found
+  }
+
   private insertRetainedMorphPlan(
     parent: ProtocolElement,
     plans: MorphPlan[],
@@ -1211,6 +1298,7 @@ export class DocumentTree {
 
   private morphPlanAnchor(plan: MorphPlan): ProtocolElement | undefined {
     if (plan.type === "clone") return plan.anchor
+    if (plan.type === "create") return undefined
     return isElement(plan.current) ? plan.current : undefined
   }
 
@@ -1321,9 +1409,9 @@ export class DocumentTree {
   }
 
   private assertMatchedPermanentChildren(
-    parent: ProtocolElement,
     sources: readonly ProtocolNode[],
     currentById: ReadonlyMap<string, ProtocolElement>,
+    currentChildren: readonly ProtocolNode[],
   ): void {
     const sourceById = new Map<string, ProtocolElement>()
     for (const source of sources) {
@@ -1332,7 +1420,7 @@ export class DocumentTree {
       if (id !== undefined) sourceById.set(id, source)
     }
 
-    for (const current of parent.children) {
+    for (const current of currentChildren) {
       if (!isElement(current) || !hasTurboPermanent(current)) continue
       const id = attributeValue(current, "id")
       const source = id === undefined ? undefined : sourceById.get(id)
@@ -1430,7 +1518,7 @@ export class DocumentTree {
     for (const child of previous) {
       if (retained.has(child)) continue
       this.recordMorphParent(child, transaction)
-      setProtocolNodeParent(child, null)
+      if (child.parent === parent) setProtocolNodeParent(child, null)
     }
   }
 
@@ -1489,6 +1577,11 @@ export class DocumentTree {
     transaction: MorphTransaction,
   ): ProtocolNode {
     if (plan.type === "clone") return this.cloneNode(plan.source, parent)
+    if (plan.type === "create") {
+      const created = this.cloneElementWithoutChildren(plan.source, parent)
+      this.applyMorphChildren(created, plan.children, transaction)
+      return created
+    }
     if (plan.type === "permanent" || plan.type === "frame-reload" || plan.type === "retain") {
       return plan.current
     }
@@ -1501,6 +1594,25 @@ export class DocumentTree {
     this.applyMorphChildren(current, plan.children, transaction)
     transaction.completed.push([current, source])
     return current
+  }
+
+  private cloneElementWithoutChildren(
+    source: ProtocolElement,
+    parent: ProtocolParentNode,
+  ): ProtocolElement {
+    const id = attributeValue(source, "id")
+    return {
+      attributes: source.attributes.map((attribute) => ({ ...attribute })),
+      children: [],
+      key: id ? `id:${id}` : `mutation:${this.mutationKey++}`,
+      kind: source.kind,
+      localName: source.localName,
+      namespaceUri: source.namespaceUri,
+      parent,
+      prefix: source.prefix,
+      tagName: source.tagName,
+      ...(source.location ? { location: source.location } : {}),
+    }
   }
 
   private recordMorphParent(node: ProtocolNode, transaction: MorphTransaction): void {
