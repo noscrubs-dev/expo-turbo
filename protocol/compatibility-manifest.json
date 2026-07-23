@@ -211,6 +211,55 @@
       }
     },
     {
+      "id": "frame-envelope",
+      "envelope": "document",
+      "file": "fixtures/frame-envelope.xml",
+      "expect": {
+        "outcome": "accepted",
+        "normalized": {
+          "nodes": [
+            {
+              "kind": "element",
+              "qname": "turbo-frame",
+              "namespace": null,
+              "attributes": [
+                ["autoscroll", null, "true"],
+                ["data-turbo-action", null, "advance"],
+                ["disabled", null, "disabled"],
+                ["id", null, "details"],
+                ["loading", null, "lazy"],
+                ["recurse", null, "details child"],
+                ["refresh", null, "morph"],
+                ["src", null, "/frames/details"],
+                ["target", null, "_top"]
+              ],
+              "children": [
+                {
+                  "kind": "element",
+                  "qname": "DemoCard",
+                  "namespace": null,
+                  "attributes": [
+                    ["id", null, "details-card"]
+                  ],
+                  "children": [
+                    {
+                      "kind": "text",
+                      "value": "Loaded details",
+                      "cdata": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "provenance": {
+        "kind": "authored",
+        "baseline": "turbo-8.0.23"
+      }
+    },
+    {
       "id": "unsafe-doctype",
       "envelope": "document",
       "file": "fixtures/unsafe-doctype.xml",

@@ -1,0 +1,1 @@
+<turbo-frame id="details" src="/frames/details" target="_top" loading="lazy" disabled="disabled" autoscroll="true" refresh="morph" recurse="details child" data-turbo-action="advance"><DemoCard id="details-card">Loaded details</DemoCard></turbo-frame>
