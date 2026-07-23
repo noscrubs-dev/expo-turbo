@@ -113,7 +113,7 @@ describe("Turbo Stream dispatcher", () => {
     expect(notifications).toBe(2)
   })
 
-  test("supports identity-safe outer and child morph only for exact targets", async () => {
+  test("supports identity-safe outer and child morph for exact targets", async () => {
     const document = session(
       '<Gallery><Panel id="replace"><Old id="old-replace"/></Panel><Panel id="update"><Old id="old-update"/></Panel><Later id="later"/></Gallery>',
     )
@@ -136,6 +136,81 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("new-replace")).toBeDefined()
     expect(document.tree.getElementById("new-update")).toBeDefined()
     expect(document.tree.getElementById("later")).toBeUndefined()
+  })
+
+  test("clones and applies an idless child morph to selector targets in document order", async () => {
+    const document = session(
+      '<Gallery><Panel id="one" class="group"><Old tone="one"/></Panel><Panel id="two" class="group"><Old tone="two"/></Panel></Gallery>',
+    )
+    const one = document.tree.getElementById("one")
+    const two = document.tree.getElementById("two")
+    if (!one || !two) throw new Error("selector child morph fixtures are missing")
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" targets=".group" method="morph"><template><New tone="after"/></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 2, matchedTargets: 2, status: "applied" })
+    expect(document.tree.getElementById("one")).toBe(one)
+    expect(document.tree.getElementById("two")).toBe(two)
+    expect(one.children[0]).toMatchObject({ tagName: "New" })
+    expect(two.children[0]).toMatchObject({ tagName: "New" })
+    expect(one.children[0]).not.toBe(two.children[0])
+  })
+
+  test("retains each compatible selector target through an idless outer morph", async () => {
+    const document = session(
+      '<Gallery><Panel id="one" class="group"><Old tone="one"/></Panel><Panel id="two" class="group"><Old tone="two"/></Panel></Gallery>',
+    )
+    const root = document.tree.document.children[0]
+    const one = document.tree.getElementById("one")
+    const two = document.tree.getElementById("two")
+    if (root?.kind !== "element" || !one || !two) {
+      throw new Error("selector outer morph fixtures are missing")
+    }
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="replace" targets=".group" method="morph"><template><Panel class="group" tone="after"><New/></Panel></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 2, matchedTargets: 2, status: "applied" })
+    expect(root.children).toEqual([one, two])
+    expect(attributeValue(one, "id")).toBeUndefined()
+    expect(attributeValue(two, "id")).toBeUndefined()
+    expect(attributeValue(one, "tone")).toBe("after")
+    expect(attributeValue(two, "tone")).toBe("after")
+    expect(one.children[0]).not.toBe(two.children[0])
+  })
+
+  test("rejects an id-bearing selector morph payload before changing any target", async () => {
+    const document = session(
+      '<Gallery><Panel id="one" class="group"><Old tone="one"/></Panel><Panel id="two" class="group"><Old tone="two"/></Panel></Gallery>',
+    )
+    const one = document.tree.getElementById("one")
+    const two = document.tree.getElementById("two")
+    const oneChild = one?.children[0]
+    const twoChild = two?.children[0]
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" targets=".group" method="morph"><template><New id="shared"/></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report?.status).toBe("error")
+    expect(document.tree.getElementById("one")).toBe(one)
+    expect(document.tree.getElementById("two")).toBe(two)
+    expect(one?.children[0]).toBe(oneChild)
+    expect(two?.children[0]).toBe(twoChild)
+    expect(document.tree.getElementById("shared")).toBeUndefined()
+    expect(document.revision).toBe(0)
   })
 
   test("ignores formatting whitespace around an outer morph root", async () => {
@@ -804,11 +879,6 @@ describe("Turbo Stream dispatcher", () => {
       readonly stream: string
     }[] = [
       {
-        name: "selector",
-        stream:
-          '<turbo-stream action="update" targets="DemoForm" method="morph"><template><DemoText/></template></turbo-stream>',
-      },
-      {
         name: "Frame target",
         stream:
           '<turbo-stream action="update" target="frame" method="morph"><template><DemoText/></template></turbo-stream>',
@@ -897,11 +967,6 @@ describe("Turbo Stream dispatcher", () => {
       readonly permanent?: boolean
       readonly stream: string
     }[] = [
-      {
-        name: "selector",
-        stream:
-          '<turbo-stream action="replace" targets="DemoForm" method="morph"><template><DemoForm id="form"/></template></turbo-stream>',
-      },
       {
         name: "empty root",
         stream:

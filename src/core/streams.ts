@@ -527,13 +527,6 @@ async function renderAction(
     return result
   }
   const morph = attributeValue(stream, "method") === "morph"
-  if (
-    (action === "replace" || action === "update") &&
-    morph &&
-    attributeValue(stream, "target") === undefined
-  ) {
-    throw actionError("Native Turbo Stream morph requires an exact target", action)
-  }
   if ((action === "replace" || action === "update") && morph) {
     assertNoPermanentMorphEnvelope(stream, action)
   }
