@@ -1373,6 +1373,112 @@ test("matches upstream Turbo generated-form link destination Frame response", as
   }
 })
 
+test("matches upstream Turbo redirected generated-form Frame success", async () => {
+  const initialDocument =
+    '<main id="root"><a id="save-link" href="/save?value=accepted" data-turbo-method="post" data-turbo-frame="destination">Save</a><turbo-frame id="destination" class="mounted" src="/old"><p id="old-destination">Old</p></turbo-frame></main>'
+  const finalDocument =
+    '<main><turbo-frame id="destination" class="response"><p id="saved">Saved</p></turbo-frame><p id="outside">Outside</p></main>'
+  const finalUrl = "https://example.test/save/final"
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoFrameBefore = session.tree.getElementById("destination")
+  if (!expoFrameBefore) throw new Error("Expo redirected generated-form Frame is missing")
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: true,
+        status: 200,
+        text: async () => finalDocument,
+        url: finalUrl,
+      }
+    },
+  })
+  const links = new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-frame-redirect",
+  })
+  const expoResult = await links.submit("id:save-link", "/save?value=accepted")
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(finalDocument, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperties(response, {
+      redirected: { configurable: true, value: true },
+      url: { configurable: true, value: finalUrl },
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("destination")
+    const link = browser.document.getElementById("save-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser redirected generated-form Frame is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser redirected generated-form link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("destination")
+    const expoFrameAfter = session.tree.getElementById("destination")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Redirected generated-form differential lost its Frame")
+    }
+    expect(expoResult).toMatchObject({
+      application: "frame",
+      effectiveMethod: "POST",
+      responseStatus: 200,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body?.value).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser redirected generated-form Frame result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 for (const responseStatus of [422, 500] as const) {
   test(`matches upstream Turbo for an authoritative Frame form ${responseStatus} response`, async () => {
     const initialDocument =
