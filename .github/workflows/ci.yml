@@ -144,7 +144,8 @@ jobs:
                 EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test \
                   src/demo-live-cable.redis-smoke.test.ts \
                   src/demo-live-form.rails-smoke.test.ts \
-                  src/demo-live-morph.rails-smoke.test.tsx
+                  src/demo-live-morph.rails-smoke.test.tsx \
+                  src/demo-live-response-matrix.rails-smoke.test.ts
               )
               exit $?
             fi
