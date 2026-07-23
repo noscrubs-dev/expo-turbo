@@ -5,6 +5,9 @@ appId: host.exp.Exponent
 - openLink: ${EXPO_URL}
 - waitForAnimationToEnd
 - tapOn:
+    text: Try again
+    optional: true
+- tapOn:
     text: Open
     optional: true
 - extendedWaitUntil:
