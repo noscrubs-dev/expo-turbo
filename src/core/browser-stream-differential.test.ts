@@ -18,6 +18,7 @@ import {
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
   FormControlRegistry,
+  FormLinkSubmissionController,
   FormSubmissionController,
   FrameController,
   FrameLifecycle,
@@ -1109,6 +1110,159 @@ test("matches upstream Turbo unsafe form method and URL-encoded body", async () 
     expect(browserRequestBody).toBe(expoRequestBody)
     expect(browserFrameHeader).toBe(expoRequest.headers["Turbo-Frame"])
     expect(browser.document.getElementById("validation-result")).not.toBeNull()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo generated-form link method and ordered query body", async () => {
+  const initialDocument =
+    '<main id="root"><a id="delete-link" href="/orders/7?tag=one&amp;tag=two+words&amp;_method=post&amp;empty=" data-turbo-method="delete">Delete</a><p id="old">Old</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: {},
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: request.url,
+      }
+    },
+  })
+  const links = new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-link",
+  })
+  const expoResult = await links.submit(
+    "id:delete-link",
+    "/orders/7?tag=one&tag=two+words&_method=post&empty=",
+  )
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    return new browser.Response(null, { status: 204 })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const responseHandled = new Promise<void>((resolve) => {
+      browser.document.addEventListener("turbo:before-fetch-response", () => resolve(), {
+        once: true,
+      })
+    })
+    const link = browser.document.getElementById("delete-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser generated-form differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await responseHandled
+    await Promise.resolve()
+
+    expect(expoResult).toMatchObject({
+      application: "empty",
+      effectiveMethod: "DELETE",
+      status: "empty",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body?.value).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+    await browser.happyDOM.abort()
+  }
+})
+
+test("matches upstream Turbo generated-form Stream link response", async () => {
+  const initialDocument =
+    '<main id="root"><a id="stream-link" href="/updates?scope=profile" data-turbo-stream="">Update</a><p id="status">Old</p></main>'
+  const streamResponse =
+    '<turbo-stream action="update" target="status"><template>Updated</template></turbo-stream>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => streamResponse,
+        url: request.url,
+      }
+    },
+  })
+  const links = new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-stream-link",
+  })
+  const expoResult = await links.submit("id:stream-link", "/updates?scope=profile")
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    return new browser.Response(streamResponse, {
+      headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+      status: 200,
+    })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("stream-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser generated-form Stream link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "stream",
+      effectiveMethod: "GET",
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()
