@@ -362,12 +362,14 @@ describe("Frame request loader", () => {
     }
   })
 
-  test("returns prevented without changing the active Frame", async () => {
+  test("returns prevented while preserving the mounted Frame and canonicalizing its source", async () => {
     const session = documentSession()
     const frame = session.tree.getElementById("details")
     const children = frame?.children
+    let sourceAtDispatch: string | undefined
     const lifecycle = new FrameLifecycle()
     lifecycle.subscribe("frame-missing", (event) => {
+      sourceAtDispatch = attributeValue(frame as never, "src")
       event.preventDefault()
       return undefined
     })
@@ -387,7 +389,8 @@ describe("Frame request loader", () => {
       url: "https://example.test/frame",
     })
     expect(frame?.children).toBe(children)
-    expect(attributeValue(frame as never, "src")).toBe("/old")
+    expect(sourceAtDispatch).toBe("https://example.test/frame")
+    expect(attributeValue(frame as never, "src")).toBe("https://example.test/frame")
   })
 
   test("visits the buffered response after releasing Frame request ownership", async () => {

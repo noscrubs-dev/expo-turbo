@@ -951,6 +951,12 @@ export class FrameRequestLoader {
 
         const intermediary = recurseFrame(document.getFrames(), frameId)
         if (!intermediary) {
+          if (recurseDepth === 0 && !historyPlan) {
+            this.session.setAttribute(frame.key, "src", responseUrl)
+            if (!this.owns(frameId, active)) {
+              return this.canceled(frameId, requestIds, responseUrl, active)
+            }
+          }
           const missing = this.dispatchFrameMissing(
             frameId,
             requestIds,
