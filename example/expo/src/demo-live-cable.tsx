@@ -1,10 +1,13 @@
 import {
   ActionCableV1WebSocketAdapter,
+  LifecycleCableAdapter,
   resolveActionCableEndpoint,
   type ActionCableWebSocket,
   type ActionCableWebSocketAdapterOptions,
   type ActionCableWebSocketEventType,
   type ClockAdapter,
+  type LifecycleAdapter,
+  type LifecycleState,
 } from "expo-turbo/adapters";
 import {
   CableStreamSourceRegistry,
@@ -62,6 +65,7 @@ export interface DemoLiveCableRuntimeOptions {
   readonly clock?: ClockAdapter;
   readonly createSocket?: ActionCableWebSocketAdapterOptions["createSocket"];
   readonly fetch?: DemoLiveFetch;
+  readonly lifecycle?: LifecycleAdapter;
   readonly origin: string;
 }
 
@@ -75,6 +79,7 @@ export interface DemoLiveProtectedCableRuntimeOptions {
   readonly clock?: ClockAdapter;
   readonly createSocket?: NativeActionCableSocketFactory;
   readonly fetch?: DemoLiveFetch;
+  readonly lifecycle?: LifecycleAdapter;
   readonly origin: string;
 }
 
@@ -99,12 +104,8 @@ export interface DemoLiveCableRuntime {
   dispose(): void;
 }
 
-export type DemoLiveCableLifecycleState = "active" | "background" | "inactive";
-
-export interface DemoLiveCableLifecycle {
-  currentState(): DemoLiveCableLifecycleState;
-  subscribe(listener: (state: DemoLiveCableLifecycleState) => void): () => void;
-}
+export type DemoLiveCableLifecycleState = LifecycleState;
+export type DemoLiveCableLifecycle = LifecycleAdapter;
 
 export interface DemoLiveCablePanelOptions {
   readonly description?: string;
@@ -223,7 +224,7 @@ function asDemoLiveCableLifecycleState(
 }
 
 const nativeDemoLiveCableLifecycle: DemoLiveCableLifecycle = Object.freeze({
-  currentState: () => asDemoLiveCableLifecycleState(AppState.currentState),
+  getState: () => asDemoLiveCableLifecycleState(AppState.currentState),
   subscribe(listener: (state: DemoLiveCableLifecycleState) => void) {
     const subscription = AppState.addEventListener("change", (state) => {
       listener(asDemoLiveCableLifecycleState(state));
@@ -349,12 +350,17 @@ async function createDemoLiveCableRuntimeFor(
     visits,
     { onError: reportError },
   );
-  const cable = new ActionCableV1WebSocketAdapter({
-    clock,
-    createSocket: options.createSocket ?? createNativeActionCableSocket,
-    heartbeat: { now: () => clock.now() },
+  const cable = new LifecycleCableAdapter({
+    createCable: () =>
+      new ActionCableV1WebSocketAdapter({
+        clock,
+        createSocket: options.createSocket ?? createNativeActionCableSocket,
+        heartbeat: { now: () => clock.now() },
+        onError: reportError,
+        url: endpoints.cableUrl,
+      }),
+    lifecycle: options.lifecycle ?? nativeDemoLiveCableLifecycle,
     onError: reportError,
-    url: endpoints.cableUrl,
   });
   const streamSources = new CableStreamSourceRegistry(session, cable, {
     onError: reportError,
@@ -464,6 +470,7 @@ export async function createDemoLiveProtectedCableRuntime(
       clock: options.clock,
       createSocket: (url, protocols) => createSocket(url, protocols, headers),
       fetch,
+      lifecycle: options.lifecycle,
       origin: options.origin,
     },
     {
@@ -486,6 +493,11 @@ function useDemoLiveCableRuntimeOwner(proof: DemoLiveCableRuntime): void {
       });
     };
   }, [proof]);
+}
+
+function DemoLiveCableRuntimeOwner({ proof }: Readonly<{ proof: DemoLiveCableRuntime }>) {
+  useDemoLiveCableRuntimeOwner(proof);
+  return null;
 }
 
 export function DemoLiveCableRuntimeProvider({
@@ -638,90 +650,61 @@ export function DemoLiveCableProof({
   panelOptions,
 }: DemoLiveCableProofProps) {
   const startRuntime = useCallback(
-    () => createRuntime?.() ?? createDemoLiveCableRuntime({ origin }),
-    [createRuntime, origin],
+    () => createRuntime?.() ?? createDemoLiveCableRuntime({ lifecycle, origin }),
+    [createRuntime, lifecycle, origin],
   );
-  const [backgrounded, setBackgrounded] = useState(
-    () => lifecycle.currentState() === "background",
-  );
+  const [backgrounded, setBackgrounded] = useState(() => lifecycle.getState() !== "active");
   const [error, setError] = useState<Error | undefined>();
   const [proof, setProof] = useState<DemoLiveCableRuntime | undefined>();
 
   useEffect(() => {
     let disposed = false;
-    let inBackground = lifecycle.currentState() === "background";
     let currentProof: DemoLiveCableRuntime | undefined;
-    let generation = 0;
-    let starting = false;
-
-    const release = () => {
-      generation += 1;
-      starting = false;
-      currentProof?.dispose();
-      currentProof = undefined;
-      if (!disposed) setProof(undefined);
-    };
-    const start = () => {
-      if (disposed || inBackground || starting || currentProof) return;
-      const requestGeneration = ++generation;
-      starting = true;
-      setError(undefined);
-      void Promise.resolve()
-        .then(() => {
-          if (disposed || inBackground || requestGeneration !== generation) return undefined;
-          return startRuntime();
-        })
-        .then((nextProof) => {
-          if (!nextProof) return;
-          if (disposed || inBackground || requestGeneration !== generation) {
-            nextProof.dispose();
-            return;
-          }
-          currentProof = nextProof;
-          setProof(nextProof);
-        })
-        .catch((nextError) => {
-          if (!disposed && !inBackground && requestGeneration === generation) {
-            setError(asDisplayError(nextError));
-          }
-        })
-        .finally(() => {
-          if (requestGeneration === generation) starting = false;
-        });
-    };
     const unsubscribe = lifecycle.subscribe((state) => {
-      if (state === "background") {
-        if (inBackground) return;
-        inBackground = true;
-        setBackgrounded(true);
-        setError(undefined);
-        release();
-        return;
-      }
-      if (state === "active" && inBackground) {
-        inBackground = false;
-        setBackgrounded(false);
-        start();
-      }
+      setBackgrounded(state !== "active");
     });
-    if (!inBackground) start();
+    void startRuntime()
+      .then((nextProof) => {
+        if (disposed) {
+          nextProof.dispose();
+          return;
+        }
+        currentProof = nextProof;
+        setProof(nextProof);
+      })
+      .catch((nextError) => {
+        if (!disposed) setError(asDisplayError(nextError));
+      });
 
     return () => {
       disposed = true;
       unsubscribe();
-      release();
+      currentProof?.dispose();
+      currentProof = undefined;
     };
   }, [lifecycle, startRuntime]);
 
-  if (backgrounded) {
+  const pausedMessage = (
+    <Text
+      accessibilityLabel="Action Cable paused in background"
+      selectable
+      style={{ color: "#435160" }}
+    >
+      Action Cable pauses while the app is in the background.
+    </Text>
+  );
+  if (backgrounded && !proof) {
+    return pausedMessage;
+  }
+  if (proof) {
     return (
-      <Text
-        accessibilityLabel="Action Cable paused in background"
-        selectable
-        style={{ color: "#435160" }}
-      >
-        Action Cable pauses while the app is in the background.
-      </Text>
+      <>
+        <DemoLiveCableRuntimeOwner proof={proof} />
+        {backgrounded ? pausedMessage : null}
+        <View style={{ display: backgrounded ? "none" : "flex" }}>
+          <DemoLiveCablePanel proof={proof} {...panelOptions} />
+        </View>
+      </>
     );
   }
   if (error) {
@@ -731,14 +714,11 @@ export function DemoLiveCableProof({
       </Text>
     );
   }
-  if (!proof) {
-    return (
-      <Text selectable style={{ color: "#435160" }}>
-        Loading the standalone Rails Action Cable proof…
-      </Text>
-    );
-  }
-  return <DemoLiveCablePanel proof={proof} {...panelOptions} />;
+  return (
+    <Text selectable style={{ color: "#435160" }}>
+      Loading the standalone Rails Action Cable proof…
+    </Text>
+  );
 }
 
 export function DemoLiveProtectedCableProof({
@@ -747,8 +727,8 @@ export function DemoLiveProtectedCableProof({
   origin,
 }: Readonly<Omit<DemoLiveCableProofProps, "panelOptions">>) {
   const startRuntime = useCallback(
-    () => createRuntime?.() ?? createDemoLiveProtectedCableRuntime({ origin }),
-    [createRuntime, origin],
+    () => createRuntime?.() ?? createDemoLiveProtectedCableRuntime({ lifecycle, origin }),
+    [createRuntime, lifecycle, origin],
   );
 
   return (

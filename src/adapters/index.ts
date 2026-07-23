@@ -10,6 +10,7 @@ export type {
   DocumentHistoryTraversalUnsubscribe,
 } from "../core/document-history-traversal"
 export * from "./action-cable-endpoint"
+export * from "./action-cable-lifecycle"
 export * from "./action-cable-websocket"
 export * from "./action-cable-wire"
 export * from "./styles"
