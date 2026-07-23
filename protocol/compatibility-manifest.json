@@ -247,9 +247,12 @@
     {
       "id": "morph.browser-input-selection-scroll",
       "area": "morph",
-      "disposition": "incomplete",
-      "rationale": "Browser uncontrolled-input selection, the full DOM active-element cursor heuristic, arbitrary scroll capture, and local state across replaced document ancestry remain incomplete.",
-      "evidence": ["README.md"]
+      "disposition": "n-a",
+      "rationale": "React Native has no DOM uncontrolled-input selection, active-element cursor heuristic, automatic scroll-tree capture, or component-instance reparenting; stable logical identity, same-parent component state, explicit reset policy, cross-parent focus restoration, and registered reveal handles are the native contract.",
+      "evidence": [
+        "protocol/README.md",
+        "example/expo/src/renderer.test.ts"
+      ]
     },
     {
       "id": "cable.wire-subscriptions",
