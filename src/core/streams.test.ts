@@ -194,6 +194,53 @@ describe("Turbo Stream dispatcher", () => {
     expect(controls.successfulEntries()).toEqual([{ name: "email", value: "ada@example.test" }])
   })
 
+  test("retains a compatible outer morph root while its id changes or is removed", async () => {
+    for (const incomingId of [' id="next-form"', ""]) {
+      const document = session(
+        '<Gallery><DemoForm id="form" tone="before"><DemoInput id="email"/></DemoForm></Gallery>',
+      )
+      const form = document.tree.getElementById("form")
+      const email = document.tree.getElementById("email")
+      if (!form || !email) throw new Error("outer morph id transition fixture is missing")
+
+      const report = (
+        await dispatchTurboStreamFragment(
+          document,
+          `<turbo-stream action="replace" target="form" method="morph"><template><DemoForm${incomingId} tone="after"><DemoInput id="email"/></DemoForm></template></turbo-stream>`,
+        )
+      ).actions[0]
+
+      expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+      expect(document.tree.getElementById("form")).toBeUndefined()
+      expect(document.tree.getElementById("email")).toBe(email)
+      expect(attributeValue(form, "id")).toBe(incomingId ? "next-form" : undefined)
+      expect(attributeValue(form, "tone")).toBe("after")
+      if (incomingId) expect(document.tree.getElementById("next-form")).toBe(form)
+    }
+  })
+
+  test("rejects an outer morph root id collision before committing the action", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoInput id="next-form"/></DemoForm><Later id="later"/></Gallery>',
+    )
+    const form = document.tree.getElementById("form")
+    const input = document.tree.getElementById("next-form")
+
+    const reports = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="next-form"><DemoInput id="replacement"/></DemoForm></template></turbo-stream><turbo-stream action="remove" target="later"/>',
+      )
+    ).actions
+
+    expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+    expect(document.tree.getElementById("form")).toBe(form)
+    expect(document.tree.getElementById("next-form")).toBe(input)
+    expect(document.tree.getElementById("replacement")).toBeUndefined()
+    expect(document.tree.getElementById("later")).toBeUndefined()
+    expect(document.revision).toBe(1)
+  })
+
   test("retains compatible nested IDs and host form/state ownership during child morph", async () => {
     const document = session(
       '<Gallery><DemoForm id="form"><DemoInput id="email" tone="muted"/><DemoText id="copy">Before</DemoText></DemoForm></Gallery>',
@@ -869,11 +916,6 @@ describe("Turbo Stream dispatcher", () => {
         name: "non-element root",
         stream:
           '<turbo-stream action="replace" target="form" method="morph"><template>replacement</template></turbo-stream>',
-      },
-      {
-        name: "different root id",
-        stream:
-          '<turbo-stream action="replace" target="form" method="morph"><template><DemoForm id="different"/></template></turbo-stream>',
       },
       {
         name: "incompatible root shape",

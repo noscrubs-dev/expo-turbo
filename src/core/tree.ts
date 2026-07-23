@@ -251,10 +251,19 @@ function isTurboPermanent(node: ProtocolNode): boolean {
 function isCompatibleMorphElement(current: ProtocolElement, source: ProtocolElement): boolean {
   const currentId = attributeValue(current, "id")
   return (
+    isCompatibleApplicationMorphShape(current, source) &&
+    currentId !== undefined &&
+    currentId === attributeValue(source, "id")
+  )
+}
+
+function isCompatibleApplicationMorphShape(
+  current: ProtocolElement,
+  source: ProtocolElement,
+): boolean {
+  return (
     current.kind === "element" &&
     source.kind === "element" &&
-    currentId !== undefined &&
-    currentId === attributeValue(source, "id") &&
     current.tagName === source.tagName &&
     current.localName === source.localName &&
     current.namespaceUri === source.namespaceUri &&
@@ -283,14 +292,7 @@ function anonymousMorphShapeKey(element: ProtocolElement): string {
 }
 
 function isCompatibleDocumentMorphRoot(current: ProtocolElement, source: ProtocolElement): boolean {
-  return (
-    current.kind === "element" &&
-    source.kind === "element" &&
-    current.tagName === source.tagName &&
-    current.localName === source.localName &&
-    current.namespaceUri === source.namespaceUri &&
-    current.prefix === source.prefix
-  )
+  return isCompatibleApplicationMorphShape(current, source)
 }
 
 interface MorphClonePlan {
@@ -816,7 +818,7 @@ export class DocumentTree {
       !source ||
       !isElement(source) ||
       source.kind !== "element" ||
-      !isCompatibleMorphElement(target, source)
+      !isCompatibleApplicationMorphShape(target, source)
     ) {
       throw new TargetError(
         "Native Stream outer morph requires one compatible application-element root",
@@ -827,6 +829,15 @@ export class DocumentTree {
       throw new TargetError("Native Stream outer morph cannot run inside data-turbo-permanent", {
         target: targetId,
       })
+    }
+    const sourceRootId = attributeValue(source, "id")
+    const activeSourceRootId =
+      sourceRootId === undefined ? undefined : this.idIndex.get(sourceRootId)
+    if (sourceRootId !== undefined && activeSourceRootId && activeSourceRootId !== target) {
+      throw new TargetError(
+        `Native Stream outer morph root id ${JSON.stringify(sourceRootId)} collides with an active descendant`,
+        { target: sourceRootId },
+      )
     }
 
     this.assertMorphSources(target, source.children)
