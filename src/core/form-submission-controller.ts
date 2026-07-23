@@ -140,6 +140,7 @@ import {
   dispatchGuardedTurboStreamElements,
   type StreamActionDispatchOptions,
   type StreamDispatchReport,
+  streamRenderSchedulerOption,
 } from "./streams"
 import { type DocumentTree, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
 import { classifyTopLevelLocation } from "./visitability"
@@ -409,6 +410,7 @@ export class FormSubmissionController {
     const frameLifecycle = frameLifecycleOption(options, "Form submission controller")
     const submissionLifecycle = formSubmissionLifecycleOption(options, "Form submission controller")
     const streamLifecycle = streamLifecycleOption(options, "Form submission controller")
+    const streamRenderScheduler = streamRenderSchedulerOption(options, "Form submission controller")
     const visitLifecycle = documentVisitLifecycleOption(options, "Form submission controller")
     const navigation = options.navigation
     this.options = Object.freeze({
@@ -425,6 +427,7 @@ export class FormSubmissionController {
       ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
       ...(submissionLifecycle ? { submissionLifecycle } : {}),
       ...(streamLifecycle ? { streamLifecycle } : {}),
+      ...(streamRenderScheduler ? { streamRenderScheduler } : {}),
       ...(visitLifecycle ? { visitLifecycle } : {}),
     })
     this.ownership = destinationRequestOwnership(session)

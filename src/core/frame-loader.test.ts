@@ -42,6 +42,50 @@ function response(xml: string, options: Partial<TurboResponse> = {}): TurboRespo
 }
 
 describe("Frame request loader", () => {
+  test("awaits host render scheduling before applying embedded Frame Streams", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Status id="status"><Old /></Status><turbo-frame id="details" src="/old"><Loading /></turbo-frame></Gallery>',
+        { url: "https://example.test/page" },
+      ),
+    )
+    let release!: () => void
+    let scheduled!: () => void
+    const scheduleStarted = new Promise<void>((resolve) => {
+      scheduled = resolve
+    })
+    const scheduleReleased = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () =>
+          response(
+            '<turbo-frame id="details"><Committed id="committed"/><turbo-stream action="update" target="status"><template><Updated id="updated"/></template></turbo-stream></turbo-frame>',
+          ),
+      },
+      { next: () => "request-1" },
+      {
+        streamRenderScheduler: {
+          async beforeRender() {
+            scheduled()
+            await scheduleReleased
+          },
+        },
+      },
+    )
+
+    const loading = loader.load("details", "/frame")
+    await scheduleStarted
+    expect(session.tree.getElementById("committed")).toBeDefined()
+    expect(session.tree.getElementById("updated")).toBeUndefined()
+
+    release()
+    expect(await loading).toMatchObject({ status: "completed" })
+    expect(session.tree.getElementById("updated")).toBeDefined()
+  })
+
   test("consumes only the exact Frame-and-URL preload through normal commit state", async () => {
     const session = documentSession()
     const cache = new FramePreloadCache()

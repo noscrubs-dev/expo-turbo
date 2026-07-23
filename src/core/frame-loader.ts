@@ -74,7 +74,7 @@ import {
 } from "./request-lifecycle"
 import type { DocumentSession } from "./session"
 import { streamLifecycleOption } from "./stream-lifecycle"
-import type { StreamActionDispatchOptions } from "./streams"
+import { type StreamActionDispatchOptions, streamRenderSchedulerOption } from "./streams"
 import { attributeValue, type ProtocolElement } from "./tree"
 
 export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
@@ -317,6 +317,7 @@ export class FrameRequestLoader {
     this.frameLifecycle = frameLifecycleOption(options, "Frame request loader")
     this.requestLifecycle = requestLifecycleOption(options, "Frame request loader")
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
+    const streamRenderScheduler = streamRenderSchedulerOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     this.preloadBehavior = options.preloadBehavior ?? "consume"
@@ -339,6 +340,7 @@ export class FrameRequestLoader {
       ...(options.onActionError ? { onActionError: options.onActionError } : {}),
       ...(options.refresh ? { refresh: options.refresh } : {}),
       ...(streamLifecycle ? { streamLifecycle } : {}),
+      ...(streamRenderScheduler ? { streamRenderScheduler } : {}),
     })
     if (!Number.isInteger(this.maxRecurseDepth) || this.maxRecurseDepth < 0) {
       throw new TargetError("Frame recurse depth must be a non-negative integer")

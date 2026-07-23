@@ -218,6 +218,41 @@ function mountedFrameHistoryFixture(
 }
 
 describe("FormSubmissionController", () => {
+  test("awaits host render scheduling before applying a Stream form response", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const transport = pendingFetch()
+    const scheduleStarted = deferred<void>()
+    const scheduleReleased = deferred<void>()
+    const controller = new FormSubmissionController(session, transport.adapter, {
+      streamRenderScheduler: {
+        async beforeRender() {
+          scheduleStarted.resolve()
+          await scheduleReleased.promise
+        },
+      },
+    })
+    const controls = registry(session, "document-form")
+
+    const submitting = controller.submit(proposal(controls, "scheduled-stream"))
+    const request = transport.pending[0]
+    if (!request) throw new Error("Stream form request was not captured")
+    request.response.resolve(
+      response(
+        request.request,
+        '<turbo-stream action="update" target="status"><template><Updated id="updated"/></template></turbo-stream>',
+        { headers: { "Content-Type": TURBO_STREAM_MIME_TYPE } },
+      ),
+    )
+
+    await scheduleStarted.promise
+    expect(session.tree.getElementById("updated")).toBeUndefined()
+
+    scheduleReleased.resolve()
+    expect(await submitting).toMatchObject({ application: "stream", status: "applied" })
+    expect(session.tree.getElementById("updated")).toBeDefined()
+  })
+
   test("snapshots and validates the request lifecycle option", async () => {
     const session = fixture()
     const lifecycle = new RequestLifecycle()

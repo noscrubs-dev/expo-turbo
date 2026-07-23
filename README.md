@@ -256,6 +256,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-23**:
 
+- Changed: Preserved the admitted Stream render scheduler through Frame-loader and form-submission controller option snapshots.
+- Why: The direct dispatcher awaited the host scheduling point, but the two response-owning controllers silently dropped the same public option before embedded Frame or negotiated form Streams reached it.
+- Impact: Direct, embedded Frame, and Stream-form actions now all await the host's pre-render scheduling point before mutation, notification, and later siblings. Focused tests hold both response paths at the scheduler boundary and prove no Stream mutation leaks through early; physical React/native paint remains host evidence.
+
+**2026-07-23**:
+
 - Changed: Expanded the source-only cross-language compatibility manifest with every built-in Stream envelope and compact exact metadata assertions.
 - Why: The prior shared Stream fixture proved only append/remove parsing and Rails emission, leaving most Stream helper/runtime wire shapes outside the atomic TypeScript/Ruby contract.
 - Impact: TypeScript and Ruby now consume the same Turbo 8.0.23-attributed append/prepend/replace/update/remove/before/after/refresh fragment and agree on target/selector, morph, request-ID, scroll, and ordered template-root metadata. The Rails TagBuilder independently emits the same complete shared assertion record.
