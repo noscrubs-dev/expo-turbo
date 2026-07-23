@@ -113,10 +113,12 @@
     {
       "id": "frames.autofocus-autoscroll",
       "area": "frames",
-      "disposition": "incomplete",
-      "rationale": "Registered focus and root/named scroll adapters are implemented, but arbitrary nested containers, virtualizers, Android interaction, and physical-device evidence remain open.",
+      "disposition": "native-equivalent",
+      "rationale": "Stable application focus, post-focus reveal, and Frame-boundary autoscroll use explicit host-registered native handles; React Native has no browser-wide focusability or automatic scroll-container discovery, while platform/device confirmation remains tracked by the release conformance gate.",
       "evidence": [
         "src/core/frame-controller.test.ts",
+        "example/expo/src/renderer.test.ts",
+        "example/expo/src/demo-autofocus-scroll.test.ts",
         "example/expo/src/demo-frame-autoscroll.test.ts"
       ]
     },
