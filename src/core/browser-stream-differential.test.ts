@@ -562,3 +562,60 @@ test("matches upstream Turbo for a redirected document link visit", async () => 
     turbo.session.stop()
   }
 })
+
+test("matches upstream Turbo for an authoritative 422 document response", async () => {
+  const initialDocument =
+    '<main id="root"><a id="invalid-link" href="/invalid">Invalid</a><p id="old">Old</p></main>'
+  const invalidDocument =
+    '<main id="root"><a id="retry-link" href="/demo">Retry</a><p id="invalid">Invalid document</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async () => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 422,
+        text: async () => invalidDocument,
+        url: "https://example.test/invalid",
+      }),
+    },
+    { next: () => "request-invalid" },
+  )
+  const visits = new DocumentVisitController(loader, realClock)
+  const expoResult = await visits.visit("/invalid")
+  const originalFetch = browser.fetch
+  browser.fetch = async () =>
+    new browser.Response(`<html><body>${invalidDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 422,
+    })
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("invalid-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser error-document differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult.status).toBe("committed")
+    expect(visits.state.status).toBe("failed")
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
