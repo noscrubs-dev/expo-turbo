@@ -809,6 +809,90 @@ describe("Frame controller", () => {
     expect(events).toEqual(["before:replace", "morph"])
   })
 
+  test("pauses an exact Frame response before history or tree commit and resumes it", async () => {
+    const lifecycle = new FrameLifecycle()
+    let pauseNext = false
+    let resume!: () => void
+    let paused!: () => void
+    const reachedPause = new Promise<void>((resolve) => {
+      paused = resolve
+    })
+    lifecycle.subscribe("before-frame-render", (event) => {
+      if (!pauseNext) return undefined
+      event.pause()
+      resume = () => event.resume()
+      paused()
+      return undefined
+    })
+    const { controller, pending, session } = harness('src="/frame"', undefined, {
+      frameLifecycle: lifecycle,
+    })
+    const initial = controller.connect()
+    pending[0]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="before" /></turbo-frame>'),
+    )
+    await initial
+    const stable = session.tree.getElementById("stable")
+    if (!stable) throw new Error("initial Frame response did not commit")
+    pauseNext = true
+
+    const visited = controller.visit("/paused")
+    pending[1]?.resolve(
+      response('<turbo-frame id="details"><Stable id="stable" tone="after" /></turbo-frame>', {
+        url: "https://example.test/paused",
+      }),
+    )
+    await reachedPause
+
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(attributeValue(stable, "tone")).toBe("before")
+    expect(session.tree.document.url).toBe("https://example.test/page")
+
+    resume()
+    await expect(visited).resolves.toMatchObject({ status: "completed" })
+    expect(session.tree.getElementById("stable")).not.toBe(stable)
+    expect(attributeValue(session.tree.getElementById("stable") as never, "tone")).toBe("after")
+  })
+
+  test("settles a paused Frame response when newer exact work supersedes it", async () => {
+    const lifecycle = new FrameLifecycle()
+    let pauseNext = false
+    let resumeOlder!: () => void
+    let paused!: () => void
+    const reachedPause = new Promise<void>((resolve) => {
+      paused = resolve
+    })
+    lifecycle.subscribe("before-frame-render", (event) => {
+      if (!pauseNext) return undefined
+      pauseNext = false
+      event.pause()
+      resumeOlder = () => event.resume()
+      paused()
+      return undefined
+    })
+    const { controller, pending, session } = harness('src="/frame"', undefined, {
+      frameLifecycle: lifecycle,
+    })
+    const initial = controller.connect()
+    pending[0]?.resolve(
+      response('<turbo-frame id="details"><Initial id="initial" /></turbo-frame>'),
+    )
+    await initial
+    pauseNext = true
+
+    const older = controller.visit("/older")
+    pending[1]?.resolve(response('<turbo-frame id="details"><Older id="older" /></turbo-frame>'))
+    await reachedPause
+    const newer = controller.visit("/newer")
+
+    await expect(older).resolves.toMatchObject({ status: "canceled" })
+    pending[2]?.resolve(response('<turbo-frame id="details"><Newer id="newer" /></turbo-frame>'))
+    await expect(newer).resolves.toMatchObject({ status: "completed" })
+    expect(session.tree.getElementById("older")).toBeUndefined()
+    expect(session.tree.getElementById("newer")).toBeDefined()
+    resumeOlder()
+  })
+
   test("rejects an invalid selected morph before changing the active Frame", async () => {
     const lifecycle = new FrameLifecycle()
     lifecycle.subscribe("before-frame-render", (event) => {

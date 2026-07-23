@@ -19,6 +19,7 @@ import {
   FrameRenderEvent,
   frameLifecycleOption,
   hasFrameMissingVisitIntent,
+  waitUntilBeforeFrameRenderResumed,
 } from "./frame-lifecycle"
 import { parseExpoTurboDocument } from "./parser"
 
@@ -265,6 +266,43 @@ describe("Frame lifecycle", () => {
       ),
     ).toBeUndefined()
     expect(calls).toEqual(["second", "default"])
+  })
+
+  test("admits synchronous before-frame-render pauses that resume after dispatch", async () => {
+    const response = parseExpoTurboDocument(
+      '<Gallery><turbo-frame id="details"><Incoming /></turbo-frame></Gallery>',
+    )
+    const newFrame = response.getElementById("details")
+    if (newFrame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const lifecycle = new FrameLifecycle()
+    const event = createBeforeFrameRenderEvent(
+      "details",
+      newFrame,
+      "https://example.test/details",
+      (context) => context.renderDefault(),
+    )
+
+    lifecycle.subscribe("before-frame-render", (received) => {
+      received.pause()
+      expect(received.paused).toBe(true)
+      return undefined
+    })
+
+    lifecycle[FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](event)
+    let resumed = false
+    void waitUntilBeforeFrameRenderResumed(event).then(() => {
+      resumed = true
+    })
+    await Promise.resolve()
+    expect(resumed).toBe(false)
+    expect(() => event.pause()).toThrow("can no longer be paused")
+
+    event.resume()
+    await waitUntilBeforeFrameRenderResumed(event)
+    await Promise.resolve()
+    expect(event.paused).toBe(false)
+    expect(resumed).toBe(true)
+    expect(() => event.resume()).toThrow("is not paused")
   })
 
   test("requires synchronous undefined before-frame-render listeners and a function renderer", async () => {

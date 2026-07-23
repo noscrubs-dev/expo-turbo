@@ -1779,6 +1779,52 @@ describe("FormSubmissionController", () => {
     expect(events).toEqual(["before:replace", "morph"])
   })
 
+  test("pauses matching Frame form application before mutation and resumes exact ownership", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoPanel id="stable" tone="before" /></DemoForm></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const stable = session.tree.getElementById("stable")
+    if (!stable) throw new Error("invalid fixture")
+    const lifecycle = new FrameLifecycle()
+    let resume!: () => void
+    let paused!: () => void
+    const reachedPause = new Promise<void>((resolve) => {
+      paused = resolve
+    })
+    lifecycle.subscribe("before-frame-render", (event) => {
+      event.pause()
+      resume = () => event.resume()
+      paused()
+      return undefined
+    })
+
+    const submitting = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(
+            request,
+            '<turbo-frame id="frame"><DemoForm id="form" action="/save" method="post"><DemoPanel id="stable" tone="after" /><Saved id="saved" /></DemoForm></turbo-frame>',
+          ),
+      },
+      { frameLifecycle: lifecycle },
+    ).submit(proposal(registry(session, "form"), "paused-frame-form"))
+
+    await reachedPause
+    expect(session.tree.getElementById("stable")).toBe(stable)
+    expect(attributeValue(stable, "tone")).toBe("before")
+    expect(session.tree.getElementById("saved")).toBeUndefined()
+
+    resume()
+    await expect(submitting).resolves.toMatchObject({ application: "frame", status: "applied" })
+    expect(session.tree.getElementById("stable")).not.toBe(stable)
+    expect(attributeValue(session.tree.getElementById("stable") as never, "tone")).toBe("after")
+    expect(session.tree.getElementById("saved")).toBeDefined()
+  })
+
   test("shares each exact Frame lane with GET requests in both directions", async () => {
     {
       const session = fixture()

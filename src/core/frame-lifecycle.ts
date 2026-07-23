@@ -167,10 +167,24 @@ export interface BeforeFrameRenderEventDetail {
   render: FrameRenderer
 }
 
-export type BeforeFrameRenderEvent = NotificationEvent<
-  "before-frame-render",
-  BeforeFrameRenderEventDetail
->
+interface BeforeFrameRenderEventState {
+  acceptingPauses: boolean
+  pauses: number
+  release: (() => void) | undefined
+  resumed: Promise<void>
+}
+
+const beforeFrameRenderEventStates = new WeakMap<
+  ExactBeforeFrameRenderEvent,
+  BeforeFrameRenderEventState
+>()
+
+export interface BeforeFrameRenderEvent
+  extends NotificationEvent<"before-frame-render", BeforeFrameRenderEventDetail> {
+  readonly paused: boolean
+  pause(): void
+  resume(): void
+}
 
 interface BeforeFrameRenderDetailState {
   renderer: FrameRenderer
@@ -231,7 +245,46 @@ class ExactBeforeFrameRenderEvent extends NotificationEvent<
       "before-frame-render",
       new ExactBeforeFrameRenderEventDetail(frameId, newFrame, url, renderer, renderMethod),
     )
+    beforeFrameRenderEventStates.set(this, {
+      acceptingPauses: true,
+      pauses: 0,
+      release: undefined,
+      resumed: Promise.resolve(),
+    })
     Object.freeze(this)
+  }
+
+  get paused(): boolean {
+    return beforeFrameRenderEventState(this).pauses > 0
+  }
+
+  pause(): void {
+    const state = beforeFrameRenderEventState(this)
+    if (!state.acceptingPauses) {
+      throw new StateError("Before-frame-render event can no longer be paused", {
+        frameId: this.detail.frameId,
+      })
+    }
+    if (state.pauses === 0) {
+      state.resumed = new Promise<void>((resolve) => {
+        state.release = resolve
+      })
+    }
+    state.pauses += 1
+  }
+
+  resume(): void {
+    const state = beforeFrameRenderEventState(this)
+    if (state.pauses === 0) {
+      throw new StateError("Before-frame-render event is not paused", {
+        frameId: this.detail.frameId,
+      })
+    }
+    state.pauses -= 1
+    if (state.pauses !== 0) return
+    const release = state.release
+    state.release = undefined
+    release?.()
   }
 }
 
@@ -293,10 +346,10 @@ export const FRAME_LIFECYCLE_RENDER_DISPATCH = Symbol("expo-turbo.frame-lifecycl
 export const FRAME_LIFECYCLE_LOAD_DISPATCH = Symbol("expo-turbo.frame-lifecycle.load-dispatch")
 
 /**
- * Synchronous lifecycle for Frame response handling. Frame-missing listeners
- * may cancel an admission; before-render listeners may synchronously wrap the
- * package-owned replacement; render and load listeners are notification-only
- * observers.
+ * Logical lifecycle for Frame response handling. Frame-missing listeners may
+ * cancel an admission; before-render listeners may pause admission and
+ * synchronously wrap the package-owned replacement; render and load listeners
+ * are notification-only observers.
  */
 export class FrameLifecycle {
   private readonly listeners = new Map<
@@ -359,22 +412,26 @@ export class FrameLifecycle {
   }
 
   [FRAME_LIFECYCLE_BEFORE_RENDER_DISPATCH](event: BeforeFrameRenderEvent): FrameRenderer {
-    for (const listener of [...(this.listeners.get("before-frame-render") ?? [])]) {
-      let result: unknown
-      try {
-        result = listener(event)
-      } catch {
-        throw beforeRenderListenerError(event, "Before-frame-render listener failed")
+    try {
+      for (const listener of [...(this.listeners.get("before-frame-render") ?? [])]) {
+        let result: unknown
+        try {
+          result = listener(event)
+        } catch {
+          throw beforeRenderListenerError(event, "Before-frame-render listener failed")
+        }
+        if (result === undefined) continue
+        try {
+          consumeUnexpectedResult(result)
+        } catch {
+          throw beforeRenderListenerError(event, "Before-frame-render listener failed")
+        }
+        throw beforeRenderListenerError(event, "Before-frame-render listener must return undefined")
       }
-      if (result === undefined) continue
-      try {
-        consumeUnexpectedResult(result)
-      } catch {
-        throw beforeRenderListenerError(event, "Before-frame-render listener failed")
-      }
-      throw beforeRenderListenerError(event, "Before-frame-render listener must return undefined")
+      return event.detail.render
+    } finally {
+      beforeFrameRenderEventState(event).acceptingPauses = false
     }
-    return event.detail.render
   }
 
   [FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](event: BeforeFrameMorphEvent): void {
@@ -454,6 +511,28 @@ export function createBeforeFrameRenderEvent(
   renderMethod: FrameRenderMethod = "replace",
 ): BeforeFrameRenderEvent {
   return new ExactBeforeFrameRenderEvent(frameId, newFrame, url, renderer, renderMethod)
+}
+
+export function waitUntilBeforeFrameRenderResumed(
+  event: BeforeFrameRenderEvent,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const state = beforeFrameRenderEventState(event)
+  if (state.pauses === 0) return Promise.resolve(!signal?.aborted)
+  if (!signal) return state.resumed.then(() => true)
+  if (signal.aborted) return Promise.resolve(false)
+
+  return new Promise<boolean>((resolve) => {
+    const canceled = () => {
+      signal.removeEventListener("abort", canceled)
+      resolve(false)
+    }
+    signal.addEventListener("abort", canceled, { once: true })
+    void state.resumed.then(() => {
+      signal.removeEventListener("abort", canceled)
+      resolve(!signal.aborted)
+    })
+  })
 }
 
 export function hasFrameMissingVisitIntent(event: FrameMissingEvent): boolean {
@@ -603,6 +682,12 @@ function beforeFrameRenderDetailState(
 ): BeforeFrameRenderDetailState {
   const state = beforeFrameRenderDetailStates.get(detail)
   if (!state) throw new StateError("Before-frame-render event detail is invalid")
+  return state
+}
+
+function beforeFrameRenderEventState(event: BeforeFrameRenderEvent): BeforeFrameRenderEventState {
+  const state = beforeFrameRenderEventStates.get(event as ExactBeforeFrameRenderEvent)
+  if (!state) throw new StateError("Before-frame-render event is invalid")
   return state
 }
 
