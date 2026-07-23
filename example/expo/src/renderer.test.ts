@@ -1720,12 +1720,13 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(`<Gallery>
-        <NativeForm id="form" action="/profile" method="post" data-turbo-frame="profile-frame">
+        <NativeForm id="form" action="/profile" dir="ltr" method="post" data-turbo-frame="profile-frame">
           <CaptureForm slot="primary" />
-          <NativeValue id="first" name="item" value="" />
-          <NativeHidden id="hidden-token" name="authenticity_token" value="token" />
+          <NativeValue id="first" dirname="item.dir" name="item" value="" />
+          <NativeHidden id="hidden-token" dirname="authenticity_token.dir" name="authenticity_token" value="token" />
           <NativeHidden id="hidden-charset" name="_CHARSET_" value="ignored" />
           <NativeValue id="directional" name="comment" value="مرحبا" direction-name="comment.dir" direction-value="rtl" />
+          <NativeValue id="automatic-direction" dir="auto" dirname="automatic.dir" name="automatic" value="host-owned" />
           <NativeLiveValue id="local" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
@@ -1800,10 +1801,13 @@ describe("React protocol renderer", () => {
     const entryListSelection = entryListControl.props.selection()
     expect(primary.successfulEntries({ submitter: selectedSubmitter })).toEqual([
       { name: "item", value: "" },
+      { name: "item.dir", value: "ltr" },
       { name: "authenticity_token", value: "token" },
+      { name: "authenticity_token.dir", value: "ltr" },
       { name: "_CHARSET_", value: "UTF-8" },
       { name: "comment", value: "مرحبا" },
       { name: "comment.dir", value: "rtl" },
+      { name: "automatic", value: "host-owned" },
       { name: "local", value: "before" },
       { name: "agree", value: "on" },
       { name: "choices[]", value: "one" },
@@ -1829,10 +1833,13 @@ describe("React protocol renderer", () => {
         effectiveMethod: "PATCH",
         entries: [
           { name: "item", value: "" },
+          { name: "item.dir", value: "ltr" },
           { name: "authenticity_token", value: "token" },
+          { name: "authenticity_token.dir", value: "ltr" },
           { name: "_CHARSET_", value: "UTF-8" },
           { name: "comment", value: "مرحبا" },
           { name: "comment.dir", value: "rtl" },
+          { name: "automatic", value: "host-owned" },
           { name: "local", value: "before" },
           { name: "agree", value: "on" },
           { name: "choices[]", value: "one" },
@@ -1859,6 +1866,19 @@ describe("React protocol renderer", () => {
     expect(entriesAtPassiveMount.get("primary")).toEqual(primary.successfulEntries())
     expect(outer.successfulEntries()).toEqual([{ name: "outer", value: "parent" }])
     expect(other.successfulEntries()).toEqual([{ name: "other", value: "isolated" }])
+    act(() => session.setAttribute("id:form", "dir", "rtl"))
+    expect(primary.successfulEntries()).toEqual(
+      expect.arrayContaining([
+        { name: "item.dir", value: "rtl" },
+        { name: "authenticity_token.dir", value: "rtl" },
+        { name: "comment.dir", value: "rtl" },
+      ]),
+    )
+    expect(primary.successfulEntries()).not.toContainEqual({
+      name: "automatic.dir",
+      value: "rtl",
+    })
+    act(() => session.setAttribute("id:form", "dir", "ltr"))
 
     let submission: Promise<unknown> | undefined
     await act(async () => {
@@ -1983,10 +2003,13 @@ describe("React protocol renderer", () => {
     ).toMatchObject({
       entries: [
         { name: "item", value: "" },
+        { name: "item.dir", value: "ltr" },
         { name: "authenticity_token", value: "token" },
+        { name: "authenticity_token.dir", value: "ltr" },
         { name: "_CHARSET_", value: "UTF-8" },
         { name: "comment", value: "مرحبا" },
         { name: "comment.dir", value: "rtl" },
+        { name: "automatic", value: "host-owned" },
         { name: "local", value: "component-local" },
         { name: "agree", value: "on" },
         { name: "choices[]", value: "one" },

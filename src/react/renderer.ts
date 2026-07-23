@@ -1100,11 +1100,32 @@ export function useExpoTurboForm(): ExpoTurboFormBinding {
 export function useExpoTurboFormControl(
   descriptor: FormControlDescriptor,
 ): ExpoTurboFormControlBinding {
+  const { session } = useRenderer()
   const { registry } = useResolvedFormRegistry()
   const nodeKey = useContext(ProtocolNodeContext)
-  const descriptorRef = useRef(descriptor)
+  const direction = useContext(DirectionContext)
   const registration = useRef<FormControlRegistration | undefined>(undefined)
   if (!nodeKey) throw new RegistryError("Expo Turbo form controls require a component node")
+  const node = session.tree.getNodeByKey(nodeKey)
+  if (!node || !isElement(node)) {
+    throw new RegistryError("Expo Turbo form controls require an active component element")
+  }
+  const dirname = attributeValue(node, "dirname")
+  const effectiveDescriptor = useMemo<FormControlDescriptor>(() => {
+    if (
+      (descriptor.kind !== "value" && descriptor.kind !== "hidden") ||
+      descriptor.directionality !== undefined ||
+      !dirname?.trim() ||
+      (direction !== "ltr" && direction !== "rtl")
+    ) {
+      return descriptor
+    }
+    return Object.freeze({
+      ...descriptor,
+      directionality: Object.freeze({ name: dirname, value: direction }),
+    })
+  }, [descriptor, direction, dirname])
+  const descriptorRef = useRef(effectiveDescriptor)
 
   const subscribe = useCallback(
     (listener: () => void) => registry.subscribeControlSubmission(nodeKey, listener),
@@ -1128,12 +1149,13 @@ export function useExpoTurboFormControl(
     inheritedDisabledSnapshot,
     inheritedDisabledSnapshot,
   )
-  const disabled = descriptor.disabled === true || inheritedDisabled || submissionState.pending
+  const disabled =
+    effectiveDescriptor.disabled === true || inheritedDisabled || submissionState.pending
 
   useLayoutEffect(() => {
-    descriptorRef.current = descriptor
-    registration.current?.update(descriptor)
-  }, [descriptor])
+    descriptorRef.current = effectiveDescriptor
+    registration.current?.update(effectiveDescriptor)
+  }, [effectiveDescriptor])
   useLayoutEffect(() => {
     const current = registry.register(nodeKey, descriptorRef.current)
     registration.current = current

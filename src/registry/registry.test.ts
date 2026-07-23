@@ -81,7 +81,7 @@ describe("typed component registry", () => {
     const registry = createRegistry(primitives)
     const decoded = registry.decode(
       element(
-        '<DemoCard id="card" autofocus="false" class="featured" data-state="ready" dir="rtl" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
+        '<DemoCard id="card" autofocus="false" class="featured" data-state="ready" dir="rtl" dirname="card.dir" form="profile" heading="Hello" count="02" enabled="false" style-tokens="tone:featured space:roomy"><DemoText>Child</DemoText></DemoCard>',
       ),
     )
 
@@ -100,6 +100,7 @@ describe("typed component registry", () => {
       classNames: ["featured"],
       data: { state: "ready" },
       direction: "rtl",
+      dirname: "card.dir",
       form: "profile",
       id: "card",
     })
