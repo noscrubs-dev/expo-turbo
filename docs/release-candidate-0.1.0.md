@@ -23,8 +23,9 @@ After downloading the `release-candidate` artifact, both files matched
 noscrubs-dev/expo-turbo` admitted each artifact.
 
 Stable npm/RubyGems publication remains prohibited until the compatibility
-manifest's production-host and physical-device evidence is complete. Merging
-this evidence record advances `main`, so run `30021116358` is deliberately a
-superseded pipeline proof rather than the publishable candidate. The final
-gated commit must produce a new candidate, and stable publication must reuse
-that later run's exact frozen bytes.
+manifest's public conformance, physical-device, and accessibility evidence is
+complete. Product-host adoption is a separate future project and is not a
+public-release prerequisite. Merging this evidence record advances `main`, so
+run `30021116358` is deliberately a superseded pipeline proof rather than the
+publishable candidate. The final gated commit must produce a new candidate,
+and stable publication must reuse that later run's exact frozen bytes.
