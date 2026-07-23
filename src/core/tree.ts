@@ -782,10 +782,13 @@ export class DocumentTree {
     assertDocumentTreeMutationAllowed(this)
     this.assertActiveParent(parent)
     const target = attributeValue(parent, "id")
-    if (parent.kind !== "element") {
-      throw new TargetError("Native Stream child morph requires an application-element target", {
-        ...(target ? { target } : {}),
-      })
+    if (parent.kind !== "element" && parent.kind !== "frame") {
+      throw new TargetError(
+        "Native Stream child morph requires an application-element or Frame target",
+        {
+          ...(target ? { target } : {}),
+        },
+      )
     }
     if (hasPermanentAncestor(parent)) {
       throw new TargetError("Native Stream child morph cannot run inside data-turbo-permanent", {

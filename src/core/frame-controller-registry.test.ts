@@ -166,6 +166,28 @@ describe("Frame controller registry visits", () => {
     registry.dispose()
   })
 
+  test("retains a mounted controller across a Stream child morph", async () => {
+    const current = harness()
+    const frame = current.session.tree.getElementById("current")
+    if (frame?.kind !== "frame") throw new Error("Expected current Frame fixture")
+    const controller = current.registry.get("current")
+    await controller.connect()
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        current.session,
+        '<turbo-stream action="update" target="current" method="morph"><template><Panel id="content" tone="after"/></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 1, status: "applied" })
+    expect(current.session.tree.getElementById("current")).toBe(frame)
+    expect(current.registry.get("current")).toBe(controller)
+    expect(controller.state.connected).toBe(true)
+    expect(current.session.tree.getElementById("content")).toBeDefined()
+    expect(current.requests).toEqual([])
+  })
+
   test("keeps exact connected autofocus valid across unrelated Frame mutations", async () => {
     const { registry, session } = harness()
     const controller = registry.get("named")

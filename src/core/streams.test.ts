@@ -138,6 +138,44 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
+  test("preserves a Frame wrapper while morphing its application children", async () => {
+    const document = session(
+      '<Gallery><turbo-frame id="details" src="/details" target="_top"><DemoForm id="form" tone="before"><DemoInput id="email" tone="before"/><Removed id="removed"/></DemoForm></turbo-frame></Gallery>',
+    )
+    const frame = document.tree.getElementById("details")
+    const form = document.tree.getElementById("form")
+    const email = document.tree.getElementById("email")
+    if (frame?.kind !== "frame" || !form || !email) {
+      throw new Error("Frame Stream morph fixtures are missing")
+    }
+    const scope = new DocumentStateScopes(document).scopeFor(email.key, "form", {
+      draft: "kept",
+    })
+    const controls = new FormControlRegistry(document, form.key)
+    controls.register(email.key, { kind: "value", name: "email", value: "ada@example.test" })
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="details" method="morph"><template><DemoForm id="form" tone="after"><DemoInput id="email" tone="after"/><Added id="added"/></DemoForm></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+    expect(document.tree.getElementById("details")).toBe(frame)
+    expect(attributeValue(frame, "src")).toBe("/details")
+    expect(attributeValue(frame, "target")).toBe("_top")
+    expect(document.tree.getElementById("form")).toBe(form)
+    expect(document.tree.getElementById("email")).toBe(email)
+    expect(attributeValue(form, "tone")).toBe("after")
+    expect(attributeValue(email, "tone")).toBe("after")
+    expect(document.tree.getElementById("removed")).toBeUndefined()
+    expect(document.tree.getElementById("added")).toBeDefined()
+    expect(scope.state.get("draft")).toBe("kept")
+    expect(scope.state.isDisposed).toBe(false)
+    expect(controls.successfulEntries()).toEqual([{ name: "email", value: "ada@example.test" }])
+  })
+
   test("clones and applies an idless child morph to selector targets in document order", async () => {
     const document = session(
       '<Gallery><Panel id="one" class="group"><Old tone="one"/></Panel><Panel id="two" class="group"><Old tone="two"/></Panel></Gallery>',
@@ -878,11 +916,6 @@ describe("Turbo Stream dispatcher", () => {
       readonly permanent?: boolean
       readonly stream: string
     }[] = [
-      {
-        name: "Frame target",
-        stream:
-          '<turbo-stream action="update" target="frame" method="morph"><template><DemoText/></template></turbo-stream>',
-      },
       {
         name: "permanent payload node without an id",
         stream:
