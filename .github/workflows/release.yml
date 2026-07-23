@@ -203,6 +203,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions:
+      attestations: write
       contents: read
       id-token: write
     steps:
@@ -286,6 +287,16 @@ jobs:
             manifest.artifacts.map(({ file, sha256 }) => `${sha256}  ${file}`).join("\n") + "\n",
           )
           NODE
+      - name: Sign the paired artifact provenance
+        id: provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: SHA256SUMS
+      - name: Preserve the offline provenance bundle
+        shell: bash
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$PROVENANCE_BUNDLE" provenance.jsonl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-candidate
@@ -294,6 +305,7 @@ jobs:
             artifacts/ruby-gem/*.gem
             release-candidate.json
             SHA256SUMS
+            provenance.jsonl
           if-no-files-found: error
           retention-days: 30
 
@@ -414,6 +426,24 @@ jobs:
             ].join("\n") + "\n",
           )
           NODE
+      - name: Verify the frozen artifact provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "$NPM_ARTIFACT" \
+            --bundle release-candidate/provenance.jsonl \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref refs/heads/main
+          gh attestation verify "$GEM_ARTIFACT" \
+            --bundle release-candidate/provenance.jsonl \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref refs/heads/main
       - name: Require both exact versions to be unpublished
         shell: bash
         run: |
@@ -513,6 +543,7 @@ jobs:
             "$GEM_ARTIFACT" \
             release-candidate/release-candidate.json \
             release-candidate/SHA256SUMS \
+            release-candidate/provenance.jsonl \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Expo Turbo $PACKAGE_VERSION" \
