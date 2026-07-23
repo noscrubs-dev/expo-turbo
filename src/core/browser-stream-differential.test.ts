@@ -61,12 +61,14 @@ function installBrowserGlobals(): void {
     URL: browser.URL,
     URLSearchParams: browser.URLSearchParams,
     Window: browser.Window,
+    addEventListener: browser.addEventListener.bind(browser),
     cancelAnimationFrame: browser.cancelAnimationFrame.bind(browser),
     customElements: browser.customElements,
     document: browser.document,
     history: browser.history,
     location: browser.location,
     navigator: browser.navigator,
+    removeEventListener: browser.removeEventListener.bind(browser),
     requestAnimationFrame: browser.requestAnimationFrame.bind(browser),
     window: browser,
   } as const
@@ -564,7 +566,7 @@ test("matches upstream Turbo for a redirected document link visit", async () => 
   }
 })
 
-test("matches upstream Turbo advance and replace history writes", async () => {
+test("matches upstream Turbo advance, replace, and back restoration history", async () => {
   const initialDocument =
     '<main id="root"><a id="advance-link" href="/next">Next</a><p id="initial">Initial</p></main>'
   const nextDocument =
@@ -590,7 +592,10 @@ test("matches upstream Turbo advance and replace history writes", async () => {
       },
     },
   )
-  history.initialize({ kind: "unmanaged", url: "https://example.test/demo" })
+  const initialHistoryEntry = history.initialize({
+    kind: "unmanaged",
+    url: "https://example.test/demo",
+  }).entry
   const loader = new DocumentRequestLoader(
     session,
     {
@@ -598,7 +603,12 @@ test("matches upstream Turbo advance and replace history writes", async () => {
         headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
         redirected: false,
         status: 200,
-        text: async () => (request.url.endsWith("/next") ? nextDocument : finalDocument),
+        text: async () =>
+          request.url.endsWith("/next")
+            ? nextDocument
+            : request.url.endsWith("/final")
+              ? finalDocument
+              : initialDocument,
         url: request.url,
       }),
     },
@@ -609,19 +619,26 @@ test("matches upstream Turbo advance and replace history writes", async () => {
   await visits.visit("/final", { action: "replace" })
 
   const originalFetch = browser.fetch
+  ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
   browser.history.replaceState({}, "", "/demo")
   const browserHistoryLength = browser.history.length
+  const browserRequests: string[] = []
   browser.fetch = async (input) => {
     const url = String(input)
-    const document = url.endsWith("/next") ? nextDocument : finalDocument
+    browserRequests.push(url)
+    const document = url.endsWith("/next")
+      ? nextDocument
+      : url.endsWith("/final")
+        ? finalDocument
+        : initialDocument
     return new browser.Response(`<html><body>${document}</body></html>`, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
       status: 200,
     })
   }
+  browser.document.body.innerHTML = initialDocument
   turbo.start()
   try {
-    browser.document.body.innerHTML = initialDocument
     const advanceLink = browser.document.getElementById("advance-link")
     if (!(advanceLink instanceof browser.HTMLAnchorElement)) {
       throw new Error("Browser advance history link is missing")
@@ -662,6 +679,24 @@ test("matches upstream Turbo advance and replace history writes", async () => {
     expect(browser.location.href).toBe(finalHistoryEntry.url)
     expect(browser.history.length).toBe(browserHistoryLength + 1)
     expect(browserTurboState?.restorationIndex).toBe(finalHistoryEntry.restorationIndex)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+
+    browser.history.back()
+    await browser.happyDOM.waitUntilComplete()
+    const restored = await visits.restoreTraversal(initialHistoryEntry)
+    const restoredBrowserTurboState = (
+      browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
+    )?.turbo
+
+    expect(restored).toMatchObject({
+      direction: "back",
+      source: "network",
+    })
+    expect(browser.location.href).toBe(initialHistoryEntry.url)
+    expect(restoredBrowserTurboState?.restorationIndex).toBe(initialHistoryEntry.restorationIndex)
+    expect(browserRequests).toHaveLength(3)
     expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
       normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
     )
