@@ -12,6 +12,7 @@ import {
   DocumentVisitController,
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
+  FrameRequestLoader,
   isElement,
   type ProtocolElement,
   type ProtocolNode,
@@ -303,6 +304,187 @@ test("matches upstream Turbo Frame extraction for an eager response", async () =
     expect(expoResult.children).toEqual(browserResult.children)
     expect(browser.document.getElementById("outside")).toBeNull()
     expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo for ordinary Frame link navigation", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details" class="mounted" target="_self"><a id="frame-link" href="/frame/next">Next</a><p id="old">Old</p></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details" class="response" target="_top"><p id="loaded">Loaded</p></turbo-frame><p id="outside">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const loader = new FrameRequestLoader(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => frameResponse,
+          url: "https://example.test/frame/next",
+        }
+      },
+    },
+    { next: () => "request-frame-link" },
+  )
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!expoFrameBefore) throw new Error("Expo Frame differential target is missing")
+  const expoResult = await loader.load("details", "/frame/next")
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/frame/next",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const link = browser.document.getElementById("frame-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser Frame differential target is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser Frame differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Frame differential lost its target")
+    }
+    expect(expoResult.status).toBe("completed")
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(browserFrameHeader ?? undefined).toBe(expoRequest?.headers["Turbo-Frame"])
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser Frame differential result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browserFrameAfter.hasAttribute("complete")).toBe(true)
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo redirected Frame source canonicalization", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><a id="frame-redirect-link" href="/frame/redirect">Redirect</a><p id="old">Old</p></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details"><p id="final">Final</p></turbo-frame></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const loader = new FrameRequestLoader(
+    session,
+    {
+      fetch: async () => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: true,
+        status: 200,
+        text: async () => frameResponse,
+        url: "https://example.test/frame/final",
+      }),
+    },
+    { next: () => "request-frame-redirect" },
+  )
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!expoFrameBefore) throw new Error("Expo redirected Frame target is missing")
+  const expoResult = await loader.load("details", "/frame/redirect")
+
+  const originalFetch = browser.fetch
+  browser.fetch = async () => {
+    const response = new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperties(response, {
+      redirected: { configurable: true, value: true },
+      url: { configurable: true, value: "https://example.test/frame/final" },
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const link = browser.document.getElementById("frame-redirect-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser redirected Frame target is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser redirected Frame link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Redirected Frame differential lost its target")
+    }
+    expect(expoResult).toMatchObject({
+      status: "completed",
+      url: "https://example.test/frame/final",
+    })
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    expect(browserFrameAfter.getAttribute("src")).toBe("https://example.test/frame/final")
+    expect(expoFrameAfter.attributes.find(({ name }) => name === "src")?.value).toBe(
+      "https://example.test/frame/final",
+    )
+    expect(browser.document.getElementById("final")).not.toBeNull()
+    expect(session.tree.getElementById("final")).toBeDefined()
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()
