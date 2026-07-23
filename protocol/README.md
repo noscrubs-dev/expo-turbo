@@ -3,14 +3,21 @@
 `compatibility-manifest.json` is the source-only cross-language contract for the
 public TypeScript package and Rails gem. It pins the protocol and upstream
 baselines, records fixture provenance, and describes each fixture's document or
-Stream-fragment envelope plus its expected outcome.
+Stream-fragment envelope plus its expected outcome. The additive
+`behaviorFixtures` section applies shared initial-document and sibling-Stream
+bytes through the public TypeScript dispatcher, then compares both the complete
+ordered action report and canonical final tree with manifest-owned expectations.
 
 The current `fixtures/` set proves one namespaced document, the complete
 meaningful Frame envelope, a basic sibling Stream fragment, every built-in Turbo
 Stream envelope (`append`, `prepend`, `replace`, `update`, `remove`, `before`,
 `after`, and `refresh`), exact `target`/`targets`, morph, request-ID, scroll, and
 template-root metadata, plus unsafe DOCTYPE/non-XML-whitespace Stream-text
-rejections. TypeScript and Ruby tests load the same manifest and XML bytes. Both
+rejections. Three executable Stream-mutation records additionally cover ordered
+action isolation after an unknown action, append collision replacement, exact
+`target` precedence over `targets`, per-target payload cloning, and every
+built-in action's absent-template result. TypeScript and Ruby tests load the
+same envelope manifest and XML bytes. Both
 normalize accepted trees to the declared language-neutral AST or compact
 Stream-envelope records, and both exercise every declared rejection. The Rails
 helpers must also emit the exact shared Frame, basic Stream, and all-actions
@@ -19,6 +26,10 @@ disabledness, autoscroll, morph refresh, recurse tokens, visit action, and
 ordered application children; it is an envelope contract rather than evidence
 for every Frame loading or native-device lifecycle path. Fixture readers are
 test-only; neither package ships protocol sources as runtime assets.
+
+Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
+the TypeScript tree runtime. They are the first source-controlled behavioral
+conformance slice, not yet a complete browser differential suite.
 
 Document fixture normalization represents its sole document root; sibling Stream
 fixture normalization represents its sibling Stream elements. Compact

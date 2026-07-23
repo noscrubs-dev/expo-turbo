@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises"
 
 import {
   attributeValue,
+  DocumentSession,
+  dispatchTurboStreamFragment,
   EXPO_TURBO_PROTOCOL_VERSION,
   isElement,
   type ProtocolElement,
@@ -10,6 +12,7 @@ import {
   parseExpoTurboDocument,
   parseTurboStreamFragment,
   RAILS_BASELINE_VERSION,
+  serializeExpoTurboTree,
   TURBO_BASELINE_VERSION,
   TURBO_RAILS_BASELINE_VERSION,
   TURBO_RAILS_MINIMUM_VERSION,
@@ -62,6 +65,22 @@ interface ProtocolFixture {
   readonly id: string
 }
 
+interface StreamBehaviorReport {
+  readonly action: string
+  readonly appliedTargets: number
+  readonly matchedTargets: number
+  readonly status: "applied" | "canceled" | "error" | "noop"
+}
+
+interface StreamBehaviorFixture {
+  readonly documentFile: string
+  readonly expectedDocumentFile: string
+  readonly expectedReports: readonly StreamBehaviorReport[]
+  readonly id: string
+  readonly kind: "stream-mutation"
+  readonly streamFile: string
+}
+
 interface ProtocolManifest {
   readonly baselines: {
     readonly rails: string
@@ -71,6 +90,7 @@ interface ProtocolManifest {
       readonly target: string
     }
   }
+  readonly behaviorFixtures: readonly StreamBehaviorFixture[]
   readonly fixtures: readonly ProtocolFixture[]
   readonly manifestVersion: number
   readonly protocolVersion: string
@@ -99,7 +119,11 @@ function validateManifest(value: unknown): ProtocolManifest {
   ) {
     throw new Error("Protocol compatibility manifest has an invalid version")
   }
-  if (!isRecord(value.baselines) || !Array.isArray(value.fixtures)) {
+  if (
+    !isRecord(value.baselines) ||
+    !Array.isArray(value.fixtures) ||
+    !Array.isArray(value.behaviorFixtures)
+  ) {
     throw new Error("Protocol compatibility manifest has invalid baselines or fixtures")
   }
 
@@ -123,6 +147,34 @@ function validateManifest(value: unknown): ProtocolManifest {
       throw new Error(`Protocol fixture ${fixture.id} must declare exactly one accepted assertion`)
     }
     fixtureUrl(fixture.file)
+  }
+
+  for (const fixture of value.behaviorFixtures) {
+    if (
+      !isRecord(fixture) ||
+      typeof fixture.id !== "string" ||
+      fixture.kind !== "stream-mutation" ||
+      typeof fixture.documentFile !== "string" ||
+      typeof fixture.streamFile !== "string" ||
+      typeof fixture.expectedDocumentFile !== "string" ||
+      !Array.isArray(fixture.expectedReports)
+    ) {
+      throw new Error("Protocol compatibility manifest has an invalid behavior fixture")
+    }
+    fixtureUrl(fixture.documentFile)
+    fixtureUrl(fixture.streamFile)
+    fixtureUrl(fixture.expectedDocumentFile)
+    for (const report of fixture.expectedReports) {
+      if (
+        !isRecord(report) ||
+        typeof report.action !== "string" ||
+        !["applied", "canceled", "error", "noop"].includes(String(report.status)) ||
+        !Number.isInteger(report.matchedTargets) ||
+        !Number.isInteger(report.appliedTargets)
+      ) {
+        throw new Error(`Protocol behavior fixture ${fixture.id} has an invalid report`)
+      }
+    }
   }
 
   return value as unknown as ProtocolManifest
@@ -240,6 +292,30 @@ describe("shared protocol fixtures", () => {
         if (!fixture.expect.streamActions) throw new Error(`Missing assertions for ${fixture.id}`)
         expect(normalizeStreamActions(xml)).toEqual(fixture.expect.streamActions)
       }
+    }
+  })
+
+  test("applies every declared Stream behavior fixture", async () => {
+    const manifest = await loadManifest()
+    for (const fixture of manifest.behaviorFixtures) {
+      const documentXml = await readFile(fixtureUrl(fixture.documentFile), "utf8")
+      const streamXml = await readFile(fixtureUrl(fixture.streamFile), "utf8")
+      const expectedDocumentXml = await readFile(fixtureUrl(fixture.expectedDocumentFile), "utf8")
+      const session = new DocumentSession(parseExpoTurboDocument(documentXml))
+
+      const report = await dispatchTurboStreamFragment(session, streamXml)
+
+      expect(
+        report.actions.map(({ action, appliedTargets, matchedTargets, status }) => ({
+          action,
+          appliedTargets,
+          matchedTargets,
+          status,
+        })),
+      ).toEqual([...fixture.expectedReports])
+      expect(serializeExpoTurboTree(session.tree)).toBe(
+        serializeExpoTurboTree(parseExpoTurboDocument(expectedDocumentXml)),
+      )
     }
   })
 
