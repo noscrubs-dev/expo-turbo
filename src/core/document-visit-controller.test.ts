@@ -4950,13 +4950,14 @@ describe("Document visit controller", () => {
     const snapshotCache = new DocumentSnapshotCache()
     const { controller, pending, session } = harness({
       documentXml:
-        '<Gallery id="gallery" data-turbo-root="/app" tone="before"><Panel id="retained" tone="before"/><Panel id="permanent" data-turbo-permanent="" tone="kept"><Locked id="locked" value="current"/></Panel><Removed id="removed"/></Gallery>',
+        '<Gallery id="gallery" data-turbo-root="/app" tone="before"><Panel id="retained" tone="before"/><Anonymous tone="before"/><Panel id="permanent" data-turbo-permanent="" tone="kept"><Locked id="locked" value="current"/></Panel><Removed id="removed"/></Gallery>',
       history: history.history,
       snapshotCache,
     })
     const tree = session.tree
     const root = session.tree.getElementById("gallery")
     const retained = session.tree.getElementById("retained")
+    const anonymous = root?.children[1]
     const permanent = session.tree.getElementById("permanent")
     const retainedIdentity = session.getNodeSnapshot("id:retained")?.identity
     const disposed: string[] = []
@@ -4965,7 +4966,7 @@ describe("Document visit controller", () => {
     const refreshing = controller.refreshCurrent("https://example.test/current", "morph")
     pending[0]?.resolve(
       response(
-        '<Gallery id="gallery" data-turbo-root="/app" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" tone="after"/><Added id="added"/></Gallery>',
+        '<Gallery id="gallery" data-turbo-root="/app" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" tone="after"/><Anonymous tone="after"/><Added id="added"/></Gallery>',
         { url: "https://example.test/current" },
       ),
     )
@@ -4974,6 +4975,8 @@ describe("Document visit controller", () => {
     expect(session.tree).toBe(tree)
     expect(session.tree.getElementById("gallery")).toBe(root)
     expect(session.tree.getElementById("retained")).toBe(retained)
+    expect(root?.children[2]).toBe(anonymous)
+    expect(anonymous?.kind === "element" && attributeValue(anonymous, "tone")).toBe("after")
     expect(session.tree.getElementById("permanent")).toBe(permanent)
     expect(session.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
     const currentGallery = session.tree.getElementById("gallery")

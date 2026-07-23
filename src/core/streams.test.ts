@@ -293,7 +293,7 @@ describe("Turbo Stream dispatcher", () => {
     expect(disposals).toBe(0)
   })
 
-  test("reorders compatible IDs while remounting unkeyed and incompatible children", async () => {
+  test("reorders compatible IDs, retains anonymous ordinals, and remounts incompatible children", async () => {
     const document = session(
       '<Gallery><DemoForm id="form"><DemoInput id="first"/><DemoText>Unkeyed</DemoText><DemoInput id="second"/></DemoForm></Gallery>',
     )
@@ -314,12 +314,47 @@ describe("Turbo Stream dispatcher", () => {
     expect(currentSecond).toBe(second)
     expect(currentFirst).not.toBe(first)
     expect(scope.state.isDisposed).toBe(true)
-    expect(form?.children[1]).not.toBe(unkeyed)
-    expect(form?.children.map((child) => child.key)).toEqual([
-      second.key,
-      expect.any(String),
-      first.key,
-    ])
+    expect(form?.children[1]).toBe(unkeyed)
+    expect(form?.children[1]?.kind === "element" && attributeValue(form.children[1], "tone")).toBe(
+      undefined,
+    )
+    expect(form?.children.map((child) => child.key)).toEqual([second.key, unkeyed.key, first.key])
+  })
+
+  test("matches anonymous application siblings by exact shape ordinal", async () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><Row tone="first"><Label>One</Label></Row><Divider/><Row tone="second"><Label>Two</Label></Row></DemoPanel></Gallery>',
+    )
+    const panel = document.tree.getElementById("panel")
+    const first = panel?.children[0]
+    const divider = panel?.children[1]
+    const second = panel?.children[2]
+    const firstLabel = first?.kind === "element" ? first.children[0] : undefined
+    const secondLabel = second?.kind === "element" ? second.children[0] : undefined
+    if (!first || !divider || !second || !firstLabel || !secondLabel) {
+      throw new Error("anonymous morph fixture is missing")
+    }
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Row tone="updated-first"><Label>One updated</Label></Row><Row tone="updated-second"><Label>Two updated</Label></Row><Divider/></template></turbo-stream>',
+    )
+
+    const current = document.tree.getElementById("panel")
+    const currentFirst = current?.children[0]
+    const currentSecond = current?.children[1]
+    const currentDivider = current?.children[2]
+    expect(currentFirst).toBe(first)
+    expect(currentSecond).toBe(second)
+    expect(currentDivider).toBe(divider)
+    expect(currentFirst?.kind === "element" && currentFirst.children[0]).toBe(firstLabel)
+    expect(currentSecond?.kind === "element" && currentSecond.children[0]).toBe(secondLabel)
+    expect(currentFirst?.kind === "element" && attributeValue(currentFirst, "tone")).toBe(
+      "updated-first",
+    )
+    expect(currentSecond?.kind === "element" && attributeValue(currentSecond, "tone")).toBe(
+      "updated-second",
+    )
   })
 
   test("structurally replaces protocol-wrapper descendants during child morph", async () => {
