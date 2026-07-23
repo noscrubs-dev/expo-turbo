@@ -914,6 +914,92 @@ describe("FormSubmissionController", () => {
     }
   })
 
+  test("pauses and wraps successful document form render admission before logical commit", async () => {
+    const session = fixture()
+    const controls = registry(session, "document-form")
+    const lifecycle = new DocumentVisitLifecycle()
+    const originalTree = session.tree
+    const calls: string[] = []
+    let resume: () => undefined = () => undefined
+    const reached = deferred<void>()
+    lifecycle.subscribe("before-render", (event) => {
+      calls.push("before-render")
+      expect(controls.submissionState.busy).toBe(false)
+      expect(event.detail.currentDocument).toBe(originalTree.document)
+      expect(event.detail.newDocument.children[0]?.kind).toBe("element")
+      expect(event.detail.renderMethod).toBe("replace")
+      expect(event.detail.url).toBe("https://example.test/form-result")
+      const renderDefault = event.detail.render
+      event.detail.render = async (context) => {
+        calls.push("renderer")
+        await Promise.resolve()
+        return renderDefault(context)
+      }
+      event.pause()
+      resume = () => {
+        event.resume()
+        return undefined
+      }
+      reached.resolve()
+      return undefined
+    })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Applied id="applied" /></Gallery>', {
+            url: "https://example.test/form-result",
+          }),
+      },
+      { history: historyFixture(session).history, visitLifecycle: lifecycle },
+    )
+
+    const submitting = controller.submit(proposal(controls, "before-render-form"))
+    await reached.promise
+
+    expect(session.tree).toBe(originalTree)
+    expect(session.tree.getElementById("applied")).toBeUndefined()
+    resume()
+
+    expect(await submitting).toMatchObject({ application: "document", status: "applied" })
+    expect(session.tree.getElementById("applied")).toBeDefined()
+    expect(calls).toEqual(["before-render", "renderer"])
+  })
+
+  test("lets before-render prevent successful document form application", async () => {
+    const session = fixture()
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-render", (event) => {
+      event.preventDefault()
+      return undefined
+    })
+    const history = historyFixture(session)
+    const originalTree = session.tree
+    const controller = new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, '<Gallery><Prevented id="prevented" /></Gallery>', {
+            url: "https://example.test/prevented",
+          }),
+      },
+      { history: history.history, visitLifecycle: lifecycle },
+    )
+
+    expect(
+      await controller.submit(
+        proposal(registry(session, "document-form"), "before-render-prevented"),
+      ),
+    ).toMatchObject({
+      classification: "success",
+      reason: "render-prevented",
+      status: "unapplied",
+    })
+    expect(session.tree).toBe(originalTree)
+    expect(session.tree.getElementById("prevented")).toBeUndefined()
+    expect(history.writes).toHaveLength(0)
+  })
+
   test("lets before-visit cancel successful document form application after unsafe cache invalidation", async () => {
     const session = fixture()
     session.setAttribute("id:document-form", "method", "post")

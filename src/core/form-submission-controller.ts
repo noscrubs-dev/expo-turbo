@@ -33,6 +33,7 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   type DocumentVisitLifecycle,
   documentVisitLifecycleOption,
+  runBeforeDocumentRender,
   VisitEvent,
 } from "./document-visit-lifecycle"
 import {
@@ -1432,6 +1433,25 @@ export class FormSubmissionController {
     const streams = embeddedStreams(tree)
     for (const stream of streams) tree.removeNode(stream)
     if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
+    const visitLifecycle = this.options.visitLifecycle
+    if (candidate.classification === "success" && visitLifecycle) {
+      const beforeRender = await settleRequestOperation(lease.controller.signal, () =>
+        runBeforeDocumentRender(visitLifecycle, {
+          currentDocument: this.session.tree.document,
+          newDocument: tree.document,
+          renderMethod: "replace",
+          url: appliedUrl,
+        }),
+      )
+      const action = this.documentVisitAction(candidate, identity)
+      if (beforeRender.status === "canceled" || !this.isCurrent(lease, proposal)) {
+        return this.unapplied(candidate, destination, action, "superseded")
+      }
+      if (beforeRender.status === "rejected") throw beforeRender.error
+      if (!beforeRender.value) {
+        return this.unapplied(candidate, destination, action, "render-prevented")
+      }
+    }
 
     const snapshotCache =
       candidate.classification === "success" && candidate.transportMethod === "GET"
