@@ -49,8 +49,11 @@ cloning, the admitted selector surface, outer and child Stream morphs,
 permanent-node moves, anonymous reconciliation, stable-ID reordering, and one
 real eager Frame fetch whose matching children exclude unrelated response
 content. Browser Frame `complete` attributes and native controller state stay
-platform-owned rather than being normalized into one representation. Refresh
-remains a named native
+platform-owned rather than being normalized into one representation. Browser
+GET and unsafe URL-encoded Frame forms are also submitted through official
+Turbo: their exact URL, method, ordered body, submitter, omitted disabled and
+unchecked controls, and `Turbo-Frame` header are compared with package request
+construction. Refresh remains a named native
 equivalent because its owning-session GET/render contract is not a structural
 DOM action. The separate native-equivalent morph record proves compatible
 outer `replace`, child `update`, and selector child morphing retain the declared
