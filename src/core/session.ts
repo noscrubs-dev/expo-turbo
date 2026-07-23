@@ -13,6 +13,7 @@ import { type MorphLifecycle, morphLifecycleOption } from "./morph-lifecycle"
 import { installMorphLifecycle, morphLifecycleDispatchActive } from "./morph-lifecycle-internal"
 import { RecentRequestIds } from "./recent-request-ids"
 import { markSessionCommitError } from "./session-commit-error-internal"
+import { notifyBeforeSessionMutation } from "./session-mutation-internal"
 import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal"
 import {
   type DocumentTree,
@@ -150,6 +151,7 @@ export class DocumentSession {
 
   private morphCurrentDocument(tree: DocumentTree): void {
     this.assertMutationAllowed()
+    notifyBeforeSessionMutation(this)
     const morph = morphCurrentDocumentRoot(this.currentTree, tree)
     const generation = this.currentTreeGeneration + 1
     this.currentTreeGeneration = generation
@@ -242,6 +244,7 @@ export class DocumentSession {
 
   mutate(mutator: (tree: DocumentTree) => readonly string[]): void {
     this.assertMutationAllowed()
+    notifyBeforeSessionMutation(this)
     this.commit(mutator(this.currentTree))
   }
 

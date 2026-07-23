@@ -387,6 +387,7 @@ interface MorphTransaction {
   readonly children: Map<ProtocolParentNode, readonly ProtocolNode[]>
   readonly parents: Map<ProtocolNode, ProtocolParentNode | null>
   readonly completed: Array<readonly [ProtocolElement, ProtocolElement]>
+  readonly replacements: Array<readonly [ProtocolElement, ProtocolElement]>
 }
 
 interface MorphPlanningContext {
@@ -433,6 +434,19 @@ function advanceNodeMorphRevision(tree: DocumentTree, node: ProtocolElement): vo
     morphRevisions.set(tree, revisions)
   }
   revisions.set(node, (revisions.get(node) ?? 0) + 1)
+}
+
+function advanceReplacementMorphRevision(
+  tree: DocumentTree,
+  replacement: ProtocolElement,
+  previous: ProtocolElement,
+): void {
+  let revisions = morphRevisions.get(tree)
+  if (!revisions) {
+    revisions = new WeakMap()
+    morphRevisions.set(tree, revisions)
+  }
+  revisions.set(replacement, (revisions.get(previous) ?? 0) + 1)
 }
 
 /** @internal Stream dispatcher entrypoint; not re-exported from `expo-turbo/core`. */
@@ -1765,6 +1779,7 @@ export class DocumentTree {
       children: new Map(),
       completed: [],
       parents: new Map(),
+      replacements: [],
     }
 
     try {
@@ -1782,6 +1797,9 @@ export class DocumentTree {
     }
 
     for (const [current] of transaction.completed) advanceNodeMorphRevision(this, current)
+    for (const [replacement, previous] of transaction.replacements) {
+      advanceReplacementMorphRevision(this, replacement, previous)
+    }
     if (source) advanceNodeMorphRevision(this, parent)
 
     const lifecycle = documentTreeMorphLifecycle(this)
@@ -1822,11 +1840,13 @@ export class DocumentTree {
       children: new Map(),
       completed: [],
       parents: new Map(),
+      replacements: [],
     }
     let replacement: ProtocolElement
 
     try {
       replacement = this.cloneElementWithoutChildren(source, parent)
+      transaction.replacements.push([replacement, current])
       this.applyMorphChildren(replacement, plans, transaction)
       transaction.children.set(parent, parent.children)
       setProtocolNodeChildren(parent, [
@@ -1845,6 +1865,9 @@ export class DocumentTree {
     }
 
     for (const [retained] of transaction.completed) advanceNodeMorphRevision(this, retained)
+    for (const [next, previous] of transaction.replacements) {
+      advanceReplacementMorphRevision(this, next, previous)
+    }
     const lifecycle = documentTreeMorphLifecycle(this)
     if (lifecycle) {
       for (const [retained, incoming] of transaction.completed) {
@@ -1862,9 +1885,14 @@ export class DocumentTree {
     parent: ProtocolParentNode,
     transaction: MorphTransaction,
   ): ProtocolNode {
-    if (plan.type === "clone") return this.cloneNode(plan.source, parent)
+    if (plan.type === "clone") {
+      const clone = this.cloneNode(plan.source, parent)
+      if (plan.anchor && isElement(clone)) transaction.replacements.push([clone, plan.anchor])
+      return clone
+    }
     if (plan.type === "create") {
       const created = this.cloneElementWithoutChildren(plan.source, parent)
+      if (plan.anchor) transaction.replacements.push([created, plan.anchor])
       this.applyMorphChildren(created, plan.children, transaction)
       return created
     }
