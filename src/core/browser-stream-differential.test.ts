@@ -1988,6 +1988,88 @@ test("matches upstream Turbo for a redirected top-level POST form document respo
   }
 })
 
+test("matches upstream Turbo unsafe document form redirect safety", async () => {
+  const initialDocument =
+    '<main id="root"><form id="search" action="/search" method="post"><button id="submit-search" type="submit">Search</button></form><p id="old">Old</p></main>'
+  const unsafeResponse =
+    '<main id="root"><a href="/demo">Search again</a><p id="unsafe-result">Unsafe result</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("search")
+  if (!form) throw new Error("Expo unsafe document form is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  let expoError: unknown
+  try {
+    await new FormSubmissionController(session, {
+      fetch: async () => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => unsafeResponse,
+        url: "https://example.test/search",
+      }),
+    }).submit((signal) =>
+      controls.submissionProposal({
+        protocol: { requestId: "request-document-unsafe-form" },
+        signal,
+      }),
+    )
+  } catch (error) {
+    expoError = error
+  }
+
+  let browserError: unknown
+  const originalFetch = browser.fetch
+  const originalConsoleError = console.error
+  browser.fetch = async () => {
+    const response = new browser.Response(`<html><body>${unsafeResponse}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/search",
+    })
+    return response
+  }
+  console.error = (error) => {
+    browserError = error
+  }
+  browser.history.replaceState({}, "", "/demo")
+  const browserInitialUrl = browser.location.href
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserForm = browser.document.getElementById("search")
+    const browserSubmitter = browser.document.getElementById("submit-search")
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser unsafe document form is missing")
+    }
+    if (!(browserSubmitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser unsafe document form submitter is missing")
+    }
+    browserForm.requestSubmit(browserSubmitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoError).toBeInstanceOf(Error)
+    expect((expoError as Error).message).toMatch(/must redirect/)
+    expect(browserError).toBeInstanceOf(Error)
+    expect((browserError as Error).message).toMatch(/must redirect/)
+    expect(session.tree.document.url).toBe("https://example.test/demo")
+    expect(browser.location.href).toBe(browserInitialUrl)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+    expect(session.tree.getElementById("unsafe-result")).toBeUndefined()
+    expect(browser.document.getElementById("unsafe-result")).toBeNull()
+  } finally {
+    console.error = originalConsoleError
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo for an ordinary document link visit", async () => {
   const initialDocument =
     '<main id="root"><a id="next-link" href="/next">Next</a><p id="old">Old</p></main>'
