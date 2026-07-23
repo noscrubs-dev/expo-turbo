@@ -1056,6 +1056,200 @@ describe("React protocol renderer", () => {
     expect(subscriptions[0]?.unsubscribeCalls).toBe(1)
   })
 
+  test("preserves paired document runtime owners across the native root remount", async () => {
+    let nextProbe = 0
+    let renderedController: FrameController | undefined
+    function PermanentProbe(props: Readonly<{ title: string }>): ReactNode {
+      const [instance] = useState(() => ++nextProbe)
+      const [count, setCount] = useState(0)
+      return createElement("section", {
+        count,
+        increment: () => setCount((value) => value + 1),
+        instance,
+        title: props.title,
+      })
+    }
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      renderedController = props.controller
+      return createElement("frame-boundary", null, props.children)
+    }
+    const probe = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "none",
+      component: PermanentProbe,
+      schema: z.object({ title: z.string() }),
+      tag: "PermanentProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [probe],
+        name: "document-permanent-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><PermanentProbe id="probe" title="Client" data-turbo-permanent=""/><turbo-frame id="frame" data-turbo-permanent=""><DemoText>Frame client</DemoText></turbo-frame><turbo-cable-stream-source id="source" channel="ClientChannel" data-turbo-permanent=""/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("frame")
+    const source = session.tree.getElementById("source")
+    if (frame?.kind !== "frame" || source?.kind !== "stream-source") {
+      throw new Error("document permanent runtime fixtures are missing")
+    }
+    const subscriptions: {
+      callbacks: Parameters<CableAdapter["subscribe"]>[1]
+      identifier: string
+      unsubscribeCalls: number
+    }[] = []
+    const streamSources = new CableStreamSourceRegistry(
+      session,
+      {
+        subscribe(identifier, callbacks) {
+          const record = { callbacks, identifier, unsubscribeCalls: 0 }
+          subscriptions.push(record)
+          return {
+            unsubscribe() {
+              record.unsubscribeCalls += 1
+            },
+          }
+        },
+      },
+      { onError: () => undefined },
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: () => {
+            throw new Error("retained source-less Frame must not fetch")
+          },
+        },
+        { next: () => "document-permanent-frame-request" },
+      ),
+    )
+    const controller = frames.get("frame")
+    const renderer = render(session, componentRegistry, {
+      frameComponent: FrameBoundary,
+      frames,
+      streamSources,
+    })
+    const renderedProbe = () => renderer.root.findByType("section").props
+
+    expect(renderedController).toBe(controller)
+    expect(subscriptions).toHaveLength(1)
+    act(() => renderedProbe().increment())
+    expect(renderedProbe()).toMatchObject({ count: 1, instance: 1, title: "Client" })
+
+    await act(async () => {
+      session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery><turbo-cable-stream-source id="source" channel="ServerChannel" data-turbo-permanent=""/><PermanentProbe id="probe" title="Server" data-turbo-permanent=""/><turbo-frame id="frame" src="/server" data-turbo-permanent=""><DemoText>Frame server</DemoText></turbo-frame><DemoText>Added</DemoText></Gallery>',
+          { url: "https://example.test/next" },
+        ),
+      )
+      await Promise.resolve()
+    })
+
+    expect(renderedProbe()).toMatchObject({ count: 0, instance: 2, title: "Client" })
+    expect(JSON.stringify(renderer.toJSON())).toContain("Frame client")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Frame server")
+    expect(session.tree.getElementById("frame")).toBe(frame)
+    expect(session.tree.getElementById("source")).toBe(source)
+    expect(frames.get("frame")).toBe(controller)
+    expect(renderedController).toBe(controller)
+    expect(controller.state.connected).toBe(true)
+    expect(subscriptions).toHaveLength(1)
+    expect(subscriptions[0]?.identifier).toContain("ClientChannel")
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(0)
+
+    await act(async () => {
+      renderer.unmount()
+      await Promise.resolve()
+    })
+    expect(controller.state.connected).toBe(false)
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(1)
+  })
+
+  test("preserves paired Frame-response runtime owners across replacement ancestry", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><turbo-frame id="nested" data-turbo-permanent=""><DemoText>Frame client</DemoText></turbo-frame><turbo-cable-stream-source id="source" channel="ClientChannel" data-turbo-permanent=""/></turbo-frame></Gallery>',
+      ),
+    )
+    const nested = session.tree.getElementById("nested")
+    const source = session.tree.getElementById("source")
+    if (nested?.kind !== "frame" || source?.kind !== "stream-source") {
+      throw new Error("Frame replacement permanent runtime fixtures are missing")
+    }
+    const subscriptions: {
+      identifier: string
+      unsubscribeCalls: number
+    }[] = []
+    const streamSources = new CableStreamSourceRegistry(
+      session,
+      {
+        subscribe(identifier) {
+          const record = { identifier, unsubscribeCalls: 0 }
+          subscriptions.push(record)
+          return {
+            unsubscribe() {
+              record.unsubscribeCalls += 1
+            },
+          }
+        },
+      },
+      { onError: () => undefined },
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: () => {
+            throw new Error("retained source-less nested Frame must not fetch")
+          },
+        },
+        { next: () => "frame-replacement-permanent-request" },
+      ),
+    )
+    const nestedController = frames.get("nested")
+    const renderer = render(session, registryWithCounters(), {
+      frames,
+      streamSources,
+    })
+
+    expect(nestedController.state.connected).toBe(true)
+    expect(subscriptions).toHaveLength(1)
+    await act(async () => {
+      await applyFrameResponse(
+        session,
+        "details",
+        '<turbo-frame id="details"><turbo-cable-stream-source id="source" channel="ServerChannel" data-turbo-permanent=""/><turbo-frame id="nested" src="/server" data-turbo-permanent=""><DemoText>Frame server</DemoText></turbo-frame></turbo-frame>',
+      )
+      await Promise.resolve()
+    })
+
+    expect(session.tree.getElementById("nested")).toBe(nested)
+    expect(session.tree.getElementById("source")).toBe(source)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Frame client")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Frame server")
+    expect(frames.get("nested")).toBe(nestedController)
+    expect(nestedController.state.connected).toBe(true)
+    expect(subscriptions).toHaveLength(1)
+    expect(subscriptions[0]?.identifier).toContain("ClientChannel")
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(0)
+
+    await act(async () => {
+      renderer.unmount()
+      await Promise.resolve()
+    })
+    expect(nestedController.state.connected).toBe(false)
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(1)
+  })
+
   test("contains invalid Cable sources locally and reconnects after correction", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(`<Gallery>
@@ -6566,7 +6760,7 @@ describe("React protocol renderer", () => {
   })
 
   test("does not let a press-out cancel automatic or direct shared preloads", async () => {
-    const pending: Array<ReturnType<typeof deferred<TurboResponse>>> = []
+    const pending: ReturnType<typeof deferred<TurboResponse>>[] = []
     const requests: TurboRequest[] = []
     const harness = renderPreloadingDocumentLinks(
       `<Gallery>
@@ -9877,7 +10071,7 @@ describe("React protocol renderer", () => {
   test("falls back through host navigation when generated form-link interception is disabled", async () => {
     const documentRequests: TurboRequest[] = []
     const generatedRequests: TurboRequest[] = []
-    const navigation: Array<Readonly<{ action: string; url: string }>> = []
+    const navigation: Readonly<{ action: string; url: string }>[] = []
     const clicks: string[] = []
     const lifecycle = new DocumentVisitLifecycle()
     lifecycle.subscribe("click", () => {

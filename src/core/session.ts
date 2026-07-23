@@ -20,6 +20,7 @@ import {
   morphCurrentDocumentRoot,
   nodeMorphRevision,
   type ProtocolNode,
+  preserveDocumentPermanentElements,
 } from "./tree"
 import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
@@ -180,6 +181,7 @@ export class DocumentSession {
 
   private installTree(tree: DocumentTree, preview: boolean): void {
     this.assertMutationAllowed()
+    preserveDocumentPermanentElements(this.currentTree, tree)
     const generation = this.currentTreeGeneration + 1
     const autofocus = preview ? undefined : prepareDocumentAutofocus(tree, generation)
     this.currentTree = tree

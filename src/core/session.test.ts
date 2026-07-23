@@ -9,7 +9,7 @@ import {
 } from "./document-morph-frame-reload-internal"
 import { morphCurrentDocument } from "./document-session-morph-internal"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { type DisposalError, TargetError } from "./errors"
+import { type DisposalError, ParseError, TargetError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 import { DocumentSession, SessionCommitError } from "./session"
@@ -62,6 +62,111 @@ describe("document session snapshots", () => {
     ])
     expect(states.every(Object.isFrozen)).toBe(true)
     expect(document.treeState).toEqual({ generation: 3, preview: false })
+  })
+
+  test("preserves outermost paired permanent elements during document replacement", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="current"><Panel id="player" data-turbo-permanent="" tone="client"><Locked id="locked" value="client"/></Panel><turbo-frame id="frame" src="/client" data-turbo-permanent=""><FrameClient id="frame-child"/></turbo-frame><turbo-cable-stream-source id="source" channel="ClientChannel" data-turbo-permanent=""/><Removed id="removed"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const previousTree = document.tree
+    const player = previousTree.getElementById("player")
+    const locked = previousTree.getElementById("locked")
+    const frame = previousTree.getElementById("frame")
+    const frameChild = previousTree.getElementById("frame-child")
+    const source = previousTree.getElementById("source")
+    if (
+      !player ||
+      !locked ||
+      frame?.kind !== "frame" ||
+      !frameChild ||
+      source?.kind !== "stream-source"
+    ) {
+      throw new Error("Expected permanent document replacement fixtures")
+    }
+    const disposed: string[] = []
+    for (const id of ["player", "locked", "frame", "frame-child", "source", "removed"]) {
+      document.registerDisposal(`id:${id}`, () => disposed.push(id))
+    }
+    const incoming = parseExpoTurboDocument(
+      '<Screen id="next"><Replacement id="player" data-turbo-permanent="" tone="server"><Ignored id="ignored"/></Replacement><turbo-frame id="frame" src="/server" data-turbo-permanent=""><FrameServer id="frame-ignored"/></turbo-frame><turbo-cable-stream-source id="source" channel="ServerChannel" data-turbo-permanent=""/><Added id="added"/></Screen>',
+      { url: "https://example.test/next" },
+    )
+    const incomingPlayer = incoming.getElementById("player")
+    const incomingFrame = incoming.getElementById("frame")
+    const incomingSource = incoming.getElementById("source")
+
+    document.replaceTree(incoming)
+
+    expect(document.tree).toBe(incoming)
+    expect(document.tree.document.url).toBe("https://example.test/next")
+    expect(document.tree.getElementById("player")).toBe(player)
+    expect(document.tree.getElementById("locked")).toBe(locked)
+    expect(document.tree.getElementById("frame")).toBe(frame)
+    expect(document.tree.getElementById("frame-child")).toBe(frameChild)
+    expect(document.tree.getElementById("source")).toBe(source)
+    expect(document.tree.getElementById("ignored")).toBeUndefined()
+    expect(document.tree.getElementById("frame-ignored")).toBeUndefined()
+    expect(attributeValue(player, "tone")).toBe("client")
+    expect(attributeValue(frame, "src")).toBe("/client")
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(incomingPlayer?.parent).toBeNull()
+    expect(incomingFrame?.parent).toBeNull()
+    expect(incomingSource?.parent).toBeNull()
+    expect(previousTree.getElementById("player")).not.toBe(player)
+    expect(previousTree.getElementById("frame")).not.toBe(frame)
+    expect(previousTree.getElementById("source")).not.toBe(source)
+    expect(disposed).toEqual(["removed"])
+    expect(document.treeGeneration).toBe(1)
+    expect(document.revision).toBe(1)
+  })
+
+  test("requires paired permanent markers during document replacement", () => {
+    const document = session(
+      '<Gallery><Panel id="current-only" data-turbo-permanent=""/><Panel id="incoming-only"/></Gallery>',
+    )
+    const currentOnly = document.tree.getElementById("current-only")
+    const incomingOnly = document.tree.getElementById("incoming-only")
+
+    document.replaceTree(
+      parseExpoTurboDocument(
+        '<Gallery><Panel id="current-only"/><Panel id="incoming-only" data-turbo-permanent=""/></Gallery>',
+      ),
+    )
+
+    expect(document.tree.getElementById("current-only")).not.toBe(currentOnly)
+    expect(document.tree.getElementById("incoming-only")).not.toBe(incomingOnly)
+  })
+
+  test("rolls back both trees when a paired permanent subtree would collide", () => {
+    const document = session(
+      '<Gallery id="current"><Panel id="permanent" data-turbo-permanent=""><Locked id="collision"/></Panel></Gallery>',
+    )
+    const currentTree = document.tree
+    const permanent = currentTree.getElementById("permanent")
+    const locked = currentTree.getElementById("collision")
+    const incoming = parseExpoTurboDocument(
+      '<Gallery id="next"><Panel id="permanent" data-turbo-permanent=""><Incoming id="incoming"/></Panel><Other id="collision"/></Gallery>',
+    )
+    const incomingPermanent = incoming.getElementById("permanent")
+    if (!permanent || !locked || !incomingPermanent) throw new Error("Expected collision fixtures")
+
+    expect(() => document.replaceTree(incoming)).toThrow(ParseError)
+
+    expect(document.tree).toBe(currentTree)
+    expect(document.tree.getElementById("permanent")).toBe(permanent)
+    expect(document.tree.getElementById("collision")).toBe(locked)
+    const currentRoot = document.tree.getElementById("current")
+    const incomingRoot = incoming.getElementById("next")
+    if (!currentRoot || !incomingRoot) throw new Error("Expected collision roots")
+    expect(permanent.parent).toBe(currentRoot)
+    expect(incoming.getElementById("permanent")).toBe(incomingPermanent)
+    expect(incomingPermanent.parent).toBe(incomingRoot)
+    expect(incoming.getElementById("incoming")).toBeDefined()
+    expect(document.treeGeneration).toBe(0)
+    expect(document.revision).toBe(0)
   })
 
   test("publishes one session revision notification for each logical commit", async () => {
