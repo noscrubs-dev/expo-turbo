@@ -8,6 +8,7 @@ import { attributeValue, type ProtocolElement } from "./tree"
 export type FormSubmissionActivityStatus = "idle" | "submitting"
 export type FormSubmissionUnappliedReason =
   | "outside-root"
+  | "render-prevented"
   | "superseded"
   | "unvisitable-extension"
   | "visit-prevented"
