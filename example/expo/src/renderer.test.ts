@@ -5621,6 +5621,53 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("defers a reusable press-in error document to the activated visit", async () => {
+    const documentRequests: TurboRequest[] = []
+    const errors: ExpoTurboRenderError[] = []
+    const harness = renderPreloadingDocumentLinks(
+      '<Gallery data-turbo-root="/app"><DocumentLink href="/app/invalid" /></Gallery>',
+      async (request) => ({
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 422,
+        text: async () =>
+          '<Gallery data-turbo-root="/app"><DemoText id="validation-error">Invalid</DemoText></Gallery>',
+        url: request.url,
+      }),
+      {
+        documentFetch: async (request) => {
+          documentRequests.push(request)
+          throw new Error("press-in activation must reuse the authoritative error response")
+        },
+        onError: (event) => errors.push(event),
+        url: "https://example.test/app/current",
+      },
+    )
+
+    act(() => harness.prefetch("/app/invalid"))
+    await act(async () => {
+      await nextTurn()
+    })
+    expect(errors).toEqual([])
+
+    let result: unknown
+    await act(async () => {
+      harness.commitPrefetch("/app/invalid")
+      result = await harness.activation("/app/invalid")()
+    })
+    expect(result).toMatchObject({
+      classification: "client-error",
+      responseStatus: 422,
+      source: "prefetch",
+      status: "committed",
+    })
+    expect(errors).toEqual([])
+    expect(documentRequests).toEqual([])
+    expect(harness.session.tree.getElementById("validation-error")).toBeDefined()
+
+    act(() => harness.renderer.unmount())
+  })
+
   test("cancels an activated in-flight press-in response without waiting for transport", async () => {
     const pending = deferred<TurboResponse>()
     const requests: TurboRequest[] = []

@@ -2020,8 +2020,16 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         ) {
           throw new StateError("Document link prefetch lease is invalid")
         }
+        const activationPromise: unknown = lease.activationPromise ?? promise
+        if (
+          activationPromise === null ||
+          (typeof activationPromise !== "object" && typeof activationPromise !== "function") ||
+          typeof (activationPromise as PromiseLike<unknown>).then !== "function"
+        ) {
+          throw new StateError("Document link prefetch lease is invalid")
+        }
         commit = () => lease.commit()
-        preload = Promise.resolve(promise)
+        preload = Promise.resolve(activationPromise)
         release = () => lease.release()
       } else {
         preload = documentPreloader.preload(prefetchUrl)
