@@ -2287,8 +2287,9 @@ function restoreComponentMorphFocus(
   adapter: AutofocusAdapter,
   scrollAdapter: AutofocusScrollAdapter | undefined,
   nodeKey: string,
+  readFocusedId = readMorphFocusedId,
 ): void {
-  const focusedId = readMorphFocusedId(adapter, nodeKey)
+  const focusedId = readFocusedId(adapter, nodeKey)
   if (focusedId !== undefined) return
 
   let available: unknown
@@ -2842,6 +2843,130 @@ interface DocumentRenderBoundaryProps {
   readonly generation: number
 }
 
+interface RetainedMorphFocusSnapshot {
+  readonly key: string
+  readonly morphRevision: number
+  readonly node: ProtocolNode
+}
+
+function readRetainedMorphFocusedId(
+  adapter: AutofocusAdapter,
+  nodeKey: string,
+): string | undefined {
+  let key: unknown
+  try {
+    key = adapter.getMorphFocusedId?.()
+  } catch {
+    throw new StateError("Retained morph focus snapshot failed", { target: nodeKey })
+  }
+  if (key !== undefined && typeof key !== "string") {
+    consumeUnexpectedAdapterResult(key)
+    throw new StateError("Retained morph focus snapshot failed", { target: nodeKey })
+  }
+  return key
+}
+
+function retainedMorphFocusSnapshot(
+  session: DocumentSession,
+  adapter: AutofocusAdapter,
+  nodeKey: string,
+): RetainedMorphFocusSnapshot | undefined {
+  const key = readRetainedMorphFocusedId(adapter, nodeKey)
+  if (key === undefined) return undefined
+  const snapshot = session.getNodeSnapshot(key)
+  return snapshot ? { key, morphRevision: snapshot.morphRevision, node: snapshot.node } : undefined
+}
+
+function reportRetainedMorphFocusError(
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+  nodeKey: string,
+  error: unknown,
+): void {
+  const reported =
+    error instanceof Error ? error : new StateError("Retained morph focus restoration failed")
+  if (!onError) throw reported
+  try {
+    onError({ error: reported, nodeKey })
+  } catch {
+    const reportingError = new StateError("Retained morph focus error reporting failed")
+    alreadyReportedRenderErrors.add(reportingError)
+    throw reportingError
+  }
+}
+
+function useRetainedMorphFocus(
+  session: DocumentSession,
+  adapter: AutofocusAdapter | undefined,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
+  nodeKey: string,
+  onError: ((event: ExpoTurboRenderError) => void) | undefined,
+): number {
+  const baseline = useRef<RetainedMorphFocusSnapshot | undefined>(undefined)
+  const pending = useRef<RetainedMorphFocusSnapshot | undefined>(undefined)
+  const pendingError = useRef<unknown>(undefined)
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      session.subscribeRevision(() => {
+        try {
+          const previous = baseline.current
+          const current =
+            adapter?.getMorphFocusedId === undefined
+              ? undefined
+              : retainedMorphFocusSnapshot(session, adapter, nodeKey)
+          pending.current =
+            previous &&
+            current &&
+            previous.key === current.key &&
+            previous.node === current.node &&
+            previous.morphRevision !== current.morphRevision
+              ? current
+              : undefined
+          baseline.current = current
+        } catch (error) {
+          pending.current = undefined
+          baseline.current = undefined
+          pendingError.current = error
+        }
+        listener()
+      }),
+    [adapter, nodeKey, session],
+  )
+  const snapshot = useCallback(() => session.revision, [session])
+  const revision = useSyncExternalStore(subscribe, snapshot, snapshot)
+
+  useLayoutEffect(() => {
+    void revision
+    try {
+      if (pendingError.current !== undefined) {
+        const error = pendingError.current
+        pendingError.current = undefined
+        throw error
+      }
+      const candidate = pending.current
+      pending.current = undefined
+      if (candidate && adapter) {
+        const active = session.getNodeSnapshot(candidate.key)
+        if (active?.node === candidate.node && active.morphRevision === candidate.morphRevision) {
+          restoreComponentMorphFocus(
+            adapter,
+            scrollAdapter,
+            candidate.key,
+            readRetainedMorphFocusedId,
+          )
+        }
+      }
+      baseline.current =
+        adapter?.getMorphFocusedId === undefined
+          ? undefined
+          : retainedMorphFocusSnapshot(session, adapter, nodeKey)
+    } catch (error) {
+      reportRetainedMorphFocusError(onError, nodeKey, error)
+    }
+  }, [adapter, nodeKey, onError, revision, scrollAdapter, session])
+
+  return revision
+}
+
 function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
   const {
     autofocus,
@@ -2867,11 +2992,6 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     () => streamAutofocusLifecycleRevision(session),
     [session],
   )
-  const subscribeRevision = useCallback(
-    (listener: () => void) => session.subscribeRevision(listener),
-    [session],
-  )
-  const revisionSnapshot = useCallback(() => session.revision, [session])
   const coordinationRevision = useSyncExternalStore(
     subscribeRenderLifecycle,
     renderLifecycleSnapshot,
@@ -2882,7 +3002,13 @@ function DocumentRenderBoundary(props: DocumentRenderBoundaryProps): ReactNode {
     streamAutofocusSnapshot,
     streamAutofocusSnapshot,
   )
-  const revision = useSyncExternalStore(subscribeRevision, revisionSnapshot, revisionSnapshot)
+  const revision = useRetainedMorphFocus(
+    session,
+    autofocus,
+    autofocusScroll,
+    props.document.key,
+    onError,
+  )
   useInsertionEffect(() => retainDocumentRenderer(session), [session])
   useLayoutEffect(() => {
     if (coordinationRevision !== documentRenderLifecycleRevision(session)) return
