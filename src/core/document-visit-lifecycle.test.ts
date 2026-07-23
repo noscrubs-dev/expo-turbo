@@ -9,10 +9,12 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
   DocumentLoadEvent,
+  DocumentMorphEvent,
   DocumentReloadEvent,
   DocumentRenderEvent,
   DocumentVisitLifecycle,
@@ -21,6 +23,7 @@ import {
   VisitEvent,
 } from "./document-visit-lifecycle"
 import { PropsError, StateError } from "./errors"
+import { parseExpoTurboDocument } from "./parser"
 
 function capturedError(operation: () => unknown): Error {
   try {
@@ -274,9 +277,27 @@ describe("document visit lifecycle", () => {
     expect(Object.isFrozen(visit.detail)).toBe(true)
   })
 
-  test("exposes frozen native document render, load, and reload notifications", () => {
+  test("exposes frozen native document morph, render, load, and reload notifications", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const events: string[] = []
+    const currentDocument = parseExpoTurboDocument('<Gallery id="current" />', {
+      url: "https://example.test/next",
+    }).document
+    const newDocument = parseExpoTurboDocument('<Gallery id="new" />', {
+      url: "https://example.test/next",
+    }).document
+    lifecycle.subscribe("morph", (event) => {
+      events.push(event.type)
+      expect(event.detail).toEqual({
+        currentDocument,
+        generation: 4,
+        newDocument,
+        url: "https://example.test/next",
+      })
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      return undefined
+    })
     lifecycle.subscribe("render", (event) => {
       events.push(event.type)
       expect(event.detail).toEqual({
@@ -304,6 +325,14 @@ describe("document visit lifecycle", () => {
       return undefined
     })
 
+    lifecycle[DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH](
+      new DocumentMorphEvent({
+        currentDocument,
+        generation: 4,
+        newDocument,
+        url: "https://example.test/next",
+      }),
+    )
     lifecycle[DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH](
       new DocumentRenderEvent({
         generation: 4,
@@ -319,7 +348,7 @@ describe("document visit lifecycle", () => {
       new DocumentReloadEvent({ cause: "transport", reason: "request-failed" }),
     )
 
-    expect(events).toEqual(["render", "load", "reload"])
+    expect(events).toEqual(["morph", "render", "load", "reload"])
   })
 
   test("emits frozen before-cache notifications through stable listener snapshots", async () => {

@@ -5027,9 +5027,27 @@ describe("Document visit controller", () => {
     const tree = current.session.tree
     const retained = tree.getElementById("retained")
     const retainedIdentity = current.session.getNodeSnapshot("id:retained")?.identity
+    const events: string[] = []
     const renderMethods: string[] = []
+    lifecycle.subscribe("visit", () => {
+      events.push("visit")
+    })
+    lifecycle.subscribe("morph", (event) => {
+      events.push("morph")
+      expect(event.detail.currentDocument).toBe(current.session.tree.document)
+      expect(event.detail.generation).toBe(current.session.treeGeneration)
+      expect(event.detail.newDocument.children[0]?.kind).toBe("element")
+      expect(current.session.tree.getElementById("retained")).toBe(retained)
+      const committedRetained = current.session.tree.getElementById("retained")
+      if (!committedRetained) throw new Error("Expected committed retained morph fixture")
+      expect(attributeValue(committedRetained, "tone")).toBe("after")
+    })
     lifecycle.subscribe("render", (event) => {
+      events.push("render")
       renderMethods.push(event.detail.renderMethod)
+    })
+    lifecycle.subscribe("load", () => {
+      events.push("load")
     })
 
     const refreshing = current.controller.visit("/current?revision=next", { action: "replace" })
@@ -5065,6 +5083,7 @@ describe("Document visit controller", () => {
     expect(current.session.tree.getElementById("removed")).toBeUndefined()
     expect(current.session.tree.getElementById("added")).toBeDefined()
     expect(renderMethods).toEqual(["morph"])
+    expect(events).toEqual(["visit", "morph", "render", "load"])
     expect(
       consumeDocumentRefreshScroll(
         current.session,
@@ -5138,7 +5157,11 @@ describe("Document visit controller", () => {
         visitLifecycle: lifecycle,
       })
       const releaseRenderer = retainDocumentRenderer(current.session)
+      let morphEvents = 0
       const renderMethods: string[] = []
+      lifecycle.subscribe("morph", () => {
+        morphEvents += 1
+      })
       lifecycle.subscribe("render", (event) => {
         renderMethods.push(event.detail.renderMethod)
       })
@@ -5192,6 +5215,7 @@ describe("Document visit controller", () => {
       const currentStable = current.session.tree.getElementById("stable")
       if (!currentStable) throw new Error("Expected replacement document fixture")
       expect(attributeValue(currentStable, "tone")).toBe("after")
+      expect(morphEvents).toBe(0)
       expect(renderMethods).toEqual(["replace"])
       expect(current.controller.state.status).toBe("failed")
       expect(history.writes).toHaveLength(1)
@@ -5224,9 +5248,15 @@ describe("Document visit controller", () => {
       },
     ] as const) {
       const history = historyFixture()
+      const lifecycle = new DocumentVisitLifecycle()
       const { controller, pending, session } = harness({
         documentXml: candidate.documentXml,
         history: history.history,
+        visitLifecycle: lifecycle,
+      })
+      let morphEvents = 0
+      lifecycle.subscribe("morph", () => {
+        morphEvents += 1
       })
       const tree = session.tree
       const disposed: string[] = []
@@ -5242,6 +5272,7 @@ describe("Document visit controller", () => {
       expect(session.treeGeneration).toBe(0)
       expect(session.revision).toBe(0)
       expect(session.tree.getElementById("stable")).toBeDefined()
+      expect(morphEvents).toBe(0)
       expect(disposed).toEqual([])
     }
   })

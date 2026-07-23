@@ -7,6 +7,7 @@ import type { DocumentScrollPosition } from "./document-history"
 import {
   documentLoadRefreshScroll,
   documentLoadRenderMethod,
+  notifyDocumentLoadMorph,
 } from "./document-load-render-method-internal"
 import {
   createDocumentTransportError,
@@ -877,8 +878,20 @@ export class DocumentRequestLoader {
     }
     this.release(active)
     try {
-      if (effectiveRenderMethod === "morph") morphCurrentDocument(this.session, commit.tree)
-      else this.session.replaceTree(commit.tree)
+      if (effectiveRenderMethod === "morph") {
+        morphCurrentDocument(this.session, commit.tree)
+        notifyDocumentLoadMorph(
+          options,
+          Object.freeze({
+            currentDocument: this.session.tree.document,
+            generation: this.session.treeGeneration,
+            newDocument: commit.tree.document,
+            url: commit.finalUrl,
+          }),
+        )
+      } else {
+        this.session.replaceTree(commit.tree)
+      }
     } catch {
       suppressPreparedDocumentRefreshScroll(this.session)
       discardDocumentRefreshScroll(this.session, this.session.treeGeneration)

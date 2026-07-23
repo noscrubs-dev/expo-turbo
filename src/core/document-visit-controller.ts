@@ -49,8 +49,10 @@ import {
   BeforeVisitEvent,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH,
+  DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH,
+  DocumentMorphEvent,
   DocumentReloadEvent,
   type DocumentReloadEventDetail,
   type DocumentRenderMethod,
@@ -1435,7 +1437,17 @@ export class DocumentVisitController {
         },
       } satisfies DocumentVisitLoadOptions),
     } satisfies DocumentVisitLoadOptions
-    const loadOptions = withDocumentLoadRenderMethod(options, renderMethod, refreshScroll)
+    const lifecycle = this.visitLifecycle
+    const loadOptions = withDocumentLoadRenderMethod(
+      options,
+      renderMethod,
+      refreshScroll,
+      lifecycle
+        ? (detail) => {
+            lifecycle[DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH](new DocumentMorphEvent(detail))
+          }
+        : undefined,
+    )
     const loaded = prefetched
       ? this.loader[DOCUMENT_LOAD_PREFETCHED_RESPONSE](
           source,

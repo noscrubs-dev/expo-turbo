@@ -2,6 +2,7 @@ import type { VisitAction } from "../adapters"
 import { PropsError, StateError } from "./errors"
 import { CancellableEvent, NotificationEvent } from "./events"
 import { consumeThenableResult } from "./thenable-result"
+import type { ProtocolDocument } from "./tree"
 
 export type DocumentVisitDirection = "back" | "forward" | "none"
 
@@ -117,6 +118,20 @@ export class DocumentLoadEvent extends NotificationEvent<"load", DocumentLoadEve
   }
 }
 
+export interface DocumentMorphEventDetail {
+  readonly currentDocument: ProtocolDocument
+  readonly generation: number
+  readonly newDocument: ProtocolDocument
+  readonly url: string
+}
+
+export class DocumentMorphEvent extends NotificationEvent<"morph", DocumentMorphEventDetail> {
+  constructor(detail: DocumentMorphEventDetail) {
+    super("morph", Object.freeze({ ...detail }))
+    Object.freeze(this)
+  }
+}
+
 export type DocumentReloadCause = "content-type" | "transport"
 export type DocumentReloadReason = "request-failed"
 
@@ -137,6 +152,7 @@ export type DocumentVisitLifecycleEvent =
   | BeforePrefetchEvent
   | BeforeVisitEvent
   | DocumentLoadEvent
+  | DocumentMorphEvent
   | DocumentReloadEvent
   | DocumentRenderEvent
   | LinkClickEvent
@@ -148,6 +164,7 @@ export interface DocumentVisitLifecycleEventMap {
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
   readonly load: DocumentLoadEvent
+  readonly morph: DocumentMorphEvent
   readonly reload: DocumentReloadEvent
   readonly render: DocumentRenderEvent
   readonly visit: VisitEvent
@@ -184,6 +201,9 @@ export const DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.load-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.morph-dispatch",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.reload-dispatch",
 )
@@ -191,7 +211,7 @@ export const DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH = Symbol(
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
  * Click, before-prefetch, and before-visit listeners may cancel admission;
- * visit, before-cache, render, load, and reload listeners are notification observers.
+ * visit, before-cache, morph, render, load, and reload listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
   private readonly listeners = new Map<
@@ -214,6 +234,7 @@ export class DocumentVisitLifecycle {
       type !== "before-visit" &&
       type !== "click" &&
       type !== "load" &&
+      type !== "morph" &&
       type !== "reload" &&
       type !== "render" &&
       type !== "visit"
@@ -306,15 +327,20 @@ export class DocumentVisitLifecycle {
     this.dispatchNotification("load", event, "Load listener failed")
   }
 
+  [DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH](event: DocumentMorphEvent): void {
+    this.dispatchNotification("morph", event, "Morph listener failed")
+  }
+
   [DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH](event: DocumentReloadEvent): void {
     this.dispatchNotification("reload", event, "Reload listener failed")
   }
 
   private dispatchNotification(
-    type: "before-cache" | "load" | "reload" | "render" | "visit",
+    type: "before-cache" | "load" | "morph" | "reload" | "render" | "visit",
     event:
       | BeforeCacheEvent
       | DocumentLoadEvent
+      | DocumentMorphEvent
       | DocumentReloadEvent
       | DocumentRenderEvent
       | VisitEvent,
@@ -359,7 +385,9 @@ export class DocumentVisitLifecycle {
   }
 }
 
-function notificationName(type: "before-cache" | "load" | "reload" | "render" | "visit"): string {
+function notificationName(
+  type: "before-cache" | "load" | "morph" | "reload" | "render" | "visit",
+): string {
   if (type === "before-cache") return "Before-cache"
   return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
 }
