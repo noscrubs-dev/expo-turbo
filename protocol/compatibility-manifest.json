@@ -356,12 +356,14 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request and matching-Frame 422 response, history, and document-response browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request and matching-Frame 422 response, history, and document-response browser differential, standalone iOS simulator and Android emulator Release builds, and installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
         ".maestro/live-frame-morph.yaml",
-        ".maestro/release-gallery-smoke.yaml"
+        ".maestro/release-gallery-smoke.yaml",
+        ".maestro/release-ios-live-frame-morph.yaml",
+        ".maestro/release-ios-live-frame-form.yaml"
       ]
     },
     {

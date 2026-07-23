@@ -1,0 +1,72 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Compatibility gallery
+    direction: UP
+    timeout: 120000
+    speed: 80
+- scrollUntilVisible:
+    element:
+      text: Standalone Rails Frame form
+    direction: DOWN
+    timeout: 240000
+    speed: 80
+    visibilityPercentage: 50
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: First name
+    direction: DOWN
+    timeout: 30000
+- tapOn:
+    text: First name
+    index: 1
+- inputText: invalid release
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: Save first name
+    direction: DOWN
+    timeout: 30000
+- tapOn: Save first name
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: First name
+    direction: UP
+    timeout: 30000
+- tapOn:
+    text: First name
+    index: 1
+- eraseText
+- inputText: Ada
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: Complete without replacing Frame
+    direction: DOWN
+    timeout: 30000
+- tapOn: Complete without replacing Frame
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Save first name
+    direction: UP
+    timeout: 30000
+- tapOn: Save first name
+- extendedWaitUntil:
+    notVisible: This demo name is unavailable
+    timeout: 30000
+- assertVisible: Rails Frame form
