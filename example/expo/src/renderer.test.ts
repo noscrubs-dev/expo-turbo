@@ -12606,6 +12606,72 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
   })
 
+  test("reconciles retained Frame attributes through its mounted controller", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame" src="/before" target="before"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${pending.length + 1}` },
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), { frames })
+    const frame = session.tree.getElementById("frame")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const controller = frames.get("frame")
+
+    expect(pending).toHaveLength(1)
+    act(() => {
+      session.setAttribute(frame.key, "src", "/after")
+      session.setAttribute(frame.key, "target", "after")
+    })
+
+    expect(frames.get("frame")).toBe(controller)
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.url).toBe("https://example.test/after")
+    expect(controller.state).toMatchObject({
+      connected: true,
+      source: "/after",
+      target: "after",
+      status: "loading",
+    })
+
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="frame"><DemoText>Stale</DemoText></turbo-frame>',
+      url: "https://example.test/before",
+    })
+    pending[1]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="frame"><DemoText>After</DemoText></turbo-frame>',
+      url: "https://example.test/after",
+    })
+    await act(async () => {
+      await controller.loaded
+    })
+    expect(JSON.stringify(renderer.toJSON())).toContain("After")
+
+    act(() => renderer.unmount())
+  })
+
   test("connects eager Frame controllers and cancels them when a subtree unmounts", async () => {
     const pending: {
       request: TurboRequest

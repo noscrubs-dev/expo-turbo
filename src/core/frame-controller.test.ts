@@ -1361,6 +1361,71 @@ describe("Frame controller", () => {
     expect(controller.state).toMatchObject({ connected: false, status: "canceled" })
   })
 
+  test("reconciles externally morphed source, disabled, loading, and target attributes", async () => {
+    let visible = false
+    let visibilityListener: ((visible: boolean) => void) | undefined
+    let visibilityUnsubscribed = 0
+    const visibility: VisibilityAdapter = {
+      isVisible: () => visible,
+      subscribe(_frameId, listener) {
+        visibilityListener = listener
+        return () => {
+          visibilityListener = undefined
+          visibilityUnsubscribed += 1
+        }
+      },
+    }
+    const { controller, pending, session } = harness('src="/frame" target="before"', visibility)
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+
+    const initial = controller.connect()
+    session.setAttribute(frame.key, "src", "/next")
+    session.setAttribute(frame.key, "target", "after")
+    const changed = controller.reconcileAttributes()
+
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.url).toBe("https://example.test/next")
+    expect(controller.state).toMatchObject({
+      source: "/next",
+      target: "after",
+      status: "loading",
+    })
+    pending[0]?.resolve(response('<turbo-frame id="details"><Stale /></turbo-frame>'))
+    pending[1]?.resolve(response('<turbo-frame id="details"><Current /></turbo-frame>'))
+    expect(await initial).toMatchObject({ status: "canceled" })
+    expect(await changed).toMatchObject({ status: "completed" })
+
+    session.setAttribute(frame.key, "disabled", "")
+    await controller.reconcileAttributes()
+    expect(controller.state).toMatchObject({ disabled: true })
+
+    session.setAttribute(frame.key, "src", "/visible")
+    await controller.reconcileAttributes()
+    session.removeAttribute(frame.key, "disabled")
+    session.setAttribute(frame.key, "loading", "lazy")
+    await controller.reconcileAttributes()
+    expect(controller.state).toMatchObject({
+      disabled: false,
+      loading: "lazy",
+      source: "/visible",
+    })
+    expect(visibilityListener).toBeDefined()
+
+    visible = true
+    visibilityListener?.(true)
+    expect(pending).toHaveLength(3)
+    expect(visibilityUnsubscribed).toBe(1)
+    pending[2]?.resolve(response('<turbo-frame id="details"><Visible /></turbo-frame>'))
+    await expect(controller.loaded).resolves.toMatchObject({ status: "completed" })
+
+    session.removeAttribute(frame.key, "src")
+    await controller.reconcileAttributes()
+    expect(controller.state).toMatchObject({ status: "idle" })
+    expect(controller.state.source).toBeUndefined()
+  })
+
   test("defers lazy sources until load, reloads the same source, and removes src", async () => {
     const { controller, pending, session } = harness('src="/frame" loading="lazy"')
 
