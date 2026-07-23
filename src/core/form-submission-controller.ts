@@ -522,6 +522,7 @@ export class FormSubmissionController {
     }
     let frameRender: PreparedFrameRender | undefined
     let frameRendered = false
+    let frameLifecycleDispatched = false
 
     try {
       if (confirmation && confirmationMessage !== undefined) {
@@ -982,7 +983,6 @@ export class FormSubmissionController {
         await executeFrameVisitControlReload(this.options.frameLifecycle, visitControlReload)
         return settle(application)
       }
-      const settled = settle(application)
       if (
         documentRendered &&
         documentRender &&
@@ -1000,10 +1000,34 @@ export class FormSubmissionController {
         this.options.frameLifecycle
       ) {
         if (dispatchFrameRender(this.options.frameLifecycle, frameRender)) {
+          frameLifecycleDispatched = true
           dispatchFrameLoad(this.options.frameLifecycle, frameRender)
         }
       }
-      return settled
+      if (
+        frameHistoryPlan &&
+        response.status === "xml" &&
+        response.classification === "success" &&
+        application.status === "applied" &&
+        application.application === "frame"
+      ) {
+        try {
+          await finalizeFrameFormHistoryVisit(
+            frameHistoryPlan,
+            // The response lease is deliberately released before renderer acknowledgement.
+            // The committed plan retains the exact navigation, mount, and Frame checkpoint guards.
+            () => true,
+            activeLease.controller.signal,
+          )
+        } catch {
+          throw new FormSubmissionCommitError(response, {
+            application: "frame",
+            applicationDestination: application.applicationDestination,
+            destination: application.destination,
+          })
+        }
+      }
+      return settle(application)
     } catch (error) {
       controller.abort()
       const reported =
@@ -1021,6 +1045,7 @@ export class FormSubmissionController {
         if (
           error instanceof FormSubmissionCommitError &&
           error.outcome.application === "frame" &&
+          !frameLifecycleDispatched &&
           frameRendered &&
           frameRender &&
           this.options.frameLifecycle
@@ -1308,13 +1333,6 @@ export class FormSubmissionController {
         )
         if (this.ownership.retains(lease) && this.options.frameControllers) {
           notifyMountedFrameAutofocus(this.options.frameControllers, frame)
-        }
-        if (promotedHistory) {
-          await finalizeFrameFormHistoryVisit(
-            promotedHistory,
-            () => this.ownership.retains(lease),
-            lease.controller.signal,
-          )
         }
         return Object.freeze({
           ...metadata,

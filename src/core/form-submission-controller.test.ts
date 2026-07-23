@@ -3868,6 +3868,24 @@ describe("FormSubmissionController", () => {
     )
     const controls = registry(session, "form-a")
     const events: string[] = []
+    const frameLifecycle = new FrameLifecycle()
+    frameLifecycle.subscribe("frame-render", () => {
+      expect(controls.submissionState.busy).toBe(false)
+      events.push("frame-render")
+    })
+    frameLifecycle.subscribe("frame-load", () => {
+      expect(controls.submissionState.busy).toBe(false)
+      events.push("frame-load")
+    })
+    const frame = session.tree.getElementById("frame-a")
+    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const releaseRenderer = retainFrameRenderer(session, frame)
+    let lifecycleRevision = frameRenderLifecycleRevision(session)
+    const unsubscribe = subscribeFrameRenderLifecycle(session, () => {
+      if (frameRenderLifecycleRevision(session) <= lifecycleRevision) return
+      lifecycleRevision = frameRenderLifecycleRevision(session)
+      acknowledgeFrameRender(session, frame, "frame-a", session.revision)?.finish()
+    })
     const finalUrl = "https://example.test/frame-a/committed"
     const assertCommitted = () => {
       expect(controls.submissionState.busy).toBe(false)
@@ -3894,12 +3912,20 @@ describe("FormSubmissionController", () => {
             { redirected: true, url: finalUrl },
           ),
       },
-      { frameControllers: current.frameControllers },
+      { frameControllers: current.frameControllers, frameLifecycle },
     ).submit(proposal(controls, "promoted-frame-lifecycle"))
 
     expect(result).toMatchObject({ application: "frame", status: "applied" })
-    expect(events).toEqual([`before:${finalUrl}`, `visit:advance:${finalUrl}`])
+    expect(events).toEqual([
+      "frame-render",
+      "frame-load",
+      `before:${finalUrl}`,
+      `visit:advance:${finalUrl}`,
+    ])
     expect(current.writes).toHaveLength(1)
+
+    unsubscribe()
+    releaseRenderer()
   })
 
   test("keeps a prevented promoted Frame form fully committed without emitting visit", async () => {
@@ -5324,11 +5350,12 @@ describe("FormSubmissionController", () => {
     session.setAttribute("id:form-a", "data-turbo-action", "advance")
     session.setAttribute("id:form-a", "method", "post")
     const visitLifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
     visitLifecycle.subscribe("before-visit", () => {
+      events.push("before-visit")
       throw new Error("sensitive promoted Frame form listener failure")
     })
     const frameLifecycle = new FrameLifecycle()
-    const events: string[] = []
     frameLifecycle.subscribe("frame-render", () => {
       events.push("render")
     })
@@ -5368,7 +5395,7 @@ describe("FormSubmissionController", () => {
       ).submit(proposal(registry(session, "form-a"), "promoted-frame-render-failure")),
     ).rejects.toBeInstanceOf(FormSubmissionCommitError)
 
-    expect(events).toEqual(["render", "load"])
+    expect(events).toEqual(["render", "load", "before-visit"])
     expect(current.history.current?.url).toBe("https://example.test/frame-a/listener-failed")
     expect(session.tree.getElementById("listener-failed")).toBeDefined()
 

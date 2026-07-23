@@ -413,6 +413,7 @@ describe("promoted Frame history", () => {
   test("settles Frame visual lifecycle after promoted history finalization fails", async () => {
     const visitLifecycle = new DocumentVisitLifecycle()
     visitLifecycle.subscribe("before-visit", () => {
+      events.push("before-visit")
       throw new Error("sensitive promoted Frame listener failure")
     })
     const frameLifecycle = new FrameLifecycle()
@@ -447,7 +448,7 @@ describe("promoted Frame history", () => {
       }),
     ).rejects.toBeInstanceOf(FrameCommitError)
 
-    expect(events).toEqual(["render", "load"])
+    expect(events).toEqual(["render", "load", "before-visit"])
     expect(controller.state).toMatchObject({ busy: false, complete: true, status: "completed" })
 
     unsubscribe()
