@@ -155,6 +155,7 @@ export interface ProtocolAttributes {
   readonly classNames: readonly string[]
   readonly data: Readonly<Record<string, string>>
   readonly direction?: "auto" | "ltr" | "rtl"
+  readonly dirname?: string
   readonly form?: string
   readonly id?: string
   readonly xmlSpace?: "default" | "preserve"
@@ -207,6 +208,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
       .map((attribute) => [attribute.name.slice(5), attribute.value]),
   )
   const direction = protocolDirection(element)
+  const dirname = attributeValue(element, "dirname")
   const form = attributeValue(element, "form")
   const xmlSpace = attributeValue(element, "xml:space")
   if (xmlSpace && !["default", "preserve"].includes(xmlSpace)) {
@@ -224,6 +226,7 @@ function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
     classNames: Object.freeze(classes),
     data: Object.freeze(data),
     ...(direction ? { direction } : {}),
+    ...(dirname !== undefined ? { dirname } : {}),
     ...(form !== undefined ? { form } : {}),
     ...(id ? { id } : {}),
     ...(xmlSpace === "default" || xmlSpace === "preserve" ? { xmlSpace } : {}),
@@ -235,6 +238,7 @@ function isSharedAttribute(name: string): boolean {
     name === "class" ||
     name === "autofocus" ||
     name === "dir" ||
+    name === "dirname" ||
     name === "form" ||
     name === "id" ||
     name === "xml:space" ||

@@ -913,8 +913,8 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoAction message="Hello from validated XML" />
   <DemoCard id="native-form-card" title="Live native form controls" style-tokens="tone:info space:compact">
     <DemoText>Clear the required first name to block submission and focus the first invalid native field. Restore a value, approve the host-owned native confirmation, then submit through the exact-form activity guard. The fixture fails its first safe GET so the registered form boundary can retry from current values with a fresh request ID.</DemoText>
-    <DemoForm id="native-form" action="/demo/profile" method="post">
-      <DemoFormInput id="first-name" autofocus="" label="First name" name="profile[first_name]" required="" value="Ada" />
+    <DemoForm id="native-form" action="/demo/profile" dir="rtl" method="post">
+      <DemoFormInput id="first-name" autofocus="" dirname="profile[first_name].dir" label="First name" name="profile[first_name]" required="" value="Ada" />
       <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
       <DemoFormFieldset id="disabled-profile-group" disabled="false">
         <DemoFormLegend>

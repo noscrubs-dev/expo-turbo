@@ -452,6 +452,10 @@ describe("demo app runtime ownership", () => {
         await Promise.resolve();
       });
       if (!renderer) throw new Error("renderer was not created");
+      expect(runtime.forms.controlsFor("id:native-form").successfulEntries()).toContainEqual({
+        name: "profile[first_name].dir",
+        value: "rtl",
+      });
       const submitter = renderer.root
         .findAll((node) => String(node.type) === "pressable")
         .find((pressable) =>
