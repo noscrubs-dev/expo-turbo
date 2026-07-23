@@ -255,7 +255,7 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 - Changed: Replaced parsed-tree-only press-in handoff with an immutable raw response handoff that re-enters the ordinary document loader at activation.
 - Why: A parsed tree discarded the original status, MIME type, request ID, redirect flag, and final URL, so reused navigation could not preserve normal error, history, refresh-suppression, or redirect lifecycle semantics.
-- Impact: The one physical prefetch now becomes the authoritative activated response, including `201` redirects and renderable `4xx`/`5xx` XML. Focused core/example tests and the distinct redirected demo fixture pass; Maestro-only iPhone Simulator confirmation is the remaining gate for this chunk.
+- Impact: The one physical prefetch now becomes the authoritative activated response, including `201` redirects and renderable `4xx`/`5xx` XML. Focused core/example tests, web/iOS/Android static exports, and the distinct redirected demo fixture pass; a Maestro-only iPhone 17 Pro Simulator/Expo Go interaction confirms the redirected response renders without reaching its canonical fallback. Android interaction and physical-device proof remain pending.
 
 **2026-07-23**:
 
