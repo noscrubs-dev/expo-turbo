@@ -148,6 +148,37 @@ describe("morph lifecycle", () => {
     ])
   })
 
+  test("notifies one retained stable identity once when it changes parents", async () => {
+    const lifecycle = new MorphLifecycle()
+    const fieldEvents: string[] = []
+    lifecycle.subscribe("before-morph-element", (event) => {
+      if (attributeValue(event.detail.currentElement, "id") === "field") {
+        fieldEvents.push("before")
+      }
+      return undefined
+    })
+    lifecycle.subscribe("morph-element", (event) => {
+      if (attributeValue(event.detail.currentElement, "id") === "field") {
+        fieldEvents.push("after")
+      }
+      return undefined
+    })
+    const document = session(
+      '<Gallery id="gallery"><Group id="right"/><Group id="left"><Field id="field"/></Group></Gallery>',
+      lifecycle,
+    )
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="gallery" method="morph"><template><Group id="right"><Field id="field"/></Group><Group id="left"/></template></turbo-stream>',
+    )
+
+    expect(fieldEvents).toEqual(["before", "after"])
+    expect(document.tree.getElementById("field")?.parent).toBe(
+      document.tree.getElementById("right"),
+    )
+  })
+
   test("rejects reentrant session mutation from a cancellable listener without committing", async () => {
     const lifecycle = new MorphLifecycle()
     const document = session(

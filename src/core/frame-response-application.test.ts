@@ -370,6 +370,39 @@ describe("prepared Frame mutations", () => {
     expect(replacedDisposals).toBe(1)
   })
 
+  test("reparents a stable application identity during a direct Frame reload morph", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph"><Group id="right"/><Group id="left"><Field id="field" tone="before"/></Group></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const field = session.tree.getElementById("field")
+    if (frame?.kind !== "frame" || !field) throw new Error("invalid reparent fixture")
+    const identity = session.getNodeSnapshot(field.key)?.identity
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Group id="right"><Field id="field" tone="after"/></Group><Group id="left"/></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, frame, prepared, {
+        finalUrl: "https://example.test/final",
+        renderMethod: "morph",
+      }),
+    )
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("missing reparent destination")
+    expect(session.tree.getElementById("field")).toBe(field)
+    expect(field.parent).toBe(right)
+    expect(session.getNodeSnapshot(field.key)?.identity).toBe(identity)
+    expect(session.getNodeSnapshot(field.key)?.morphRevision).toBe(1)
+    expect(attributeValue(field, "tone")).toBe("after")
+  })
+
   test("retains eligible nested morph Frames untouched for their own post-render reload", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
