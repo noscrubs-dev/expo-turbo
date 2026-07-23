@@ -184,8 +184,8 @@
       "id": "forms.android-multipart",
       "area": "forms",
       "disposition": "incomplete",
-      "rationale": "Multipart codecs and the Expo picker adapter are covered in unit/export builds, but Android interaction, release-build, and physical-device upload evidence remain open.",
-      "evidence": ["README.md"]
+      "rationale": "Multipart codecs and the Expo picker adapter are covered in unit/export builds. An installed Android Release emulator app submits the example-owned fallback Blob to the standalone Rails host, receives matching 422 XML, and retains the attachment for retry. Android native-picker selection and physical-device upload evidence remain open.",
+      "evidence": ["README.md", ".maestro/release-android-frame-form.yaml"]
     },
     {
       "id": "streams.builtin-actions",
