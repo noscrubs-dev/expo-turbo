@@ -262,6 +262,26 @@ function isCompatibleMorphElement(current: ProtocolElement, source: ProtocolElem
   )
 }
 
+function isCompatibleAnonymousMorphElement(
+  current: ProtocolElement,
+  source: ProtocolElement,
+): boolean {
+  return (
+    current.kind === "element" &&
+    source.kind === "element" &&
+    attributeValue(current, "id") === undefined &&
+    attributeValue(source, "id") === undefined &&
+    current.tagName === source.tagName &&
+    current.localName === source.localName &&
+    current.namespaceUri === source.namespaceUri &&
+    current.prefix === source.prefix
+  )
+}
+
+function anonymousMorphShapeKey(element: ProtocolElement): string {
+  return JSON.stringify([element.tagName, element.localName, element.namespaceUri, element.prefix])
+}
+
 function isCompatibleDocumentMorphRoot(current: ProtocolElement, source: ProtocolElement): boolean {
   const currentId = attributeValue(current, "id")
   return (
@@ -723,7 +743,8 @@ export class DocumentTree {
 
   /**
    * Reconciles children for the narrow native Stream `update method="morph"` contract.
-   * Only same-parent, same-ID ordinary application elements retain their node identity.
+   * Same-parent compatible ordinary application elements retain their node identity
+   * by stable ID or deterministic anonymous sibling ordinal.
    */
   private morphStreamUpdateChildren(
     parent: ProtocolElement,
@@ -1028,18 +1049,50 @@ export class DocumentTree {
     }
     this.assertMatchedPermanentChildren(parent, sources, currentById)
 
+    const currentForSource = new Map<ProtocolElement, ProtocolElement>()
+    const anonymousByShape = new Map<string, ProtocolElement[]>()
+    for (const child of parent.children) {
+      if (
+        !isElement(child) ||
+        child.kind !== "element" ||
+        attributeValue(child, "id") !== undefined
+      ) {
+        continue
+      }
+      const shape = anonymousMorphShapeKey(child)
+      const siblings = anonymousByShape.get(shape)
+      if (siblings) siblings.push(child)
+      else anonymousByShape.set(shape, [child])
+    }
+    const nextAnonymousIndex = new Map<string, number>()
+    for (const source of sources) {
+      if (!isElement(source)) continue
+      const id = attributeValue(source, "id")
+      if (id !== undefined) {
+        const current = currentById.get(id)
+        if (current) currentForSource.set(source, current)
+        continue
+      }
+      if (source.kind !== "element") continue
+      const shape = anonymousMorphShapeKey(source)
+      const index = nextAnonymousIndex.get(shape) ?? 0
+      const current = anonymousByShape.get(shape)?.[index]
+      if (!current) continue
+      nextAnonymousIndex.set(shape, index + 1)
+      currentForSource.set(source, current)
+    }
+
     const sourceIndexByCurrent = new Map<ProtocolElement, number>()
     for (const [index, source] of sources.entries()) {
       if (!isElement(source)) continue
-      const id = attributeValue(source, "id")
-      const current = id === undefined ? undefined : currentById.get(id)
+      const current = currentForSource.get(source)
       if (current) sourceIndexByCurrent.set(current, index)
     }
 
     const plans = sources.map((source) => {
       const id = isElement(source) ? attributeValue(source, "id") : undefined
       const active = id === undefined ? undefined : this.idIndex.get(id)
-      const current = id === undefined ? undefined : currentById.get(id)
+      const current = isElement(source) ? currentForSource.get(source) : undefined
       if (active && active !== current) {
         throw new TargetError(`Native morph cannot reparent id ${JSON.stringify(id)}`, {
           ...(id ? { target: id } : {}),
@@ -1055,7 +1108,10 @@ export class DocumentTree {
       }
       if (isElement(source) && source.kind === "element" && current) {
         if (isTurboPermanent(current)) return { current, type: "permanent" } as const
-        if (isCompatibleMorphElement(current, source)) {
+        if (
+          isCompatibleMorphElement(current, source) ||
+          isCompatibleAnonymousMorphElement(current, source)
+        ) {
           if (dispatchLifecycle && !this.beforeMorphElement(current, source)) {
             return { current, type: "retain" } as const
           }

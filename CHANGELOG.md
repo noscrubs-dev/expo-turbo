@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Retain compatible anonymous application elements during every implemented native morph path. Under one retained parent, the nth ID-less application child of an exact tag, local name, namespace, and prefix now maps to the nth compatible current child, preserving recursive React/session/form/state identity while allowing keyed siblings and other anonymous shapes to reorder around it. Stable IDs still take precedence; protocol wrappers, incompatible shapes, reparented IDs, and invalid permanent-node plans retain their existing replacement or fail-closed behavior.
+
 - Add explicit host delegation for browser `target` and `download` links. `ExpoTurboProvider.documentLinks` receives frozen canonical browsing-context or download requests, including an optional authored filename, while disabled links still win and an absent adapter still fails closed. These links bypass Turbo click, visit, Frame, fetch, request-ID, and prefetch ownership; concrete native browsing/download implementations remain host work.
 
 - Add exact one-use Frame response preload. `FramePreloader` safely warms a cache keyed by Frame ID and fragment-free URL without mutating live state; marked semantic Frame links preload automatically, and `FrameRequestLoader` consumes the response through its normal lifecycle without a second fetch. This does not claim provisional Frame preview rendering or canonical revalidation.

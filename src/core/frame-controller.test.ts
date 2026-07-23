@@ -428,21 +428,22 @@ describe("Frame controller", () => {
     const initial = controller.connect()
     pending[0]?.resolve(
       response(
-        '<turbo-frame id="details"><Stable id="stable" tone="initial" /><Permanent id="permanent" data-turbo-permanent="" tone="connected"><Locked id="locked" value="current" /></Permanent></turbo-frame>',
+        '<turbo-frame id="details"><Stable id="stable" tone="initial" /><Anonymous tone="initial" /><Permanent id="permanent" data-turbo-permanent="" tone="connected"><Locked id="locked" value="current" /></Permanent></turbo-frame>',
       ),
     )
     await initial
     const afterConnect = session.tree.getElementById("stable")
+    const anonymous = frame.children[1]
     const permanent = session.tree.getElementById("permanent")
     const locked = session.tree.getElementById("locked")
-    if (!afterConnect || !permanent || !locked)
+    if (!afterConnect || anonymous?.kind !== "element" || !permanent || !locked)
       throw new Error("initial Frame response did not commit")
     expect(afterConnect).not.toBe(initialStable)
 
     const reloaded = controller.reload()
     pending[1]?.resolve(
       response(
-        '<turbo-frame id="details"><Stable id="stable" tone="morphed" /><Permanent id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming" /></Permanent></turbo-frame>',
+        '<turbo-frame id="details"><Stable id="stable" tone="morphed" /><Anonymous tone="morphed" /><Permanent id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming" /></Permanent></turbo-frame>',
       ),
     )
     await reloaded
@@ -453,6 +454,8 @@ describe("Frame controller", () => {
       throw new Error("morph Frame response did not commit")
     }
     expect(afterReload).toBe(afterConnect)
+    expect(frame.children[1]).toBe(anonymous)
+    expect(attributeValue(anonymous, "tone")).toBe("morphed")
     expect(afterReloadPermanent).toBe(permanent)
     expect(afterReloadLocked).toBe(locked)
     expect(attributeValue(afterReload, "tone")).toBe("morphed")
