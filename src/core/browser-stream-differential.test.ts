@@ -12,6 +12,7 @@ import {
   DocumentVisitController,
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
+  FrameController,
   FrameRequestLoader,
   isElement,
   type ProtocolElement,
@@ -488,6 +489,105 @@ test("matches upstream Turbo redirected Frame source canonicalization", async ()
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo empty and error Frame response outcomes", async () => {
+  const fixtures = [
+    {
+      body: "",
+      expectedId: "old",
+      responseStatus: 204,
+      status: "empty",
+    },
+    {
+      body: '<main><turbo-frame id="details"><p id="validation">Validation</p></turbo-frame></main>',
+      expectedId: "validation",
+      responseStatus: 422,
+      status: "completed",
+    },
+    {
+      body: '<main><turbo-frame id="details"><p id="server-error">Server error</p></turbo-frame></main>',
+      expectedId: "server-error",
+      responseStatus: 500,
+      status: "completed",
+    },
+  ] as const
+
+  for (const fixture of fixtures) {
+    const initialDocument =
+      '<main id="root"><turbo-frame id="details" class="mounted"><a id="frame-outcome-link" href="/frame/outcome">Outcome</a><p id="old">Old</p></turbo-frame></main>'
+    const session = new DocumentSession(
+      parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+    )
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: async () => ({
+          headers: fixture.responseStatus === 204 ? {} : { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: fixture.responseStatus,
+          text: async () => fixture.body,
+          url: "https://example.test/frame/outcome",
+        }),
+      },
+      { next: () => `request-frame-${fixture.responseStatus}` },
+    )
+    const controller = new FrameController(session, "details", loader)
+    const expoFrameBefore = session.tree.getElementById("details")
+    if (!expoFrameBefore) throw new Error("Expo outcome Frame target is missing")
+    const expoResult = await controller.visit("/frame/outcome")
+
+    const originalFetch = browser.fetch
+    browser.fetch = async () =>
+      new browser.Response(fixture.responseStatus === 204 ? null : fixture.body, {
+        headers:
+          fixture.responseStatus === 204 ? {} : { "Content-Type": "text/html; charset=utf-8" },
+        status: fixture.responseStatus,
+      })
+    turbo.start()
+    try {
+      browser.document.body.innerHTML = initialDocument
+      const browserFrameBefore = browser.document.getElementById("details")
+      const link = browser.document.getElementById("frame-outcome-link")
+      if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+        throw new Error("Browser outcome Frame target is missing")
+      }
+      if (!(link instanceof browser.HTMLAnchorElement)) {
+        throw new Error("Browser outcome Frame link is missing")
+      }
+      link.dispatchEvent(
+        new browser.MouseEvent("click", {
+          bubbles: true,
+          button: 0,
+          cancelable: true,
+          composed: true,
+        }),
+      )
+      await browser.happyDOM.waitUntilComplete()
+
+      const browserFrameAfter = browser.document.getElementById("details")
+      const expoFrameAfter = session.tree.getElementById("details")
+      if (!browserFrameAfter || !expoFrameAfter) {
+        throw new Error("Frame response-outcome differential lost its target")
+      }
+      expect(expoResult?.status).toBe(fixture.status)
+      expect(controller.state).toMatchObject({
+        complete: true,
+        status: fixture.status,
+      })
+      expect(browserFrameAfter).toBe(browserFrameBefore)
+      expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+      expect(browserFrameAfter.getAttribute("src")).toBe("https://example.test/frame/outcome")
+      expect(expoFrameAfter.attributes.find(({ name }) => name === "src")?.value).toBe(
+        "https://example.test/frame/outcome",
+      )
+      expect(browser.document.getElementById(fixture.expectedId)).not.toBeNull()
+      expect(session.tree.getElementById(fixture.expectedId)).toBeDefined()
+    } finally {
+      browser.fetch = originalFetch
+      turbo.session.stop()
+    }
   }
 })
 

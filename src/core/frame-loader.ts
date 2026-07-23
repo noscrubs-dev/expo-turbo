@@ -656,6 +656,12 @@ export class FrameRequestLoader {
               { frameId },
             )
           }
+          if (!historyPlan) {
+            this.session.setAttribute(frame.key, "src", responseUrl)
+            if (!this.owns(frameId, active)) {
+              return this.canceled(frameId, requestIds, responseUrl, active)
+            }
+          }
           this.release(frameId, active)
           return Object.freeze({
             frameId,

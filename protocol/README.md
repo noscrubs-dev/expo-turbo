@@ -48,10 +48,13 @@ precedence, absent templates, direct-child ID collision replacement, payload
 cloning, the admitted selector surface, outer and child Stream morphs,
 permanent-node moves, anonymous reconciliation, stable-ID reordering, and one
 real eager Frame fetch whose matching children exclude unrelated response
-content. Ordinary and redirected captured-link Frame navigation additionally
-compares the exact GET and `Turbo-Frame` header, mounted-wrapper identity and
-attributes, matching children, unrelated-response exclusion, and canonical final
-`src`. Browser Frame `complete` attributes and native completion state stay
+content. Ordinary, redirected, empty `204`, matching `422`, and matching `500`
+captured-link Frame navigation additionally compare the exact GET and
+`Turbo-Frame` header, mounted-wrapper identity and attributes, matching children,
+unrelated-response exclusion, and canonical `src`. Empty responses preserve
+current children while adopting the absolute request URL; matching error
+responses install their authoritative children. Browser Frame `complete`
+attributes and native completion state stay
 platform-owned rather than being normalized into one representation. Browser
 GET and unsafe URL-encoded Frame forms are also submitted through official
 Turbo: their exact URL, method, ordered body, submitter, omitted disabled and

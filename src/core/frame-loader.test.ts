@@ -300,6 +300,9 @@ describe("Frame request loader", () => {
 
     expect(await loader.load("details", "/frame")).toMatchObject({ status: "empty" })
     expect(frame?.children).toBe(children)
+    expect(frame?.attributes.find(({ name }) => name === "src")?.value).toBe(
+      "https://example.test/frame",
+    )
   })
 
   test("dispatches one typed Frame-missing event before the default error", async () => {
