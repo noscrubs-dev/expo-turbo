@@ -22,6 +22,7 @@ import type {
   DocumentAnchorScrollAdapter,
   DocumentAutomaticPreloadPolicy,
   DocumentHistoryScrollAdapter,
+  DocumentLinkAdapter,
   DocumentPrefetchPolicy,
   DocumentRefreshScrollAdapter,
   DocumentVisitAnnouncementAdapter,
@@ -250,6 +251,7 @@ interface RendererContextValue {
   readonly documentAnnouncements: DocumentVisitAnnouncementAdapter | undefined
   readonly documentController: DocumentVisitController | undefined
   readonly documentHistoryScroll: DocumentHistoryScrollAdapter | undefined
+  readonly documentLinks: DocumentLinkAdapter | undefined
   readonly documentPrefetchPolicy: DocumentPrefetchPolicy | undefined
   readonly documentPreloader: DocumentPreloadRequester | undefined
   readonly documentRefreshScroll: DocumentRefreshScrollAdapter | undefined
@@ -299,17 +301,12 @@ const announcedDocumentVisitStates = new WeakMap<
   DocumentVisitController,
   Readonly<{ revision: number; status: DocumentVisitAnnouncementEvent["status"] }>
 >()
-const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = [
-  "action",
-  "confirm",
-  "download",
-  "method",
-  "stream",
-] as const
+const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = ["action", "confirm", "method", "stream"] as const
 const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
   ...UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES,
   "data-behavior",
   "data-confirm",
+  "download",
   "data-method",
   "data-remote",
   "data-turbo-confirm",
@@ -432,6 +429,7 @@ function automaticDocumentPreloadUrl(
   if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
     return undefined
   }
+  if (hasProtocolAttribute(node, "download")) return undefined
   if (UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))) {
     return undefined
   }
@@ -496,6 +494,7 @@ function automaticFramePreloadTarget(
   if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
     return undefined
   }
+  if (hasProtocolAttribute(node, "download")) return undefined
   if (UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES.some((name) => hasProtocolAttribute(node, name))) {
     return undefined
   }
@@ -617,6 +616,7 @@ export interface ExpoTurboProviderProps {
   readonly documentAnnouncements?: DocumentVisitAnnouncementAdapter
   readonly documentController?: DocumentVisitController
   readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
+  readonly documentLinks?: DocumentLinkAdapter
   readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
   readonly documentPreloader?: DocumentPreloadRequester
   readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
@@ -669,6 +669,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       documentAnnouncements: props.documentAnnouncements,
       documentController: props.documentController,
       documentHistoryScroll: props.documentHistoryScroll,
+      documentLinks: props.documentLinks,
       documentPrefetchPolicy: props.documentPrefetchPolicy,
       documentPreloader: props.documentPreloader,
       documentRefreshScroll: props.documentRefreshScroll,
@@ -699,6 +700,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.documentAnnouncements,
       props.documentController,
       props.documentHistoryScroll,
+      props.documentLinks,
       props.documentPrefetchPolicy,
       props.documentPreloader,
       props.documentRefreshScroll,
@@ -1257,6 +1259,18 @@ export function useExpoTurboDirection(): ExpoTurboDirection | undefined {
 export type ExpoTurboDocumentLinkDelegation =
   | DocumentVisitDelegation
   | Readonly<{
+      filename?: string
+      kind: "download"
+      status: "delegated"
+      url: string
+    }>
+  | Readonly<{
+      kind: "browsing-context"
+      status: "delegated"
+      target: string
+      url: string
+    }>
+  | Readonly<{
       kind: "external"
       reason: "opt-out"
       status: "delegated"
@@ -1307,6 +1321,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     documentAnchorScroll,
     documentAutomaticPreloadPolicy,
     documentController,
+    documentLinks,
     documentPreloader,
     formLinks,
     framePreloader,
@@ -1565,19 +1580,61 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     if (attributeValue(node, "disabled") !== undefined) {
       return Object.freeze({ kind: "disabled", status: "ignored" })
     }
-    const browserTarget = attributeValue(node, "target")
-    if (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self") {
-      throw new TargetError("Document link metadata requires unsupported navigation behavior")
-    }
     for (const name of UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES) {
       if (attributeValue(node, name) !== undefined) {
         throw new TargetError("Document link metadata requires unsupported navigation behavior")
       }
     }
-    const actionValue = attributeValue(node, "data-turbo-action")
-    const action = exactVisitAction(actionValue)
     const documentUrl = session.tree.document.url
     if (!documentUrl) throw new TargetError("Document links require an active document URL")
+    const browserTarget = attributeValue(node, "target")
+    const download = attributeValue(node, "download")
+    if (
+      download !== undefined ||
+      (browserTarget !== undefined && browserTarget !== "" && browserTarget !== "_self")
+    ) {
+      if (!documentLinks) {
+        throw new TargetError("Document link metadata requires provider documentLinks support")
+      }
+      const delegated = resolveDocumentLinkUrl(href, documentUrl)
+      const url = delegated.kind === "external" ? delegated.url : delegated.resolution.url
+      try {
+        if (download !== undefined) {
+          const filename = download === "" ? undefined : download
+          const result = await documentLinks.download(
+            Object.freeze({
+              ...(filename !== undefined ? { filename } : {}),
+              url,
+            }),
+          )
+          if (result !== undefined) throw new StateError("Document link host delegation failed")
+          return Object.freeze({
+            ...(filename !== undefined ? { filename } : {}),
+            kind: "download" as const,
+            status: "delegated" as const,
+            url,
+          })
+        }
+        if (!browserTarget) {
+          throw new TargetError("Document link browsing context target is invalid")
+        }
+        const result = await documentLinks.openBrowsingContext(
+          Object.freeze({ target: browserTarget, url }),
+        )
+        if (result !== undefined) throw new StateError("Document link host delegation failed")
+        return Object.freeze({
+          kind: "browsing-context" as const,
+          status: "delegated" as const,
+          target: browserTarget,
+          url,
+        })
+      } catch (error) {
+        if (error instanceof TargetError) throw error
+        throw new StateError("Document link host delegation failed")
+      }
+    }
+    const actionValue = attributeValue(node, "data-turbo-action")
+    const action = exactVisitAction(actionValue)
     const anchor = href.includes("#") ? resolveDocumentLinkAnchor(href, documentUrl) : undefined
     const captureContext = documentLinkCaptureContext(node)
     const { elementTarget, nearestFrameId, optedOut } = captureContext
@@ -1801,6 +1858,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   }, [
     documentAnchorScroll,
     documentController,
+    documentLinks,
     formLinks,
     frames,
     href,

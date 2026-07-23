@@ -21,6 +21,7 @@ import {
   type DocumentAnchorScrollAdapter,
   type DocumentAutomaticPreloadPolicy,
   type DocumentHistoryScrollAdapter,
+  type DocumentLinkAdapter,
   type DocumentVisitAnnouncementAdapter,
   type DocumentVisitAnnouncementEvent,
   type DocumentPrefetchPolicy,
@@ -199,6 +200,7 @@ function render(
     documentComponent?: ExpoTurboProviderProps["documentComponent"]
     documentController?: ExpoTurboProviderProps["documentController"]
     documentHistoryScroll?: DocumentHistoryScrollAdapter
+    documentLinks?: DocumentLinkAdapter
     documentAnnouncements?: DocumentVisitAnnouncementAdapter
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     documentRefreshScroll?: DocumentRefreshScrollAdapter
@@ -545,6 +547,7 @@ function renderDocumentLinks(
     autofocus?: AutofocusAdapter
     documentAnchorScroll?: DocumentAnchorScrollAdapter
     documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
+    documentLinks?: DocumentLinkAdapter
     documentPrefetchPolicy?: DocumentPrefetchPolicy
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     framePreloadCache?: FramePreloadCache
@@ -9595,6 +9598,125 @@ describe("React protocol renderer", () => {
 
     await harness.controller.visit("/outside", { navigation: adapter })
     expect(events).toEqual(["before-visit:https://example.test/outside"])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("delegates browser browsing-context and download links through the explicit host adapter", async () => {
+    const contexts: unknown[] = []
+    const downloads: unknown[] = []
+    const events: string[] = []
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("click", (event) => {
+      events.push(`click:${event.detail.url}`)
+    })
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`visit:${event.detail.url}`)
+    })
+    const documentLinks: DocumentLinkAdapter = {
+      download(request) {
+        expect(Object.isFrozen(request)).toBe(true)
+        downloads.push(request)
+      },
+      openBrowsingContext(request) {
+        expect(Object.isFrozen(request)).toBe(true)
+        contexts.push(request)
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery data-turbo-root="/app">
+        <DocumentLink href="/app/context" target="_blank" data-turbo-action="replace" />
+        <DocumentLink href="/app/named" target="reports" />
+        <DocumentLink download="" href="/app/download" data-turbo-method="delete" />
+        <DocumentLink download="report.xml" href="/app/named-download" target="_blank" />
+      </Gallery>`,
+      async () => {
+        throw new Error("host-delegated links must not fetch")
+      },
+      "https://example.test/app/gallery",
+      undefined,
+      undefined,
+      undefined,
+      { visitLifecycle: lifecycle },
+      () => ({ documentLinks }),
+    )
+
+    expect(await harness.activation("/app/context")()).toEqual({
+      kind: "browsing-context",
+      status: "delegated",
+      target: "_blank",
+      url: "https://example.test/app/context",
+    })
+    await expect(harness.activation("/app/named")()).resolves.toEqual({
+      kind: "browsing-context",
+      status: "delegated",
+      target: "reports",
+      url: "https://example.test/app/named",
+    })
+    await expect(harness.activation("/app/download")()).resolves.toEqual({
+      kind: "download",
+      status: "delegated",
+      url: "https://example.test/app/download",
+    })
+    await expect(harness.activation("/app/named-download")()).resolves.toEqual({
+      filename: "report.xml",
+      kind: "download",
+      status: "delegated",
+      url: "https://example.test/app/named-download",
+    })
+
+    expect(contexts).toEqual([
+      { target: "_blank", url: "https://example.test/app/context" },
+      { target: "reports", url: "https://example.test/app/named" },
+    ])
+    expect(downloads).toEqual([
+      { url: "https://example.test/app/download" },
+      { filename: "report.xml", url: "https://example.test/app/named-download" },
+    ])
+    expect(events).toEqual([])
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state.status).toBe("initialized")
+    act(() => harness.renderer.unmount())
+  })
+
+  test("redacts host document-link adapter failures without allocating request ownership", async () => {
+    const documentLinks: DocumentLinkAdapter = {
+      download() {
+        throw new Error("secret download failure")
+      },
+      openBrowsingContext() {
+        return "unexpected" as never
+      },
+    }
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink download="" href="/download" />
+        <DocumentLink href="/context" target="_blank" />
+      </Gallery>`,
+      async () => {
+        throw new Error("failed host delegation must not fetch")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({ documentLinks }),
+    )
+
+    for (const href of ["/download", "/context"]) {
+      try {
+        await harness.activation(href)()
+        throw new Error("host adapter failure should reject")
+      } catch (error) {
+        expect(error).toBeInstanceOf(StateError)
+        if (!(error instanceof StateError)) throw error
+        expect(error.message).toBe("Document link host delegation failed")
+        expect(error.message).not.toContain("secret")
+        expect(error.cause).toBeUndefined()
+      }
+    }
+    expect(harness.documentRequestIdCount()).toBe(0)
+    expect(harness.controller.state.status).toBe("initialized")
     act(() => harness.renderer.unmount())
   })
 
