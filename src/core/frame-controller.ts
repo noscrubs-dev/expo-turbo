@@ -294,6 +294,72 @@ export class FrameController {
     return this.loadLazySourceIfVisible()
   }
 
+  /**
+   * Reconciles lifecycle ownership after an external tree mutation retains this
+   * exact Frame node while changing its protocol attributes.
+   */
+  reconcileAttributes(): Promise<FrameLoadReport | undefined> {
+    this.assertLoadAdmission()
+    const frame = this.frame
+    const source = attributeValue(frame, "src")
+    const disabled = attributeValue(frame, "disabled") !== undefined
+    const loading = loadingStyle(frame)
+    const target = attributeValue(frame, "target")
+    const sourceChanged = source !== this.snapshot.source
+    const disabledChanged = disabled !== this.snapshot.disabled
+    const loadingChanged = loading !== this.snapshot.loading
+    const targetChanged = target !== this.snapshot.target
+
+    if (!sourceChanged && !disabledChanged && !loadingChanged && !targetChanged) {
+      return Promise.resolve(undefined)
+    }
+    const pendingRender =
+      this.pendingFrameRender?.epoch === this.loadEpoch
+        ? this.pendingFrameRender.prepared
+        : undefined
+    if (
+      pendingRender &&
+      sourceChanged &&
+      source === pendingRender.commit.url &&
+      !disabledChanged &&
+      !loadingChanged &&
+      !targetChanged
+    ) {
+      return Promise.resolve(undefined)
+    }
+
+    if (sourceChanged) {
+      this.cancel()
+      this.needsLoad = source !== undefined
+      this.status = "idle"
+    }
+
+    if (disabled) {
+      this.stopVisibilityObserver()
+      this.cancel()
+      this.publish()
+      return Promise.resolve(undefined)
+    }
+
+    if (!source) {
+      this.stopVisibilityObserver()
+      this.needsLoad = false
+      this.status = "idle"
+      this.publish()
+      return Promise.resolve(undefined)
+    }
+
+    if (loading === "eager") this.stopVisibilityObserver()
+    this.publish()
+    if (!this.connected) return Promise.resolve(undefined)
+    if (sourceChanged || disabledChanged || loadingChanged) {
+      return loading === "eager" || (sourceChanged && this.hasBeenLoaded)
+        ? this.loadSourceIfNeeded(false)
+        : this.loadLazySourceIfVisible()
+    }
+    return Promise.resolve(undefined)
+  }
+
   subscribe(listener: FrameControllerListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)

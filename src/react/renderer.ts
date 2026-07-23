@@ -2817,6 +2817,7 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
       throw error
     }
     acknowledgement?.finish()
+    void controller.reconcileAttributes().catch(() => undefined)
   }, [
     controller,
     coordinationRevision,
