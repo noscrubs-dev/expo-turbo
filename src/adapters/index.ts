@@ -187,7 +187,7 @@ export interface AutofocusAdapter {
   getFocusedId?(): string | undefined
   /**
    * Optional logical-focus snapshot used to retain focus when native morphing
-   * keeps a logical node but React must remount it under a different parent.
+   * remounts a retained node or replaces it with the same stable id.
    */
   getMorphFocusedId?(): string | undefined
 }

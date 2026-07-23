@@ -125,6 +125,7 @@ import {
 } from "../core/protocol-request"
 import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
 import type { DocumentSession, NodeSnapshot } from "../core/session"
+import { subscribeBeforeSessionMutation } from "../core/session-mutation-internal"
 import type {
   DocumentStateScopes,
   DocumentStateStore,
@@ -2927,32 +2928,35 @@ function useRetainedMorphFocus(
   const baseline = useRef<RetainedMorphFocusSnapshot | undefined>(undefined)
   const pending = useRef<RetainedMorphFocusSnapshot | undefined>(undefined)
   const pendingError = useRef<unknown>(undefined)
-  const subscribe = useCallback(
-    (listener: () => void) =>
-      session.subscribeRevision(() => {
+  useLayoutEffect(
+    () =>
+      subscribeBeforeSessionMutation(session, () => {
         try {
-          const previous = baseline.current
-          const current =
+          pendingError.current = undefined
+          baseline.current =
             adapter?.getMorphFocusedId === undefined
               ? undefined
               : retainedMorphFocusSnapshot(session, adapter, nodeKey)
-          pending.current =
-            previous &&
-            current &&
-            previous.key === current.key &&
-            previous.node === current.node &&
-            previous.morphRevision !== current.morphRevision
-              ? current
-              : undefined
-          baseline.current = current
         } catch (error) {
-          pending.current = undefined
           baseline.current = undefined
           pendingError.current = error
         }
-        listener()
       }),
     [adapter, nodeKey, session],
+  )
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      session.subscribeRevision(() => {
+        const previous = baseline.current
+        const current = previous ? session.getNodeSnapshot(previous.key) : undefined
+        pending.current =
+          previous && current && previous.morphRevision !== current.morphRevision
+            ? { ...current, key: previous.key }
+            : undefined
+        baseline.current = undefined
+        listener()
+      }),
+    [session],
   )
   const snapshot = useCallback(() => session.revision, [session])
   const revision = useSyncExternalStore(subscribe, snapshot, snapshot)
@@ -2978,10 +2982,6 @@ function useRetainedMorphFocus(
           )
         }
       }
-      baseline.current =
-        adapter?.getMorphFocusedId === undefined
-          ? undefined
-          : retainedMorphFocusSnapshot(session, adapter, nodeKey)
     } catch (error) {
       reportRetainedMorphFocusError(onError, nodeKey, error)
     }

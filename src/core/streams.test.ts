@@ -411,6 +411,33 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("email-error")).toBeDefined()
   })
 
+  test("advances the morph revision across incompatible same-id replacements", async () => {
+    const document = session(
+      '<Gallery id="gallery"><DemoInput id="field" tone="before"/></Gallery>',
+    )
+    const original = document.tree.getElementById("field")
+    if (!original) throw new Error("replacement morph fixture is missing")
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="gallery" method="morph"><template><DemoError id="field">After</DemoError></template></turbo-stream>',
+    )
+    const firstReplacement = document.tree.getElementById("field")
+    if (!firstReplacement) throw new Error("first replacement morph result is missing")
+
+    expect(firstReplacement).not.toBe(original)
+    expect(document.getNodeSnapshot(firstReplacement.key)?.morphRevision).toBe(1)
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="gallery" method="morph"><template><DemoInput id="field" tone="again"/></template></turbo-stream>',
+    )
+    const secondReplacement = document.tree.getElementById("field")
+
+    expect(secondReplacement).not.toBe(firstReplacement)
+    expect(document.getNodeSnapshot("id:field")?.morphRevision).toBe(2)
+  })
+
   test("atomically reparents compatible stable IDs while retaining their ownership", async () => {
     for (const action of ["update", "replace"] as const) {
       for (const destinationFirst of [false, true]) {

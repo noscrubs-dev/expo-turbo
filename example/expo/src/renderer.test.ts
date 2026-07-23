@@ -4628,6 +4628,137 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
+  test("restores stable-id focus after a morph replaces the logical node", async () => {
+    const focusCalls: string[] = []
+    let focusedId: string | undefined = "id:field"
+    let mountedToken: symbol | undefined
+    let moveFocusDuringCommit = false
+    const focusable = (tag: "Focusable" | "Replacement") => {
+      function Focusable(props: Readonly<{ title: string }>): ReactNode {
+        const nodeKey = "id:field"
+        useLayoutEffect(() => {
+          const token = Symbol()
+          mountedToken = token
+          if (moveFocusDuringCommit) focusedId = "id:other"
+          return () => {
+            if (mountedToken === token) mountedToken = undefined
+            if (focusedId === nodeKey) focusedId = undefined
+          }
+        }, [])
+        return createElement("focusable", { title: props.title })
+      }
+      return defineComponent({
+        attributes: { title: { codec: stringCodec, prop: "title" } },
+        children: "none",
+        component: Focusable,
+        schema: z.object({ title: z.string() }),
+        tag,
+      })
+    }
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [focusable("Focusable"), focusable("Replacement")],
+        name: "stream-morph-replacement-focus",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Focusable id="field" title="Before"/></Gallery>',
+      ),
+    )
+    const original = session.tree.getElementById("field")
+    if (!original) throw new Error("replacement morph focus field is missing")
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: () => mountedToken !== undefined,
+        focus: (nodeKey) => {
+          focusedId = nodeKey
+          focusCalls.push(nodeKey)
+        },
+        getFocusedId: () => focusedId,
+        getMorphFocusedId: () => focusedId,
+      },
+    })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="gallery" method="morph"><template><Replacement id="field" title="After"/></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("field")).not.toBe(original)
+    expect(focusedId).toBe("id:field")
+    expect(focusCalls).toEqual(["id:field"])
+
+    moveFocusDuringCommit = true
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="gallery" method="morph"><template><Focusable id="field" title="Again"/></template></turbo-stream>',
+      )
+    })
+
+    expect(focusedId).toBe("id:other")
+    expect(focusCalls).toEqual(["id:field"])
+    act(() => renderer.unmount())
+  })
+
+  test("does not restore same-id focus after an ordinary document replacement", async () => {
+    const mounted = new Set<string>()
+    const focusCalls: string[] = []
+    let focusedId: string | undefined = "id:field"
+    function Focusable(): ReactNode {
+      const nodeKey = "id:field"
+      useLayoutEffect(() => {
+        mounted.add(nodeKey)
+        return () => {
+          mounted.delete(nodeKey)
+          if (focusedId === nodeKey) focusedId = undefined
+        }
+      }, [])
+      return createElement("focusable")
+    }
+    const focusable = defineComponent({
+      attributes: {},
+      children: "none",
+      component: Focusable,
+      schema: z.object({}),
+      tag: "Focusable",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [focusable],
+        name: "ordinary-replacement-focus",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><Focusable id="field"/></Gallery>'),
+    )
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: (nodeKey) => mounted.has(nodeKey),
+        focus: (nodeKey) => {
+          focusedId = nodeKey
+          focusCalls.push(nodeKey)
+        },
+        getMorphFocusedId: () => focusedId,
+      },
+    })
+
+    await act(async () => {
+      session.replaceTree(
+        parseExpoTurboDocument('<Gallery><Focusable id="field"/></Gallery>'),
+      )
+    })
+
+    expect(focusedId).toBeUndefined()
+    expect(focusCalls).toEqual([])
+    act(() => renderer.unmount())
+  })
+
   test("redacts retained morph focus snapshot failures after the tree commits", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
