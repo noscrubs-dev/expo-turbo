@@ -112,7 +112,7 @@ class FakeDemoLiveCableLifecycle implements DemoLiveCableLifecycle {
 
   constructor(private state: DemoLiveCableLifecycleState = "active") {}
 
-  currentState(): DemoLiveCableLifecycleState {
+  getState(): DemoLiveCableLifecycleState {
     return this.state;
   }
 
@@ -910,7 +910,7 @@ describe("standalone Rails Action Cable proof", () => {
     }
   });
 
-  test("restarts the host-owned runtime once after an iOS background transition", async () => {
+  test("suspends one stable runtime and restores its subscriptions after an iOS lifecycle transition", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
     const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";
     const broadcastUrl = "http://demo.example:3000/api/expo_turbo/demo/broadcast";
@@ -953,6 +953,7 @@ describe("standalone Rails Action Cable proof", () => {
             url,
           };
         },
+        lifecycle,
         origin: "http://demo.example:3000",
       });
       proofs.push(proof);
@@ -997,8 +998,11 @@ describe("standalone Rails Action Cable proof", () => {
         lifecycle.emit("inactive");
         await nextTurn();
       });
-      expect(initialSocket.closeCalls).toBe(0);
+      expect(initialSocket.closeCalls).toBe(1);
       expect(runtimeCreations).toBe(1);
+      expect(
+        renderer?.root.findByProps({ accessibilityLabel: "Action Cable paused in background" }),
+      ).toBeDefined();
 
       await act(async () => {
         lifecycle.emit("background");
@@ -1016,24 +1020,34 @@ describe("standalone Rails Action Cable proof", () => {
         await nextTurn();
         await nextTurn();
       });
-      expect(runtimeCreations).toBe(2);
-      const recreatedProof = proofs[1];
-      if (!recreatedProof) throw new Error("missing recreated Cable runtime");
-      await act(async () => {
-        await recreatedProof.frames.get("demo-frame").loaded;
-        await nextTurn();
-      });
+      expect(runtimeCreations).toBe(1);
       const recreatedSocket = sockets[1];
       if (!recreatedSocket) throw new Error("missing recreated Action Cable socket");
       expect(
         unabortedRequests(requests).filter(({ url }) => url === documentUrl),
-      ).toHaveLength(2);
-      expect(unabortedRequests(requests).filter(({ url }) => url === frameUrl)).toHaveLength(2);
+      ).toHaveLength(1);
+      expect(unabortedRequests(requests).filter(({ url }) => url === frameUrl)).toHaveLength(1);
 
       await act(async () => {
         recreatedSocket.emitOpen();
         recreatedSocket.emitMessage('{"type":"welcome"}');
         recreatedSocket.emitMessage(
+          `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
+        );
+        await nextTurn();
+      });
+      await act(async () => {
+        await initialProof.frames.get("demo-frame").loaded;
+        await nextTurn();
+      });
+      expect(unabortedRequests(requests).filter(({ url }) => url === frameUrl)).toHaveLength(2);
+      expect(sockets).toHaveLength(3);
+      const reconciledSocket = sockets[2];
+      if (!reconciledSocket) throw new Error("missing reconciled Action Cable socket");
+      await act(async () => {
+        reconciledSocket.emitOpen();
+        reconciledSocket.emitMessage('{"type":"welcome"}');
+        reconciledSocket.emitMessage(
           `{"identifier":${JSON.stringify(identifier)},"type":"confirm_subscription"}`,
         );
         await Promise.resolve();
@@ -1045,7 +1059,7 @@ describe("standalone Rails Action Cable proof", () => {
         replaceButton()?.props.onPress();
         await Promise.resolve();
       });
-      expect(runtimeCreations).toBe(2);
+      expect(runtimeCreations).toBe(1);
       expect(unabortedRequests(requests).at(-1)).toMatchObject({
         request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
         url: broadcastUrl,
@@ -1063,7 +1077,7 @@ describe("standalone Rails Action Cable proof", () => {
     expect(recreatedSocket.closeCalls).toBe(1);
   });
 
-  test("disposes a runtime that resolves after the proof backgrounds", async () => {
+  test("disposes a runtime that resolves after its pending owner unmounts", async () => {
     const lifecycle = new FakeDemoLiveCableLifecycle();
     const lateProof = {
       dispose: mock(() => undefined),
@@ -1089,20 +1103,18 @@ describe("standalone Rails Action Cable proof", () => {
       if (!resolveRuntime) throw new Error("missing pending Cable runtime");
 
       await act(async () => {
-        lifecycle.emit("background");
-        resolveRuntime?.(lateProof);
-        await nextTurn();
+        renderer?.unmount();
+        await Promise.resolve();
       });
-      expect(lateProof.dispose).toHaveBeenCalledTimes(1);
-      expect(
-        renderer?.root.findByProps({ accessibilityLabel: "Action Cable paused in background" }),
-      ).toBeDefined();
+      resolveRuntime?.(lateProof);
+      await nextTurn();
     } finally {
       await act(async () => {
         renderer?.unmount();
         await Promise.resolve();
       });
     }
+    expect(lateProof.dispose).toHaveBeenCalledTimes(1);
   });
 
   test("reconciles its active Frame after a server-directed reconfirmation", async () => {
