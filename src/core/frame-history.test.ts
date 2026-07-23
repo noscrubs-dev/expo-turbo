@@ -1437,6 +1437,57 @@ describe("promoted Frame history", () => {
     )
   })
 
+  test("emits before-cache before exposing the requested Frame source and captures its mutations", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    let current: ReturnType<typeof historyHarness>
+    lifecycle.subscribe("before-cache", () => {
+      events.push("before-cache")
+      const frame = current.session.tree.getElementById("details")
+      expect(attributeValue(frame as never, "src")).toBe("/old")
+      expect(current.frameRequests).toHaveLength(0)
+      current.session.setAttribute("id:shell", "phase", "before-cache")
+    })
+    current = historyHarness(
+      async ({ url }) => response('<turbo-frame id="details"><Next /></turbo-frame>', { url }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await current.registry.visit("/next", { action: "advance", frame: "details" })
+
+    expect(events).toEqual(["before-cache"])
+    const outgoing = current.cache.get("https://example.test/current")
+    expect(attributeValue(outgoing?.getElementById("shell") as never, "phase")).toBe("before-cache")
+    expect(attributeValue(outgoing?.getElementById("details") as never, "src")).toBe("/old")
+  })
+
+  test("rejects a promoted Frame before fetch when before-cache replaces its document", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    let current: ReturnType<typeof historyHarness>
+    lifecycle.subscribe("before-cache", () => {
+      current.session.replaceTree(
+        parseExpoTurboDocument('<Gallery><Replacement id="replacement" /></Gallery>', {
+          url: "https://example.test/current",
+        }),
+      )
+    })
+    current = historyHarness(
+      async ({ url }) =>
+        response('<turbo-frame id="details"><Unexpected /></turbo-frame>', { url }),
+      undefined,
+      { visitLifecycle: lifecycle },
+    )
+
+    await expect(
+      current.registry.visit("/next", { action: "advance", frame: "details" }),
+    ).rejects.toBeInstanceOf(StateError)
+    expect(current.frameRequests).toEqual([])
+    expect(current.writes).toEqual([])
+    expect(current.cache.size).toBe(0)
+    expect(current.session.tree.getElementById("replacement")).toBeDefined()
+  })
+
   test("promotes the lifecycle-admitted Frame URL through history", async () => {
     const lifecycle = new RequestLifecycle()
     lifecycle.subscribe("before-fetch-request", (event) => {
