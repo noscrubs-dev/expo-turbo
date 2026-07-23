@@ -309,6 +309,12 @@
         {"action": "remove", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
         {"action": "append", "status": "applied", "matchedTargets": 1, "appliedTargets": 1}
       ],
+      "identityAssertions": [
+        {"id": "items", "outcome": "retained"},
+        {"id": "old", "outcome": "replaced"},
+        {"id": "victim", "outcome": "retained"},
+        {"id": "marker", "outcome": "removed"}
+      ],
       "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
     },
     {
@@ -320,6 +326,10 @@
       "expectedReports": [
         {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
         {"action": "append", "status": "applied", "matchedTargets": 2, "appliedTargets": 2}
+      ],
+      "identityAssertions": [
+        {"id": "one", "outcome": "retained"},
+        {"id": "two", "outcome": "retained"}
       ],
       "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
     },
@@ -337,6 +347,11 @@
         {"action": "before", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
         {"action": "after", "status": "noop", "matchedTargets": 1, "appliedTargets": 0},
         {"action": "remove", "status": "applied", "matchedTargets": 1, "appliedTargets": 1}
+      ],
+      "identityAssertions": [
+        {"id": "update", "outcome": "retained"},
+        {"id": "replace", "outcome": "removed"},
+        {"id": "remove", "outcome": "removed"}
       ],
       "provenance": {"kind": "upstream-derived", "baseline": "turbo-8.0.23"}
     }

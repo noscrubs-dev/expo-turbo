@@ -7,6 +7,8 @@ Stream-fragment envelope plus its expected outcome. The additive
 `behaviorFixtures` section applies shared initial-document and sibling-Stream
 bytes through the public TypeScript dispatcher, then compares both the complete
 ordered action report and canonical final tree with manifest-owned expectations.
+Identity assertions additionally prove whether selected live nodes were retained,
+replaced under the same ID, or removed.
 
 The current `fixtures/` set proves one namespaced document, the complete
 meaningful Frame envelope, a basic sibling Stream fragment, every built-in Turbo
@@ -16,7 +18,9 @@ template-root metadata, plus unsafe DOCTYPE/non-XML-whitespace Stream-text
 rejections. Three executable Stream-mutation records additionally cover ordered
 action isolation after an unknown action, append collision replacement, exact
 `target` precedence over `targets`, per-target payload cloning, and every
-built-in action's absent-template result. TypeScript and Ruby tests load the
+built-in action's absent-template result. They also prove target retention for
+`update` and selector actions, replacement for an append ID collision, and
+removal for `remove` plus an empty `replace`. TypeScript and Ruby tests load the
 same envelope manifest and XML bytes. Both
 normalize accepted trees to the declared language-neutral AST or compact
 Stream-envelope records, and both exercise every declared rejection. The Rails

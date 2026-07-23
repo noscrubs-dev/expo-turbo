@@ -77,6 +77,10 @@ interface StreamBehaviorFixture {
   readonly expectedDocumentFile: string
   readonly expectedReports: readonly StreamBehaviorReport[]
   readonly id: string
+  readonly identityAssertions: readonly {
+    readonly id: string
+    readonly outcome: "removed" | "replaced" | "retained"
+  }[]
   readonly kind: "stream-mutation"
   readonly streamFile: string
 }
@@ -157,7 +161,8 @@ function validateManifest(value: unknown): ProtocolManifest {
       typeof fixture.documentFile !== "string" ||
       typeof fixture.streamFile !== "string" ||
       typeof fixture.expectedDocumentFile !== "string" ||
-      !Array.isArray(fixture.expectedReports)
+      !Array.isArray(fixture.expectedReports) ||
+      !Array.isArray(fixture.identityAssertions)
     ) {
       throw new Error("Protocol compatibility manifest has an invalid behavior fixture")
     }
@@ -174,6 +179,18 @@ function validateManifest(value: unknown): ProtocolManifest {
       ) {
         throw new Error(`Protocol behavior fixture ${fixture.id} has an invalid report`)
       }
+    }
+    const identityIds = new Set<string>()
+    for (const assertion of fixture.identityAssertions) {
+      if (
+        !isRecord(assertion) ||
+        typeof assertion.id !== "string" ||
+        !["removed", "replaced", "retained"].includes(String(assertion.outcome)) ||
+        identityIds.has(assertion.id)
+      ) {
+        throw new Error(`Protocol behavior fixture ${fixture.id} has an invalid identity assertion`)
+      }
+      identityIds.add(assertion.id)
     }
   }
 
@@ -302,6 +319,17 @@ describe("shared protocol fixtures", () => {
       const streamXml = await readFile(fixtureUrl(fixture.streamFile), "utf8")
       const expectedDocumentXml = await readFile(fixtureUrl(fixture.expectedDocumentFile), "utf8")
       const session = new DocumentSession(parseExpoTurboDocument(documentXml))
+      const initialIdentities = new Map(
+        fixture.identityAssertions.map((assertion) => {
+          const node = session.tree.getElementById(assertion.id)
+          if (!node) {
+            throw new Error(
+              `Protocol behavior fixture ${fixture.id} is missing initial id ${assertion.id}`,
+            )
+          }
+          return [assertion.id, node] as const
+        }),
+      )
 
       const report = await dispatchTurboStreamFragment(session, streamXml)
 
@@ -316,6 +344,16 @@ describe("shared protocol fixtures", () => {
       expect(serializeExpoTurboTree(session.tree)).toBe(
         serializeExpoTurboTree(parseExpoTurboDocument(expectedDocumentXml)),
       )
+      for (const assertion of fixture.identityAssertions) {
+        const initial = initialIdentities.get(assertion.id)
+        const final = session.tree.getElementById(assertion.id)
+        if (assertion.outcome === "retained") expect(final).toBe(initial)
+        if (assertion.outcome === "replaced") {
+          expect(final).toBeDefined()
+          expect(final).not.toBe(initial)
+        }
+        if (assertion.outcome === "removed") expect(final).toBeUndefined()
+      }
     }
   })
 
