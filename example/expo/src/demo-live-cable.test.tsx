@@ -1259,6 +1259,62 @@ describe("standalone Rails Action Cable proof", () => {
     expect(lateProof.dispose).toHaveBeenCalledTimes(1);
   });
 
+  test("keeps a parent-owned runtime alive while its panel remounts", async () => {
+    const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
+    const proof = await createDemoLiveCableRuntime({
+      createSocket: () => new FakeActionCableSocket(),
+      fetch: async (url) => ({
+        headers: {
+          forEach(callback: (value: string, name: string) => void): void {
+            callback(EXPO_TURBO_MIME_TYPE, "Content-Type");
+          },
+        },
+        redirected: false,
+        status: 200,
+        text: async () => '<Gallery id="demo-document"></Gallery>',
+        url,
+      }),
+      origin: "http://demo.example:3000",
+    });
+    const originalDispose = proof.dispose.bind(proof);
+    const dispose = mock(() => originalDispose());
+    const retainedProof: DemoLiveCableRuntime = { ...proof, dispose };
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(DemoLiveCablePanel, { ownsRuntime: false, proof: retainedProof }),
+        );
+        await nextTurn();
+      });
+      await act(async () => {
+        renderer?.unmount();
+        await nextTurn();
+      });
+      expect(dispose).not.toHaveBeenCalled();
+
+      await act(async () => {
+        renderer = create(
+          createElement(DemoLiveCablePanel, { ownsRuntime: false, proof: retainedProof }),
+        );
+        await nextTurn();
+      });
+      if (!renderer) throw new Error("missing remounted Cable panel");
+      expect(proof.documentUrl).toBe(documentUrl);
+      expect(
+        renderer.root.findByProps({ accessibilityLabel: "Broadcast XML replace" }),
+      ).toBeDefined();
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await nextTurn();
+      });
+      originalDispose();
+    }
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
   test("reconciles its active Frame after a server-directed reconfirmation", async () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/document";
     const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/frame";

@@ -532,8 +532,9 @@ export async function createDemoLiveProtectedCableRuntime(
   );
 }
 
-function useDemoLiveCableRuntimeOwner(proof: DemoLiveCableRuntime): void {
+function useDemoLiveCableRuntimeOwner(proof: DemoLiveCableRuntime, enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     liveRuntimeOwners.set(proof, (liveRuntimeOwners.get(proof) ?? 0) + 1);
     return () => {
       const owners = Math.max(0, (liveRuntimeOwners.get(proof) ?? 0) - 1);
@@ -544,19 +545,15 @@ function useDemoLiveCableRuntimeOwner(proof: DemoLiveCableRuntime): void {
         proof.dispose();
       });
     };
-  }, [proof]);
-}
-
-function DemoLiveCableRuntimeOwner({ proof }: Readonly<{ proof: DemoLiveCableRuntime }>) {
-  useDemoLiveCableRuntimeOwner(proof);
-  return null;
+  }, [enabled, proof]);
 }
 
 export function DemoLiveCableRuntimeProvider({
   children,
+  ownsRuntime = true,
   proof,
-}: Readonly<{ children?: ReactNode; proof: DemoLiveCableRuntime }>) {
-  useDemoLiveCableRuntimeOwner(proof);
+}: Readonly<{ children?: ReactNode; ownsRuntime?: boolean; proof: DemoLiveCableRuntime }>) {
+  useDemoLiveCableRuntimeOwner(proof, ownsRuntime);
   return (
     <ExpoTurboProvider
       documentController={proof.documentController}
@@ -592,11 +589,12 @@ export function DemoLiveCablePanel({
   description =
     "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while any re-confirmed lifecycle or network transport reloads only that active Frame. This example host injects AppState, Expo Network, a bounded stale monitor, and five finite exponential retry attempts; it has no user document navigation, server-owned Frame form, production auth, or unbounded client retry.",
   proof,
+  ownsRuntime = true,
   refreshButtonLabel = "Refresh canonical document",
   replaceButtonLabel = "Broadcast XML replace",
   sourceKey = DEMO_STREAM_SOURCE_KEY,
   title = "Anonymous Action Cable proof",
-}: Readonly<{ proof: DemoLiveCableRuntime }> & DemoLiveCablePanelOptions) {
+}: Readonly<{ ownsRuntime?: boolean; proof: DemoLiveCableRuntime }> & DemoLiveCablePanelOptions) {
   const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
@@ -644,7 +642,7 @@ export function DemoLiveCablePanel({
   );
 
   return (
-    <DemoLiveCableRuntimeProvider proof={proof}>
+    <DemoLiveCableRuntimeProvider ownsRuntime={ownsRuntime} proof={proof}>
       <View style={{ borderColor: "#6d7f93", borderRadius: 12, borderWidth: 1, gap: 12, padding: 16 }}>
         <Text selectable style={{ fontSize: 18, fontWeight: "600" }}>
           {title}
@@ -772,10 +770,9 @@ export function DemoLiveCableProof({
   if (proof) {
     return (
       <>
-        <DemoLiveCableRuntimeOwner proof={proof} />
         {backgrounded ? pausedMessage : null}
         <View style={{ display: backgrounded ? "none" : "flex" }}>
-          <DemoLiveCablePanel proof={proof} {...panelOptions} />
+          <DemoLiveCablePanel ownsRuntime={false} proof={proof} {...panelOptions} />
         </View>
       </>
     );
