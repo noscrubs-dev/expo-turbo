@@ -4108,6 +4108,8 @@ describe("React protocol renderer", () => {
     const canFocusCalls: string[] = []
     const disposed: number[] = []
     const focusCalls: string[] = []
+    const scrollAvailabilityCalls: string[] = []
+    const scrollCalls: string[] = []
     const unmounted: number[] = []
     let focusedId: string | undefined
     const component = (label: string) =>
@@ -4170,6 +4172,15 @@ describe("React protocol renderer", () => {
         },
         getFocusedId: () => focusedId,
       },
+      autofocusScroll: {
+        canScroll(nodeKey) {
+          scrollAvailabilityCalls.push(nodeKey)
+          return nodeKey === "id:reset"
+        },
+        scrollTo(nodeKey) {
+          scrollCalls.push(nodeKey)
+        },
+      },
     })
     const rendered = () =>
       Object.fromEntries(
@@ -4196,6 +4207,8 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual([])
     expect(canFocusCalls).toEqual([])
     expect(focusCalls).toEqual([])
+    expect(scrollAvailabilityCalls).toEqual([])
+    expect(scrollCalls).toEqual([])
     expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([])
 
@@ -4215,6 +4228,8 @@ describe("React protocol renderer", () => {
     expect(disposed).toEqual([2])
     expect(canFocusCalls).toEqual(["id:reset"])
     expect(focusCalls).toEqual(["id:reset"])
+    expect(scrollAvailabilityCalls).toEqual(["id:reset"])
+    expect(scrollCalls).toEqual(["id:reset"])
     expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([2])
 

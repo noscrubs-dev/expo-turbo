@@ -2283,7 +2283,11 @@ function readMorphFocusedId(adapter: AutofocusAdapter, nodeKey: string): string 
   return focusedId
 }
 
-function restoreComponentMorphFocus(adapter: AutofocusAdapter, nodeKey: string): void {
+function restoreComponentMorphFocus(
+  adapter: AutofocusAdapter,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
+  nodeKey: string,
+): void {
   const focusedId = readMorphFocusedId(adapter, nodeKey)
   if (focusedId !== undefined) return
 
@@ -2309,10 +2313,12 @@ function restoreComponentMorphFocus(adapter: AutofocusAdapter, nodeKey: string):
     consumeUnexpectedAdapterResult(result)
     throw new StateError("Component morph focus restoration failed", { target: nodeKey })
   }
+  if (scrollAdapter) applyAutofocusScroll(scrollAdapter, nodeKey, "Component morph")
 }
 
 function useComponentMorphFocus(
   adapter: AutofocusAdapter | undefined,
+  scrollAdapter: AutofocusScrollAdapter | undefined,
   enabled: boolean,
   morphRevision: number,
   nodeKey: string,
@@ -2333,15 +2339,15 @@ function useComponentMorphFocus(
     committedMorphRevision.current = morphRevision
     if (restore.current) {
       restore.current = false
-      if (adapter && enabled) restoreComponentMorphFocus(adapter, nodeKey)
+      if (adapter && enabled) restoreComponentMorphFocus(adapter, scrollAdapter, nodeKey)
     }
-  }, [adapter, enabled, morphRevision, nodeKey])
+  }, [adapter, enabled, morphRevision, nodeKey, scrollAdapter])
 }
 
 function RegisteredElement(
   props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
 ): ReactNode {
-  const { autofocus, registry } = useRenderer()
+  const { autofocus, autofocusScroll, registry } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
   const decoded: DecodedComponent = registry.decode(props.node)
   const direction = decoded.protocol.direction ?? inheritedDirection
@@ -2354,6 +2360,7 @@ function RegisteredElement(
   const componentProps = decoded.props as Readonly<Record<string, unknown>>
   useComponentMorphFocus(
     autofocus,
+    autofocusScroll,
     decoded.definition.morphState === "reset",
     props.morphRevision,
     props.node.key,
@@ -2484,7 +2491,7 @@ function focusFirstAvailableCandidate(
 function applyAutofocusScroll(
   adapter: AutofocusScrollAdapter,
   id: string,
-  scope: "Document" | "Frame" | "Stream",
+  scope: "Component morph" | "Document" | "Frame" | "Stream",
   frameId?: string,
 ): void {
   const context = frameId ? { frameId } : {}

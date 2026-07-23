@@ -4,7 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
-- Preserve exact logical focus when a focused `morphState: "reset"` component remounts after a retained morph. The React boundary captures the host's stable focused node key before commit, waits for the replacement handle's layout effects, restores only when focus became empty and the exact key is available, and never steals focus that moved elsewhere during commit. Adapter faults remain redacted through the component error boundary.
+- Preserve exact logical focus when a focused `morphState: "reset"` component remounts after a retained morph. The React boundary captures the host's stable focused node key before commit, waits for the replacement handle's layout effects, restores only when focus became empty and the exact key is available, and never steals focus that moved elsewhere during commit. A successful restoration may then ask the existing optional autofocus-scroll adapter to reveal that exact key. Adapter faults remain redacted through the component error boundary.
 
 - Add capability-visible component morph-state policy. Registered components preserve their mounted React state by default; a component may declare `morphState: "reset"` to remount its exact retained component boundary after a successfully committed Stream, direct Frame reload, or current-document morph. The logical XML node remains retained, ordinary non-morph mutations do not trigger the policy, and reset cleanup releases component-owned native resources through the existing disposal contract.
 
