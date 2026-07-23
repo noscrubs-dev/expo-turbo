@@ -4,6 +4,7 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Preserve identified `data-turbo-permanent` Cable stream sources across implemented Stream, direct Frame reload, and current-document morphs. A retained source may move between ordinary parents while keeping its exact descriptor, node identity, live refcounted subscription, and zero morph revision; incoming descriptor changes are ignored and lifecycle callbacks remain silent.
 - Preserve identified `data-turbo-permanent` Frame descendants across implemented Stream, direct Frame reload, and current-document morphs. A retained permanent Frame may move between ordinary parents while keeping its exact wrapper, controller, source, current children, state, and zero morph revision; incoming content is ignored, lifecycle callbacks stay silent, and the Frame is excluded from any post-render refresh-morph reload cascade.
 - Replace an incompatible ordinary application root during a current-document morph while retaining compatible stable descendants across that boundary. The outgoing root receives removal admission, retained descendants keep logical identity and lifecycle, and the registered React root remounts with component-owned cleanup.
 - Preserve a targeted mounted `turbo-frame` and its active controller during exact `update method="morph"` Stream reconciliation. Only the Frame's children morph; its wrapper attributes, request/controller ownership, and compatible application/form/state identities remain intact. Frame replacement morphs remain unsupported.

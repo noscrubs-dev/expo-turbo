@@ -691,6 +691,36 @@ describe("Turbo Stream dispatcher", () => {
     expect(attributeValue(frame, "data-turbo-permanent")).toBe("")
   })
 
+  test("moves permanent Cable stream sources without changing their live descriptor", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoGroup id="left"><turbo-cable-stream-source id="source" channel="ClientChannel" data-room="client" data-turbo-permanent=""/></DemoGroup><DemoGroup id="right"/></DemoForm></Gallery>',
+    )
+    const source = document.tree.getElementById("source")
+    if (source?.kind !== "stream-source") {
+      throw new Error("permanent Cable stream source fixture is missing")
+    }
+    const snapshot = document.getNodeSnapshot(source.key)
+    let disposals = 0
+    document.registerDisposal(source.key, () => {
+      disposals += 1
+    })
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><turbo-cable-stream-source id="source" channel="ServerChannel" data-room="server"/></DemoGroup></template></turbo-stream>',
+    )
+
+    const right = document.tree.getElementById("right")
+    if (!right) throw new Error("permanent Cable stream source destination is missing")
+    expect(document.tree.getElementById("source")).toBe(source)
+    expect(source.parent).toBe(right)
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(attributeValue(source, "data-room")).toBe("client")
+    expect(document.getNodeSnapshot(source.key)?.identity).toBe(snapshot?.identity)
+    expect(document.getNodeSnapshot(source.key)?.morphRevision).toBe(0)
+    expect(disposals).toBe(0)
+  })
+
   test("admits new permanent nodes and preserves nested permanent state opaquely", async () => {
     const document = session(
       '<Gallery><DemoForm id="form"><DemoPanel id="outer" data-turbo-permanent="" tone="client"><DemoPanel id="nested" data-turbo-permanent="" tone="nested-client"/></DemoPanel><DemoText id="becomes-permanent" tone="before"/></DemoForm></Gallery>',

@@ -976,6 +976,86 @@ describe("React protocol renderer", () => {
     expect(errors).toEqual([])
   })
 
+  test("keeps one live subscription while a permanent Cable source changes parents", async () => {
+    function Container(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement("container", null, props.children)
+    }
+    const container = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: Container,
+      schema: z.object({}),
+      tag: "Container",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [container],
+        name: "permanent-source-reparent-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Container id="panel"><Container id="left"><turbo-cable-stream-source id="source" channel="ClientChannel" data-room="client" data-turbo-permanent=""/></Container><Container id="right"/><DemoText id="status">Old</DemoText></Container></Gallery>',
+      ),
+    )
+    const source = session.tree.getElementById("source")
+    if (source?.kind !== "stream-source") {
+      throw new Error("permanent Cable stream source fixture is missing")
+    }
+    const subscriptions: {
+      callbacks: Parameters<CableAdapter["subscribe"]>[1]
+      identifier: string
+      unsubscribeCalls: number
+    }[] = []
+    const cable: CableAdapter = {
+      subscribe(identifier, callbacks) {
+        const record = { callbacks, identifier, unsubscribeCalls: 0 }
+        subscriptions.push(record)
+        return {
+          unsubscribe() {
+            record.unsubscribeCalls += 1
+          },
+        }
+      },
+    }
+    const streamSources = new CableStreamSourceRegistry(session, cable, {
+      onError: () => undefined,
+    })
+    const renderer = render(session, componentRegistry, { streamSources })
+
+    expect(subscriptions).toHaveLength(1)
+    expect(subscriptions[0]?.identifier).toContain("ClientChannel")
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Container id="left"/><Container id="right"><turbo-cable-stream-source id="source" channel="ServerChannel" data-room="server"/></Container><DemoText id="status">Old</DemoText></template></turbo-stream>',
+      )
+      await Promise.resolve()
+    })
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("permanent Cable stream source destination is missing")
+    expect(session.tree.getElementById("source")).toBe(source)
+    expect(source.parent).toBe(right)
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(subscriptions).toHaveLength(1)
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(0)
+
+    await act(async () => {
+      await subscriptions[0]?.callbacks.received(
+        '<turbo-stream action="update" target="status"><template>Fresh</template></turbo-stream>',
+      )
+    })
+    expect(JSON.stringify(renderer.toJSON())).toContain("Fresh")
+
+    await act(async () => {
+      renderer.unmount()
+      await Promise.resolve()
+    })
+    expect(subscriptions[0]?.unsubscribeCalls).toBe(1)
+  })
+
   test("contains invalid Cable sources locally and reconnects after correction", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(`<Gallery>

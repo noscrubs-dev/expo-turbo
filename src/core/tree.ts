@@ -277,8 +277,8 @@ function isCompatibleStreamOuterMorphShape(
 ): boolean {
   return (
     isCompatibleApplicationMorphShape(current, source) ||
-    (current.kind === "frame" &&
-      source.kind === "frame" &&
+    ((current.kind === "frame" || current.kind === "stream-source") &&
+      source.kind === current.kind &&
       current.tagName === source.tagName &&
       current.localName === source.localName &&
       current.namespaceUri === source.namespaceUri &&
@@ -301,7 +301,9 @@ function isCompatiblePermanentMorphElement(
 function isSupportedPermanentMorphElement(element: ProtocolElement): boolean {
   const id = attributeValue(element, "id")
   return (
-    (element.kind === "element" || element.kind === "frame") && id !== undefined && id.trim() !== ""
+    (element.kind === "element" || element.kind === "frame" || element.kind === "stream-source") &&
+    id !== undefined &&
+    id.trim() !== ""
   )
 }
 
@@ -1101,7 +1103,7 @@ export class DocumentTree {
       const id = attributeValue(source, "id")
       if (isTurboPermanent(source) && !isSupportedPermanentMorphElement(source)) {
         throw new TargetError(
-          "Native morph permanent nodes require an application element or Frame with a stable id",
+          "Native morph permanent nodes require an application element, Frame, or Cable stream source with a stable id",
           { ...(id ? { target: id } : {}) },
         )
       }
@@ -1221,7 +1223,7 @@ export class DocumentTree {
         const currentId = attributeValue(current, "id")
         if (!isSupportedPermanentMorphElement(current)) {
           throw new TargetError(
-            "Native morph permanent nodes require an application element or Frame with a stable id",
+            "Native morph permanent nodes require an application element, Frame, or Cable stream source with a stable id",
             { ...(currentId ? { target: currentId } : {}) },
           )
         }
@@ -1311,7 +1313,7 @@ export class DocumentTree {
         const id = attributeValue(current, "id")
         if (!isSupportedPermanentMorphElement(current)) {
           throw new TargetError(
-            "Native morph permanent nodes require an application element or Frame with a stable id",
+            "Native morph permanent nodes require an application element, Frame, or Cable stream source with a stable id",
             { ...(id ? { target: id } : {}) },
           )
         }
