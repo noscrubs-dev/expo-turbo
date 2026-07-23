@@ -153,6 +153,64 @@
       }
     },
     {
+      "id": "stream-actions",
+      "envelope": "stream-fragment",
+      "file": "fixtures/stream-actions.xml",
+      "expect": {
+        "outcome": "accepted",
+        "streamActions": [
+          {
+            "action": "append",
+            "target": "items",
+            "templateTags": ["DemoItem"]
+          },
+          {
+            "action": "prepend",
+            "target": "items",
+            "templateTags": ["DemoItem"]
+          },
+          {
+            "action": "replace",
+            "target": "profile",
+            "method": "morph",
+            "templateTags": ["DemoProfile"]
+          },
+          {
+            "action": "update",
+            "targets": ".item",
+            "method": "morph",
+            "templateTags": ["DemoItem"]
+          },
+          {
+            "action": "remove",
+            "target": "stale",
+            "templateTags": []
+          },
+          {
+            "action": "before",
+            "target": "marker",
+            "templateTags": ["DemoNotice"]
+          },
+          {
+            "action": "after",
+            "targets": ".marker",
+            "templateTags": ["DemoNotice"]
+          },
+          {
+            "action": "refresh",
+            "method": "morph",
+            "requestId": "request-123",
+            "scroll": "preserve",
+            "templateTags": []
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "authored",
+        "baseline": "turbo-8.0.23"
+      }
+    },
+    {
       "id": "unsafe-doctype",
       "envelope": "document",
       "file": "fixtures/unsafe-doctype.xml",

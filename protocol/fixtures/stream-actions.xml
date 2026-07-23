@@ -1,0 +1,8 @@
+<turbo-stream action="append" target="items"><template><DemoItem id="append-item" /></template></turbo-stream>
+<turbo-stream action="prepend" target="items"><template><DemoItem id="prepend-item" /></template></turbo-stream>
+<turbo-stream action="replace" target="profile" method="morph"><template><DemoProfile id="profile" /></template></turbo-stream>
+<turbo-stream action="update" targets=".item" method="morph"><template><DemoItem /></template></turbo-stream>
+<turbo-stream action="remove" target="stale"></turbo-stream>
+<turbo-stream action="before" target="marker"><template><DemoNotice id="before-marker" /></template></turbo-stream>
+<turbo-stream action="after" targets=".marker"><template><DemoNotice id="after-marker" /></template></turbo-stream>
+<turbo-stream action="refresh" method="morph" request-id="request-123" scroll="preserve"></turbo-stream>

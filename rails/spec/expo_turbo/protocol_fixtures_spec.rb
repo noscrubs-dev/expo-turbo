@@ -70,6 +70,27 @@ RSpec.describe "shared protocol fixtures" do
     document.root.element_children.map { |element| normalized_node(element) }
   end
 
+  def normalized_stream_actions(xml)
+    document = ExpoTurbo::Rails::Testing.parse_stream_fragment(xml)
+    document.root.element_children.map do |element|
+      normalized = {
+        "action" => element["action"].to_s,
+        "templateTags" => element.at_xpath("./template")&.element_children&.map { |child| qualified_name(child) } || []
+      }
+      {
+        "method" => "method",
+        "requestId" => "request-id",
+        "scroll" => "scroll",
+        "target" => "target",
+        "targets" => "targets"
+      }.each do |key, attribute|
+        value = element[attribute]
+        normalized[key] = value unless value.nil?
+      end
+      normalized
+    end
+  end
+
   def normalized_fixture(xml, fixture)
     case fixture.fetch("envelope")
     when "document"
@@ -116,8 +137,12 @@ RSpec.describe "shared protocol fixtures" do
       next unless declared_fixture.fetch("expect").fetch("outcome") == "accepted"
 
       xml = File.read(fixture_path(declared_fixture.fetch("file")))
-      expected = declared_fixture.fetch("expect").fetch("normalized").fetch("nodes")
-      expect(normalized_fixture(xml, declared_fixture)).to eq(expected)
+      expectation = declared_fixture.fetch("expect")
+      if expectation.key?("normalized")
+        expect(normalized_fixture(xml, declared_fixture)).to eq(expectation.fetch("normalized").fetch("nodes"))
+      else
+        expect(normalized_stream_actions(xml)).to eq(expectation.fetch("streamActions"))
+      end
     end
   end
 
@@ -138,5 +163,21 @@ RSpec.describe "shared protocol fixtures" do
     XML
 
     expect(normalized_stream_fragment(rendered)).to eq(expected)
+  end
+
+  it "emits every shared built-in Stream envelope through the Rails helper" do
+    expected = fixture("stream-actions").fetch("expect").fetch("streamActions")
+    rendered = [
+      stream.append("items", '<DemoItem id="append-item"/>'),
+      stream.prepend("items", '<DemoItem id="prepend-item"/>'),
+      stream.replace("profile", '<DemoProfile id="profile"/>', method: :morph),
+      stream.update_all(".item", "<DemoItem/>", method: :morph),
+      stream.remove("stale"),
+      stream.before("marker", '<DemoNotice id="before-marker"/>'),
+      stream.after_all(".marker", '<DemoNotice id="after-marker"/>'),
+      stream.refresh(request_id: "request-123", method: :morph, scroll: :preserve)
+    ].join
+
+    expect(normalized_stream_actions(rendered)).to eq(expected)
   end
 end

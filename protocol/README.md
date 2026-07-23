@@ -5,16 +5,21 @@ public TypeScript package and Rails gem. It pins the protocol and upstream
 baselines, records fixture provenance, and describes each fixture's document or
 Stream-fragment envelope plus its expected outcome.
 
-The initial `fixtures/` set intentionally stays small: it proves one namespaced
-document, a sibling Stream fragment emitted by the Rails helper, and unsafe
-DOCTYPE/non-XML-whitespace Stream-text rejections. TypeScript and Ruby tests
-load the same manifest and XML bytes, normalize accepted trees to the declared
-language-neutral AST, and
-exercise the declared rejection. Fixture readers are test-only; neither package
-ships protocol sources as runtime assets.
+The current `fixtures/` set proves one namespaced document, a basic sibling
+Stream fragment, every built-in Turbo Stream envelope (`append`, `prepend`,
+`replace`, `update`, `remove`, `before`, `after`, and `refresh`), exact
+`target`/`targets`, morph, request-ID, scroll, and template-root metadata, plus
+unsafe DOCTYPE/non-XML-whitespace Stream-text rejections. TypeScript and Ruby
+tests load the same manifest and XML bytes. Both normalize accepted trees to
+the declared language-neutral AST or compact Stream-envelope records, and both
+exercise every declared rejection. The Rails helper must also emit the exact
+shared basic and all-actions records. Fixture readers are test-only; neither
+package ships protocol sources as runtime assets.
 
 Document fixture normalization represents its sole document root; sibling Stream
-fixture normalization represents its sibling Stream elements. XML comments and
+fixture normalization represents its sibling Stream elements. Compact
+`streamActions` assertions retain each Stream's action, optional addressing and
+morph/refresh metadata, plus ordered top-level template tags. XML comments and
 envelope-level XML whitespace are not part of either normalized envelope.
 
 The package remains pre-release and does not yet claim complete Turbo compatibility.
