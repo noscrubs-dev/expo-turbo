@@ -604,6 +604,59 @@ describe("Turbo Stream dispatcher", () => {
     )
   })
 
+  test("matches anonymous wrappers by intersecting stable descendant IDs", async () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><Row tone="one"><Field id="one"/></Row><Row tone="two"><Field id="two"/></Row></DemoPanel></Gallery>',
+    )
+    const panel = document.tree.getElementById("panel")
+    const first = panel?.children[0]
+    const second = panel?.children[1]
+    const one = document.tree.getElementById("one")
+    const two = document.tree.getElementById("two")
+    if (first?.kind !== "element" || second?.kind !== "element" || !one || !two) {
+      throw new Error("ID-set morph fixture is missing")
+    }
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Row tone="two-after"><Field id="two" value="after"/></Row><Row tone="one-after"><Field id="one" value="after"/></Row></template></turbo-stream>',
+    )
+
+    const current = document.tree.getElementById("panel")
+    expect(current?.children).toEqual([second, first])
+    expect(document.tree.getElementById("one")).toBe(one)
+    expect(document.tree.getElementById("two")).toBe(two)
+    expect(attributeValue(first, "tone")).toBe("one-after")
+    expect(attributeValue(second, "tone")).toBe("two-after")
+  })
+
+  test("does not soft-match a new anonymous wrapper over persistent descendant state", async () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><Row tone="one"><Field id="one"/></Row><Row tone="two"><Field id="two"/></Row></DemoPanel></Gallery>',
+    )
+    const panel = document.tree.getElementById("panel")
+    const first = panel?.children[0]
+    const second = panel?.children[1]
+    const one = document.tree.getElementById("one")
+    const two = document.tree.getElementById("two")
+    if (!first || !second || !one || !two) throw new Error("ID-set morph fixture is missing")
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Row tone="new"><Field id="new"/></Row><Row tone="one-after"><Field id="one"/></Row><Row tone="two-after"><Field id="two"/></Row></template></turbo-stream>',
+    )
+
+    const current = document.tree.getElementById("panel")
+    const inserted = current?.children[0]
+    if (inserted?.kind !== "element") throw new Error("new anonymous wrapper is missing")
+    expect(inserted).not.toBe(first)
+    expect(inserted).not.toBe(second)
+    expect(current?.children.slice(1)).toEqual([first, second])
+    expect(document.tree.getElementById("one")).toBe(one)
+    expect(document.tree.getElementById("two")).toBe(two)
+    expect(document.tree.getElementById("new")?.parent).toBe(inserted)
+  })
+
   test("structurally replaces protocol-wrapper descendants during child morph", async () => {
     const document = session(
       '<Gallery><DemoPanel id="panel"><turbo-frame id="frame"><DemoInput id="field"/></turbo-frame><turbo-cable-stream-source id="source" channel="DemoChannel"/></DemoPanel></Gallery>',

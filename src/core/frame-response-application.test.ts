@@ -439,6 +439,37 @@ describe("prepared Frame mutations", () => {
     expect(session.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
   })
 
+  test("matches anonymous Frame wrappers through stable descendant ID sets", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph"><Row tone="one"><Field id="one"/></Row><Row tone="two"><Field id="two"/></Row></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const first = frame?.children[0]
+    const second = frame?.children[1]
+    if (frame?.kind !== "frame" || first?.kind !== "element" || second?.kind !== "element") {
+      throw new Error("invalid anonymous Frame wrapper fixture")
+    }
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Row tone="two-after"><Field id="two"/></Row><Row tone="one-after"><Field id="one"/></Row></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, frame, prepared, {
+        finalUrl: "https://example.test/final",
+        renderMethod: "morph",
+      }),
+    )
+
+    expect(frame.children).toEqual([second, first])
+    expect(attributeValue(first, "tone")).toBe("one-after")
+    expect(attributeValue(second, "tone")).toBe("two-after")
+  })
+
   test("retains eligible nested morph Frames untouched for their own post-render reload", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

@@ -358,6 +358,7 @@ interface MorphTransaction {
 }
 
 interface MorphPlanningContext {
+  readonly idSets: ReadonlyMap<ProtocolElement, ReadonlySet<string>>
   readonly incomingIds: ReadonlySet<string>
   readonly root: ProtocolElement
 }
@@ -1098,7 +1099,7 @@ export class DocumentTree {
       if (siblings) siblings.push(child)
       else anonymousByShape.set(shape, [child])
     }
-    const nextAnonymousIndex = new Map<string, number>()
+    const assignedAnonymous = new Set<ProtocolElement>()
     for (const source of sources) {
       if (!isElement(source)) continue
       const id = attributeValue(source, "id")
@@ -1122,10 +1123,15 @@ export class DocumentTree {
       }
       if (source.kind !== "element") continue
       const shape = anonymousMorphShapeKey(source)
-      const index = nextAnonymousIndex.get(shape) ?? 0
-      const current = anonymousByShape.get(shape)?.[index]
+      const candidates = (anonymousByShape.get(shape) ?? []).filter(
+        (current) => !assignedAnonymous.has(current),
+      )
+      const current =
+        candidates.find((candidate) =>
+          this.morphIdSetsIntersect(candidate, source, planning.idSets),
+        ) ?? candidates.find((candidate) => !planning.idSets.has(candidate))
       if (!current) continue
-      nextAnonymousIndex.set(shape, index + 1)
+      assignedAnonymous.add(current)
       currentForSource.set(source, current)
     }
 
@@ -1292,7 +1298,27 @@ export class DocumentTree {
         if (id !== undefined) incomingIds.add(id)
       })
     }
-    return { incomingIds, root }
+    const persistentIds = new Set(
+      [...incomingIds].filter((id) => {
+        const active = this.idIndex.get(id)
+        return active !== undefined && isWithin(active, root)
+      }),
+    )
+    const idSets = new Map<ProtocolElement, ReadonlySet<string>>()
+    const recordIdSets = (node: ProtocolNode): ReadonlySet<string> => {
+      if (!isElement(node)) return new Set()
+      const ids = new Set<string>()
+      const id = attributeValue(node, "id")
+      if (id !== undefined && persistentIds.has(id)) ids.add(id)
+      for (const child of node.children) {
+        for (const childId of recordIdSets(child)) ids.add(childId)
+      }
+      if (ids.size > 0) idSets.set(node, ids)
+      return ids
+    }
+    recordIdSets(root)
+    for (const source of sources) recordIdSets(source)
+    return { idSets, incomingIds, root }
   }
 
   private hasActiveMorphDescendant(source: ProtocolElement, root: ProtocolElement): boolean {
@@ -1307,6 +1333,20 @@ export class DocumentTree {
       if (found) break
     }
     return found
+  }
+
+  private morphIdSetsIntersect(
+    current: ProtocolElement,
+    source: ProtocolElement,
+    idSets: ReadonlyMap<ProtocolElement, ReadonlySet<string>>,
+  ): boolean {
+    const currentIds = idSets.get(current)
+    const sourceIds = idSets.get(source)
+    if (!currentIds || !sourceIds) return false
+    for (const id of currentIds) {
+      if (sourceIds.has(id)) return true
+    }
+    return false
   }
 
   private insertRetainedMorphPlan(
