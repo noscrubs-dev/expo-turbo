@@ -9,14 +9,25 @@ module Api
 
         def show
           case params[:scenario]
+          when "document-success"
+            render_document(status: :ok)
           when "document-client-error"
             render_document(status: :unprocessable_content)
           when "document-server-error"
             render_document(status: :internal_server_error)
+          when "created-empty"
+            head :created
           when "empty"
             head :no_content
+          when "redirect"
+            redirect_to "/api/expo_turbo/demo/response_scenarios/document-success", status: :see_other
           when "wrong-mime"
             render plain: "This is intentionally not Expo Turbo XML.", content_type: "text/plain"
+          when "malformed-xml"
+            render plain: "<Gallery>", content_type: ::ExpoTurbo::Rails::MIME_TYPE
+          when "delayed-document"
+            sleep(delay_ms.fdiv(1_000))
+            render_document(status: :ok)
           when "frame"
             render_frame
           when "missing-frame"

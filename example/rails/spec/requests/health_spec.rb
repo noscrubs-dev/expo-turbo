@@ -257,6 +257,13 @@ RSpec.describe "standalone demo host" do
   end
 
   it "serves the document response matrix with exact status and content-type boundaries" do
+    get "/api/expo_turbo/demo/response_scenarios/document-success"
+    document = ExpoTurbo::Rails::Testing.parse_document(response.body)
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(document.at_xpath("//DemoText[@id='demo-response-status']")&.text)
+      .to eq("Handled Rails XML response 200")
+
     {
       "document-client-error" => :unprocessable_content,
       "document-server-error" => :internal_server_error
@@ -274,9 +281,22 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:no_content)
     expect(response.body).to be_empty
 
+    get "/api/expo_turbo/demo/response_scenarios/created-empty"
+    expect(response).to have_http_status(:created)
+    expect(response.body).to be_empty
+
+    get "/api/expo_turbo/demo/response_scenarios/redirect"
+    expect(response).to redirect_to("/api/expo_turbo/demo/response_scenarios/document-success")
+    expect(response).to have_http_status(:see_other)
+
     get "/api/expo_turbo/demo/response_scenarios/wrong-mime"
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq("text/plain")
+
+    get "/api/expo_turbo/demo/response_scenarios/malformed-xml"
+    expect(response).to have_http_status(:ok)
+    expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
+    expect(response.body).to eq("<Gallery>")
 
     get "/api/expo_turbo/demo/response_scenarios/unknown"
     expect(response).to have_http_status(:not_found)
