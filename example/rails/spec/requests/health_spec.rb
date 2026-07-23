@@ -64,12 +64,16 @@ RSpec.describe "standalone demo host" do
     expect(
       ExpoTurboDemo::NativeCableTicket.subject_for(
         Rails.application.message_verifier(ExpoTurboDemo::NativeCableTicket::VERIFIER_NAME).generate(
-          ExpoTurboDemo::NativeCableTicket::SUBJECT,
+          [ExpoTurboDemo::NativeCableTicket::SUBJECT, "expired-generation"],
           expires_in: -1.second,
           purpose: ExpoTurboDemo::NativeCableTicket::VERIFIER_PURPOSE
         )
       )
     ).to be_nil
+    ExpoTurboDemo::NativeCableTicket.revoke!
+    expect(ExpoTurboDemo::NativeCableTicket.subject_for(ticket)).to be_nil
+    expect(ExpoTurboDemo::NativeCableTicket.subject_for(ExpoTurboDemo::NativeCableTicket.issue))
+      .to eq(ExpoTurboDemo::NativeCableTicket::SUBJECT)
     expect(
       configuration.subscription_authorizer.call(
         subject:,
@@ -84,6 +88,16 @@ RSpec.describe "standalone demo host" do
         grant: "forged"
       )
     ).to be(false)
+  end
+
+  it "invalidates existing native tickets through the demo connection identity" do
+    ticket = ExpoTurboDemo::NativeCableTicket.issue
+
+    post "/api/expo_turbo/demo/protected_revocation"
+
+    expect(response).to have_http_status(:no_content)
+    expect(ExpoTurboDemo::NativeCableTicket.subject_for(ticket)).to be_nil
+    expect(ApplicationCable::Connection.identifiers).to include(:expo_turbo_demo_subject)
   end
 
   it "serves a protected Frame descriptor and broadcasts only to its opaque Cable token" do

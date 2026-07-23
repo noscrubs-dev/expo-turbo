@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "securerandom"
+
 module ExpoTurboDemo
   module NativeCableTicket
     HEADER = "X-Expo-Turbo-Demo-Ticket"
@@ -12,7 +14,7 @@ module ExpoTurboDemo
 
     class << self
       def issue
-        verifier.generate(SUBJECT, expires_in: TTL, purpose: VERIFIER_PURPOSE)
+        verifier.generate([SUBJECT, current_generation], expires_in: TTL, purpose: VERIFIER_PURPOSE)
       end
 
       def subject_for(ticket)
@@ -21,8 +23,14 @@ module ExpoTurboDemo
         ticket = ticket.dup.force_encoding(Encoding::UTF_8)
         return unless ticket.valid_encoding? && ticket.present?
 
-        subject = verifier.verified(ticket, purpose: VERIFIER_PURPOSE)
-        subject if subject == SUBJECT
+        subject, generation = verifier.verified(ticket, purpose: VERIFIER_PURPOSE)
+        subject if subject == SUBJECT && ActiveSupport::SecurityUtils.secure_compare(generation, current_generation)
+      rescue TypeError
+        nil
+      end
+
+      def revoke!
+        generation_mutex.synchronize { @generation = SecureRandom.hex(32) }
       end
 
       def authorizes?(subject:, stream_name:, grant:)
@@ -30,6 +38,14 @@ module ExpoTurboDemo
       end
 
       private
+
+      def current_generation
+        generation_mutex.synchronize { @generation ||= SecureRandom.hex(32) }
+      end
+
+      def generation_mutex
+        @generation_mutex ||= Mutex.new
+      end
 
       def verifier
         Rails.application.message_verifier(VERIFIER_NAME)
