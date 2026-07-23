@@ -148,14 +148,20 @@
       "area": "forms",
       "disposition": "native-equivalent",
       "rationale": "Explicit registered native controls reproduce successful-control ordering, disabledness, submitter precedence, repeated names, select, checkable, and multi-entry behavior.",
-      "evidence": ["src/core/forms.test.ts"]
+      "evidence": [
+        "src/core/browser-stream-differential.test.ts",
+        "src/core/forms.test.ts"
+      ]
     },
     {
       "id": "forms.encoding-methods",
       "area": "forms",
       "disposition": "exact",
       "rationale": "GET query replacement, URL encoding, text/plain, multipart, Rails method normalization, stream negotiation, and submitter overrides match the pinned contracts.",
-      "evidence": ["src/core/form-request.test.ts"]
+      "evidence": [
+        "src/core/browser-stream-differential.test.ts",
+        "src/core/form-request.test.ts"
+      ]
     },
     {
       "id": "forms.response-matrix",
@@ -342,7 +348,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, and eager Frame-extraction browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager Frame-extraction, and form-request browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",

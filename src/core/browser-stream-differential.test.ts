@@ -3,6 +3,7 @@ import { type Element as HappyElement, type Node as HappyNode, Window } from "ha
 
 import {
   applyFrameResponse,
+  buildFormRequest,
   DocumentSession,
   dispatchTurboStreamFragment,
   isElement,
@@ -47,6 +48,7 @@ function installBrowserGlobals(): void {
     HTMLTextAreaElement: browser.HTMLTextAreaElement,
     IntersectionObserver: browser.IntersectionObserver,
     MutationObserver: browser.MutationObserver,
+    MouseEvent: browser.MouseEvent,
     Node: browser.Node,
     NodeFilter: browser.NodeFilter,
     Request: browser.Request,
@@ -287,6 +289,128 @@ test("matches upstream Turbo Frame extraction for an eager response", async () =
     expect(expoResult.children).toEqual(browserResult.children)
     expect(browser.document.getElementById("outside")).toBeNull()
     expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo GET form URL and submitter serialization", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><form id="search" action="/search?stale=1" method="get"><input name="query" value="a b" /><input name="empty" value="" /><input name="ignored" value="no" disabled="" /><button id="submit-search" name="commit" value="Search">Search</button></form></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details"><p id="search-result">Found</p></turbo-frame></main>'
+  const expoRequest = buildFormRequest({
+    documentUrl: "https://example.test/demo",
+    entries: [
+      { name: "query", value: "a b" },
+      { name: "empty", value: "" },
+      { name: "commit", value: "Search" },
+    ],
+    form: { action: "/search?stale=1", method: "get" },
+    protocol: { frameId: "details", requestId: "request-1" },
+    submitter: { name: "commit", value: "Search" },
+  }).request
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    return new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const form = browser.document.getElementById("search")
+    const submitter = browser.document.getElementById("submit-search")
+    if (!(form instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser form differential form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser form differential submitter is missing")
+    }
+    form.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(browserRequestUrl).toBe(expoRequest.url)
+    expect(browserRequestMethod).toBe(expoRequest.method)
+    expect(browserFrameHeader).toBe(expoRequest.headers["Turbo-Frame"])
+    expect(browser.document.getElementById("search-result")).not.toBeNull()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo unsafe form method and URL-encoded body", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><form id="order" action="/orders?source=demo" method="post"><input name="order[items][]" value="shirt" /><input name="order[items][]" value="towels" /><input type="checkbox" name="notify" value="yes" checked="" /><input type="checkbox" name="ignored" value="no" /><button id="submit-order" name="commit" value="Save">Save</button></form></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details"><p id="validation-result">Review</p></turbo-frame></main>'
+  const expoRequest = buildFormRequest({
+    documentUrl: "https://example.test/demo",
+    entries: [
+      { name: "order[items][]", value: "shirt" },
+      { name: "order[items][]", value: "towels" },
+      { name: "notify", value: "yes" },
+      { name: "commit", value: "Save" },
+    ],
+    form: { action: "/orders?source=demo", method: "post" },
+    protocol: { frameId: "details", requestId: "request-2" },
+    submitter: { name: "commit", value: "Save" },
+  }).request
+  const expoRequestBody = expoRequest.body?.value
+  if (typeof expoRequestBody !== "string") {
+    throw new Error("Expo unsafe form differential body is not URL encoded")
+  }
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    return new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 422,
+    })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const form = browser.document.getElementById("order")
+    const submitter = browser.document.getElementById("submit-order")
+    if (!(form instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser unsafe form differential form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser unsafe form differential submitter is missing")
+    }
+    form.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(browserRequestUrl).toBe(expoRequest.url)
+    expect(browserRequestMethod).toBe(expoRequest.method)
+    expect(browserRequestBody).toBe(expoRequestBody)
+    expect(browserFrameHeader).toBe(expoRequest.headers["Turbo-Frame"])
+    expect(browser.document.getElementById("validation-result")).not.toBeNull()
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()
