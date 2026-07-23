@@ -133,9 +133,12 @@
     {
       "id": "links.generic-host-contexts",
       "area": "links",
-      "disposition": "incomplete",
-      "rationale": "The example has a bounded router and fragment codec, but generic deep-link fragments, downloads, and non-current browsing-context mappings remain host work without device evidence.",
-      "evidence": ["README.md"]
+      "disposition": "native-equivalent",
+      "rationale": "React Native has no implicit browser contexts or download fallback. The explicit host adapter receives frozen resolved browsing-context or download requests with strict precedence, admission, and failure handling.",
+      "evidence": [
+        "example/expo/src/renderer.test.ts",
+        "protocol/README.md"
+      ]
     },
     {
       "id": "forms.successful-controls",
