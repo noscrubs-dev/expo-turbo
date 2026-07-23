@@ -4105,6 +4105,7 @@ describe("React protocol renderer", () => {
 
   test("applies component-declared preserve and reset state policies during morph", async () => {
     let nextInstance = 0
+    const canFocusCalls: string[] = []
     const disposed: number[] = []
     const focusCalls: string[] = []
     const unmounted: number[] = []
@@ -4159,7 +4160,10 @@ describe("React protocol renderer", () => {
     const resetNode = session.tree.getElementById("reset")
     const renderer = render(session, componentRegistry, {
       autofocus: {
-        canFocus: (nodeKey) => nodeKey === "id:reset",
+        canFocus(nodeKey) {
+          canFocusCalls.push(nodeKey)
+          return nodeKey === "id:reset"
+        },
         focus(nodeKey) {
           focusCalls.push(nodeKey)
           focusedId = nodeKey
@@ -4190,6 +4194,7 @@ describe("React protocol renderer", () => {
     expect(rendered().preserve).toMatchObject({ instance: 1, title: "before" })
     expect(rendered().reset).toMatchObject({ instance: 2, title: "before" })
     expect(disposed).toEqual([])
+    expect(canFocusCalls).toEqual([])
     expect(focusCalls).toEqual([])
     expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([])
@@ -4208,6 +4213,7 @@ describe("React protocol renderer", () => {
     expect(rendered().preserve).toMatchObject({ instance: 1, title: "after" })
     expect(rendered().reset).toMatchObject({ instance: 3, title: "after" })
     expect(disposed).toEqual([2])
+    expect(canFocusCalls).toEqual(["id:reset"])
     expect(focusCalls).toEqual(["id:reset"])
     expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([2])
