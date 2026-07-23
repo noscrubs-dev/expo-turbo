@@ -375,6 +375,39 @@ describe("document session snapshots", () => {
     expect(document.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
   })
 
+  test("moves and preserves an opaque permanent Frame during a current-document morph", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"><turbo-frame id="permanent-frame" src="/client" refresh="morph" data-turbo-permanent=""><ClientOwned id="locked"/></turbo-frame></Group><Group id="right"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = document.tree.getElementById("permanent-frame")
+    const locked = document.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || !locked) throw new Error("Expected permanent Frame fixtures")
+    const reloads: (readonly ProtocolElement[])[] = []
+    registerDocumentMorphFrameReloader(document, (frames) => reloads.push(frames))
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"/><Group id="right"><turbo-frame id="permanent-frame" src="/server" refresh="morph"><ServerOwned id="ignored"/></turbo-frame></Group></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    const right = document.tree.getElementById("right")
+    if (!right) throw new Error("Expected permanent Frame destination")
+    expect(document.tree.getElementById("permanent-frame")).toBe(frame)
+    expect(document.tree.getElementById("locked")).toBe(locked)
+    expect(document.tree.getElementById("ignored")).toBeUndefined()
+    expect(frame.parent).toBe(right)
+    expect(attributeValue(frame, "src")).toBe("/client")
+    expect(document.getNodeSnapshot(frame.key)?.morphRevision).toBe(0)
+    notifyDocumentMorphFrameReloads(document, document.tree.document, document.treeGeneration)
+    expect(reloads).toEqual([])
+  })
+
   test("matches anonymous document wrappers through stable descendant ID sets", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(

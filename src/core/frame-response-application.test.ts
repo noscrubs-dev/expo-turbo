@@ -439,6 +439,42 @@ describe("prepared Frame mutations", () => {
     expect(session.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
   })
 
+  test("moves an opaque permanent nested Frame during a direct Frame reload morph", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details" src="/old" refresh="morph"><Group id="left"><turbo-frame id="permanent-frame" src="/client" refresh="morph" data-turbo-permanent=""><ClientOwned id="locked"/></turbo-frame></Group><Group id="right"/></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const permanentFrame = session.tree.getElementById("permanent-frame")
+    const locked = session.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || permanentFrame?.kind !== "frame" || !locked) {
+      throw new Error("invalid permanent nested Frame fixture")
+    }
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Group id="left"/><Group id="right"><turbo-frame id="permanent-frame" src="/server" refresh="morph"><ServerOwned id="ignored"/></turbo-frame></Group></turbo-frame>',
+    )
+
+    commitPreparedFrameMutation(
+      session,
+      prepareFrameMutation(session, frame, prepared, {
+        finalUrl: "https://example.test/final",
+        renderMethod: "morph",
+      }),
+    )
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("missing permanent nested Frame destination")
+    expect(session.tree.getElementById("permanent-frame")).toBe(permanentFrame)
+    expect(session.tree.getElementById("locked")).toBe(locked)
+    expect(session.tree.getElementById("ignored")).toBeUndefined()
+    expect(permanentFrame.parent).toBe(right)
+    expect(attributeValue(permanentFrame, "src")).toBe("/client")
+    expect(session.getNodeSnapshot(permanentFrame.key)?.morphRevision).toBe(0)
+  })
+
   test("matches anonymous Frame wrappers through stable descendant ID sets", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

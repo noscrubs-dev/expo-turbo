@@ -4176,6 +4176,90 @@ describe("React protocol renderer", () => {
     act(() => renderer.unmount())
   })
 
+  test("keeps one mounted Frame controller while an opaque permanent Frame changes parents", async () => {
+    let nextBoundary = 0
+    const boundaryUnmounts: number[] = []
+    let renderedController: FrameController | undefined
+    function Container(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement("container", null, props.children)
+    }
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      const [instance] = useState(() => ++nextBoundary)
+      useEffect(
+        () => () => {
+          boundaryUnmounts.push(instance)
+        },
+        [instance],
+      )
+      renderedController = props.controller
+      return createElement("frame-boundary", { instance }, props.children)
+    }
+    const container = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: Container,
+      schema: z.object({}),
+      tag: "Container",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [container],
+        name: "permanent-frame-reparent-component",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Container id="panel"><Container id="left"><turbo-frame id="frame" data-turbo-permanent=""><DemoText id="copy">Client</DemoText></turbo-frame></Container><Container id="right"/></Container></Gallery>',
+      ),
+    )
+    const frame = session.tree.getElementById("frame")
+    const copy = session.tree.getElementById("copy")
+    if (frame?.kind !== "frame" || !copy) throw new Error("permanent Frame fixture is missing")
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: () => {
+            throw new Error("permanent Frame reparent must not fetch")
+          },
+        },
+        { next: () => "permanent-frame-request" },
+      ),
+    )
+    const controller = frames.get("frame")
+    const renderer = render(session, componentRegistry, {
+      frameComponent: FrameBoundary,
+      frames,
+    })
+
+    expect(renderedController).toBe(controller)
+    expect(controller.state.connected).toBe(true)
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><Container id="left"/><Container id="right"><turbo-frame id="frame" src="/ignored"><DemoText id="ignored">Server</DemoText></turbo-frame></Container></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("frame")).toBe(frame)
+    expect(session.tree.getElementById("copy")).toBe(copy)
+    expect(session.tree.getElementById("ignored")).toBeUndefined()
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("permanent Frame destination is missing")
+    expect(frame.parent).toBe(right)
+    expect(attributeValue(frame, "src")).toBeUndefined()
+    expect(frames.get("frame")).toBe(controller)
+    expect(renderedController).toBe(controller)
+    expect(controller.state.connected).toBe(true)
+    expect(renderer.root.findByType("text").children).toEqual(["Client"])
+
+    act(() => renderer.unmount())
+    expect(controller.state.connected).toBe(false)
+    expect(boundaryUnmounts).toHaveLength(nextBoundary)
+  })
+
   test("restores exact retained focus after a cross-parent morph remount", async () => {
     const mounted = new Set<string>()
     const focusCalls: string[] = []
