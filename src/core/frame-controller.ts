@@ -402,10 +402,12 @@ export class FrameController {
         if (report.status !== "promoted" && report.frame && this.connected) {
           stageFrameAutofocusReport(this, report.frame, this.session, this.frameNode)
         }
+        const rendering = this.frameRenderResult(prepared, epoch)
+        const rendered = typeof rendering === "boolean" ? rendering : await rendering
+        this.finishAfterFrameRender(prepared, rendered, epoch, report)
         let committedHistoryFailure: FrameCommitError | undefined
         if (historyPlan && report.status === "completed") {
           try {
-            this.publish()
             await finalizeFrameHistoryVisit(
               historyPlan,
               () => epoch === this.loadEpoch && this.connected,
@@ -415,19 +417,9 @@ export class FrameController {
             committedHistoryFailure = new FrameCommitError(
               frameHistoryCommittedCandidate(historyPlan),
             )
-          } finally {
-            if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
           }
         }
         if (this.visitFinalization === visitFinalization) this.visitFinalization = undefined
-        const rendering = this.frameRenderResult(prepared, epoch)
-        const rendered = typeof rendering === "boolean" ? rendering : await rendering
-        this.finishAfterFrameRender(
-          prepared,
-          rendered,
-          epoch,
-          committedHistoryFailure?.outcome ?? report,
-        )
         if (committedHistoryFailure) {
           if (epoch === this.loadEpoch) {
             for (const listener of this.errorListeners) listener(committedHistoryFailure)
