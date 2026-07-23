@@ -310,7 +310,9 @@ export function DemoLiveMorphPanel({ proof }: Readonly<{ proof: DemoLiveMorphRun
         </Text>
       </Pressable>
       <Pressable
-        accessibilityLabel="Visit outer Frame and pause before render"
+        accessibilityLabel={
+          paused ? "Outer Frame render paused" : "Visit outer Frame and pause before render"
+        }
         accessibilityRole="button"
         disabled={pendingAction !== undefined}
         onPress={visitOuterPaused}
