@@ -1,0 +1,55 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- scrollUntilVisible:
+    element:
+      text: First name
+    direction: DOWN
+    timeout: 60000
+- tapOn: Ada
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: Nested Frame refresh morph
+    direction: DOWN
+    timeout: 240000
+    speed: 80
+    visibilityPercentage: 50
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: Standalone Rails Frame form
+    direction: UP
+    timeout: 60000
+    speed: 30
+    visibilityPercentage: 50
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: Choose a text file
+    direction: DOWN
+    timeout: 60000
+- tapOn: Choose a text file
+- extendedWaitUntil:
+    visible: Recent
+    timeout: 30000
+- tapOn: expo-turbo-android-picked.txt
+- scrollUntilVisible:
+    element:
+      text: "Selected: expo-turbo-android-picked.txt"
+    direction: DOWN
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Validate selected attachment (return 422)
+    direction: DOWN
+    timeout: 60000
+- tapOn: Validate selected attachment (return 422)
+- extendedWaitUntil:
+    visible: Retry this selected attachment
+    timeout: 30000
+- assertVisible: "Selected: expo-turbo-android-picked.txt"

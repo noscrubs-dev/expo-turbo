@@ -236,7 +236,7 @@ The manual **Release** workflow defaults to a non-publishing candidate run on me
 - [x] Native autofocus/autoscroll compatibility uses explicit host-registered focus targets, post-focus reveal handles, and mounted Frame boundaries. Automatic browser-style focusability, arbitrary scroll-container discovery, and implicit virtualizer traversal are N/A on React Native; hosts register the exact nested container or virtualized target they own. Android interaction, release-build, and physical-device confirmation remain part of the device-conformance gate rather than this capability disposition.
 - [x] Automatic browser DOM control discovery is N/A on React Native. App-installed components explicitly register live native descriptors; server-authored `name`, `value`, `checked`, or submitter-looking XML attributes never synthesize a successful value without that host registration. Registered descriptors cover the native-equivalent successful-control ordering and semantics above.
 - [x] The standalone Rails example accepts one deliberately constrained `text/plain` POST profile: UTF-8 `profile[first_name]` followed by `commit=save`, in that exact order with CRLF line endings and a final CRLF. It does not install a generic Rails parameter decoder or body-based method override.
-- [ ] Android native Files-picker multipart interaction, physical-device confirmation, broader host picker/URI-file integration, broader host upload profiles, and any broader host-specific `text/plain` profile. The installed Android Release emulator fallback-Blob path is covered.
+- [ ] Android physical-device multipart confirmation, broader host picker/URI-file integration, broader host upload profiles, and any broader host-specific `text/plain` profile. Installed Android Release emulator flows cover both the fallback Blob and native Files-picker document paths.
 - [x] Opt-in `422` Turbo Stream `replace method="morph"` for compatible application IDs, including the standalone Rails form's controlled local-draft preservation proof. Ordinary XML Frame validation remains replacement-only.
 - [x] Shared logical morph lifecycle for every implemented current-document, direct Frame reload, and exact Stream morph path: frozen `before-morph-element` callbacks may veto a matched element or an omitted-element removal; `before-morph-attribute` may independently veto an update/addition or removal; and `morph-element` observes successfully committed retained elements in child-before-parent completion order. Listener snapshots are stable, callbacks must be synchronous and return `undefined`, reentrant session/tree mutation fails closed, and notification faults are isolated. Native logical handles replace DOM targets/bubbling; permanent and opaque nested-Frame plans stay silent.
 - [ ] Remaining lifecycle-event compatibility: browser DOM targets/bubbling and physical-paint timing; physical Stream renderer-flush timing; and browser DOM-attribute/repaint timing.
@@ -264,6 +264,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-23**:
+
+- Changed: Added a Maestro-only Android Release flow through the native Files picker and real Rails multipart retry boundary.
+- Why: The fallback Blob proved React Native multipart transport but did not prove Android's provider-backed document result or cached Expo `File`.
+- Impact: The Release emulator selects the checked-in text fixture from Android Files, submits it to Rails, receives matching `422` XML, and retains the selected filename for retry. Physical Android evidence remains open.
 
 **2026-07-23**:
 
