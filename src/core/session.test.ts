@@ -143,6 +143,68 @@ describe("document session snapshots", () => {
     expect(disposed).toEqual(["removed"])
   })
 
+  test("retains the application root while its id is added, changed, or removed", () => {
+    for (const candidate of [
+      { currentId: undefined, incomingId: "gallery" },
+      { currentId: "gallery", incomingId: "next-gallery" },
+      { currentId: "gallery", incomingId: undefined },
+    ] as const) {
+      const currentAttribute = candidate.currentId ? ` id="${candidate.currentId}"` : ""
+      const incomingAttribute = candidate.incomingId ? ` id="${candidate.incomingId}"` : ""
+      const document = session(
+        `<Gallery${currentAttribute} tone="before"><Panel id="retained" tone="before"/></Gallery>`,
+      )
+      const root = document.tree.document.children[0]
+      const retained = document.tree.getElementById("retained")
+      if (root?.kind !== "element" || !retained) {
+        throw new Error("Expected document root id transition fixtures")
+      }
+
+      morphCurrentDocument(
+        document,
+        parseExpoTurboDocument(
+          `<Gallery${incomingAttribute} tone="after"><Panel id="retained" tone="after"/></Gallery>`,
+        ),
+      )
+
+      expect(document.tree.document.children[0]).toBe(root)
+      expect(document.tree.getElementById("retained")).toBe(retained)
+      expect(attributeValue(root, "id")).toBe(candidate.incomingId)
+      expect(attributeValue(root, "tone")).toBe("after")
+      if (candidate.currentId) {
+        expect(document.tree.getElementById(candidate.currentId)).toBeUndefined()
+      }
+      if (candidate.incomingId) {
+        expect(document.tree.getElementById(candidate.incomingId)).toBe(root)
+      }
+    }
+  })
+
+  test("rejects a document root id that collides with an active descendant", () => {
+    const document = session(
+      '<Gallery id="gallery" tone="before"><Panel id="next-gallery" tone="before"/></Gallery>',
+    )
+    const tree = document.tree
+    const root = document.tree.getElementById("gallery")
+    const descendant = document.tree.getElementById("next-gallery")
+
+    expect(() =>
+      morphCurrentDocument(
+        document,
+        parseExpoTurboDocument(
+          '<Gallery id="next-gallery" tone="after"><Panel id="replacement" /></Gallery>',
+        ),
+      ),
+    ).toThrow(TargetError)
+
+    expect(document.tree).toBe(tree)
+    expect(document.tree.getElementById("gallery")).toBe(root)
+    expect(document.tree.getElementById("next-gallery")).toBe(descendant)
+    expect(document.tree.getElementById("replacement")).toBeUndefined()
+    expect(document.treeGeneration).toBe(0)
+    expect(document.revision).toBe(0)
+  })
+
   test("retains only outermost compatible refresh-morph Frames for post-render reload", () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(

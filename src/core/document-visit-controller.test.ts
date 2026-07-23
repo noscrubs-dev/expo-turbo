@@ -5176,20 +5176,21 @@ describe("Document visit controller", () => {
     const refreshing = controller.refreshCurrent("https://example.test/current", "morph")
     pending[0]?.resolve(
       response(
-        '<Gallery id="gallery" data-turbo-root="/app" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" tone="after"/><Anonymous tone="after"/><Added id="added"/></Gallery>',
+        '<Gallery id="next-gallery" data-turbo-root="/app" tone="after"><Panel id="permanent" data-turbo-permanent="" tone="incoming"><Locked id="locked" value="incoming"/></Panel><Panel id="retained" tone="after"/><Anonymous tone="after"/><Added id="added"/></Gallery>',
         { url: "https://example.test/current" },
       ),
     )
 
     expect(await refreshing).toMatchObject({ status: "committed" })
     expect(session.tree).toBe(tree)
-    expect(session.tree.getElementById("gallery")).toBe(root)
+    expect(session.tree.getElementById("gallery")).toBeUndefined()
+    expect(session.tree.getElementById("next-gallery")).toBe(root)
     expect(session.tree.getElementById("retained")).toBe(retained)
     expect(root?.children[2]).toBe(anonymous)
     expect(anonymous?.kind === "element" && attributeValue(anonymous, "tone")).toBe("after")
     expect(session.tree.getElementById("permanent")).toBe(permanent)
     expect(session.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
-    const currentGallery = session.tree.getElementById("gallery")
+    const currentGallery = session.tree.getElementById("next-gallery")
     const currentRetained = session.tree.getElementById("retained")
     const currentPermanent = session.tree.getElementById("permanent")
     if (!currentGallery || !currentRetained || !currentPermanent) {
@@ -5442,19 +5443,15 @@ describe("Document visit controller", () => {
         responseXml: '<Other><Panel id="stable" tone="after"/></Other>',
       },
       {
-        documentXml: '<Gallery id="gallery"><Panel id="stable" tone="before"/></Gallery>',
-        name: "absent application root ID",
-        responseXml: '<Gallery><Panel id="stable" tone="after"/></Gallery>',
-      },
-      {
-        documentXml: '<Gallery id="gallery"><Panel id="stable" tone="before"/></Gallery>',
-        name: "changed application root ID",
-        responseXml: '<Gallery id="next"><Panel id="stable" tone="after"/></Gallery>',
-      },
-      {
         documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
         name: "permanent application root",
         responseXml: '<Gallery data-turbo-permanent=""><Panel id="stable" tone="after"/></Gallery>',
+      },
+      {
+        documentXml:
+          '<Gallery id="gallery"><Panel id="next-gallery" tone="before"/><Panel id="stable" tone="before"/></Gallery>',
+        name: "application root ID collision",
+        responseXml: '<Gallery id="next-gallery"><Panel id="stable" tone="after"/></Gallery>',
       },
     ] as const) {
       const history = historyFixture()
