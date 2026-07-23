@@ -914,6 +914,23 @@ export class FormSubmissionController {
             discardFrameMissingResponseBody(pendingMissingEvent)
             throw new StateError("Frame-missing response has no lifecycle state")
           }
+          const activeFrame =
+            pendingMissingEvent.detail.frameId === identity.originFrameId
+              ? identity.originFrame
+              : identity.destinationFrame
+          if (!activeFrame) {
+            discardFrameMissingResponseBody(pendingMissingEvent)
+            throw new StateError("Form submission proposal has no exact missing-response Frame", {
+              frameId: pendingMissingEvent.detail.frameId,
+            })
+          }
+          if (response.redirected || response.classification === "success") {
+            this.session.setAttribute(activeFrame.key, "src", response.url)
+            if (!this.isCurrent(activeLease, proposal)) {
+              discardFrameMissingResponseBody(pendingMissingEvent)
+              return settle(this.canceled(response, proposal.destination))
+            }
+          }
           try {
             lifecycle[FRAME_LIFECYCLE_MISSING_DISPATCH](pendingMissingEvent)
           } catch (error) {
