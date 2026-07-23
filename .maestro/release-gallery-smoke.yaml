@@ -1,0 +1,14 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- scrollUntilVisible:
+    element:
+      text: Frame-scoped native link
+    direction: DOWN
+    timeout: 60000
+- waitForAnimationToEnd
+- assertVisible: Submit a generated form and promote this mounted Frame through shared history.
