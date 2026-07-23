@@ -53,6 +53,7 @@ const BROADCAST_PATH = "/api/expo_turbo/demo/broadcast";
 const DOCUMENT_PATH = "/api/expo_turbo/demo/document";
 const PROTECTED_BROADCAST_PATH = "/api/expo_turbo/demo/protected_broadcast";
 const PROTECTED_DOCUMENT_PATH = "/api/expo_turbo/demo/protected_document";
+const PROTECTED_REVOCATION_PATH = "/api/expo_turbo/demo/protected_revocation";
 const PROTECTED_TICKET_PATH = "/api/expo_turbo/demo/protected_ticket";
 const CABLE_PATH = "/cable";
 const NATIVE_CABLE_TICKET_HEADER = "X-Expo-Turbo-Demo-Ticket";
@@ -111,6 +112,7 @@ export interface DemoLiveCableRuntime {
   readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
   readonly streamSources: CableStreamSourceRegistry;
+  revokeCableCredentials(): Promise<void>;
   rotateCableCredentials(): void;
   subscribeErrors(listener: (error: Error | undefined) => void): () => void;
   dispose(): void;
@@ -121,6 +123,7 @@ export type DemoLiveCableLifecycle = LifecycleAdapter;
 
 export interface DemoLiveCablePanelOptions {
   readonly description?: string;
+  readonly revokeCredentialsButtonLabel?: string | false;
   readonly rotateCredentialsButtonLabel?: string | false;
   readonly refreshButtonLabel?: string | false;
   readonly replaceButtonLabel?: string;
@@ -296,6 +299,7 @@ export function resolveDemoLiveCableEndpoints(origin: string): DemoLiveCableEndp
 interface DemoLiveCablePaths {
   readonly broadcastPath: string;
   readonly documentPath: string;
+  readonly revocationPath?: string;
 }
 
 type DemoLiveCableFactory = (
@@ -337,6 +341,9 @@ async function createDemoLiveCableRuntimeFor(
     throw new StateError("Standalone Rails demo options are invalid");
   }
   const endpoints = resolveDemoLiveCableEndpointsFor(options.origin, paths);
+  const revocationUrl = paths.revocationPath
+    ? new URL(paths.revocationPath, new URL(options.origin).origin).toString()
+    : undefined;
   const fetch = options.fetch ?? nativeDemoLiveFetch;
   if (typeof fetch !== "function") {
     throw new StateError("Standalone Rails demo fetch is invalid");
@@ -453,6 +460,19 @@ async function createDemoLiveCableRuntimeFor(
     }
   };
 
+  const revokeCableCredentials = async (): Promise<void> => {
+    if (!revocationUrl) throw new StateError("Standalone Rails credential revocation is unavailable");
+    const response = await fetch(revocationUrl, {
+      headers: { Accept: EXPO_TURBO_MIME_TYPE },
+      method: "POST",
+    });
+    if (response.status !== 204) {
+      throw new RequestError("The standalone Rails credential revocation request failed", {
+        responseStatus: response.status,
+      });
+    }
+  };
+
   return Object.freeze({
     broadcast: () => broadcast("replace"),
     broadcastRefresh: () => broadcast("refresh"),
@@ -464,6 +484,7 @@ async function createDemoLiveCableRuntimeFor(
     documentUrl: endpoints.documentUrl,
     formLinks,
     frames,
+    revokeCableCredentials,
     rotateCableCredentials(): void {
       cable.rotateCredentials();
     },
@@ -553,6 +574,7 @@ export async function createDemoLiveProtectedCableRuntime(
     {
       broadcastPath: PROTECTED_BROADCAST_PATH,
       documentPath: PROTECTED_DOCUMENT_PATH,
+      revocationPath: PROTECTED_REVOCATION_PATH,
     },
     createProtectedCable,
   );
@@ -607,6 +629,7 @@ const protectedCablePanelOptions = Object.freeze({
     "This native-only panel fetches a fresh short-lived standalone Rails ticket with no-store caching for each credential-bearing transport generation, then sends it only as the X-Expo-Turbo-Demo-Ticket native WebSocket header. The Action Cable URL has no credential query, and Rails must resolve that header-derived subject before it authorizes this exact protected grant and opaque stream token. It shares the example's injected AppState, Expo Network, heartbeat, and finite backoff policy, but is not a production user, revocation teardown, Android-interaction, or physical-device policy.",
   refreshButtonLabel: false,
   replaceButtonLabel: "Broadcast protected XML replace",
+  revokeCredentialsButtonLabel: "Revoke protected Cable ticket",
   rotateCredentialsButtonLabel: "Rotate protected Cable ticket",
   sourceKey: DEMO_PROTECTED_STREAM_SOURCE_KEY,
   title: "Header-ticket Action Cable proof",
@@ -617,13 +640,14 @@ export function DemoLiveCablePanel({
     "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while any re-confirmed lifecycle or network transport reloads only that active Frame. This example host injects AppState, Expo Network, a bounded stale monitor, and five finite exponential retry attempts; it has no user document navigation, server-owned Frame form, production auth, or unbounded client retry.",
   proof,
   ownsRuntime = true,
+  revokeCredentialsButtonLabel = false,
   rotateCredentialsButtonLabel = false,
   refreshButtonLabel = "Refresh canonical document",
   replaceButtonLabel = "Broadcast XML replace",
   sourceKey = DEMO_STREAM_SOURCE_KEY,
   title = "Anonymous Action Cable proof",
 }: Readonly<{ ownsRuntime?: boolean; proof: DemoLiveCableRuntime }> & DemoLiveCablePanelOptions) {
-  const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | undefined>();
+  const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | "revoke" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
   const [recovered, setRecovered] = useState(false);
@@ -749,6 +773,35 @@ export function DemoLiveCablePanel({
           >
             <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
               {rotateCredentialsButtonLabel}
+            </Text>
+          </Pressable>
+        ) : null}
+        {revokeCredentialsButtonLabel ? (
+          <Pressable
+            accessibilityLabel={revokeCredentialsButtonLabel}
+            accessibilityRole="button"
+            disabled={broadcasting !== undefined || !connected}
+            onPress={() => {
+              if (broadcasting || !connected) return;
+              setRecovered(false);
+              setBroadcasting("revoke");
+              proof.clearError();
+              setError(undefined);
+              void proof
+                .revokeCableCredentials()
+                .catch((nextError) => setError(asDisplayError(nextError)))
+                .finally(() => setBroadcasting(undefined));
+            }}
+            style={({ pressed }) => ({
+              alignItems: "center",
+              backgroundColor: pressed || broadcasting === "revoke" ? "#74352f" : "#933f36",
+              borderRadius: 12,
+              opacity: broadcasting !== undefined || !connected ? 0.65 : 1,
+              padding: 14,
+            })}
+          >
+            <Text style={{ color: "white", fontSize: 15, fontWeight: "600" }}>
+              {broadcasting === "revoke" ? "Revoking…" : revokeCredentialsButtonLabel}
             </Text>
           </Pressable>
         ) : null}
