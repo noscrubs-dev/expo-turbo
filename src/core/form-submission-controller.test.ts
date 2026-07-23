@@ -5280,36 +5280,28 @@ describe("FormSubmissionController", () => {
   })
 
   test("keeps ordinary empty responses inert and applies redirected empty Frame sources", async () => {
-    for (const fixtureCase of [
-      { body: "unused", reads: 0, status: 204 },
-      { body: " \n ", reads: 1, status: 201 },
-    ] as const) {
-      const session = fixture()
-      session.setAttribute("id:document-form", "method", "post")
-      const tree = session.tree
-      const revision = session.revision
-      let reads = 0
-      const controller = new FormSubmissionController(session, {
-        fetch: async (request) =>
-          response(request, fixtureCase.body, {
-            headers: {},
-            status: fixtureCase.status,
-            text: async () => {
-              reads += 1
-              return fixtureCase.body
-            },
-          }),
-      })
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const tree = session.tree
+    const revision = session.revision
+    let reads = 0
+    const result = await new FormSubmissionController(session, {
+      fetch: async (request) =>
+        response(request, "unused", {
+          headers: {},
+          status: 204,
+          text: async () => {
+            reads += 1
+            return "unused"
+          },
+        }),
+    }).submit(proposal(registry(session, "document-form"), "empty-204"))
 
-      const result = await controller.submit(
-        proposal(registry(session, "document-form"), `empty-${fixtureCase.status}`),
-      )
-      expect(result).toMatchObject({ application: "empty", status: "empty" })
-      expect(Object.isFrozen(result)).toBe(true)
-      expect(reads).toBe(fixtureCase.reads)
-      expect(session.tree).toBe(tree)
-      expect(session.revision).toBe(revision)
-    }
+    expect(result).toMatchObject({ application: "empty", status: "empty" })
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(reads).toBe(0)
+    expect(session.tree).toBe(tree)
+    expect(session.revision).toBe(revision)
 
     for (const fixtureCase of [
       { body: "unused", status: 204 },
@@ -5346,6 +5338,52 @@ describe("FormSubmissionController", () => {
       expect(frame.children).toBe(children)
       expect(attributeValue(frame, "src")).toBe(finalUrl)
     }
+  })
+
+  test("applies a blank document 201 as an empty successful visit", async () => {
+    const session = fixture()
+    session.setAttribute("id:document-form", "method", "post")
+    const history = historyFixture(session)
+    const lifecycle = new DocumentVisitLifecycle()
+    const events: string[] = []
+    lifecycle.subscribe("before-visit", (event) => {
+      events.push(`before:${event.detail.url}`)
+    })
+    lifecycle.subscribe("visit", (event) => {
+      events.push(`visit:${event.detail.action}:${event.detail.url}`)
+    })
+    const finalUrl = "https://example.test/created"
+    const result = await new FormSubmissionController(
+      session,
+      {
+        fetch: async (request) =>
+          response(request, " \n ", {
+            headers: {},
+            status: 201,
+            url: finalUrl,
+          }),
+      },
+      { history: history.history, visitLifecycle: lifecycle },
+    ).submit(proposal(registry(session, "document-form"), "empty-201"))
+
+    expect(result).toMatchObject({
+      application: "document",
+      responseStatus: 201,
+      status: "applied",
+    })
+    expect(session.tree.document.url).toBe(finalUrl)
+    expect(session.tree.document.children).toEqual([])
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 5,
+          url: finalUrl,
+        },
+        method: "push",
+      },
+    ])
+    expect(events).toEqual([`before:${finalUrl}`, `visit:advance:${finalUrl}`])
   })
 
   test("applies matching Frame success and error XML with exact src ownership", async () => {

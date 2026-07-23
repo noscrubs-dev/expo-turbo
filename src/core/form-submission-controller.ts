@@ -149,7 +149,13 @@ import {
   type StreamDispatchReport,
   streamRenderSchedulerOption,
 } from "./streams"
-import { type DocumentTree, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
+import {
+  DocumentTree,
+  isElement,
+  type ProtocolDocument,
+  type ProtocolElement,
+  type ProtocolNode,
+} from "./tree"
 import { classifyTopLevelLocation } from "./visitability"
 
 export type FormSubmissionProposalFactory = (signal: AbortSignal) => FormSubmissionProposal
@@ -1206,6 +1212,7 @@ export class FormSubmissionController {
   ): Promise<FormSubmissionReport> {
     const destination = proposal.destination
     const metadata = responseMetadata(candidate)
+    let emptyDocumentTree: DocumentTree | undefined
     if (candidate.status === "empty") {
       if (candidate.redirected && destination.kind === "frame") {
         const activeFrame = identity.destinationFrame
@@ -1238,7 +1245,18 @@ export class FormSubmissionController {
           )
         }
       }
-      return Object.freeze({ ...metadata, application: "empty", destination, status: "empty" })
+      if (candidate.responseStatus === 201 && destination.kind === "document") {
+        const document: ProtocolDocument = {
+          children: [],
+          key: this.session.tree.document.key,
+          kind: "document",
+          parent: null,
+          url: candidate.url,
+        }
+        emptyDocumentTree = new DocumentTree(document)
+      } else {
+        return Object.freeze({ ...metadata, application: "empty", destination, status: "empty" })
+      }
     }
 
     if (candidate.status === "stream") {
@@ -1482,10 +1500,15 @@ export class FormSubmissionController {
         responseStatus: candidate.responseStatus,
       })
     }
-    const tree = parseExpoTurboDocument(candidate.body, {
-      ...(this.options.limits ? { limits: this.options.limits } : {}),
-      url: appliedUrl,
-    })
+    const tree =
+      emptyDocumentTree ??
+      (candidate.status === "xml"
+        ? parseExpoTurboDocument(candidate.body, {
+            ...(this.options.limits ? { limits: this.options.limits } : {}),
+            url: appliedUrl,
+          })
+        : undefined)
+    if (!tree) throw new StateError("Document form response has no applicable tree")
     const streams = embeddedStreams(tree)
     for (const stream of streams) tree.removeNode(stream)
     if (!this.isCurrent(lease, proposal)) return this.canceled(candidate, destination)
