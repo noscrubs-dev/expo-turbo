@@ -1309,6 +1309,134 @@ test("matches upstream Turbo for a Frame form Stream response", async () => {
   }
 })
 
+test("matches upstream Turbo prevented missing-Frame handling for a Frame form", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'
+  const missingResponse = '<main><p id="outside">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("profile")
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!form || !expoFrameBefore) throw new Error("Expo missing Frame form fixture is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  const expoEvents: unknown[] = []
+  const lifecycle = new FrameLifecycle()
+  lifecycle.subscribe("frame-missing", (event) => {
+    expoEvents.push({
+      frameId: event.detail.frameId,
+      response: event.detail.response,
+      type: event.type,
+    })
+    event.preventDefault()
+  })
+  let expoRequest: TurboRequest | undefined
+  const expoResult = await new FormSubmissionController(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => missingResponse,
+          url: "https://example.test/profile",
+        }
+      },
+    },
+    { frameLifecycle: lifecycle },
+  ).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-frame-form-missing" },
+      signal,
+    }),
+  )
+
+  const browserEvents: unknown[] = []
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  let browserFrameListenerTarget: HappyElement | undefined
+  const handleBrowserMissing = (received: HappyEvent) => {
+    const event = received as unknown as CustomEvent<{ response: Response }>
+    browserEvents.push({
+      frameId: (event.target as Element | null)?.id,
+      response: {
+        redirected: event.detail.response.redirected,
+        status: event.detail.response.status,
+        url: event.detail.response.url,
+      },
+      type: event.type.replace("turbo:", ""),
+    })
+    event.preventDefault()
+  }
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(missingResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/profile",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const browserForm = browser.document.getElementById("profile")
+    const submitter = browser.document.getElementById("submit-profile")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser missing Frame form target is missing")
+    }
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser missing Frame form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser missing Frame form submitter is missing")
+    }
+    browserFrameBefore.addEventListener("turbo:frame-missing", handleBrowserMissing)
+    browserFrameListenerTarget = browserFrameBefore
+    browserForm.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      responseStatus: 200,
+      status: "prevented",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(expoEvents).toEqual(browserEvents)
+    expect(browser.document.getElementById("details")).toBe(browserFrameBefore)
+    expect(session.tree.getElementById("details")).toBe(expoFrameBefore)
+    const browserResult = normalizeBrowserNode(browserFrameBefore)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser missing Frame form differential result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameBefore)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browserFrameListenerTarget?.removeEventListener("turbo:frame-missing", handleBrowserMissing)
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo for an empty Frame form 204 response", async () => {
   const initialDocument =
     '<main id="root"><turbo-frame id="details" src="/details"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'

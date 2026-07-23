@@ -5894,7 +5894,9 @@ describe("FormSubmissionController", () => {
     for (const status of [200, 422, 500]) {
       const session = fixture()
       const lifecycle = new FrameLifecycle()
-      const events: Array<Readonly<{ frameId: string; status: number; url: string }>> = []
+      const events: Array<
+        Readonly<{ frameId: string; frameSrc: string | undefined; status: number; url: string }>
+      > = []
       lifecycle.subscribe("frame-missing", (event) => {
         expect(Object.isFrozen(event)).toBe(true)
         expect(Object.isFrozen(event.detail)).toBe(true)
@@ -5902,6 +5904,10 @@ describe("FormSubmissionController", () => {
         expect("body" in event.detail.response).toBe(false)
         events.push({
           frameId: event.detail.frameId,
+          frameSrc: attributeValue(
+            session.tree.getElementById(event.detail.frameId) as never,
+            "src",
+          ),
           status: event.detail.response.status,
           url: event.detail.response.url,
         })
@@ -5920,7 +5926,14 @@ describe("FormSubmissionController", () => {
       ).submit(proposal(registry(session, "form-a"), `missing-${status}`))
 
       await expect(submitting).rejects.toBeInstanceOf(FrameMissingError)
-      expect(events).toEqual([{ frameId: "frame-a", status, url: finalUrl }])
+      expect(events).toEqual([
+        {
+          frameId: "frame-a",
+          frameSrc: finalUrl,
+          status,
+          url: finalUrl,
+        },
+      ])
       expect(session.tree.getElementById("form-a")).toBeDefined()
     }
   })
