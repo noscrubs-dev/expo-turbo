@@ -4,6 +4,7 @@ import {
   type DocumentHistoryHostAdapter,
   type DocumentHistoryState,
   type DocumentLoadReport,
+  DocumentPrefetchCache,
   DocumentPreloader,
   DocumentRequestLoader,
   type DocumentSession,
@@ -30,6 +31,21 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo" data-turbo-action="restore">
     <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
   </DemoDocumentLink>
+</Gallery>`;
+
+const PRESS_IN_PREFETCH_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="press-in-prefetch-reused" title="Press-in response reused" tone="positive" style-tokens="space:comfortable surface:elevated">
+    <DemoText>The authoritative document came from the one-shot native press-in request without a second physical GET.</DemoText>
+  </DemoCard>
+  <DemoDocumentLink href="/demo" data-turbo-action="restore">
+    <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
+  </DemoDocumentLink>
+</Gallery>`;
+
+const PRESS_IN_CANONICAL_FALLBACK_DOCUMENT = `<Gallery data-turbo-root="/demo">
+  <DemoCard id="press-in-prefetch-missed" title="Canonical fallback fetched" style-tokens="tone:warning space:comfortable surface:elevated">
+    <DemoText>The press-in request was unavailable when activation began, so the ordinary canonical GET completed.</DemoText>
+  </DemoCard>
 </Gallery>`;
 
 const CACHED_PREVIEW_DOCUMENT = `<Gallery data-turbo-root="/demo">
@@ -218,6 +234,11 @@ export function createDemoFixtureFetchAdapter(
                 CANONICAL_PREVIEW_DOCUMENT,
                 PREVIEW_REVALIDATION_DELAY_MS,
               );
+      } else if (url.pathname === "/demo/linked" && url.search === "?prefetch=reuse") {
+        xml =
+          request.headers["X-Sec-Purpose"] === "prefetch"
+            ? PRESS_IN_PREFETCH_DOCUMENT
+            : PRESS_IN_CANONICAL_FALLBACK_DOCUMENT;
       } else if (url.pathname === "/demo/linked" && url.search === "?refresh=scroll") {
         xml = refreshScenarioPending === undefined ? REFRESH_SCENARIO_DOCUMENT : REFRESHED_DOCUMENT;
         refreshScenarioPending = undefined;
@@ -338,6 +359,7 @@ export function createDemoDocumentRuntime(
     historyHost,
   );
   const snapshotCache = new DocumentSnapshotCache();
+  const prefetchCache = new DocumentPrefetchCache();
   const visitLifecycle = new DocumentVisitLifecycle();
   let preloadRequestId = 0;
   const preloader = new DocumentPreloader(
@@ -345,6 +367,7 @@ export function createDemoDocumentRuntime(
     fetchAdapter,
     { next: () => `demo-document-preload-${++preloadRequestId}` },
     snapshotCache,
+    { prefetchCache },
   );
   const loader = new DocumentRequestLoader(
     session,
@@ -353,6 +376,7 @@ export function createDemoDocumentRuntime(
   );
   const controller = new DocumentVisitController(loader, clock, {
     history,
+    prefetchCache,
     snapshotCache,
     visitLifecycle,
   });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type { TurboRequest, TurboResponse } from "../adapters"
+import { DocumentPrefetchCache } from "./document-prefetch-cache"
 import { DocumentPreloader } from "./document-preloader"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
 import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors"
@@ -530,6 +531,32 @@ describe("document preloader", () => {
       response("<Gallery><Direct /></Gallery>", "https://example.test/app/direct-join"),
     )
     await expect(joined.promise).resolves.toMatchObject({ status: "cached" })
+  })
+
+  test("hands a committed retained response to the one-shot prefetch cache", async () => {
+    const pending = deferred<TurboResponse>()
+    const snapshotCache = new DocumentSnapshotCache()
+    const prefetchCache = new DocumentPrefetchCache()
+    const preloader = new DocumentPreloader(
+      session(),
+      { fetch: () => pending.promise },
+      requestIds(),
+      snapshotCache,
+      { prefetchCache },
+    )
+
+    const lease = preloader.retain("/app/next")
+    await Promise.resolve()
+    lease.commit()
+    const prefetched = prefetchCache.take("https://example.test/app/next")
+    expect(prefetched).toBeDefined()
+    pending.resolve(
+      response('<Gallery><Next id="next" /></Gallery>', "https://example.test/app/next"),
+    )
+
+    await expect(lease.promise).resolves.toMatchObject({ status: "cached" })
+    expect((await prefetched?.promise)?.getElementById("next")).toBeDefined()
+    expect(snapshotCache.has("https://example.test/app/next")).toBe(false)
   })
 
   test("does not let a released lease cancel a reentrant retry", async () => {

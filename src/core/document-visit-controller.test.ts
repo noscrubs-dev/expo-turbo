@@ -20,6 +20,7 @@ import {
   DocumentSnapshotPreviewCommitError,
   DocumentSnapshotRestoreCommitError,
 } from "./document-loader"
+import { DocumentPrefetchCache } from "./document-prefetch-cache"
 import { consumeDocumentRefreshScroll } from "./document-refresh-scroll-internal"
 import {
   acknowledgeDocumentRender,
@@ -186,6 +187,7 @@ function harness(
     fetch?: FetchAdapter["fetch"]
     onRequestId?: () => void
     onObserverError?: (error: AggregateError) => void
+    prefetchCache?: DocumentPrefetchCache
     progressDelayMs?: number
     requestLifecycle?: RequestLifecycle
     snapshotCache?: DocumentSnapshotCache
@@ -223,6 +225,7 @@ function harness(
   const controller = new DocumentVisitController(loader, clock, {
     ...(options.history ? { history: options.history } : {}),
     ...(options.onObserverError ? { onObserverError: options.onObserverError } : {}),
+    ...(options.prefetchCache ? { prefetchCache: options.prefetchCache } : {}),
     ...(options.progressDelayMs !== undefined ? { progressDelayMs: options.progressDelayMs } : {}),
     ...(options.snapshotCache ? { snapshotCache: options.snapshotCache } : {}),
     ...(options.visitLifecycle ? { visitLifecycle: options.visitLifecycle } : {}),
@@ -231,6 +234,72 @@ function harness(
 }
 
 describe("Document visit controller", () => {
+  test("waits for and commits one prefetched response without a second request", async () => {
+    let resolvePrefetch: ((tree: DocumentTree) => void) | undefined
+    const prefetchCache = new DocumentPrefetchCache()
+    prefetchCache.putPending(
+      "https://example.test/next",
+      new Promise((resolve) => {
+        resolvePrefetch = resolve
+      }),
+    )
+    const current = harness({ prefetchCache })
+
+    const visiting = current.controller.visit("/next")
+    expect(current.pending).toHaveLength(0)
+    resolvePrefetch?.(
+      parseExpoTurboDocument('<Gallery><Next id="next" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visiting).toEqual({
+      source: "prefetch",
+      status: "committed",
+      url: "https://example.test/next",
+    })
+    expect(current.pending).toHaveLength(0)
+    expect(current.requestIdCount()).toBe(0)
+    expect(current.session.tree.getElementById("next")).toBeDefined()
+
+    const second = current.controller.visit("/next")
+    expect(current.pending).toHaveLength(1)
+    current.pending[0]?.resolve(
+      response('<Gallery><Canonical id="canonical" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    await second
+  })
+
+  test("cancels a visit while its committed prefetch response is still pending", async () => {
+    let resolvePrefetch: ((tree: DocumentTree) => void) | undefined
+    const prefetchCache = new DocumentPrefetchCache()
+    prefetchCache.putPending(
+      "https://example.test/next",
+      new Promise((resolve) => {
+        resolvePrefetch = resolve
+      }),
+    )
+    const current = harness({ prefetchCache })
+
+    const visiting = current.controller.visit("/next")
+    current.controller.cancel()
+    resolvePrefetch?.(
+      parseExpoTurboDocument('<Gallery><Late id="late" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visiting).toEqual({
+      source: "prefetch",
+      status: "canceled",
+      url: "https://example.test/next",
+    })
+    expect(current.session.tree.getElementById("late")).toBeUndefined()
+    expect(current.pending).toHaveLength(0)
+  })
+
   test("lets before-visit prevent work before history, cache, request, or state ownership", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     const snapshotCache = new ReentrantSnapshotCache()
