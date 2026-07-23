@@ -11,6 +11,8 @@ export * from "./document-snapshot-cache"
 export * from "./document-visit-controller"
 export {
   BeforeCacheEvent,
+  BeforeDocumentRenderEvent,
+  type BeforeDocumentRenderEventDetail,
   BeforePrefetchEvent,
   BeforeVisitEvent,
   DocumentLoadEvent,
@@ -21,8 +23,10 @@ export {
   DocumentReloadEvent,
   type DocumentReloadEventDetail,
   type DocumentReloadReason,
+  type DocumentRenderContext,
   DocumentRenderEvent,
   type DocumentRenderEventDetail,
+  type DocumentRenderer,
   type DocumentRenderMethod,
   DocumentVisitLifecycle,
   type DocumentVisitLifecycleEvent,

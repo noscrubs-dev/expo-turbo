@@ -1,10 +1,88 @@
 import type { VisitAction } from "../adapters"
 import { PropsError, StateError } from "./errors"
-import { CancellableEvent, NotificationEvent } from "./events"
-import { consumeThenableResult } from "./thenable-result"
+import { CancellableEvent, NotificationEvent, PausableEvent } from "./events"
+import { consumeThenableResult, resolveThenableResult } from "./thenable-result"
 import type { ProtocolDocument } from "./tree"
 
 export type DocumentVisitDirection = "back" | "forward" | "none"
+
+export interface DocumentRenderContext {
+  readonly currentDocument: ProtocolDocument
+  readonly newDocument: ProtocolDocument
+  renderDefault(): undefined
+}
+
+export type DocumentRenderer = (
+  context: DocumentRenderContext,
+) => PromiseLike<undefined> | undefined
+
+export interface BeforeDocumentRenderEventDetail {
+  readonly currentDocument: ProtocolDocument
+  readonly newDocument: ProtocolDocument
+  readonly renderMethod: DocumentRenderMethod
+  readonly url: string
+  render: DocumentRenderer
+}
+
+interface BeforeDocumentRenderDetailState {
+  renderer: DocumentRenderer
+}
+
+const beforeDocumentRenderDetailStates = new WeakMap<
+  ExactBeforeDocumentRenderEventDetail,
+  BeforeDocumentRenderDetailState
+>()
+
+class ExactBeforeDocumentRenderEventDetail implements BeforeDocumentRenderEventDetail {
+  readonly currentDocument: ProtocolDocument
+  readonly newDocument: ProtocolDocument
+  readonly renderMethod: DocumentRenderMethod
+  readonly url: string
+
+  constructor(
+    currentDocument: ProtocolDocument,
+    newDocument: ProtocolDocument,
+    renderMethod: DocumentRenderMethod,
+    url: string,
+    renderer: DocumentRenderer,
+  ) {
+    this.currentDocument = currentDocument
+    this.newDocument = newDocument
+    this.renderMethod = renderMethod
+    this.url = url
+    beforeDocumentRenderDetailStates.set(this, { renderer })
+    Object.freeze(this)
+  }
+
+  get render(): DocumentRenderer {
+    return beforeDocumentRenderDetailState(this).renderer
+  }
+
+  set render(renderer: DocumentRenderer) {
+    if (typeof renderer !== "function") {
+      throw new StateError("Before-document-render renderer must be a function")
+    }
+    beforeDocumentRenderDetailState(this).renderer = renderer
+  }
+}
+
+export class BeforeDocumentRenderEvent extends PausableEvent<
+  "before-render",
+  BeforeDocumentRenderEventDetail
+> {
+  constructor(detail: Omit<BeforeDocumentRenderEventDetail, "render">, renderer: DocumentRenderer) {
+    super(
+      "before-render",
+      new ExactBeforeDocumentRenderEventDetail(
+        detail.currentDocument,
+        detail.newDocument,
+        detail.renderMethod,
+        detail.url,
+        renderer,
+      ),
+    )
+  }
+}
 
 export class LinkClickEvent extends CancellableEvent<
   "click",
@@ -149,6 +227,7 @@ export class DocumentReloadEvent extends NotificationEvent<"reload", DocumentRel
 
 export type DocumentVisitLifecycleEvent =
   | BeforeCacheEvent
+  | BeforeDocumentRenderEvent
   | BeforePrefetchEvent
   | BeforeVisitEvent
   | DocumentLoadEvent
@@ -160,6 +239,7 @@ export type DocumentVisitLifecycleEvent =
 
 export interface DocumentVisitLifecycleEventMap {
   readonly "before-cache": BeforeCacheEvent
+  readonly "before-render": BeforeDocumentRenderEvent
   readonly "before-prefetch": BeforePrefetchEvent
   readonly "before-visit": BeforeVisitEvent
   readonly click: LinkClickEvent
@@ -186,6 +266,9 @@ export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_DISPATCH = Symbol(
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_CACHE_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-cache-dispatch",
 )
+export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_RENDER_DISPATCH = Symbol(
+  "expo-turbo.document-visit-lifecycle.before-render-dispatch",
+)
 export const DOCUMENT_VISIT_LIFECYCLE_BEFORE_PREFETCH_DISPATCH = Symbol(
   "expo-turbo.document-visit-lifecycle.before-prefetch-dispatch",
 )
@@ -210,7 +293,7 @@ export const DOCUMENT_VISIT_LIFECYCLE_RELOAD_DISPATCH = Symbol(
 
 /**
  * Synchronous logical lifecycle for semantic links and native document visits.
- * Click, before-prefetch, and before-visit listeners may cancel admission;
+ * Click, before-prefetch, before-visit, and before-render listeners may cancel admission;
  * visit, before-cache, morph, render, load, and reload listeners are notification observers.
  */
 export class DocumentVisitLifecycle {
@@ -231,6 +314,7 @@ export class DocumentVisitLifecycle {
     if (
       type !== "before-cache" &&
       type !== "before-prefetch" &&
+      type !== "before-render" &&
       type !== "before-visit" &&
       type !== "click" &&
       type !== "load" &&
@@ -315,6 +399,27 @@ export class DocumentVisitLifecycle {
     this.dispatchNotification("before-cache", event, "Before-cache listener failed")
   }
 
+  [DOCUMENT_VISIT_LIFECYCLE_BEFORE_RENDER_DISPATCH](
+    event: BeforeDocumentRenderEvent,
+  ): DocumentRenderer {
+    for (const listener of [...(this.listeners.get("before-render") ?? [])]) {
+      let result: unknown
+      try {
+        result = listener(event)
+      } catch {
+        throw new StateError("Before-document-render listener failed")
+      }
+      if (result === undefined) continue
+      try {
+        consumeThenableResult(result)
+      } catch {
+        throw new StateError("Before-document-render listener failed")
+      }
+      throw new StateError("Before-document-render listener must return undefined")
+    }
+    return event.detail.render
+  }
+
   [DOCUMENT_VISIT_LIFECYCLE_VISIT_DISPATCH](event: VisitEvent): void {
     this.dispatchNotification("visit", event, "Visit listener failed")
   }
@@ -385,11 +490,67 @@ export class DocumentVisitLifecycle {
   }
 }
 
+export async function runBeforeDocumentRender(
+  lifecycle: DocumentVisitLifecycle,
+  detail: Omit<BeforeDocumentRenderEventDetail, "render">,
+): Promise<boolean> {
+  let defaultRendered = false
+  let rendering = true
+  const context = Object.freeze({
+    currentDocument: detail.currentDocument,
+    newDocument: detail.newDocument,
+    renderDefault(): undefined {
+      if (!rendering) throw new StateError("Document render context is no longer active")
+      if (defaultRendered) {
+        throw new StateError("Default document renderer may run only once")
+      }
+      defaultRendered = true
+      return undefined
+    },
+  })
+  const defaultRenderer: DocumentRenderer = (activeContext) => {
+    if (activeContext !== context) {
+      throw new StateError("Document renderer received an invalid context")
+    }
+    return activeContext.renderDefault()
+  }
+  const event = new BeforeDocumentRenderEvent(detail, defaultRenderer)
+  const renderer = lifecycle[DOCUMENT_VISIT_LIFECYCLE_BEFORE_RENDER_DISPATCH](event)
+  await event.waitUntilResumed()
+  if (event.defaultPrevented) return false
+
+  let result: unknown
+  try {
+    result = renderer(context)
+    const settlement = resolveThenableResult(result)
+    if (settlement) result = await settlement
+  } catch {
+    throw new StateError("Document renderer failed")
+  } finally {
+    rendering = false
+  }
+  if (result !== undefined) {
+    throw new StateError("Document renderer must return undefined")
+  }
+  if (!defaultRendered) {
+    throw new StateError("Document renderer must call renderDefault")
+  }
+  return true
+}
+
 function notificationName(
   type: "before-cache" | "load" | "morph" | "reload" | "render" | "visit",
 ): string {
   if (type === "before-cache") return "Before-cache"
   return `${type[0]?.toUpperCase() ?? ""}${type.slice(1)}`
+}
+
+function beforeDocumentRenderDetailState(
+  detail: ExactBeforeDocumentRenderEventDetail,
+): BeforeDocumentRenderDetailState {
+  const state = beforeDocumentRenderDetailStates.get(detail)
+  if (!state) throw new StateError("Before-document-render event detail is invalid")
+  return state
 }
 
 export function admitDocumentVisitLifecycle(

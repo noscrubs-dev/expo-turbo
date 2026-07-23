@@ -1076,6 +1076,105 @@ describe("Document visit controller", () => {
     expect(events).toEqual(["before", "visit:replace"])
   })
 
+  test("pauses and wraps a network document before logical render without losing ownership", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const current = harness({ visitLifecycle: lifecycle })
+    const originalTree = current.session.tree
+    const calls: string[] = []
+    let resume: () => undefined = () => undefined
+    let reached!: () => void
+    const beforeRender = new Promise<void>((resolve) => {
+      reached = resolve
+    })
+    lifecycle.subscribe("before-render", (event) => {
+      calls.push("before-render")
+      expect(event.detail.currentDocument).toBe(originalTree.document)
+      expect(event.detail.newDocument.children[0]?.kind).toBe("element")
+      expect(event.detail.renderMethod).toBe("replace")
+      const renderDefault = event.detail.render
+      event.detail.render = async (context) => {
+        calls.push("renderer")
+        await Promise.resolve()
+        return renderDefault(context)
+      }
+      event.pause()
+      resume = () => {
+        event.resume()
+        return undefined
+      }
+      reached()
+      return undefined
+    })
+
+    const visiting = current.controller.visit("https://example.test/next")
+    current.pending[0]?.resolve(
+      response('<Gallery id="next"><Panel id="committed" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    await beforeRender
+
+    expect(current.session.tree).toBe(originalTree)
+    expect(current.session.treeGeneration).toBe(0)
+    expect(current.controller.state.status).toBe("started")
+    resume()
+
+    expect(await visiting).toMatchObject({ status: "committed" })
+    expect(current.session.tree).not.toBe(originalTree)
+    expect(current.session.tree.getElementById("committed")).toBeDefined()
+    expect(calls).toEqual(["before-render", "renderer"])
+  })
+
+  test("lets before-render cancellation preserve the active document", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    lifecycle.subscribe("before-render", (event) => {
+      event.preventDefault()
+      return undefined
+    })
+    const current = harness({ visitLifecycle: lifecycle })
+    const originalTree = current.session.tree
+
+    const visiting = current.controller.visit("https://example.test/next")
+    current.pending[0]?.resolve(
+      response('<Gallery id="next"><Panel id="not-committed" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+
+    expect(await visiting).toMatchObject({ status: "canceled" })
+    expect(current.session.tree).toBe(originalTree)
+    expect(current.session.treeGeneration).toBe(0)
+    expect(current.session.tree.getElementById("not-committed")).toBeUndefined()
+    expect(current.controller.state.status).toBe("canceled")
+  })
+
+  test("cancels promptly while before-render remains paused", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    let reached!: () => void
+    const paused = new Promise<void>((resolve) => {
+      reached = resolve
+    })
+    lifecycle.subscribe("before-render", (event) => {
+      event.pause()
+      reached()
+      return undefined
+    })
+    const current = harness({ visitLifecycle: lifecycle })
+    const originalTree = current.session.tree
+    const visiting = current.controller.visit("https://example.test/next")
+    current.pending[0]?.resolve(
+      response('<Gallery id="next"><Panel id="not-committed" /></Gallery>', {
+        url: "https://example.test/next",
+      }),
+    )
+    await paused
+
+    current.controller.cancel()
+    expect(await visiting).toMatchObject({ status: "canceled" })
+    expect(current.session.tree).toBe(originalTree)
+    expect(current.session.tree.getElementById("not-committed")).toBeUndefined()
+  })
+
   test("lets a visit observer cancel exact ownership before fetch", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     let controller: DocumentVisitController
