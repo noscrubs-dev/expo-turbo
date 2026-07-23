@@ -27,6 +27,7 @@ import {
   type ProtocolNode,
   parseExpoTurboDocument,
 } from "."
+import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 
 type TurboModule = typeof import("@hotwired/turbo")
 
@@ -1215,6 +1216,98 @@ for (const responseStatus of [422, 500] as const) {
     }
   })
 }
+
+test("matches upstream Turbo for a Frame form Stream response", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form></turbo-frame><p id="status">Old</p></main>'
+  const streamResponse =
+    '<turbo-stream action="update" target="status"><template><span id="updated">Updated</span></template></turbo-stream>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("profile")
+  const expoFrameBefore = session.tree.getElementById("details")
+  if (!form || !expoFrameBefore) throw new Error("Expo Stream Frame form fixture is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  let expoRequest: TurboRequest | undefined
+  const expoResult = await new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": TURBO_STREAM_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => streamResponse,
+        url: "https://example.test/profile",
+      }
+    },
+  }).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-frame-form-stream" },
+      signal,
+    }),
+  )
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(streamResponse, {
+      headers: { "Content-Type": `${TURBO_STREAM_MIME_TYPE}; charset=utf-8` },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/profile",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const browserForm = browser.document.getElementById("profile")
+    const submitter = browser.document.getElementById("submit-profile")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser Stream Frame form target is missing")
+    }
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser Stream Frame form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser Stream Frame form submitter is missing")
+    }
+    browserForm.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "stream",
+      responseStatus: 200,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(browser.document.getElementById("details")).toBe(browserFrameBefore)
+    expect(session.tree.getElementById("details")).toBe(expoFrameBefore)
+    expect(normalizeProtocolNode(session.tree.getElementById("status") as ProtocolElement)).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("status") as HappyElement),
+    )
+    expect(browser.document.getElementById("updated")).not.toBeNull()
+    expect(session.tree.getElementById("updated")).toBeDefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
 
 test("matches upstream Turbo for an empty Frame form 204 response", async () => {
   const initialDocument =
