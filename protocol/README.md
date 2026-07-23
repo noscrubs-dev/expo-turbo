@@ -48,7 +48,10 @@ precedence, absent templates, direct-child ID collision replacement, payload
 cloning, the admitted selector surface, outer and child Stream morphs,
 permanent-node moves, anonymous reconciliation, stable-ID reordering, and one
 real eager Frame fetch whose matching children exclude unrelated response
-content. Browser Frame `complete` attributes and native controller state stay
+content. Ordinary and redirected captured-link Frame navigation additionally
+compares the exact GET and `Turbo-Frame` header, mounted-wrapper identity and
+attributes, matching children, unrelated-response exclusion, and canonical final
+`src`. Browser Frame `complete` attributes and native completion state stay
 platform-owned rather than being normalized into one representation. Browser
 GET and unsafe URL-encoded Frame forms are also submitted through official
 Turbo: their exact URL, method, ordered body, submitter, omitted disabled and
@@ -62,8 +65,8 @@ URL. The native `422` visit remains truthfully failed after installing the
 server-authored recovery document.
 Refresh remains a named native
 equivalent because its owning-session GET/render contract is not a structural
-DOM action. Browser history and remaining response lifecycles remain outside this
-bounded comparison. The separate native-equivalent morph record proves compatible
+DOM action. Remaining response and Frame lifecycles stay outside this bounded
+comparison. The separate native-equivalent morph record proves compatible
 outer `replace`, child `update`, and selector child morphing retain the declared
 target/stable-child identities while removing omitted children. This is not yet
 a complete browser differential suite.
