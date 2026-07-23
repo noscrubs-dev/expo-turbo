@@ -17,6 +17,8 @@ import {
   DocumentVisitController,
   dispatchTurboStreamFragment,
   EXPO_TURBO_MIME_TYPE,
+  FormControlRegistry,
+  FormSubmissionController,
   FrameController,
   FrameLifecycle,
   FrameRequestLoader,
@@ -1106,6 +1108,106 @@ test("matches upstream Turbo unsafe form method and URL-encoded body", async () 
     expect(browserRequestBody).toBe(expoRequestBody)
     expect(browserFrameHeader).toBe(expoRequest.headers["Turbo-Frame"])
     expect(browser.document.getElementById("validation-result")).not.toBeNull()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo for an authoritative Frame form 422 response", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details" class="mounted"><form id="profile" action="/profile" method="post"><button id="submit-profile" type="submit">Save</button></form><p id="old">Old</p></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details" class="response"><form id="profile" action="/profile" method="post"><p id="validation">Name is required</p><button type="submit">Save</button></form></turbo-frame><p id="outside">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("profile")
+  if (!form) throw new Error("Expo Frame form differential form is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  let expoRequest: TurboRequest | undefined
+  const expoResult = await new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 422,
+        text: async () => frameResponse,
+        url: "https://example.test/profile",
+      }
+    },
+  }).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-frame-form-422" },
+      signal,
+    }),
+  )
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 422,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: "https://example.test/profile",
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("details")
+    const browserForm = browser.document.getElementById("profile")
+    const submitter = browser.document.getElementById("submit-profile")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser Frame form differential target is missing")
+    }
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser Frame form differential form is missing")
+    }
+    if (!(submitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser Frame form differential submitter is missing")
+    }
+    browserForm.requestSubmit(submitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrameAfter = browser.document.getElementById("details")
+    const expoFrameAfter = session.tree.getElementById("details")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Frame form differential lost its target")
+    }
+    expect(expoResult).toMatchObject({
+      application: "frame",
+      responseStatus: 422,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser Frame form differential result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()

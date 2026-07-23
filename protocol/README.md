@@ -61,7 +61,9 @@ platform-owned rather than being normalized into one representation. Browser
 GET and unsafe URL-encoded Frame forms are also submitted through official
 Turbo: their exact URL, method, ordered body, submitter, omitted disabled and
 unchecked controls, and `Turbo-Frame` header are compared with package request
-construction. Ordinary, redirected, and authoritative `422` same-origin
+construction. An authoritative matching-Frame form `422` additionally compares
+the mounted wrapper, complete validation children, and unrelated-response
+exclusion after both runtimes apply the response. Ordinary, redirected, and authoritative `422` same-origin
 document links additionally drive official Turbo GETs and package
 `DocumentVisitController` GETs from the same source/destination documents;
 their complete normalized destination roots agree, direct requests compare
