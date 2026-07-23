@@ -120,6 +120,7 @@ export class FrameControllerRegistry
       throw new FrameMissingError(`Active frame ${JSON.stringify(frameId)} is missing`, { frameId })
     }
 
+    this.releaseStaleNodeOwnersAfterRender(frameId, frame)
     const current = this.controllers.get(frameId)
     if (current?.node === frame) return current.controller
     if (current) this.release(frameId, current, true)
@@ -276,6 +277,23 @@ export class FrameControllerRegistry
     record.historyInvalidation?.abort()
     if (unregisterDisposal) record.unregisterDisposal()
     record.controller.disconnect()
+  }
+
+  private releaseStaleNodeOwnersAfterRender(frameId: string, frame: ProtocolElement): void {
+    if (
+      ![...this.controllers].some(
+        ([ownedFrameId, record]) => ownedFrameId !== frameId && record.node === frame,
+      )
+    )
+      return
+    queueMicrotask(() => {
+      const activeFrameId = attributeValue(frame, "id")
+      for (const [ownedFrameId, record] of [...this.controllers]) {
+        if (record.node === frame && ownedFrameId !== activeFrameId) {
+          this.release(ownedFrameId, record, true)
+        }
+      }
+    })
   }
 
   private reloadNestedMorphFrames(outer: FrameController, report: FrameResponseReport): void {

@@ -332,6 +332,30 @@ describe("Turbo Stream dispatcher", () => {
     }
   })
 
+  test("retains an identified Frame outer morph while reconciling its identity and children", async () => {
+    const document = session(
+      '<Gallery><turbo-frame id="frame" src="/before" target="before"><DemoText id="copy" tone="before"/></turbo-frame></Gallery>',
+    )
+    const frame = document.tree.getElementById("frame")
+    const copy = document.tree.getElementById("copy")
+    if (frame?.kind !== "frame" || !copy) throw new Error("Frame outer morph fixture is missing")
+
+    const report = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="replace" target="frame" method="morph"><template><turbo-frame id="next-frame" src="/after" target="after"><DemoText id="copy" tone="after"/></turbo-frame></template></turbo-stream>',
+      )
+    ).actions[0]
+
+    expect(report).toMatchObject({ appliedTargets: 1, matchedTargets: 1, status: "applied" })
+    expect(document.tree.getElementById("frame")).toBeUndefined()
+    expect(document.tree.getElementById("next-frame")).toBe(frame)
+    expect(document.tree.getElementById("copy")).toBe(copy)
+    expect(attributeValue(frame, "src")).toBe("/after")
+    expect(attributeValue(frame, "target")).toBe("after")
+    expect(attributeValue(copy, "tone")).toBe("after")
+  })
+
   test("rejects an outer morph root id collision before committing the action", async () => {
     const document = session(
       '<Gallery><DemoForm id="form"><DemoInput id="next-form"/></DemoForm><Later id="later"/></Gallery>',
@@ -1021,9 +1045,9 @@ describe("Turbo Stream dispatcher", () => {
           '<turbo-stream action="replace" target="form" method="morph"><template><DemoGroup id="form"/></template></turbo-stream>',
       },
       {
-        name: "Frame target",
+        name: "unidentified Frame root",
         stream:
-          '<turbo-stream action="replace" target="frame" method="morph"><template><turbo-frame id="frame"><DemoText/></turbo-frame></template></turbo-stream>',
+          '<turbo-stream action="replace" target="frame" method="morph"><template><turbo-frame><DemoText/></turbo-frame></template></turbo-stream>',
       },
       {
         name: "permanent active node",
