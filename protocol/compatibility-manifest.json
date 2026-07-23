@@ -349,8 +349,8 @@
       "id": "release.registry-publication",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "The package and gem build as version 0.1.0, but stable npm and RubyGems publication and clean registry verification have not completed.",
-      "evidence": ["README.md"]
+      "rationale": "Release run 30021116358 froze and attested matching package and gem 0.1.0 candidates from public main commit 0163220, and downloaded checksums/provenance verify. That superseded run proves the candidate pipeline; the final gated commit still needs its own frozen candidate, stable npm and RubyGems publication, and clean registry verification.",
+      "evidence": ["README.md", "docs/release-candidate-0.1.0.md"]
     }
   ],
   "fixtures": [
