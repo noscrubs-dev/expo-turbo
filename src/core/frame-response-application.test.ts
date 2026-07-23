@@ -131,7 +131,7 @@ describe("prepared Frame mutations", () => {
     expect(() => commitPreparedFrameMutation(session, mutation)).toThrow(StateError)
   })
 
-  test("preserves paired permanent Frame descendants during ordinary replacement", () => {
+  test("preserves paired permanent application descendants during ordinary Frame replacement", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<Gallery><turbo-frame id="details"><DemoForm id="form" tone="client"><DemoInput id="editable" value="client" /><DemoPanel id="permanent" data-turbo-permanent="" tone="client"><DemoInput id="locked" value="client" /></DemoPanel></DemoForm><Old id="same" /></turbo-frame></Gallery>',
@@ -204,6 +204,51 @@ describe("prepared Frame mutations", () => {
     }
     expect(responsePermanent).not.toBe(permanent)
     expect(attributeValue(responsePermanent, "tone")).toBe("server")
+  })
+
+  test("preserves paired permanent Frames and Cable sources during ordinary Frame replacement", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="details"><Group id="left"><turbo-frame id="nested" src="/client" data-turbo-permanent=""><FrameClient id="frame-child"/></turbo-frame><turbo-cable-stream-source id="source" channel="ClientChannel" data-turbo-permanent=""/></Group></turbo-frame></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frame = session.tree.getElementById("details")
+    const nested = session.tree.getElementById("nested")
+    const frameChild = session.tree.getElementById("frame-child")
+    const source = session.tree.getElementById("source")
+    if (
+      frame?.kind !== "frame" ||
+      nested?.kind !== "frame" ||
+      !frameChild ||
+      source?.kind !== "stream-source"
+    ) {
+      throw new Error("invalid permanent protocol replacement fixture")
+    }
+    let disposals = 0
+    for (const node of [nested, frameChild, source]) {
+      session.registerDisposal(node.key, () => {
+        disposals += 1
+      })
+    }
+
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Group id="right"><turbo-cable-stream-source id="source" channel="ServerChannel" data-turbo-permanent=""/><turbo-frame id="nested" src="/server" data-turbo-permanent=""><FrameServer id="ignored"/></turbo-frame></Group></turbo-frame>',
+    )
+    commitPreparedFrameMutation(session, prepareFrameMutation(session, frame, prepared))
+
+    const right = session.tree.getElementById("right")
+    if (!right) throw new Error("missing permanent protocol replacement destination")
+    expect(session.tree.getElementById("nested")).toBe(nested)
+    expect(session.tree.getElementById("frame-child")).toBe(frameChild)
+    expect(session.tree.getElementById("source")).toBe(source)
+    expect(session.tree.getElementById("ignored")).toBeUndefined()
+    expect(nested.parent).toBe(right)
+    expect(source.parent).toBe(right)
+    expect(attributeValue(nested, "src")).toBe("/client")
+    expect(attributeValue(source, "channel")).toBe("ClientChannel")
+    expect(disposals).toBe(0)
   })
 
   test("replaces one-sided permanent Frame descendants normally", () => {

@@ -411,12 +411,14 @@ type FramePermanentReplacer = (
 ) => readonly string[]
 
 type DocumentRefreshMorpher = (source: DocumentTree) => MorphFrameReloadResult
+type DocumentPermanentPreserver = (current: DocumentTree) => readonly ProtocolElement[]
 
 const streamChildMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const streamOuterMorphers = new WeakMap<DocumentTree, StreamChildMorpher>()
 const frameRefreshMorphers = new WeakMap<DocumentTree, FrameRefreshMorpher>()
 const framePermanentReplacers = new WeakMap<DocumentTree, FramePermanentReplacer>()
 const documentRefreshMorphers = new WeakMap<DocumentTree, DocumentRefreshMorpher>()
+const documentPermanentPreservers = new WeakMap<DocumentTree, DocumentPermanentPreserver>()
 const morphRevisions = new WeakMap<DocumentTree, WeakMap<ProtocolElement, number>>()
 
 /** @internal Renderer state-policy input; not re-exported from `expo-turbo/core`. */
@@ -488,6 +490,18 @@ export function morphCurrentDocumentRoot(
   return morph(source)
 }
 
+/** @internal Full-document renderer entrypoint; not re-exported from `expo-turbo/core`. */
+export function preserveDocumentPermanentElements(
+  current: DocumentTree,
+  source: DocumentTree,
+): readonly ProtocolElement[] {
+  const preserve = documentPermanentPreservers.get(source)
+  if (!preserve) {
+    throw new TargetError("Native document replacement requires an admitted document tree")
+  }
+  return preserve(current)
+}
+
 export class DocumentTree {
   readonly document: ProtocolDocument
   private readonly allowDuplicateIds: boolean
@@ -521,6 +535,9 @@ export class DocumentTree {
       this.replaceFrameChildrenPreservingPermanents(frame, responseFrame),
     )
     documentRefreshMorphers.set(this, (source) => this.morphCurrentDocumentRoot(source))
+    documentPermanentPreservers.set(this, (current) =>
+      this.preserveDocumentPermanentElementsFrom(current),
+    )
   }
 
   private rebuildIndexes(): void {
@@ -619,6 +636,110 @@ export class DocumentTree {
     return clone
   }
 
+  /**
+   * Matches Turbo's Bardo pairing for ordinary document replacement. Only the
+   * outermost supported element marked permanent in both documents is moved;
+   * the old tree receives a structural clone in its prior location.
+   */
+  private preserveDocumentPermanentElementsFrom(current: DocumentTree): readonly ProtocolElement[] {
+    assertDocumentTreeMutationAllowed(current)
+    assertDocumentTreeMutationAllowed(this)
+    if (current === this) return []
+
+    const currentById = new Map<string, ProtocolElement>()
+    this.visitDocumentPermanentCandidates(current.document, (element) => {
+      const id = attributeValue(element, "id")
+      if (id?.trim() && isTurboPermanent(element)) currentById.set(id, element)
+      return true
+    })
+
+    const pairs: Array<readonly [ProtocolElement, ProtocolElement]> = []
+    this.visitDocumentPermanentCandidates(this.document, (incoming) => {
+      const id = attributeValue(incoming, "id")
+      const retained = id?.trim() && isTurboPermanent(incoming) ? currentById.get(id) : undefined
+      if (!retained) return true
+      pairs.push([retained, incoming])
+      return false
+    })
+    if (pairs.length === 0) return []
+
+    const currentChildren = new Map<ProtocolParentNode, readonly ProtocolNode[]>()
+    const incomingChildren = new Map<ProtocolParentNode, readonly ProtocolNode[]>()
+    const parents = new Map<ProtocolNode, ProtocolParentNode | null>()
+    const currentMutationKey = current.mutationKey
+    const incomingMutationKey = this.mutationKey
+
+    const replaceChild = (
+      parent: ProtocolParentNode,
+      previous: ProtocolNode,
+      replacement: ProtocolNode,
+      children: Map<ProtocolParentNode, readonly ProtocolNode[]>,
+    ): void => {
+      if (!children.has(parent)) children.set(parent, parent.children)
+      const index = parent.children.indexOf(previous)
+      if (index === -1) throw new TargetError("Permanent document pair is detached")
+      setProtocolNodeChildren(parent, [
+        ...parent.children.slice(0, index),
+        replacement,
+        ...parent.children.slice(index + 1),
+      ])
+    }
+
+    try {
+      for (const [retained, incoming] of pairs) {
+        const currentParent = retained.parent
+        const incomingParent = incoming.parent
+        if (!currentParent || !incomingParent) {
+          throw new TargetError("Permanent document pair requires attached elements")
+        }
+        const clone = current.cloneNode(retained, currentParent)
+        replaceChild(currentParent, retained, clone, currentChildren)
+        replaceChild(incomingParent, incoming, retained, incomingChildren)
+        parents.set(retained, currentParent)
+        parents.set(incoming, incomingParent)
+        setProtocolNodeParent(clone, currentParent)
+        setProtocolNodeParent(incoming, null)
+        setProtocolNodeParent(retained, incomingParent)
+      }
+      current.rebuildIndexes()
+      this.rebuildIndexes()
+      return Object.freeze(pairs.map(([retained]) => retained))
+    } catch (error) {
+      current.mutationKey = currentMutationKey
+      this.mutationKey = incomingMutationKey
+      for (const [parent, children] of currentChildren) setProtocolNodeChildren(parent, children)
+      for (const [parent, children] of incomingChildren) setProtocolNodeChildren(parent, children)
+      for (const [node, parent] of parents) setProtocolNodeParent(node, parent)
+      current.rebuildIndexes()
+      this.rebuildIndexes()
+      throw error
+    }
+  }
+
+  private visitDocumentPermanentCandidates(
+    root: ProtocolParentNode,
+    visit: (element: ProtocolElement) => boolean,
+  ): void {
+    const descend = (node: ProtocolNode): void => {
+      if (!isElement(node)) return
+      if (
+        node.kind === "stream" ||
+        node.kind === "template" ||
+        !isSupportedPermanentMorphElement(node)
+      ) {
+        if (node.kind === "element" || node.kind === "frame") {
+          for (const child of node.children) descend(child)
+        }
+        return
+      }
+      if (!visit(node)) return
+      if (node.kind === "element" || node.kind === "frame") {
+        for (const child of node.children) descend(child)
+      }
+    }
+    for (const child of root.children) descend(child)
+  }
+
   insertClones(
     parent: ProtocolParentNode,
     index: number,
@@ -670,8 +791,8 @@ export class DocumentTree {
   }
 
   /**
-   * Matches Turbo's ordinary Frame renderer only for paired permanent application
-   * elements. Every unpaired response node remains a structural replacement.
+   * Matches Turbo's ordinary Frame renderer for outermost paired permanent
+   * application elements, nested Frames, and Cable stream sources.
    */
   private replaceFrameChildrenPreservingPermanents(
     frame: ProtocolElement,
@@ -724,29 +845,44 @@ export class DocumentTree {
     responseFrame: ProtocolElement,
   ): ReadonlyMap<string, ProtocolElement> {
     const currentById = new Map<string, ProtocolElement>()
-    this.visitFrameApplicationElements(frame, (element) => {
+    this.visitFramePermanentCandidates(frame, (element) => {
       const id = attributeValue(element, "id")
       if (id?.trim() && isTurboPermanent(element)) currentById.set(id, element)
+      return true
     })
 
     const pairs = new Map<string, ProtocolElement>()
-    this.visitFrameApplicationElements(responseFrame, (element) => {
+    this.visitFramePermanentCandidates(responseFrame, (element) => {
       const id = attributeValue(element, "id")
-      if (!id?.trim()) return
+      if (!id?.trim()) return true
       const current = currentById.get(id)
-      if (current && isTurboPermanent(element)) pairs.set(id, current)
+      if (!current || !isTurboPermanent(element)) return true
+      pairs.set(id, current)
+      return false
     })
     return pairs
   }
 
-  private visitFrameApplicationElements(
+  private visitFramePermanentCandidates(
     frame: ProtocolElement,
-    visit: (element: ProtocolElement) => void,
+    visit: (element: ProtocolElement) => boolean,
   ): void {
     const descend = (node: ProtocolNode): void => {
-      if (!isElement(node) || node.kind !== "element") return
-      visit(node)
-      for (const child of node.children) descend(child)
+      if (!isElement(node)) return
+      if (
+        node.kind === "stream" ||
+        node.kind === "template" ||
+        !isSupportedPermanentMorphElement(node)
+      ) {
+        if (node.kind === "element" || node.kind === "frame") {
+          for (const child of node.children) descend(child)
+        }
+        return
+      }
+      if (!visit(node)) return
+      if (node.kind === "element" || node.kind === "frame") {
+        for (const child of node.children) descend(child)
+      }
     }
     for (const child of frame.children) descend(child)
   }
@@ -756,11 +892,14 @@ export class DocumentTree {
     parent: ProtocolParentNode,
     permanentById: ReadonlyMap<string, ProtocolElement>,
   ): ProtocolNode {
-    if (!isElement(source) || source.kind !== "element") return this.cloneNode(source, parent)
+    if (!isElement(source)) return this.cloneNode(source, parent)
 
     const id = attributeValue(source, "id")
     const permanent = id?.trim() ? permanentById.get(id) : undefined
     if (permanent) return permanent
+    if (source.kind !== "element" && source.kind !== "frame") {
+      return this.cloneNode(source, parent)
+    }
 
     const clone: ProtocolElement = {
       attributes: source.attributes.map((attribute) => ({ ...attribute })),
