@@ -1,8 +1,9 @@
-import type { DocumentRenderMethod } from "./document-visit-lifecycle"
+import type { DocumentMorphEventDetail, DocumentRenderMethod } from "./document-visit-lifecycle"
 
 export type DocumentRefreshScrollPolicy = "preserve" | "reset"
 
 interface DocumentLoadRenderOptions {
+  readonly afterMorph: ((detail: DocumentMorphEventDetail) => void) | undefined
   readonly refreshScroll: DocumentRefreshScrollPolicy | undefined
   refreshScrollReady: boolean
   readonly renderMethod: DocumentRenderMethod
@@ -15,14 +16,25 @@ export function withDocumentLoadRenderMethod<Options extends object>(
   options: Options,
   renderMethod: DocumentRenderMethod,
   refreshScroll?: DocumentRefreshScrollPolicy,
+  afterMorph?: (detail: DocumentMorphEventDetail) => void,
 ): Options {
-  documentLoadRenderOptions.set(options, { refreshScroll, refreshScrollReady: false, renderMethod })
+  documentLoadRenderOptions.set(options, {
+    afterMorph,
+    refreshScroll,
+    refreshScrollReady: false,
+    renderMethod,
+  })
   return options
 }
 
 /** @internal Reads the mode captured by the trusted document visit controller. */
 export function documentLoadRenderMethod(options: object): DocumentRenderMethod {
   return documentLoadRenderOptions.get(options)?.renderMethod ?? "replace"
+}
+
+/** @internal Notifies the trusted visit lifecycle after a successful logical page morph. */
+export function notifyDocumentLoadMorph(options: object, detail: DocumentMorphEventDetail): void {
+  documentLoadRenderOptions.get(options)?.afterMorph?.(detail)
 }
 
 /** @internal Permits a reset only after the visit controller owns a live renderer ticket. */

@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add Turbo 8.0.23 page-level morph completion to `DocumentVisitLifecycle`. Every successful controller-owned bounded current-document morph emits frozen notification-only `{ currentDocument, generation, newDocument, url }` immediately after logical reconciliation commits and before renderer acknowledgement, including headless hosts. Replacement/error documents, failed preflight, empty/canceled/superseded work, Frame morphs, and Stream morphs remain silent; observer faults cannot roll back committed truth.
+
 - Match Turbo 8.0.23 page-morph handling for protocol descendants. An outermost mounted `turbo-frame[src][refresh="morph"]` with an absent or source-compatible incoming peer retains its exact logical/native identity and children, then reloads only after the committed document render; nested eligible Frames remain owned by that outer reload cascade. Other Frame and Cable-source descendants reconcile structurally, while changed Frame sources remount. Exact generation, connection, source, permanent-ancestor, and nesting checks prevent stale reloads; the behavior works with or without the optional document visit-event lifecycle.
 
 - Sign the exact paired npm and RubyGems candidate artifacts with GitHub/Sigstore build provenance. The candidate retains an offline verification bundle beside its checksum manifest, stable publication verifies both subjects against the originating public repository before either registry write or source tag, and the release artifact transport runs on pinned Node 24 action releases.

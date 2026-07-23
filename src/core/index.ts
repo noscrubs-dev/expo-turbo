@@ -15,6 +15,8 @@ export {
   BeforeVisitEvent,
   DocumentLoadEvent,
   type DocumentLoadEventDetail,
+  DocumentMorphEvent,
+  type DocumentMorphEventDetail,
   type DocumentReloadCause,
   DocumentReloadEvent,
   type DocumentReloadEventDetail,
