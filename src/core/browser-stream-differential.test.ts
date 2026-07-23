@@ -1876,6 +1876,118 @@ test("matches upstream Turbo for a top-level GET form document response", async 
   }
 })
 
+test("matches upstream Turbo for a redirected top-level POST form document response", async () => {
+  const initialDocument =
+    '<main id="root"><form id="search" action="/search" method="post"><input id="query" name="query" value="shirts" /><button id="submit-search" name="commit" value="Search" type="submit">Search</button></form><p id="old">Old</p></main>'
+  const nextDocument =
+    '<main id="root"><a id="again" href="/demo">Search again</a><p id="result">Found shirts</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const form = session.tree.getElementById("search")
+  if (!form) throw new Error("Expo document POST form is missing")
+  const controls = new FormControlRegistry(session, form.key)
+  controls.register("id:query", {
+    kind: "value",
+    name: "query",
+    value: "shirts",
+  })
+  const submitter = controls.register("id:submit-search", {
+    kind: "submitter",
+    name: "commit",
+    value: "Search",
+  })
+  let expoRequest: TurboRequest | undefined
+  const expoResult = await new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: true,
+        status: 200,
+        text: async () => nextDocument,
+        url: "https://example.test/results",
+      }
+    },
+  }).submit((signal) =>
+    controls.submissionProposal({
+      protocol: { requestId: "request-document-post-form" },
+      signal,
+      submitter: submitter.selection,
+    }),
+  )
+  const expoRequestBody = expoRequest?.body?.value
+  if (typeof expoRequestBody !== "string") {
+    throw new Error("Expo document POST form body is not URL encoded")
+  }
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(`<html><body>${nextDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperties(response, {
+      redirected: {
+        configurable: true,
+        value: true,
+      },
+      url: {
+        configurable: true,
+        value: "https://example.test/results",
+      },
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserForm = browser.document.getElementById("search")
+    const browserSubmitter = browser.document.getElementById("submit-search")
+    if (!(browserForm instanceof browser.HTMLFormElement)) {
+      throw new Error("Browser document POST form is missing")
+    }
+    if (!(browserSubmitter instanceof browser.HTMLButtonElement)) {
+      throw new Error("Browser document POST form submitter is missing")
+    }
+    browserForm.requestSubmit(browserSubmitter)
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "document",
+      redirected: true,
+      responseStatus: 200,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    if (typeof browserRequestBody !== "string") {
+      throw new Error("Browser document POST form body is not URL encoded")
+    }
+    expect(expoRequestBody).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo for an ordinary document link visit", async () => {
   const initialDocument =
     '<main id="root"><a id="next-link" href="/next">Next</a><p id="old">Old</p></main>'
