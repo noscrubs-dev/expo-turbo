@@ -172,7 +172,7 @@
       "id": "forms.response-matrix",
       "area": "forms",
       "disposition": "exact",
-      "rationale": "Matching Frame and document XML, Streams, 204, 201, redirects, 422, errors, wrong MIME, abort, and unsafe redirect safety have explicit outcomes. The official Turbo differential proves authoritative matching-Frame 422 application.",
+      "rationale": "Matching Frame and document XML, Streams, 204, 201, redirects, 422, errors, wrong MIME, abort, and unsafe redirect safety have explicit outcomes. The official Turbo differential proves authoritative matching-Frame 422 application, inert Frame-form 204 handling, and adapter-followed redirected Frame success.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/form-submission-controller.test.ts"
