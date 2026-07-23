@@ -282,7 +282,7 @@
       "id": "cable.production-auth-device",
       "area": "cable",
       "disposition": "incomplete",
-      "rationale": "Host-neutral ticket/header and protected-resource hooks exist, but production credentials, expiry/revocation policy, authenticated host socket integration, and physical lifecycle/network evidence remain open.",
+      "rationale": "The standalone public host proves short-lived header tickets, protected-resource authorization, credential rotation, targeted revocation, reconnect reconciliation, and later protected delivery. Product-specific identity, tenant, and distributed revocation policy belongs to future host adoption and is not a public-release gate; physical iOS/Android lifecycle and network evidence remains open.",
       "evidence": ["README.md"]
     },
     {
@@ -330,8 +330,8 @@
     {
       "id": "rails.production-host",
       "area": "rails",
-      "disposition": "incomplete",
-      "rationale": "Final product route/view policy, subject/resource authorization, credentials, and expiry/revocation mapping belong to the production host and are not yet evidenced.",
+      "disposition": "n-a",
+      "rationale": "The public release owns a standalone Rails host and reusable route-free gem. Product routes, views, identities, tenancy, and credential policy belong to a future adopter and are explicitly outside this independently publishable release train.",
       "evidence": ["README.md"]
     },
     {
