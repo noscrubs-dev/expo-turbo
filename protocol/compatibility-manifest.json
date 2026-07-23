@@ -79,8 +79,9 @@
       "id": "frames.eager-lazy-recurse",
       "area": "frames",
       "disposition": "native-equivalent",
-      "rationale": "Mounted controllers implement eager, registered native visibility, cancellation, nested Frames, and bounded recurse without IntersectionObserver.",
+      "rationale": "Mounted controllers implement eager, registered native visibility, cancellation, nested Frames, and bounded recurse without IntersectionObserver. The official Turbo differential proves ordered primary/intermediary recurse requests and final nested extraction.",
       "evidence": [
+        "src/core/browser-stream-differential.test.ts",
         "src/core/frame-controller.test.ts",
         "example/expo/src/demo-visibility.test.ts"
       ]
@@ -352,7 +353,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request, history, and document-response browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request, history, and document-response browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
