@@ -1,18 +1,26 @@
 import { PropsError, TargetError } from "./errors"
-import { DocumentTree } from "./tree"
 
 export const DOCUMENT_PREFETCH_CACHE_TTL_MS = 10_000
 
 interface DocumentPrefetchEntry {
   readonly cancel: () => void
   readonly expiresAt: number
-  readonly promise: Promise<DocumentTree | undefined>
+  readonly promise: Promise<DocumentPrefetchedResponse | undefined>
+  readonly url: string
+}
+
+export interface DocumentPrefetchedResponse {
+  readonly body: string
+  readonly contentType?: string
+  readonly redirected: boolean
+  readonly requestId: string
+  readonly responseStatus: number
   readonly url: string
 }
 
 export interface DocumentPrefetchLease {
   cancel(): void
-  readonly promise: Promise<DocumentTree | undefined>
+  readonly promise: Promise<DocumentPrefetchedResponse | undefined>
 }
 
 function prefetchKey(value: string): string {
@@ -61,26 +69,17 @@ export class DocumentPrefetchCache {
     if (entry.expiresAt <= this.now()) return undefined
     return Object.freeze({
       cancel: entry.cancel,
-      promise: entry.promise.then((tree) => tree?.clone()),
+      promise: entry.promise,
     })
   }
 
-  put(url: string, tree: DocumentTree): void {
-    if (!(tree instanceof DocumentTree)) {
-      throw new PropsError("Document prefetch cache entries must be document trees")
-    }
-    const key = prefetchKey(url)
-    const documentUrl = tree.document.url
-    if (documentUrl === undefined || prefetchKey(documentUrl) !== key) {
-      throw new TargetError("Document prefetch tree URL must match its cache key")
-    }
-    const snapshot = tree.clone({ omitTemporaryElements: true })
-    this.putPending(key, Promise.resolve(snapshot))
+  put(url: string, response: DocumentPrefetchedResponse): void {
+    this.putPending(url, Promise.resolve(response))
   }
 
   putPending(
     url: string,
-    promise: Promise<DocumentTree | undefined>,
+    promise: Promise<DocumentPrefetchedResponse | undefined>,
     cancel: () => void = () => undefined,
   ): void {
     const key = prefetchKey(url)
@@ -90,10 +89,45 @@ export class DocumentPrefetchCache {
     if (typeof cancel !== "function") {
       throw new PropsError("Document prefetch cache cancellation must be a function")
     }
+    const admitted = promise.then((response) => {
+      if (!response) return undefined
+      if (!response || typeof response !== "object" || Array.isArray(response)) {
+        throw new PropsError("Document prefetch responses must be objects")
+      }
+      const responseUrl = prefetchKey(response.url)
+      const requestUrl = new URL(key)
+      const finalUrl = new URL(responseUrl)
+      if (requestUrl.origin !== finalUrl.origin) {
+        throw new TargetError("Document prefetch responses must remain same-origin")
+      }
+      if (
+        typeof response.redirected !== "boolean" ||
+        typeof response.responseStatus !== "number" ||
+        !Number.isInteger(response.responseStatus) ||
+        !(
+          (response.responseStatus >= 200 && response.responseStatus < 300) ||
+          (response.responseStatus >= 400 && response.responseStatus < 600)
+        ) ||
+        typeof response.body !== "string" ||
+        (response.contentType !== undefined && typeof response.contentType !== "string") ||
+        typeof response.requestId !== "string" ||
+        response.requestId.trim() === ""
+      ) {
+        throw new PropsError("Document prefetch response metadata is invalid")
+      }
+      return Object.freeze({
+        body: response.body,
+        ...(response.contentType !== undefined ? { contentType: response.contentType } : {}),
+        redirected: response.redirected || responseUrl !== key,
+        requestId: response.requestId,
+        responseStatus: response.responseStatus,
+        url: responseUrl,
+      })
+    })
     this.entry = Object.freeze({
       cancel,
       expiresAt: this.now() + this.ttlMs,
-      promise,
+      promise: admitted,
       url: key,
     })
   }

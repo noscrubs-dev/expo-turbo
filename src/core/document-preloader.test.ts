@@ -555,8 +555,51 @@ describe("document preloader", () => {
     )
 
     await expect(lease.promise).resolves.toMatchObject({ status: "cached" })
-    expect((await prefetched?.promise)?.getElementById("next")).toBeDefined()
+    expect(await prefetched?.promise).toEqual({
+      body: '<Gallery><Next id="next" /></Gallery>',
+      contentType: EXPO_TURBO_MIME_TYPE,
+      redirected: false,
+      requestId: "preload-1",
+      responseStatus: 200,
+      url: "https://example.test/app/next",
+    })
     expect(snapshotCache.has("https://example.test/app/next")).toBe(false)
+  })
+
+  test("retains an authoritative error response for activation without treating it as a marker snapshot", async () => {
+    const pending = deferred<TurboResponse>()
+    const snapshotCache = new DocumentSnapshotCache()
+    const prefetchCache = new DocumentPrefetchCache()
+    const preloader = new DocumentPreloader(
+      session(),
+      { fetch: () => pending.promise },
+      requestIds(),
+      snapshotCache,
+      { prefetchCache },
+    )
+
+    const lease = preloader.retain("/app/invalid")
+    await Promise.resolve()
+    lease.commit()
+    const prefetched = prefetchCache.take("https://example.test/app/invalid")
+    pending.resolve(
+      response(
+        '<Gallery><ValidationError id="validation-error" /></Gallery>',
+        "https://example.test/app/invalid",
+        { status: 422 },
+      ),
+    )
+
+    await expect(lease.promise).rejects.toBeInstanceOf(RequestError)
+    expect(await prefetched?.promise).toEqual({
+      body: '<Gallery><ValidationError id="validation-error" /></Gallery>',
+      contentType: EXPO_TURBO_MIME_TYPE,
+      redirected: false,
+      requestId: "preload-1",
+      responseStatus: 422,
+      url: "https://example.test/app/invalid",
+    })
+    expect(snapshotCache.has("https://example.test/app/invalid")).toBe(false)
   })
 
   test("does not let a released lease cancel a reentrant retry", async () => {

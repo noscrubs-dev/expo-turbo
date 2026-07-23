@@ -6,6 +6,10 @@ export const DOCUMENT_LOAD_REQUEST_DISPATCHED = Symbol(
 
 export const DOCUMENT_LOAD_DISCARD_HANDLING = Symbol("expo-turbo.document-load.discard-handling")
 
+export const DOCUMENT_LOAD_PREFETCHED_RESPONSE = Symbol(
+  "expo-turbo.document-load.prefetched-response",
+)
+
 export const DOCUMENT_BEFORE_SNAPSHOT_CAPTURE = Symbol(
   "expo-turbo.document.before-snapshot-capture",
 )

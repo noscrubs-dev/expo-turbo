@@ -12,6 +12,7 @@ import {
   createDocumentTransportError,
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
+  DOCUMENT_LOAD_PREFETCHED_RESPONSE,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
   markDocumentContentTypeError,
   markDocumentTransportError,
@@ -22,6 +23,7 @@ import {
   documentRefreshSettings,
 } from "./document-metadata"
 import { beginDocumentNavigation } from "./document-navigation-epoch"
+import type { DocumentPrefetchedResponse } from "./document-prefetch-cache"
 import {
   discardDocumentRefreshScroll,
   prepareDocumentRefreshScroll,
@@ -455,15 +457,33 @@ export class DocumentRequestLoader {
     return resolveSameOriginProtocolUrl(source, documentUrl)
   }
 
-  async load(
+  load(
     source: string,
     owner?: object,
     options: DocumentLoadOptions = {},
   ): Promise<DocumentLoadReport> {
+    return this.loadResponse(source, owner, options)
+  }
+
+  [DOCUMENT_LOAD_PREFETCHED_RESPONSE](
+    source: string,
+    response: DocumentPrefetchedResponse,
+    owner?: object,
+    options: DocumentLoadOptions = {},
+  ): Promise<DocumentLoadReport> {
+    return this.loadResponse(source, owner, options, response)
+  }
+
+  private async loadResponse(
+    source: string,
+    owner: object | undefined,
+    options: DocumentLoadOptions,
+    prefetched?: DocumentPrefetchedResponse,
+  ): Promise<DocumentLoadReport> {
     const renderMethod = documentLoadRenderMethod(options)
     const treeGeneration = this.session.treeGeneration
     let requestedUrl = this.resolveSource(source)
-    const requestId = this.requestIds.next()
+    const requestId = prefetched?.requestId ?? this.requestIds.next()
     const controller = new AbortController()
     const request: TurboRequest = Object.freeze({
       headers: protocolRequestHeaders({
@@ -548,7 +568,21 @@ export class DocumentRequestLoader {
         return this.owns(active)
       }
       let response: TurboResponse
-      if (this.requestLifecycle) {
+      if (prefetched) {
+        requestDispatched()
+        if (!startRequest(request)) return this.canceled(active)
+        response = Object.freeze({
+          headers: Object.freeze({
+            ...(prefetched.contentType !== undefined
+              ? { "Content-Type": prefetched.contentType }
+              : {}),
+          }),
+          redirected: prefetched.redirected,
+          status: prefetched.responseStatus,
+          text: () => Promise.resolve(prefetched.body),
+          url: prefetched.url,
+        })
+      } else if (this.requestLifecycle) {
         const fetched = await fetchWithRequestLifecycle({
           admission: {
             admitUrl: (url) => this.resolveSource(url),

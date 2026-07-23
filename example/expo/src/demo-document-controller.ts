@@ -35,7 +35,7 @@ const LINKED_DOCUMENT = `<Gallery data-turbo-root="/demo">
 
 const PRESS_IN_PREFETCH_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="press-in-prefetch-reused" title="Press-in response reused" tone="positive" style-tokens="space:comfortable surface:elevated">
-    <DemoText>The authoritative document came from the one-shot native press-in request without a second physical GET.</DemoText>
+    <DemoText>The authoritative redirected document, final URL, status, and request ID came from the one-shot native press-in request without a second physical GET.</DemoText>
   </DemoCard>
   <DemoDocumentLink href="/demo" data-turbo-action="restore">
     <DemoText>Restore the compatibility gallery from the document cache.</DemoText>
@@ -254,12 +254,18 @@ export function createDemoFixtureFetchAdapter(
       } else {
         xml = LINKED_DOCUMENT;
       }
+      const pressInRedirect =
+        url.pathname === "/demo/linked" &&
+        url.search === "?prefetch=reuse" &&
+        request.headers["X-Sec-Purpose"] === "prefetch";
       return {
         headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
-        redirected: false,
-        status: 200,
+        redirected: pressInRedirect,
+        status: pressInRedirect ? 201 : 200,
         text: async () => xml,
-        url: request.url,
+        url: pressInRedirect
+          ? new URL("/demo/linked?prefetch=reused", request.url).toString()
+          : request.url,
       };
     },
     armRefreshScenario(source: string): () => void {

@@ -26,11 +26,16 @@ import {
 import {
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
+  DOCUMENT_LOAD_PREFETCHED_RESPONSE,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
   isDocumentContentTypeError,
   isDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
-import type { DocumentPrefetchCache, DocumentPrefetchLease } from "./document-prefetch-cache"
+import type {
+  DocumentPrefetchCache,
+  DocumentPrefetchedResponse,
+  DocumentPrefetchLease,
+} from "./document-prefetch-cache"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
   dispatchDocumentLoad,
@@ -145,11 +150,13 @@ export type DocumentPreviewVisitResult = Readonly<{
   url: string
 }>
 
-export type DocumentPrefetchVisitResult = Readonly<{
-  source: "prefetch"
-  status: "canceled" | "committed"
-  url: string
-}>
+export type DocumentPrefetchVisitResult =
+  | Readonly<{
+      source: "prefetch"
+      status: "canceled"
+      url: string
+    }>
+  | (DocumentLoadReport & Readonly<{ source: "prefetch" }>)
 
 export type DocumentBeforeVisitCanceledResult = Readonly<{
   source: "visit-lifecycle"
@@ -963,11 +970,8 @@ export class DocumentVisitController {
   ): Promise<DocumentVisitResult> {
     this.pendingPrefetchAttemptEpoch = attemptEpoch
     this.pendingPrefetchCancel = prefetched.cancel
-    let epoch: number | undefined
-    let render: PreparedDocumentRender | undefined
-    let report: ReturnType<DocumentRequestLoader["restoreSnapshot"]>
     try {
-      const tree = await prefetched.promise
+      const response = await prefetched.promise
       if (this.canceledPrefetchAttemptEpoch === attemptEpoch) {
         this.canceledPrefetchAttemptEpoch = undefined
         return Object.freeze({ source: "prefetch", status: "canceled", url: source })
@@ -976,7 +980,7 @@ export class DocumentVisitController {
         this.pendingPrefetchAttemptEpoch = undefined
         this.pendingPrefetchCancel = undefined
       }
-      if (!tree) {
+      if (!response) {
         this.assertAttemptEpoch(attemptEpoch)
         this.assertDocumentClaimSerial(documentClaimSerial)
         this.assertTreeGeneration(treeGeneration)
@@ -1012,45 +1016,27 @@ export class DocumentVisitController {
           direction,
         )
       }
-      report = this.loader.restoreSnapshot({ get: () => tree }, source, this.requestOwner, {
-        ...(this.snapshotCache && this.visitLifecycle
-          ? { [DOCUMENT_BEFORE_SNAPSHOT_CAPTURE]: () => this.notifyBeforeCache() }
-          : {}),
-        beforeClaim: () => {
-          this.assertAttemptEpoch(attemptEpoch)
-          this.assertDocumentClaimSerial(documentClaimSerial)
-          this.assertTreeGeneration(treeGeneration)
-          if (historyPlan) this.assertHistoryPlan(historyPlan)
-          return undefined
-        },
-        beforeTreeCommit: () => {
-          if (historyPlan) this.assertHistoryPlan(historyPlan)
-          if (this.snapshotCache) this.loader.captureCurrentSnapshot(this.snapshotCache)
-          if (historyPlan) this.assertHistoryPlan(historyPlan)
-          if (historyPlan) historyPlan.history.commitProposal(historyPlan.proposal)
-          if (this.visitLifecycle) {
-            render = this.trackDocumentRender(
-              this.loader[DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](this.visitLifecycle, {
-                preview: false,
-                url: source,
-              }),
-              epoch,
-            )
-          }
-          return undefined
-        },
-        onRestoreStart: () => {
-          this.assertAttemptEpoch(attemptEpoch)
-          if (historyPlan) this.assertHistoryPlan(historyPlan)
-          this.previewContinuationEpoch = undefined
-          epoch = ++this.visitEpoch
-          this.progressVisible = false
-          this.status = "started"
-          this.publish()
-          this.notifyVisit(source, action, epoch, direction)
-          return undefined
-        },
-      } as DocumentSnapshotRestoreLifecycleOptions)
+      const result = await this.startVisit(
+        source,
+        navigation,
+        this.snapshotCache,
+        historyPlan,
+        undefined,
+        action,
+        undefined,
+        attemptEpoch,
+        undefined,
+        documentClaimSerial,
+        treeGeneration,
+        undefined,
+        undefined,
+        undefined,
+        direction,
+        undefined,
+        response,
+      )
+      if ("requestId" in result) return Object.freeze({ ...result, source: "prefetch" })
+      return result
     } catch (error) {
       if (this.canceledPrefetchAttemptEpoch === attemptEpoch) {
         this.canceledPrefetchAttemptEpoch = undefined
@@ -1062,43 +1048,8 @@ export class DocumentVisitController {
       }
       const reported =
         error instanceof Error ? error : new StateError("Document prefetched visit failed")
-      if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-        this.finish(error instanceof DocumentSnapshotRestoreCommitError ? "completed" : "failed")
-        this.notifyError(reported)
-      }
       return Promise.reject(reported)
     }
-    if (report.status === "miss") {
-      throw new StateError("Document prefetched response disappeared before activation")
-    }
-
-    return Promise.resolve(this.documentRenderResult(render, epoch)).then(
-      (rendered) => {
-        if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-          this.finishAfterDocumentRender(
-            render,
-            rendered,
-            epoch,
-            report.status === "committed" ? "completed" : "canceled",
-            report.status === "committed",
-          )
-        }
-        return Object.freeze({
-          source: "prefetch" as const,
-          status: report.status === "committed" ? ("committed" as const) : ("canceled" as const),
-          url: report.url,
-        })
-      },
-      (error: unknown) => {
-        const reported =
-          error instanceof Error ? error : new StateError("Document prefetched render failed")
-        if (epoch !== undefined && epoch === this.visitEpoch && this.status === "started") {
-          this.finish("failed")
-          this.notifyError(reported)
-        }
-        throw reported
-      },
-    )
   }
 
   private async startRestoreVisit(
@@ -1254,6 +1205,7 @@ export class DocumentVisitController {
     refreshScroll?: "preserve" | "reset",
     eventDirection?: DocumentVisitDirection,
     restorationScroll?: DocumentScrollPosition,
+    prefetched?: DocumentPrefetchedResponse,
   ): Promise<DocumentVisitResult> {
     let epoch: number | undefined = continuation?.epoch
     let historyPlan = initialHistoryPlan
@@ -1483,11 +1435,15 @@ export class DocumentVisitController {
         },
       } satisfies DocumentVisitLoadOptions),
     } satisfies DocumentVisitLoadOptions
-    const loaded = this.loader.load(
-      source,
-      this.requestOwner,
-      withDocumentLoadRenderMethod(options, renderMethod, refreshScroll),
-    )
+    const loadOptions = withDocumentLoadRenderMethod(options, renderMethod, refreshScroll)
+    const loaded = prefetched
+      ? this.loader[DOCUMENT_LOAD_PREFETCHED_RESPONSE](
+          source,
+          prefetched,
+          this.requestOwner,
+          loadOptions,
+        )
+      : this.loader.load(source, this.requestOwner, loadOptions)
     if (!continuation && epoch !== undefined) this.scheduleProgress(epoch, false)
 
     return loaded.then(
