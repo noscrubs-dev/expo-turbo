@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { type Element as HappyElement, type Node as HappyNode, Window } from "happy-dom"
 
 import {
+  applyFrameResponse,
   DocumentSession,
   dispatchTurboStreamFragment,
   isElement,
@@ -249,4 +250,45 @@ test("matches upstream Turbo stable-ID child reordering during a morph", async (
   )
 
   expect(result.expo).toEqual(result.browser)
+})
+
+test("matches upstream Turbo Frame extraction for an eager response", async () => {
+  const initialDocument =
+    '<main id="root"><turbo-frame id="details" src="/details"><p id="old">Old</p></turbo-frame></main>'
+  const frameResponse =
+    '<main><turbo-frame id="details"><p id="loaded">Loaded</p></turbo-frame><p id="outside">Outside</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  await applyFrameResponse(session, "details", frameResponse)
+
+  const originalFetch = browser.fetch
+  browser.fetch = async () =>
+    new browser.Response(frameResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    await browser.happyDOM.waitUntilComplete()
+
+    const browserFrame = browser.document.getElementById("details")
+    const expoFrame = session.tree.getElementById("details")
+    if (!browserFrame || !expoFrame) throw new Error("Frame differential lost its target")
+    const browserResult = normalizeBrowserNode(browserFrame)
+    const expoResult = normalizeProtocolNode(expoFrame)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser Frame differential result is invalid")
+    }
+    if (!expoResult || typeof expoResult === "string") {
+      throw new Error("Expo Frame differential result is invalid")
+    }
+    expect(expoResult.children).toEqual(browserResult.children)
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
 })
