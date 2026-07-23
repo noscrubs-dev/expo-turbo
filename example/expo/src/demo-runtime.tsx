@@ -1,4 +1,5 @@
 import type { ClockAdapter, FetchAdapter } from "expo-turbo/adapters";
+import * as ReactNative from "react-native";
 import { Linking, Text } from "react-native";
 import {
   DocumentFormControls,
@@ -267,6 +268,7 @@ export function DemoRuntimeProvider({
                   documentAnnouncements={DEMO_DOCUMENT_ANNOUNCEMENTS}
                   documentComponent={DemoDocumentBoundary}
                   documentController={runtime.documentRuntime.controller}
+                  defaultDirection={ReactNative.I18nManager?.isRTL ? "rtl" : "ltr"}
                   documentHistoryScroll={runtime.documentRefreshScroll}
                   documentPreloader={runtime.documentRuntime.preloader}
                   documentRefreshScroll={runtime.documentRefreshScroll}

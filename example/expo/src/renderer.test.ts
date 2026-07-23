@@ -1725,7 +1725,7 @@ describe("React protocol renderer", () => {
       parseExpoTurboDocument(`<Gallery>
         <NativeForm id="form" action="/profile" dir="ltr" method="post" data-turbo-frame="profile-frame">
           <CaptureForm slot="primary" />
-          <NativeValue id="first" dirname="item.dir" name="item" value="" />
+          <NativeValue id="first" dir="auto" dirname="item.dir" name="item" value="" />
           <NativeHidden id="hidden-token" dirname="authenticity_token.dir" name="authenticity_token" value="token" />
           <NativeHidden id="hidden-charset" name="_CHARSET_" value="ignored" />
           <NativeValue id="directional" name="comment" value="مرحبا" direction-name="comment.dir" direction-value="rtl" />
@@ -1750,6 +1750,10 @@ describe("React protocol renderer", () => {
             <NativeValue id="other-value" name="other" value="isolated" />
           </NativeForm>
         </NativeForm>
+        <NativeForm id="default-direction-form">
+          <CaptureForm slot="default-direction" />
+          <NativeValue id="default-direction-value" dir="auto" dirname="default.dir" name="default" value="" />
+        </NativeForm>
       </Gallery>`, { url: "https://example.test/forms/current" }),
     )
     const pendingSubmissions: {
@@ -1771,7 +1775,14 @@ describe("React protocol renderer", () => {
           null,
           createElement(
             ExpoTurboProvider,
-            { forms, registry: componentRegistry, scopes, session, state },
+            {
+              defaultDirection: "rtl",
+              forms,
+              registry: componentRegistry,
+              scopes,
+              session,
+              state,
+            },
             createElement(ExpoTurboRoot),
           ),
         ),
@@ -1783,7 +1794,14 @@ describe("React protocol renderer", () => {
     const primary = bindings.get("primary")
     const outer = bindings.get("outer")
     const other = bindings.get("other")
-    if (!primary || !outer || !other) throw new Error("form bindings were not captured")
+    const defaultDirection = bindings.get("default-direction")
+    if (!primary || !outer || !other || !defaultDirection) {
+      throw new Error("form bindings were not captured")
+    }
+    expect(defaultDirection.successfulEntries()).toEqual([
+      { name: "default", value: "" },
+      { name: "default.dir", value: "rtl" },
+    ])
     expect(scopes.isDisposed).toBe(false)
     expect(state.isDisposed).toBe(false)
     const activeForm = session.tree.getElementById("form")

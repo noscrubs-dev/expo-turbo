@@ -12,6 +12,7 @@ import {
 } from "expo-turbo/core";
 import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { type ReactNode, useEffect, useMemo } from "react";
+import * as ReactNative from "react-native";
 import { Text, View } from "react-native";
 
 import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
@@ -135,6 +136,7 @@ export function DemoLiveFormRuntimeProvider({
   return (
     <DemoFocusProvider focus={proof.focus}>
       <ExpoTurboProvider
+        defaultDirection={ReactNative.I18nManager?.isRTL ? "rtl" : "ltr"}
         forms={proof.forms}
         frames={proof.frames}
         registry={DEMO_REGISTRY}
