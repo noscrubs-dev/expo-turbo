@@ -615,17 +615,19 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
     },
     { next: () => "request-history" },
   )
-  const visits = new DocumentVisitController(loader, realClock, { history })
+  const snapshotCache = new DocumentSnapshotCache()
+  const visits = new DocumentVisitController(loader, realClock, { history, snapshotCache })
   await visits.visit("/next", { action: "advance" })
   await visits.visit("/final", { action: "replace" })
-  const traversalVisits = new DocumentVisitController(loader, realClock, {
-    history,
-    snapshotCache: new DocumentSnapshotCache(),
-  })
 
   const originalFetch = browser.fetch
   ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
   browser.history.replaceState({}, "", "/demo")
+  ;(
+    turbo.session as typeof turbo.session & {
+      view: { lastRenderedLocation: URL }
+    }
+  ).view.lastRenderedLocation = new browser.URL(browser.location.href)
   const browserHistoryLength = browser.history.length
   const browserRequests: string[] = []
   browser.fetch = async (input) => {
@@ -688,9 +690,11 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
       normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
     )
 
+    snapshotCache.clear()
+    ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
     browser.history.back()
     await browser.happyDOM.waitUntilComplete()
-    const restored = await traversalVisits.restoreTraversal(initialHistoryEntry)
+    const restored = await visits.restoreTraversal(initialHistoryEntry)
     const restoredBrowserTurboState = (
       browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
     )?.turbo
@@ -708,7 +712,7 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
 
     browser.history.forward()
     await browser.happyDOM.waitUntilComplete()
-    const forwarded = await traversalVisits.restoreTraversal(finalHistoryEntry)
+    const forwarded = await visits.restoreTraversal(finalHistoryEntry)
     const forwardedBrowserTurboState = (
       browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
     )?.turbo
@@ -719,6 +723,24 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
     })
     expect(browser.location.href).toBe(finalHistoryEntry.url)
     expect(forwardedBrowserTurboState?.restorationIndex).toBe(finalHistoryEntry.restorationIndex)
+    expect(browserRequests).toHaveLength(3)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+
+    browser.history.back()
+    await browser.happyDOM.waitUntilComplete()
+    const cachedBack = await visits.restoreTraversal(initialHistoryEntry)
+    const cachedBackBrowserTurboState = (
+      browser.history.state as Readonly<{ turbo?: Readonly<{ restorationIndex?: unknown }> }> | null
+    )?.turbo
+
+    expect(cachedBack).toMatchObject({
+      direction: "back",
+      source: "snapshot",
+    })
+    expect(browser.location.href).toBe(initialHistoryEntry.url)
+    expect(cachedBackBrowserTurboState?.restorationIndex).toBe(initialHistoryEntry.restorationIndex)
     expect(browserRequests).toHaveLength(3)
     expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
       normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
