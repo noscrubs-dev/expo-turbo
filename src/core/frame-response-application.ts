@@ -276,6 +276,10 @@ export function assertPreparedFrameMutationCurrent(
   }
 }
 
+export function discardPreparedFrameMutation(mutation: PreparedFrameMutation): void {
+  preparedFrameMutations.delete(mutation)
+}
+
 /**
  * Dispatches the synchronous native before-render hook while the caller holds
  * exact Frame request ownership. The selected renderer must complete before
@@ -301,31 +305,34 @@ export function prepareFrameBeforeRender(
 
 /**
  * Runs the renderer selected by `prepareFrameBeforeRender` while the caller
- * holds exact Frame ownership. A custom renderer may only synchronously admit
- * the package-owned replacement by calling `renderDefault()` exactly once.
+ * holds exact Frame ownership. A custom renderer synchronously selects either
+ * the prepared default or the package-owned bounded morph exactly once.
  */
 export function renderPreparedFrameMutation(
   prepared: PreparedFrameResponse,
   renderer: FrameRenderer | undefined,
-): void {
-  if (!renderer) return
+  defaultRenderMethod: FrameRenderMethod = "replace",
+): FrameRenderMethod {
+  if (!renderer) return defaultRenderMethod
 
   const frameId = prepared.frameId
-  let defaultRendered = false
+  let selectedRenderMethod: FrameRenderMethod | undefined
   let rendering = true
+  const select = (renderMethod: FrameRenderMethod): undefined => {
+    if (!rendering) {
+      throw new StateError("Frame render context is no longer active", { frameId })
+    }
+    if (selectedRenderMethod) {
+      throw new StateError("Frame renderer may select a method only once", { frameId })
+    }
+    selectedRenderMethod = renderMethod
+    return undefined
+  }
   const context = Object.freeze({
     frameId,
     newFrame: prepared.responseFrame,
-    renderDefault(): undefined {
-      if (!rendering) {
-        throw new StateError("Frame render context is no longer active", { frameId })
-      }
-      if (defaultRendered) {
-        throw new StateError("Default Frame renderer may run only once", { frameId })
-      }
-      defaultRendered = true
-      return undefined
-    },
+    renderDefault: () => select(defaultRenderMethod),
+    renderMorph: () => select("morph"),
   })
 
   let result: unknown
@@ -345,11 +352,12 @@ export function renderPreparedFrameMutation(
   if (result !== undefined) {
     throw new StateError("Before-frame-render renderer must return undefined", { frameId })
   }
-  if (!defaultRendered) {
-    throw new StateError("Before-frame-render renderer must call renderDefault exactly once", {
+  if (!selectedRenderMethod) {
+    throw new StateError("Before-frame-render renderer must select a render method exactly once", {
       frameId,
     })
   }
+  return selectedRenderMethod
 }
 
 export async function dispatchPreparedFrameResponseStreams(

@@ -154,6 +154,7 @@ export interface FrameRenderContext {
   readonly frameId: string
   readonly newFrame: ProtocolElement
   renderDefault(): undefined
+  renderMorph(): undefined
 }
 
 export type FrameRenderer = (context: FrameRenderContext) => undefined

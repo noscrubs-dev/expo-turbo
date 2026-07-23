@@ -94,13 +94,16 @@ import {
 } from "./frame-history"
 import { resolveMountedFrameHistory } from "./frame-history-internal"
 import {
+  BeforeFrameMorphEvent,
   createFrameMissingEvent,
   discardFrameMissingResponseBody,
   executeFrameMissingVisit,
   executeFrameVisitControlReload,
+  FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH,
   FRAME_LIFECYCLE_MISSING_DISPATCH,
   type FrameLifecycle,
   type FrameMissingEvent,
+  type FrameRenderMethod,
   frameLifecycleOption,
 } from "./frame-lifecycle"
 import {
@@ -113,6 +116,7 @@ import {
   activeFrameAutofocusCandidates,
   assertPreparedFrameMutationCurrent,
   commitPreparedFrameMutation,
+  discardPreparedFrameMutation,
   dispatchPreparedFrameResponseStreams,
   frameAutoscrollIntent,
   type PreparedFrameResponse,
@@ -1272,10 +1276,11 @@ export class FormSubmissionController {
       try {
         const finalUrl =
           candidate.classification === "success" || candidate.redirected ? candidate.url : undefined
-        const mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
+        let mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
           ...(promotedHistory ? { documentUrl: candidate.url } : {}),
           ...(finalUrl ? { finalUrl } : {}),
         })
+        let selectedRenderMethod: FrameRenderMethod = "replace"
         if (promotedHistory || this.options.frameLifecycle) {
           const acquired = this.ownership.commitFrame(lease, () => {
             const beforeFrameRenderer = prepareFrameBeforeRender(
@@ -1283,8 +1288,27 @@ export class FormSubmissionController {
               preparedFrame,
               candidate.url,
             )
-            renderPreparedFrameMutation(preparedFrame, beforeFrameRenderer)
+            selectedRenderMethod = renderPreparedFrameMutation(preparedFrame, beforeFrameRenderer)
+            if (selectedRenderMethod === "morph") {
+              discardPreparedFrameMutation(mutation)
+              mutation = prepareFrameMutation(this.session, activeFrame, preparedFrame, {
+                ...(promotedHistory ? { documentUrl: candidate.url } : {}),
+                ...(finalUrl ? { finalUrl } : {}),
+                renderMethod: "morph",
+              })
+            }
             assertPreparedFrameMutationCurrent(this.session, mutation)
+            if (selectedRenderMethod === "morph" && this.options.frameLifecycle) {
+              this.options.frameLifecycle[FRAME_LIFECYCLE_BEFORE_MORPH_DISPATCH](
+                new BeforeFrameMorphEvent({
+                  currentFrame: activeFrame,
+                  frameId,
+                  newFrame: preparedFrame.responseFrame,
+                  url: candidate.url,
+                }),
+              )
+              assertPreparedFrameMutationCurrent(this.session, mutation)
+            }
             if (promotedHistory) {
               this.assertFrameHistory(promotedHistory, identity, candidate.requestedUrl)
               commitFrameFormHistoryPlan(
@@ -1308,6 +1332,7 @@ export class FormSubmissionController {
               frame: activeFrame,
               frameId,
               ownerIsCurrent: () => this.ownership.frameCheckpointCurrent(checkpoint),
+              renderMethod: selectedRenderMethod,
               url: candidate.url,
             }),
           )
