@@ -316,6 +316,7 @@ export function DemoFrameBoundary({
         accessibilityLabel={`Frame ${state.frameId}: ${state.status}`}
         accessibilityState={accessibilityState}
         accessible
+        role="group"
         style={{
           backgroundColor: "#f6f8fa",
           borderCurve: "continuous",
@@ -363,6 +364,7 @@ export function DemoDocumentBoundary({
         accessibilityLabel={accessibilityLabel}
         accessibilityState={accessibilityState}
         accessible
+        role="group"
         style={{
           backgroundColor: "#eef6ff",
           borderCurve: "continuous",
@@ -443,6 +445,7 @@ export function DemoFormBoundary({
         accessibilityLabel={label}
         accessibilityState={accessibilityState}
         accessible
+        role="group"
         style={{
           backgroundColor: failed ? "#fff1f0" : "#eef6ff",
           borderColor: failed ? "#d14343" : "#9bbce0",
