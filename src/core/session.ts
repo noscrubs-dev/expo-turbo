@@ -13,7 +13,13 @@ import { installMorphLifecycle, morphLifecycleDispatchActive } from "./morph-lif
 import { RecentRequestIds } from "./recent-request-ids"
 import { markSessionCommitError } from "./session-commit-error-internal"
 import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal"
-import { type DocumentTree, isElement, morphCurrentDocumentRoot, type ProtocolNode } from "./tree"
+import {
+  type DocumentTree,
+  isElement,
+  morphCurrentDocumentRoot,
+  nodeMorphRevision,
+  type ProtocolNode,
+} from "./tree"
 import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
 
 export type SessionListener = () => void
@@ -26,6 +32,7 @@ export interface DocumentSessionOptions {
 
 export interface NodeSnapshot {
   readonly identity: string
+  readonly morphRevision: number
   readonly node: ProtocolNode
   readonly revision: number
 }
@@ -106,7 +113,12 @@ export class DocumentSession {
       identity = `${this.sessionIdentity}:${this.nextIdentity++}`
       this.identities.set(node, identity)
     }
-    const snapshot = Object.freeze({ identity, node, revision: this.currentRevision })
+    const snapshot = Object.freeze({
+      identity,
+      morphRevision: nodeMorphRevision(this.currentTree, node),
+      node,
+      revision: this.currentRevision,
+    })
     this.snapshots.set(key, snapshot)
     return snapshot
   }

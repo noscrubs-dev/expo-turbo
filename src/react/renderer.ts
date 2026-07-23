@@ -2268,7 +2268,9 @@ function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
   )
 }
 
-function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNode {
+function RegisteredElement(
+  props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
+): ReactNode {
   const { registry } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
   const decoded: DecodedComponent = registry.decode(props.node)
@@ -2280,10 +2282,11 @@ function RegisteredElement(props: Readonly<{ node: ProtocolElement }>): ReactNod
     Readonly<Record<string, unknown> & { children?: ReactNode }>
   >
   const componentProps = decoded.props as Readonly<Record<string, unknown>>
+  const key = decoded.definition.morphState === "reset" ? props.morphRevision : undefined
   const rendered =
     children === undefined
-      ? createElement(component, componentProps)
-      : createElement(component, componentProps, children)
+      ? createElement(component, { ...componentProps, key })
+      : createElement(component, { ...componentProps, key }, children)
   return createElement(
     DirectionContext.Provider,
     { value: direction },
@@ -2310,6 +2313,7 @@ function RootProtocolDirectionBoundary(
 }
 
 interface RegisteredElementBoundaryProps {
+  readonly morphRevision: number
   readonly node: ProtocolElement
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
@@ -2325,7 +2329,10 @@ function RegisteredElementBoundary(props: RegisteredElementBoundaryProps): React
       renderError: props.renderError,
       revision: props.revision,
     },
-    createElement(RegisteredElement, { node: props.node }),
+    createElement(RegisteredElement, {
+      morphRevision: props.morphRevision,
+      node: props.node,
+    }),
   )
 }
 
@@ -2953,7 +2960,7 @@ function ConnectedCableStreamSource(props: ConnectedCableStreamSourceProps): Rea
 }
 
 function ProtocolElementView(
-  props: Readonly<{ node: ProtocolElement; revision: number }>,
+  props: Readonly<{ morphRevision: number; node: ProtocolElement; revision: number }>,
 ): ReactNode {
   const context = useRenderer()
   if (props.node.kind === "stream-source") {
@@ -3020,6 +3027,7 @@ function ProtocolElementView(
 
   const formId = attributeValue(props.node, "form")
   const boundaryProps = {
+    morphRevision: props.morphRevision,
     node: props.node,
     onError: context.onError,
     renderError: context.renderError,
@@ -3039,6 +3047,7 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
   return createElement(ProtocolElementView, {
     key: snapshot.identity,
+    morphRevision: snapshot.morphRevision,
     node,
     revision: snapshot.revision,
   })

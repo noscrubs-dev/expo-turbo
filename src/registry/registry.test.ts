@@ -86,6 +86,7 @@ describe("typed component registry", () => {
     )
 
     expect(decoded.definition).toBe(card)
+    expect(decoded.definition.morphState).toBe("preserve")
     expect(decoded.props).toEqual({
       count: 2,
       disabled: false,
@@ -107,6 +108,10 @@ describe("typed component registry", () => {
     expect(decoded.children.filter(isElement)).toHaveLength(1)
     expect(registry.resolve("LegacyCard")).toBe(card)
     expect(registry.get("DemoCard")).toBe(card)
+    expect(
+      registry.capabilities.components.find((component) => component.tag === "DemoCard")
+        ?.morphState,
+    ).toBe("preserve")
 
     for (const value of ["", "false", "disabled"]) {
       expect(
@@ -156,6 +161,16 @@ describe("typed component registry", () => {
     expect(() => registry.decode(element("<DemoText><DemoCard /></DemoText>"))).toThrow(
       /text children only/,
     )
+    expect(() =>
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: () => null,
+        morphState: "invalid" as "reset",
+        schema: z.object({}),
+        tag: "InvalidMorphState",
+      }),
+    ).toThrow(RegistryError)
   })
 
   test("decodes text children through the shared whitespace contract", () => {

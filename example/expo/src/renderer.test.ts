@@ -4103,6 +4103,98 @@ describe("React protocol renderer", () => {
     expect([...unmounted].sort()).toEqual([1, 2, 3])
   })
 
+  test("applies component-declared preserve and reset state policies during morph", async () => {
+    let nextInstance = 0
+    const disposed: number[] = []
+    const unmounted: number[] = []
+    const component = (label: string) =>
+      function MorphStateProbe(props: Readonly<{ title: string }>): ReactNode {
+        const [instance] = useState(() => ++nextInstance)
+        useEffect(
+          () => () => {
+            unmounted.push(instance)
+          },
+          [instance],
+        )
+        useNodeDisposal(() => disposed.push(instance))
+        return createElement("section", { instance, label, title: props.title })
+      }
+    const preserve = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "none",
+      component: component("preserve"),
+      morphState: "preserve",
+      schema: z.object({ title: z.string() }),
+      tag: "PreserveProbe",
+    })
+    const reset = defineComponent({
+      attributes: { title: { codec: stringCodec, prop: "title" } },
+      children: "none",
+      component: component("reset"),
+      morphState: "reset",
+      schema: z.object({ title: z.string() }),
+      tag: "ResetProbe",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [preserve, reset],
+        name: "morph-state-policy",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="panel"><PreserveProbe id="preserve" title="before"/><ResetProbe id="reset" title="before"/></Gallery>',
+      ),
+    )
+    const preserveNode = session.tree.getElementById("preserve")
+    const resetNode = session.tree.getElementById("reset")
+    const renderer = render(session, componentRegistry)
+    const rendered = () =>
+      Object.fromEntries(
+        renderer.root
+          .findAllByType("section")
+          .map((section) => [section.props.label, section.props]),
+      )
+
+    expect(rendered().preserve).toMatchObject({ instance: 1, title: "before" })
+    expect(rendered().reset).toMatchObject({ instance: 2, title: "before" })
+    expect(session.getNodeSnapshot("id:preserve")?.morphRevision).toBe(0)
+    expect(session.getNodeSnapshot("id:reset")?.morphRevision).toBe(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="panel"><template>ordinary update</template></turbo-stream>',
+      )
+    })
+
+    expect(rendered().preserve).toMatchObject({ instance: 1, title: "before" })
+    expect(rendered().reset).toMatchObject({ instance: 2, title: "before" })
+    expect(disposed).toEqual([])
+    expect(unmounted).toEqual([])
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><PreserveProbe id="preserve" title="after"/><ResetProbe id="reset" title="after"/></template></turbo-stream>',
+      )
+    })
+
+    expect(session.tree.getElementById("preserve")).toBe(preserveNode)
+    expect(session.tree.getElementById("reset")).toBe(resetNode)
+    expect(session.getNodeSnapshot("id:preserve")?.morphRevision).toBe(1)
+    expect(session.getNodeSnapshot("id:reset")?.morphRevision).toBe(1)
+    expect(rendered().preserve).toMatchObject({ instance: 1, title: "after" })
+    expect(rendered().reset).toMatchObject({ instance: 3, title: "after" })
+    expect(disposed).toEqual([2])
+    expect(unmounted).toEqual([2])
+
+    act(() => renderer.unmount())
+    expect(disposed.sort()).toEqual([1, 2, 3])
+    expect(unmounted.sort()).toEqual([1, 2, 3])
+  })
+
   test("keeps native component state through an exact current-document refresh morph", async () => {
     const currentUrl = "https://example.test/current"
     const pending: { resolve: (response: TurboResponse) => void }[] = []
