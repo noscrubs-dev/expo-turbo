@@ -1,9 +1,16 @@
-import type { DocumentMorphEventDetail, DocumentRenderMethod } from "./document-visit-lifecycle"
+import type {
+  BeforeDocumentRenderEventDetail,
+  DocumentMorphEventDetail,
+  DocumentRenderMethod,
+} from "./document-visit-lifecycle"
 
 export type DocumentRefreshScrollPolicy = "preserve" | "reset"
 
 interface DocumentLoadRenderOptions {
   readonly afterMorph: ((detail: DocumentMorphEventDetail) => void) | undefined
+  readonly beforeRender:
+    | ((detail: Omit<BeforeDocumentRenderEventDetail, "render">) => boolean | PromiseLike<boolean>)
+    | undefined
   readonly refreshScroll: DocumentRefreshScrollPolicy | undefined
   refreshScrollReady: boolean
   readonly renderMethod: DocumentRenderMethod
@@ -17,14 +24,26 @@ export function withDocumentLoadRenderMethod<Options extends object>(
   renderMethod: DocumentRenderMethod,
   refreshScroll?: DocumentRefreshScrollPolicy,
   afterMorph?: (detail: DocumentMorphEventDetail) => void,
+  beforeRender?: (
+    detail: Omit<BeforeDocumentRenderEventDetail, "render">,
+  ) => boolean | PromiseLike<boolean>,
 ): Options {
   documentLoadRenderOptions.set(options, {
     afterMorph,
+    beforeRender,
     refreshScroll,
     refreshScrollReady: false,
     renderMethod,
   })
   return options
+}
+
+/** @internal Runs the trusted visit lifecycle's pre-mutation document render admission. */
+export function documentLoadBeforeRender(
+  options: object,
+  detail: Omit<BeforeDocumentRenderEventDetail, "render">,
+): boolean | PromiseLike<boolean> {
+  return documentLoadRenderOptions.get(options)?.beforeRender?.(detail) ?? true
 }
 
 /** @internal Reads the mode captured by the trusted document visit controller. */

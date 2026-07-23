@@ -20,6 +20,7 @@ import {
   DocumentVisitLifecycle,
   documentVisitLifecycleOption,
   LinkClickEvent,
+  runBeforeDocumentRender,
   VisitEvent,
 } from "./document-visit-lifecycle"
 import { PropsError, StateError } from "./errors"
@@ -349,6 +350,64 @@ describe("document visit lifecycle", () => {
     )
 
     expect(events).toEqual(["morph", "render", "load", "reload"])
+  })
+
+  test("pauses, wraps, and cancels owning-document render admission", async () => {
+    const lifecycle = new DocumentVisitLifecycle()
+    const currentDocument = parseExpoTurboDocument('<Gallery id="current" />', {
+      url: "https://example.test/current",
+    }).document
+    const newDocument = parseExpoTurboDocument('<Gallery id="new" />', {
+      url: "https://example.test/next",
+    }).document
+    const calls: string[] = []
+    let resume: () => undefined = () => undefined
+    lifecycle.subscribe("before-render", (event) => {
+      calls.push("listener")
+      expect(event.detail.currentDocument).toBe(currentDocument)
+      expect(event.detail.newDocument).toBe(newDocument)
+      expect(event.detail.renderMethod).toBe("morph")
+      expect(event.detail.url).toBe("https://example.test/next")
+      expect(Object.isFrozen(event)).toBe(false)
+      expect(Object.isFrozen(event.detail)).toBe(true)
+      const renderDefault = event.detail.render
+      event.detail.render = async (context) => {
+        calls.push("renderer")
+        await Promise.resolve()
+        return renderDefault(context)
+      }
+      event.pause()
+      resume = () => {
+        event.resume()
+        return undefined
+      }
+      return undefined
+    })
+
+    const rendering = runBeforeDocumentRender(lifecycle, {
+      currentDocument,
+      newDocument,
+      renderMethod: "morph",
+      url: "https://example.test/next",
+    })
+    expect(calls).toEqual(["listener"])
+    resume()
+    expect(await rendering).toBe(true)
+    expect(calls).toEqual(["listener", "renderer"])
+
+    const canceled = new DocumentVisitLifecycle()
+    canceled.subscribe("before-render", (event) => {
+      event.preventDefault()
+      return undefined
+    })
+    expect(
+      await runBeforeDocumentRender(canceled, {
+        currentDocument,
+        newDocument,
+        renderMethod: "replace",
+        url: "https://example.test/next",
+      }),
+    ).toBe(false)
   })
 
   test("emits frozen before-cache notifications through stable listener snapshots", async () => {

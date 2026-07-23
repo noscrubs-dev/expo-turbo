@@ -5,6 +5,7 @@ import {
 } from "./destination-request-ownership"
 import type { DocumentScrollPosition } from "./document-history"
 import {
+  documentLoadBeforeRender,
   documentLoadRefreshScroll,
   documentLoadRenderMethod,
   notifyDocumentLoadMorph,
@@ -798,6 +799,7 @@ export class DocumentRequestLoader {
         responseStatus: commit.response.status,
       })
     }
+    const committedTree = commit.tree
     const effectiveRenderMethod =
       renderMethod === "morph" && commit.classification === "success" ? "morph" : "replace"
     const beforeSnapshotCapture = (options as InternalDocumentLoadOptions)[
@@ -835,6 +837,28 @@ export class DocumentRequestLoader {
         })
       }
     }
+    const beforeRender = await settleRequestOperation(active.controller.signal, () =>
+      documentLoadBeforeRender(
+        options,
+        Object.freeze({
+          currentDocument: this.session.tree.document,
+          newDocument: committedTree.document,
+          renderMethod: effectiveRenderMethod,
+          url: commit.finalUrl,
+        }),
+      ),
+    )
+    if (beforeRender.status === "canceled") return this.canceled(active, commit.finalUrl)
+    if (beforeRender.status === "rejected") {
+      this.release(active)
+      if (beforeRender.error instanceof ExpoTurboError) throw beforeRender.error
+      throw new RequestError("Document before-render handling failed", {
+        method: "GET",
+        responseStatus: commit.response.status,
+      })
+    }
+    if (!beforeRender.value) return this.canceled(active, commit.finalUrl)
+    if (!this.owns(active)) return this.canceled(active, commit.finalUrl)
     if (options.beforeTreeCommit) {
       const lease = active.lease
       if (!lease) {

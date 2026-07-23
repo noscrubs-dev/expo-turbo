@@ -58,6 +58,7 @@ import {
   type DocumentRenderMethod,
   type DocumentVisitDirection,
   type DocumentVisitLifecycle,
+  runBeforeDocumentRender,
   VisitEvent,
 } from "./document-visit-lifecycle"
 import { PropsError, RequestError, StateError, TargetError } from "./errors"
@@ -1447,6 +1448,7 @@ export class DocumentVisitController {
             lifecycle[DOCUMENT_VISIT_LIFECYCLE_MORPH_DISPATCH](new DocumentMorphEvent(detail))
           }
         : undefined,
+      lifecycle ? (detail) => runBeforeDocumentRender(lifecycle, detail) : undefined,
     )
     const loaded = prefetched
       ? this.loader[DOCUMENT_LOAD_PREFETCHED_RESPONSE](
