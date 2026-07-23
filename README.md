@@ -231,7 +231,8 @@ The manual **Release** workflow defaults to a non-publishing candidate run on me
 - [x] Shared logical morph lifecycle for every implemented current-document, direct Frame reload, and exact Stream morph path: frozen `before-morph-element` callbacks may veto a matched element or an omitted-element removal; `before-morph-attribute` may independently veto an update/addition or removal; and `morph-element` observes successfully committed retained elements in child-before-parent completion order. Listener snapshots are stable, callbacks must be synchronous and return `undefined`, reentrant session/tree mutation fails closed, and notification faults are isolated. Native logical handles replace DOM targets/bubbling; permanent and opaque nested-Frame plans stay silent.
 - [ ] Remaining lifecycle-event compatibility: browser DOM targets/bubbling and physical-paint timing. Physical Stream renderer-flush timing, other current-document refresh morph paths, and browser DOM-attribute/repaint timing also remain pending.
 - [ ] Remaining native morphing: all Frame morph paths other than the bounded direct reload-morph case and its acknowledged nested reload cascade, document/current-document refresh morph other than the bounded successful Refresh Stream path above, identity-preserving ID reparenting and richer anonymous matching, global/browser-wide `data-turbo-permanent` semantics beyond paired ordinary Frame replacement (including protocol descendants, cross-Frame/document pairing, and independently reconciled nested permanent subtrees), and component-specific input-state/focus/scroll preservation.
-- [ ] Remaining Rails integration: host-specific protected-resource integration and the complete standalone Rails response/scenario matrix.
+- [x] Complete standalone Rails response boundary matrix: canonical `200` XML; empty `201` and `204`; followed `303` canonical GET; authoritative `422`/`500` XML; wrong MIME; correct-MIME malformed XML; a bounded delayed document canceled by a newer native request; matching, delayed, and missing Frames; normal/morph/refresh HTTP Streams; authoritative Frame-form `422`, `204`, and `303`; and public/protected Cable delivery. Rails request specs assert the exact wire boundaries and the real-host native smoke drives them through the public loaders without a JSON fallback.
+- [ ] Remaining Rails integration: final product-host route/view policy, protected-resource authorization, credentials, and expiry/revocation mapping.
 - [ ] production host-specific Action Cable credentials/tickets, authenticated native socket integration, protected-resource expiry/authorization/device proof, and Frame-aware physical-device lifecycle/network evidence. The package now owns host-neutral lifecycle, reachability, and finite retry coordination; each host still owns credentials, network interpretation, and retry values.
 - [ ] Complete standalone compatibility gallery, differential conformance suite, and physical iOS/Android evidence.
 - [ ] Stable npm/RubyGems publication. No registry release is supported yet.
@@ -253,6 +254,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-23**:
+
+- Changed: Completed the standalone Rails response boundary matrix with canonical `200`, empty `201`, followed `303`, malformed correct-MIME XML, and a bounded delayed document in addition to the existing `204`, `422`, `500`, wrong-MIME, Frame, form, Stream, and Cable cases.
+- Why: The public host needed real transport fixtures for every document loader branch, including redirect final-URL truth, parser failure, and cancellation by a newer request.
+- Impact: Rails request specs assert the exact responses and the real-host native smoke proves successful redirect adoption, empty `201`, malformed XML rejection without tree mutation, and delayed-request cancellation. Product-host authorization remains separate.
 
 **2026-07-23**:
 

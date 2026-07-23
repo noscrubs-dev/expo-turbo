@@ -8,6 +8,7 @@ import {
   FrameMissingError,
   FrameRequestLoader,
   nodeTextContent,
+  ParseError,
   parseExpoTurboDocument,
 } from "expo-turbo/core";
 
@@ -38,6 +39,15 @@ liveTest("applies the standalone Rails document response matrix through the publ
     { next: () => `response-matrix-document-${++requestId}` },
   );
 
+  await expect(loader.load(url(base, "document-success"))).resolves.toMatchObject({
+    classification: "success",
+    responseStatus: 200,
+    status: "committed",
+  });
+  expect(nodeTextContent(session.tree.getElementById("demo-response-status")!)).toBe(
+    "Handled Rails XML response 200",
+  );
+
   await expect(loader.load(url(base, "document-client-error"))).resolves.toMatchObject({
     classification: "client-error",
     responseStatus: 422,
@@ -64,8 +74,36 @@ liveTest("applies the standalone Rails document response matrix through the publ
   });
   expect(session.tree).toBe(tree);
 
-  await expect(loader.load(url(base, "wrong-mime"))).rejects.toBeInstanceOf(ContentTypeError);
+  await expect(loader.load(url(base, "created-empty"))).resolves.toMatchObject({
+    classification: "success",
+    responseStatus: 201,
+    status: "empty",
+  });
   expect(session.tree).toBe(tree);
+
+  await expect(loader.load(url(base, "redirect"))).resolves.toMatchObject({
+    classification: "success",
+    redirected: true,
+    responseStatus: 200,
+    status: "committed",
+    url: url(base, "document-success"),
+  });
+  expect(nodeTextContent(session.tree.getElementById("demo-response-status")!)).toBe(
+    "Handled Rails XML response 200",
+  );
+
+  const redirectedTree = session.tree;
+  await expect(loader.load(url(base, "wrong-mime"))).rejects.toBeInstanceOf(ContentTypeError);
+  expect(session.tree).toBe(redirectedTree);
+
+  await expect(loader.load(url(base, "malformed-xml"))).rejects.toBeInstanceOf(ParseError);
+  expect(session.tree).toBe(redirectedTree);
+
+  const delayed = loader.load(`${url(base, "delayed-document")}?delay_ms=1_000`);
+  await expect(loader.load(url(base, "document-success"))).resolves.toMatchObject({
+    status: "committed",
+  });
+  await expect(delayed).resolves.toMatchObject({ status: "canceled" });
 });
 
 liveTest("applies matching and delayed Rails Frames and rejects a missing Frame", async () => {
