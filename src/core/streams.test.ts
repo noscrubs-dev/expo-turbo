@@ -657,6 +657,33 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("new")?.parent).toBe(inserted)
   })
 
+  test("preserves two later anonymous wrappers when a soft-compatible sibling is prepended", async () => {
+    const document = session(
+      '<Gallery><DemoPanel id="panel"><Row tone="one"/><Row tone="two"/></DemoPanel></Gallery>',
+    )
+    const panel = document.tree.getElementById("panel")
+    const first = panel?.children[0]
+    const second = panel?.children[1]
+    if (first?.kind !== "element" || second?.kind !== "element") {
+      throw new Error("anonymous soft-match fixture is missing")
+    }
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel" method="morph"><template><Row tone="new"/><Row tone="one-after"/><Row tone="two-after"/></template></turbo-stream>',
+    )
+
+    const current = document.tree.getElementById("panel")
+    const inserted = current?.children[0]
+    if (!inserted) throw new Error("prepended anonymous wrapper is missing")
+    expect(inserted).not.toBe(first)
+    expect(inserted).not.toBe(second)
+    expect(current?.children).toEqual([inserted, first, second])
+    expect(inserted?.kind === "element" && attributeValue(inserted, "tone")).toBe("new")
+    expect(attributeValue(first, "tone")).toBe("one-after")
+    expect(attributeValue(second, "tone")).toBe("two-after")
+  })
+
   test("structurally replaces protocol-wrapper descendants during child morph", async () => {
     const document = session(
       '<Gallery><DemoPanel id="panel"><turbo-frame id="frame"><DemoInput id="field"/></turbo-frame><turbo-cable-stream-source id="source" channel="DemoChannel"/></DemoPanel></Gallery>',
