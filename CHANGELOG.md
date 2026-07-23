@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Preserve exact logical focus when a focused `morphState: "reset"` component remounts after a retained morph. The React boundary captures the host's stable focused node key before commit, waits for the replacement handle's layout effects, restores only when focus became empty and the exact key is available, and never steals focus that moved elsewhere during commit. Adapter faults remain redacted through the component error boundary.
+
 - Add capability-visible component morph-state policy. Registered components preserve their mounted React state by default; a component may declare `morphState: "reset"` to remount its exact retained component boundary after a successfully committed Stream, direct Frame reload, or current-document morph. The logical XML node remains retained, ordinary non-morph mutations do not trigger the policy, and reset cleanup releases component-owned native resources through the existing disposal contract.
 
 - Retain compatible anonymous application elements during every implemented native morph path. Under one retained parent, the nth ID-less application child of an exact tag, local name, namespace, and prefix now maps to the nth compatible current child, preserving recursive React/session/form/state identity while allowing keyed siblings and other anonymous shapes to reorder around it. Stable IDs still take precedence; protocol wrappers, incompatible shapes, reparented IDs, and invalid permanent-node plans retain their existing replacement or fail-closed behavior.

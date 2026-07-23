@@ -2268,10 +2268,80 @@ function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
   )
 }
 
+function readMorphFocusedId(adapter: AutofocusAdapter, nodeKey: string): string | undefined {
+  if (!adapter.getFocusedId) return undefined
+  let focusedId: unknown
+  try {
+    focusedId = adapter.getFocusedId()
+  } catch {
+    throw new StateError("Component morph focus snapshot failed", { target: nodeKey })
+  }
+  if (focusedId !== undefined && typeof focusedId !== "string") {
+    consumeUnexpectedAdapterResult(focusedId)
+    throw new StateError("Component morph focus snapshot failed", { target: nodeKey })
+  }
+  return focusedId
+}
+
+function restoreComponentMorphFocus(adapter: AutofocusAdapter, nodeKey: string): void {
+  const focusedId = readMorphFocusedId(adapter, nodeKey)
+  if (focusedId !== undefined) return
+
+  let available: unknown
+  try {
+    available = adapter.canFocus(nodeKey)
+  } catch {
+    throw new StateError("Component morph focus availability check failed", { target: nodeKey })
+  }
+  if (typeof available !== "boolean") {
+    consumeUnexpectedAdapterResult(available)
+    throw new StateError("Component morph focus availability check failed", { target: nodeKey })
+  }
+  if (!available) return
+
+  let result: unknown
+  try {
+    result = adapter.focus(nodeKey)
+  } catch {
+    throw new StateError("Component morph focus restoration failed", { target: nodeKey })
+  }
+  if (result !== undefined) {
+    consumeUnexpectedAdapterResult(result)
+    throw new StateError("Component morph focus restoration failed", { target: nodeKey })
+  }
+}
+
+function useComponentMorphFocus(
+  adapter: AutofocusAdapter | undefined,
+  enabled: boolean,
+  morphRevision: number,
+  nodeKey: string,
+): void {
+  const committedMorphRevision = useRef(morphRevision)
+  const restore = useRef(false)
+
+  if (
+    committedMorphRevision.current !== morphRevision &&
+    adapter?.getFocusedId &&
+    enabled &&
+    readMorphFocusedId(adapter, nodeKey) === nodeKey
+  ) {
+    restore.current = true
+  }
+
+  useLayoutEffect(() => {
+    committedMorphRevision.current = morphRevision
+    if (restore.current) {
+      restore.current = false
+      if (adapter && enabled) restoreComponentMorphFocus(adapter, nodeKey)
+    }
+  }, [adapter, enabled, morphRevision, nodeKey])
+}
+
 function RegisteredElement(
   props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
 ): ReactNode {
-  const { registry } = useRenderer()
+  const { autofocus, registry } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
   const decoded: DecodedComponent = registry.decode(props.node)
   const direction = decoded.protocol.direction ?? inheritedDirection
@@ -2282,6 +2352,12 @@ function RegisteredElement(
     Readonly<Record<string, unknown> & { children?: ReactNode }>
   >
   const componentProps = decoded.props as Readonly<Record<string, unknown>>
+  useComponentMorphFocus(
+    autofocus,
+    decoded.definition.morphState === "reset",
+    props.morphRevision,
+    props.node.key,
+  )
   const key = decoded.definition.morphState === "reset" ? props.morphRevision : undefined
   const rendered =
     children === undefined

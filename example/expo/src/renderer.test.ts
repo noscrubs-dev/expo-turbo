@@ -4106,10 +4106,18 @@ describe("React protocol renderer", () => {
   test("applies component-declared preserve and reset state policies during morph", async () => {
     let nextInstance = 0
     const disposed: number[] = []
+    const focusCalls: string[] = []
     const unmounted: number[] = []
+    let focusedId: string | undefined
     const component = (label: string) =>
       function MorphStateProbe(props: Readonly<{ title: string }>): ReactNode {
         const [instance] = useState(() => ++nextInstance)
+        useLayoutEffect(
+          () => () => {
+            if (label === "reset" && focusedId === "id:reset") focusedId = undefined
+          },
+          [],
+        )
         useEffect(
           () => () => {
             unmounted.push(instance)
@@ -4149,7 +4157,16 @@ describe("React protocol renderer", () => {
     )
     const preserveNode = session.tree.getElementById("preserve")
     const resetNode = session.tree.getElementById("reset")
-    const renderer = render(session, componentRegistry)
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: (nodeKey) => nodeKey === "id:reset",
+        focus(nodeKey) {
+          focusCalls.push(nodeKey)
+          focusedId = nodeKey
+        },
+        getFocusedId: () => focusedId,
+      },
+    })
     const rendered = () =>
       Object.fromEntries(
         renderer.root
@@ -4159,6 +4176,7 @@ describe("React protocol renderer", () => {
 
     expect(rendered().preserve).toMatchObject({ instance: 1, title: "before" })
     expect(rendered().reset).toMatchObject({ instance: 2, title: "before" })
+    focusedId = "id:reset"
     expect(session.getNodeSnapshot("id:preserve")?.morphRevision).toBe(0)
     expect(session.getNodeSnapshot("id:reset")?.morphRevision).toBe(0)
 
@@ -4172,6 +4190,8 @@ describe("React protocol renderer", () => {
     expect(rendered().preserve).toMatchObject({ instance: 1, title: "before" })
     expect(rendered().reset).toMatchObject({ instance: 2, title: "before" })
     expect(disposed).toEqual([])
+    expect(focusCalls).toEqual([])
+    expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([])
 
     await act(async () => {
@@ -4188,11 +4208,67 @@ describe("React protocol renderer", () => {
     expect(rendered().preserve).toMatchObject({ instance: 1, title: "after" })
     expect(rendered().reset).toMatchObject({ instance: 3, title: "after" })
     expect(disposed).toEqual([2])
+    expect(focusCalls).toEqual(["id:reset"])
+    expect(focusedId).toBe("id:reset")
     expect(unmounted).toEqual([2])
 
     act(() => renderer.unmount())
     expect(disposed.sort()).toEqual([1, 2, 3])
     expect(unmounted.sort()).toEqual([1, 2, 3])
+  })
+
+  test("does not steal focus that moved during a reset component morph", async () => {
+    const focusCalls: string[] = []
+    let focusedId: string | undefined = "id:reset"
+    function ResetProbe(): ReactNode {
+      useLayoutEffect(
+        () => () => {
+          focusedId = "id:competing"
+        },
+        [],
+      )
+      return createElement("section")
+    }
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: ResetProbe,
+            morphState: "reset",
+            schema: z.object({}),
+            tag: "ResetProbe",
+          }),
+        ],
+        name: "morph-focus-policy",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery id="panel"><ResetProbe id="reset"/></Gallery>'),
+    )
+    const renderer = render(session, componentRegistry, {
+      autofocus: {
+        canFocus: () => true,
+        focus(nodeKey) {
+          focusCalls.push(nodeKey)
+          focusedId = nodeKey
+        },
+        getFocusedId: () => focusedId,
+      },
+    })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="panel" method="morph"><template><ResetProbe id="reset"/></template></turbo-stream>',
+      )
+    })
+
+    expect(focusedId).toBe("id:competing")
+    expect(focusCalls).toEqual([])
+    act(() => renderer.unmount())
   })
 
   test("keeps native component state through an exact current-document refresh morph", async () => {
