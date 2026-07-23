@@ -294,6 +294,69 @@ describe("Action Cable lifecycle adapter", () => {
     expect(errors).toEqual([])
   })
 
+  test("rotates host credentials immediately while preserving logical subscriptions", () => {
+    const { adapter, cables, errors } = createManagedCable()
+    const events: string[] = []
+    adapter.subscribe("protected", callbacks(events))
+    cables[0]?.records[0]?.callbacks.connected(false)
+
+    adapter.rotateCredentials()
+
+    expect(cables).toHaveLength(2)
+    expect(cables[0]?.disposeCalls).toBe(1)
+    expect(cables[1]?.records.map((record) => record.identifier)).toEqual(["protected"])
+    expect(events).toEqual(["connected:false", "disconnected:true"])
+
+    cables[0]?.records[0]?.callbacks.received("stale")
+    cables[1]?.records[0]?.callbacks.connected(false)
+    expect(events).toEqual(["connected:false", "disconnected:true", "connected:true"])
+    expect(errors).toEqual([])
+  })
+
+  test("disposes a pending credential snapshot when the host rotates credentials", async () => {
+    const lifecycle = new FakeLifecycle("active")
+    const resolvers: ((cable: DisposableCableAdapter) => void)[] = []
+    const adapter = new LifecycleCableAdapter({
+      createCable: () =>
+        new Promise<DisposableCableAdapter>((resolve) => {
+          resolvers.push(resolve)
+        }),
+      lifecycle,
+      onError: () => undefined,
+    })
+    adapter.subscribe("protected", callbacks([]))
+
+    adapter.rotateCredentials()
+    expect(resolvers).toHaveLength(2)
+
+    const staleCable = new FakeCable()
+    const currentCable = new FakeCable()
+    resolvers[0]?.(staleCable)
+    resolvers[1]?.(currentCable)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(staleCable.disposeCalls).toBe(1)
+    expect(staleCable.records).toEqual([])
+    expect(currentCable.records.map((record) => record.identifier)).toEqual(["protected"])
+  })
+
+  test("defers rotated credentials while suspended and rejects rotation after disposal", () => {
+    const { adapter, cables, lifecycle } = createManagedCable()
+    adapter.subscribe("protected", callbacks([]))
+    lifecycle.emit("background")
+
+    adapter.rotateCredentials()
+    expect(cables).toHaveLength(1)
+
+    lifecycle.emit("active")
+    expect(cables).toHaveLength(2)
+    adapter.dispose()
+    expect(() => adapter.rotateCredentials()).toThrow(
+      new SubscriptionError("Action Cable lifecycle adapter is disposed"),
+    )
+  })
+
   test("defers transport creation while inactive and treats inactive as suspended", () => {
     const { adapter, cables, lifecycle } = createManagedCable("inactive")
     const events: string[] = []

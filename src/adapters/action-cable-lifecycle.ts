@@ -332,6 +332,21 @@ export class LifecycleCableAdapter implements CableAdapter {
     this.records.clear()
   }
 
+  /**
+   * Disposes the current credential-bearing generation and asks the host
+   * factory for a fresh snapshot while preserving logical subscriptions.
+   * Hosts should update their identity or credential source before calling
+   * this method.
+   */
+  rotateCredentials(): void {
+    if (!this.active) throw lifecycleError("Action Cable lifecycle adapter is disposed")
+    this.cancelRetry()
+    this.retryAttempts = 0
+    const reconnecting = this.canConnect() && this.records.size > 0
+    this.releaseCable(reconnecting)
+    if (reconnecting) this.activate()
+  }
+
   private transition(nextState: unknown): void {
     if (!this.active) return
     if (!isLifecycleState(nextState)) {
