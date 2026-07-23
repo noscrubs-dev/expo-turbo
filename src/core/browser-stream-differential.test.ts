@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { type Element as HappyElement, type Node as HappyNode, Window } from "happy-dom"
-
+import type { ClockAdapter, TurboRequest } from "../adapters"
 import {
   applyFrameResponse,
   buildFormRequest,
+  DocumentRequestLoader,
   DocumentSession,
+  DocumentVisitController,
   dispatchTurboStreamFragment,
+  EXPO_TURBO_MIME_TYPE,
   isElement,
   type ProtocolElement,
   type ProtocolNode,
@@ -120,6 +123,12 @@ function activeProtocolRoot(session: DocumentSession): ProtocolElement {
   const root = session.tree.document.children.find(isElement)
   if (!root) throw new Error("Differential document has no root element")
   return root
+}
+
+const realClock: ClockAdapter = {
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 }
 
 async function runDifferential(initialDocument: string, streamFragment: string) {
@@ -411,6 +420,73 @@ test("matches upstream Turbo unsafe form method and URL-encoded body", async () 
     expect(browserRequestBody).toBe(expoRequestBody)
     expect(browserFrameHeader).toBe(expoRequest.headers["Turbo-Frame"])
     expect(browser.document.getElementById("validation-result")).not.toBeNull()
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
+test("matches upstream Turbo for an ordinary document link visit", async () => {
+  const initialDocument =
+    '<main id="root"><a id="next-link" href="/next">Next</a><p id="old">Old</p></main>'
+  const nextDocument =
+    '<main id="root"><a id="back-link" href="/demo">Back</a><p id="next">Next document</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => nextDocument,
+          url: "https://example.test/next",
+        }
+      },
+    },
+    { next: () => "request-visit" },
+  )
+  const visits = new DocumentVisitController(loader, realClock)
+  const expoResult = await visits.visit("/next")
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    return new browser.Response(`<html><body>${nextDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("next-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser document differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult.status).toBe("committed")
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
   } finally {
     browser.fetch = originalFetch
     turbo.session.stop()
