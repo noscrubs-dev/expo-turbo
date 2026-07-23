@@ -112,7 +112,7 @@ function streamCommitError(message: string, action: string): SessionCommitError 
   return markSessionCommitError(new SessionCommitError([new ActionError(message, { action })]))
 }
 
-function streamRenderSchedulerOption(
+export function streamRenderSchedulerOption(
   options: unknown,
   owner: string,
 ): StreamRenderScheduler | undefined {
