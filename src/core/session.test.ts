@@ -200,6 +200,33 @@ describe("document session snapshots", () => {
     expect(document.getNodeSnapshot(permanent.key)?.morphRevision).toBe(0)
   })
 
+  test("matches anonymous document wrappers through stable descendant ID sets", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Row tone="one"><Field id="one"/></Row><Row tone="two"><Field id="two"/></Row></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const gallery = document.tree.getElementById("gallery")
+    const first = gallery?.children[0]
+    const second = gallery?.children[1]
+    if (first?.kind !== "element" || second?.kind !== "element") {
+      throw new Error("Expected anonymous document wrappers")
+    }
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Row tone="two-after"><Field id="two"/></Row><Row tone="one-after"><Field id="one"/></Row></Gallery>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    expect(document.tree.getElementById("gallery")?.children).toEqual([second, first])
+    expect(attributeValue(first, "tone")).toBe("one-after")
+    expect(attributeValue(second, "tone")).toBe("two-after")
+  })
+
   test("ignores document-level formatting around a compatible document morph root", async () => {
     const document = new DocumentSession(
       parseExpoTurboDocument(
