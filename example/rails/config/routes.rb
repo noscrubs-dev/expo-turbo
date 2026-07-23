@@ -18,6 +18,7 @@ Rails.application.routes.draw do
         get "morph/inner", to: "morph_frames#inner", defaults: {format: :expo_turbo}
         resource :stream, only: :show, defaults: {format: :turbo_stream}
         resource :protected_ticket, only: :show
+        resource :protected_revocation, only: :create if Rails.env.local?
         resource :broadcast, only: :create if Rails.env.local?
         resource :protected_broadcast, only: :create if Rails.env.local?
       end

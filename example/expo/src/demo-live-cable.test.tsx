@@ -554,6 +554,7 @@ describe("standalone Rails Action Cable proof", () => {
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_document";
     const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_frame";
     const broadcastUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_broadcast";
+    const revocationUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_revocation";
     const signedStreamName = "protected-signed-stream";
     const identifier = JSON.stringify({
       channel: "ExpoTurbo::Rails::Cable::ProtectedStreamsChannel",
@@ -604,7 +605,7 @@ describe("standalone Rails Action Cable proof", () => {
             url,
           };
         }
-        if (url === broadcastUrl) {
+        if (url === broadcastUrl || url === revocationUrl) {
           return {
             headers: { forEach: () => undefined },
             redirected: false,
@@ -722,6 +723,12 @@ describe("standalone Rails Action Cable proof", () => {
         url: "ws://demo.example:3000/cable",
       });
       expect(socketCalls[1]?.headers).not.toEqual(socketCalls[2]?.headers);
+
+      await expect(proof.revokeCableCredentials()).resolves.toBeUndefined();
+      expect(unabortedRequests(requests).at(-1)).toMatchObject({
+        request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "POST" },
+        url: revocationUrl,
+      });
     } finally {
       await act(async () => {
         renderer?.unmount();
