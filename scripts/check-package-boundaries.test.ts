@@ -30,6 +30,33 @@ describe("package boundary checks", () => {
     expect(await scanSourceBoundaries(root)).toEqual([])
   })
 
+  test("allows official Turbo only in the dedicated differential test", async () => {
+    const root = await fixture({
+      "package.json": JSON.stringify({
+        devDependencies: { "@hotwired/turbo": "8.0.23" },
+      }),
+      "src/core/browser-stream-differential.test.ts": 'import "@hotwired/turbo"',
+      "src/index.ts": "export {}",
+    })
+
+    expect(await scanSourceBoundaries(root)).toEqual([])
+  })
+
+  test("rejects official Turbo from runtime and unrelated test sources", async () => {
+    const root = await fixture({
+      "package.json": JSON.stringify({
+        devDependencies: { "@hotwired/turbo": "8.0.23" },
+      }),
+      "src/core/other.test.ts": 'import "@hotwired/turbo"',
+      "src/index.ts": 'import "@hotwired/turbo"',
+    })
+
+    expect(await scanSourceBoundaries(root)).toMatchObject([
+      { file: "src/core/other.test.ts", specifier: "@hotwired/turbo" },
+      { file: "src/index.ts", specifier: "@hotwired/turbo" },
+    ])
+  })
+
   test("allows prose in strings and regular expressions", async () => {
     const root = await fixture({
       "package.json": "{}",

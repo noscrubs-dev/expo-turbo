@@ -1,6 +1,9 @@
 # Selector adapter spike
 
-Status: selected for implementation. Release admission still requires differential and physical-device evidence.
+Status: selected and implemented. A bounded official Turbo 8.0.23 browser
+differential now covers the selected structural selector surface inside real
+Stream actions; broader differential and physical-device evidence remain
+release gates.
 
 `css-select@7.0.0` accepts a small package-owned adapter for the mutable xmldom tree. The
 comparison harness runs with `xmlMode: true`, explicit case preservation, and
@@ -14,6 +17,11 @@ tree mutation because result caching is disabled. Invalid and namespaced selecto
 wrapped in a typed target error; browser-state, pseudo-element, and shadow-DOM syntax remains
 unsupported.
 
-The standalone Expo bundle probe now calls the public selector API. Web, iOS, and Android exports
-therefore exercise the exact selected ESM/Metro graph. Differential browser target fixtures and a
-physical release-device run remain conformance gates.
+The standalone Expo bundle probe now calls the public selector API. Web, iOS,
+and Android exports therefore exercise the exact selected ESM/Metro graph. The
+development-only browser differential executes official
+`@hotwired/turbo@8.0.23` against the same initial markup and Stream messages as
+the Expo tree. It compares full normalized outcomes for child/adjacent,
+class/ID/attribute, selector-list, and structural pseudo selectors after live
+ID-collision mutations with result caching disabled. The remaining complete
+differential matrix and physical release-device run remain conformance gates.

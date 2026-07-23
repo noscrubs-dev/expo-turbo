@@ -40,7 +40,14 @@ test-only; neither package ships protocol sources as runtime assets.
 
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral
-conformance slice. The separate native-equivalent morph record proves compatible
+conformance slice. A separate development-only browser differential executes
+the pinned official `@hotwired/turbo@8.0.23` package in `happy-dom` against the
+same initial markup and sibling Stream messages as the Expo tree. It compares
+the full normalized result for all seven structural built-in actions, target
+precedence, absent templates, direct-child ID collision replacement, payload
+cloning, and the admitted selector surface. Refresh remains a named native
+equivalent because its owning-session GET/render contract is not a structural
+DOM action. The separate native-equivalent morph record proves compatible
 outer `replace`, child `update`, and selector child morphing retain the declared
 target/stable-child identities while removing omitted children. This is not yet
 a complete browser differential suite.

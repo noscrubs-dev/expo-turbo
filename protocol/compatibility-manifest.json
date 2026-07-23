@@ -197,6 +197,7 @@
       "disposition": "exact",
       "rationale": "Append, prepend, replace, update, remove, before, after, refresh, target precedence, absent templates, collisions, and independent ordered commits match Turbo 8.0.23.",
       "evidence": [
+        "src/core/browser-stream-differential.test.ts",
         "src/core/streams.test.ts",
         "protocol/fixtures/stream-actions.xml"
       ]
@@ -207,6 +208,7 @@
       "disposition": "exact",
       "rationale": "Case-sensitive XML selectors cover lists, type, ID, class, attributes, combinators, universal, and structural pseudo selectors on the mutable active tree.",
       "evidence": [
+        "src/core/browser-stream-differential.test.ts",
         "src/core/selector-candidate.test.ts",
         "src/core/streams.test.ts"
       ]
@@ -338,8 +340,9 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 browser differential, and standalone iOS simulator and Android emulator Release builds driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
       "evidence": [
+        "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
         ".maestro/live-frame-morph.yaml",
         ".maestro/release-gallery-smoke.yaml"

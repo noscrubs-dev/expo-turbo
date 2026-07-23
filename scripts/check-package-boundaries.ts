@@ -21,6 +21,8 @@ const forbiddenPackages = [
   "react-query",
 ] as const
 
+const differentialTest = "src/core/browser-stream-differential.test.ts"
+
 export type BoundaryViolation = Readonly<{
   file: string
   reason: string
@@ -97,6 +99,7 @@ async function scanManifest(packageRoot: string): Promise<BoundaryViolation[]> {
   for (const section of dependencySections) {
     const names = dependencyNames(manifest, section)
     for (const name of names) {
+      if (section === "devDependencies" && name === "@hotwired/turbo") continue
       const reason = forbiddenDependencyReason(name)
       if (reason) {
         violations.push({
@@ -323,6 +326,12 @@ function boundaryReason(
   importer: string,
   allowedRoot: string,
 ): string | undefined {
+  if (
+    specifier === "@hotwired/turbo" &&
+    relative(resolve(allowedRoot, ".."), importer) === differentialTest
+  ) {
+    return undefined
+  }
   const forbiddenReason = forbiddenDependencyReason(specifier)
   if (forbiddenReason) return forbiddenReason
   if (specifier.startsWith("@/") || specifier.startsWith("~/"))
