@@ -1205,6 +1205,11 @@ describe("standalone Rails Action Cable proof", () => {
       expect(
         renderer?.root.findByProps({ accessibilityLabel: "Broadcast XML replace" }).props.disabled,
       ).toBe(false);
+      expect(
+        renderer?.root.findByProps({
+          accessibilityLabel: "Action Cable recovered and reconciled",
+        }),
+      ).toBeDefined();
     } finally {
       await act(async () => {
         renderer?.unmount();

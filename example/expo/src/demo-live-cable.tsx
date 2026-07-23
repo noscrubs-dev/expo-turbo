@@ -31,7 +31,7 @@ import {
   StateError,
 } from "expo-turbo/core";
 import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
 import { DEMO_REGISTRY } from "./demo-registry";
@@ -600,6 +600,8 @@ export function DemoLiveCablePanel({
   const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
+  const [recovered, setRecovered] = useState(false);
+  const connectionState = useRef({ connected: false, everConnected: false });
   const sendBroadcast = (kind: "refresh" | "replace") => {
     if (broadcasting || !connected) return;
     setBroadcasting(kind);
@@ -612,12 +614,22 @@ export function DemoLiveCablePanel({
 
   useEffect(() => {
     const updateConnection = () => {
-      setConnected(
-        proof.streamSources.connectionSnapshot.sources.some(
+      const nextConnected = proof.streamSources.connectionSnapshot.sources.some(
           (source) =>
             source.nodeKey === sourceKey && source.state === "connected",
-        ),
       );
+      if (
+        nextConnected &&
+        !connectionState.current.connected &&
+        connectionState.current.everConnected
+      ) {
+        setRecovered(true);
+      }
+      connectionState.current = {
+        connected: nextConnected,
+        everConnected: connectionState.current.everConnected || nextConnected,
+      };
+      setConnected(nextConnected);
     };
     updateConnection();
     return proof.streamSources.subscribeConnection(updateConnection);
@@ -641,6 +653,11 @@ export function DemoLiveCablePanel({
           {description}
         </Text>
         <ExpoTurboRoot />
+        {recovered ? (
+          <Text accessibilityLabel="Action Cable recovered and reconciled" selectable>
+            Action Cable recovered and reconciled.
+          </Text>
+        ) : null}
         <Pressable
           accessibilityLabel={replaceButtonLabel}
           accessibilityRole="button"
