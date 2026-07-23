@@ -1726,8 +1726,9 @@ describe("React protocol renderer", () => {
           <NativeHidden id="hidden-token" dirname="authenticity_token.dir" name="authenticity_token" value="token" />
           <NativeHidden id="hidden-charset" name="_CHARSET_" value="ignored" />
           <NativeValue id="directional" name="comment" value="مرحبا" direction-name="comment.dir" direction-value="rtl" />
-          <NativeValue id="automatic-direction" dir="auto" dirname="automatic.dir" name="automatic" value="host-owned" />
-          <NativeLiveValue id="local" name="local" value="before" />
+          <NativeValue id="automatic-direction" dir="auto" dirname="automatic.dir" name="automatic" value="👋 مرحبا" />
+          <NativeValue id="neutral-direction" dir="auto" dirname="neutral.dir" name="neutral" value="123 👋" />
+          <NativeLiveValue id="local" dir="auto" dirname="local.dir" name="local" value="before" />
           <NativeCheckable id="checked" checked="true" name="agree" />
           <NativeMultiple id="multiple" name="choices[]" values="one||one" />
           <NativeEntries id="entry-list" entry-names="profile[city]||_charset_" entry-values="London|empty-name|host-owned" />
@@ -1807,8 +1808,12 @@ describe("React protocol renderer", () => {
       { name: "_CHARSET_", value: "UTF-8" },
       { name: "comment", value: "مرحبا" },
       { name: "comment.dir", value: "rtl" },
-      { name: "automatic", value: "host-owned" },
+      { name: "automatic", value: "👋 مرحبا" },
+      { name: "automatic.dir", value: "rtl" },
+      { name: "neutral", value: "123 👋" },
+      { name: "neutral.dir", value: "ltr" },
       { name: "local", value: "before" },
+      { name: "local.dir", value: "ltr" },
       { name: "agree", value: "on" },
       { name: "choices[]", value: "one" },
       { name: "choices[]", value: "" },
@@ -1839,8 +1844,12 @@ describe("React protocol renderer", () => {
           { name: "_CHARSET_", value: "UTF-8" },
           { name: "comment", value: "مرحبا" },
           { name: "comment.dir", value: "rtl" },
-          { name: "automatic", value: "host-owned" },
+          { name: "automatic", value: "👋 مرحبا" },
+          { name: "automatic.dir", value: "rtl" },
+          { name: "neutral", value: "123 👋" },
+          { name: "neutral.dir", value: "ltr" },
           { name: "local", value: "before" },
+          { name: "local.dir", value: "ltr" },
           { name: "agree", value: "on" },
           { name: "choices[]", value: "one" },
           { name: "choices[]", value: "" },
@@ -1874,11 +1883,24 @@ describe("React protocol renderer", () => {
         { name: "comment.dir", value: "rtl" },
       ]),
     )
-    expect(primary.successfulEntries()).not.toContainEqual({
-      name: "automatic.dir",
-      value: "rtl",
-    })
+    expect(primary.successfulEntries()).toEqual(
+      expect.arrayContaining([
+        { name: "automatic.dir", value: "rtl" },
+        { name: "local.dir", value: "ltr" },
+      ]),
+    )
     act(() => session.setAttribute("id:form", "dir", "ltr"))
+    const liveValueControl = activeRenderer.root
+      .findAll((node) => String(node.type) === "native-live-value")
+      .find((control) => control.props.nodeKey === "id:local")
+    if (!liveValueControl) throw new Error("live value control was not rendered")
+    act(() => liveValueControl.props.onChange("123 שלום"))
+    expect(primary.successfulEntries()).toEqual(
+      expect.arrayContaining([
+        { name: "local", value: "123 שלום" },
+        { name: "local.dir", value: "rtl" },
+      ]),
+    )
 
     let submission: Promise<unknown> | undefined
     await act(async () => {
@@ -2009,8 +2031,12 @@ describe("React protocol renderer", () => {
         { name: "_CHARSET_", value: "UTF-8" },
         { name: "comment", value: "مرحبا" },
         { name: "comment.dir", value: "rtl" },
-        { name: "automatic", value: "host-owned" },
+        { name: "automatic", value: "👋 مرحبا" },
+        { name: "automatic.dir", value: "rtl" },
+        { name: "neutral", value: "123 👋" },
+        { name: "neutral.dir", value: "ltr" },
         { name: "local", value: "component-local" },
+        { name: "local.dir", value: "ltr" },
         { name: "agree", value: "on" },
         { name: "choices[]", value: "one" },
         { name: "choices[]", value: "" },

@@ -1,3 +1,4 @@
+import bidiFactory from "bidi-js"
 import {
   Component,
   type ComponentType,
@@ -279,6 +280,16 @@ const ProtocolNodeContext = createContext<string | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 const DirectionContext = createContext<ProtocolDirection | undefined>(undefined)
+const bidi = bidiFactory()
+
+function inferredFormControlDirection(value: string): "ltr" | "rtl" {
+  for (const character of value) {
+    const type = bidi.getBidiCharTypeName(character)
+    if (type === "L") return "ltr"
+    if (type === "R" || type === "AL") return "rtl"
+  }
+  return "ltr"
+}
 const providerDisposableOwners = new WeakMap<object, number>()
 const announcedFormTerminalRevisions = new WeakMap<
   DocumentSession,
@@ -1112,17 +1123,23 @@ export function useExpoTurboFormControl(
   }
   const dirname = attributeValue(node, "dirname")
   const effectiveDescriptor = useMemo<FormControlDescriptor>(() => {
+    const resolvedDirection =
+      direction === "ltr" || direction === "rtl"
+        ? direction
+        : descriptor.kind === "value"
+          ? inferredFormControlDirection(descriptor.value)
+          : undefined
     if (
       (descriptor.kind !== "value" && descriptor.kind !== "hidden") ||
       descriptor.directionality !== undefined ||
       !dirname?.trim() ||
-      (direction !== "ltr" && direction !== "rtl")
+      resolvedDirection === undefined
     ) {
       return descriptor
     }
     return Object.freeze({
       ...descriptor,
-      directionality: Object.freeze({ name: dirname, value: direction }),
+      directionality: Object.freeze({ name: dirname, value: resolvedDirection }),
     })
   }, [descriptor, direction, dirname])
   const descriptorRef = useRef(effectiveDescriptor)
