@@ -148,6 +148,43 @@ describe("morph lifecycle", () => {
     ])
   })
 
+  test("treats an incompatible document root as a replacement around retained descendants", () => {
+    const lifecycle = new MorphLifecycle()
+    const seen: string[] = []
+    lifecycle.subscribe("before-morph-element", (event) => {
+      const id = attributeValue(event.detail.currentElement, "id")
+      seen.push(
+        `before:${id}:${event.detail.newElement ? attributeValue(event.detail.newElement, "id") : "removed"}`,
+      )
+      return undefined
+    })
+    lifecycle.subscribe("morph-element", (event) => {
+      seen.push(`after:${attributeValue(event.detail.currentElement, "id")}`)
+      return undefined
+    })
+    const document = session(
+      '<Gallery id="gallery"><Group id="left"><Field id="field" tone="before"/></Group></Gallery>',
+      lifecycle,
+    )
+    const root = document.tree.getElementById("gallery")
+    const field = document.tree.getElementById("field")
+    const source = parseExpoTurboDocument(
+      '<Screen id="screen"><Group id="right"><Field id="field" tone="after"/></Group></Screen>',
+      { url: "https://example.test/two" },
+    )
+
+    document.mutate((tree) => morphCurrentDocumentRoot(tree, source).changed)
+
+    expect(document.tree.getElementById("screen")).not.toBe(root)
+    expect(document.tree.getElementById("field")).toBe(field)
+    expect(seen).toEqual([
+      "before:gallery:removed",
+      "before:field:field",
+      "before:left:removed",
+      "after:field",
+    ])
+  })
+
   test("notifies one retained stable identity once when it changes parents", async () => {
     const lifecycle = new MorphLifecycle()
     const fieldEvents: string[] = []

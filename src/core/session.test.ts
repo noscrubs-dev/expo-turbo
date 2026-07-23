@@ -180,6 +180,58 @@ describe("document session snapshots", () => {
     }
   })
 
+  test("replaces an incompatible application root while retaining compatible descendants", () => {
+    const document = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery id="gallery"><Group id="left"><Panel id="retained" tone="before"/></Group><turbo-frame id="refreshable" src="/refreshable" refresh="morph"><FrameBefore id="frame-before"/></turbo-frame><Removed id="removed"/></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const tree = document.tree
+    const root = document.tree.getElementById("gallery")
+    const retained = document.tree.getElementById("retained")
+    const refreshable = document.tree.getElementById("refreshable")
+    if (refreshable?.kind !== "frame") throw new Error("Expected refreshable Frame fixture")
+    const retainedIdentity = document.getNodeSnapshot("id:retained")?.identity
+    const disposed: string[] = []
+    const reloads: (readonly ProtocolElement[])[] = []
+    document.registerDisposal("id:gallery", () => disposed.push("root"))
+    document.registerDisposal("id:retained", () => disposed.push("retained"))
+    document.registerDisposal("id:removed", () => disposed.push("removed"))
+    registerDocumentMorphFrameReloader(document, (frames) => reloads.push(frames))
+
+    morphCurrentDocument(
+      document,
+      parseExpoTurboDocument(
+        '<Screen id="screen"><Group id="right"><Panel id="retained" tone="after"/></Group><turbo-frame id="refreshable" src="/refreshable" refresh="morph"><FrameAfter id="frame-after"/></turbo-frame><Added id="added"/></Screen>',
+        { url: "https://example.test/next" },
+      ),
+    )
+
+    const screen = document.tree.getElementById("screen")
+    const right = document.tree.getElementById("right")
+    if (!screen || !right || !retained) throw new Error("Expected replaced document root fixtures")
+    expect(document.tree).toBe(tree)
+    expect(screen).not.toBe(root)
+    expect(screen.parent).toBe(document.tree.document)
+    expect(document.tree.getElementById("gallery")).toBeUndefined()
+    expect(document.tree.getElementById("retained")).toBe(retained)
+    expect(document.tree.getElementById("refreshable")).toBe(refreshable)
+    expect(document.tree.getElementById("frame-before")).toBeDefined()
+    expect(document.tree.getElementById("frame-after")).toBeUndefined()
+    expect(retained.parent).toBe(right)
+    expect(document.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
+    expect(attributeValue(retained, "tone")).toBe("after")
+    expect(document.tree.getElementById("removed")).toBeUndefined()
+    expect(document.tree.getElementById("added")).toBeDefined()
+    expect(document.tree.document.url).toBe("https://example.test/next")
+    expect(document.treeGeneration).toBe(1)
+    expect(document.revision).toBe(1)
+    expect(disposed).toEqual(["removed", "root"])
+    notifyDocumentMorphFrameReloads(document, document.tree.document, document.treeGeneration)
+    expect(reloads).toEqual([[refreshable]])
+  })
+
   test("rejects a document root id that collides with an active descendant", () => {
     const document = session(
       '<Gallery id="gallery" tone="before"><Panel id="next-gallery" tone="before"/></Gallery>',

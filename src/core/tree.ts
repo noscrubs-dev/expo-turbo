@@ -306,10 +306,6 @@ function anonymousMorphShapeKey(element: ProtocolElement): string {
   return JSON.stringify([element.tagName, element.localName, element.namespaceUri, element.prefix])
 }
 
-function isCompatibleDocumentMorphRoot(current: ProtocolElement, source: ProtocolElement): boolean {
-  return isCompatibleApplicationMorphShape(current, source)
-}
-
 interface MorphClonePlan {
   readonly anchor?: ProtocolElement
   readonly source: ProtocolNode
@@ -927,12 +923,11 @@ export class DocumentTree {
     if (
       !currentRoot ||
       !sourceRoot ||
-      !isCompatibleDocumentMorphRoot(currentRoot, sourceRoot) ||
       isTurboPermanent(currentRoot) ||
       isTurboPermanent(sourceRoot)
     ) {
       throw new TargetError(
-        "Native document refresh morph requires one compatible nonpermanent application root",
+        "Native document refresh morph requires one nonpermanent application root",
       )
     }
     const sourceRootId = attributeValue(sourceRoot, "id")
@@ -950,20 +945,30 @@ export class DocumentTree {
       seenFrames: new Set(),
     }
     this.buildMorphPlans(currentRoot, sourceRoot.children, context, false)
-    if (!this.beforeMorphElement(currentRoot, sourceRoot)) {
+    const compatibleRoot = isCompatibleApplicationMorphShape(currentRoot, sourceRoot)
+    if (
+      !(compatibleRoot
+        ? this.beforeMorphElement(currentRoot, sourceRoot)
+        : this.beforeMorphElement(currentRoot))
+    ) {
       return Object.freeze({
         changed: Object.freeze([]),
         reloadFrames: Object.freeze([]),
       })
     }
-    const attributes = this.admitMorphAttributes(currentRoot, sourceRoot)
     const changed = [
-      ...this.commitMorphPlans(
-        currentRoot,
-        this.buildMorphPlans(currentRoot, sourceRoot.children, context),
-        sourceRoot,
-        attributes,
-      ),
+      ...(compatibleRoot
+        ? this.commitMorphPlans(
+            currentRoot,
+            this.buildMorphPlans(currentRoot, sourceRoot.children, context),
+            sourceRoot,
+            this.admitMorphAttributes(currentRoot, sourceRoot),
+          )
+        : this.commitDocumentMorphRootReplacement(
+            currentRoot,
+            sourceRoot,
+            this.buildMorphPlans(currentRoot, sourceRoot.children, context),
+          )),
     ]
     if (sourceUrl !== undefined && this.document.url !== sourceUrl) {
       this.retargetDocumentUrl(sourceUrl)
@@ -1627,6 +1632,62 @@ export class DocumentTree {
     }
 
     return [parent.key, ...previousKeys, ...parent.children.flatMap(subtreeKeys)]
+  }
+
+  private commitDocumentMorphRootReplacement(
+    current: ProtocolElement,
+    source: ProtocolElement,
+    plans: readonly MorphPlan[],
+  ): readonly string[] {
+    const parent = current.parent
+    if (parent?.kind !== "document") {
+      throw new TargetError("Native document refresh morph requires an active application root")
+    }
+    const index = parent.children.indexOf(current)
+    if (index === -1) {
+      throw new TargetError("Native document refresh morph root is detached")
+    }
+
+    const previousKeys = subtreeKeys(current)
+    const previousMutationKey = this.mutationKey
+    const transaction: MorphTransaction = {
+      attributes: new Map(),
+      children: new Map(),
+      completed: [],
+      parents: new Map(),
+    }
+    let replacement: ProtocolElement
+
+    try {
+      replacement = this.cloneElementWithoutChildren(source, parent)
+      this.applyMorphChildren(replacement, plans, transaction)
+      transaction.children.set(parent, parent.children)
+      setProtocolNodeChildren(parent, [
+        ...parent.children.slice(0, index),
+        replacement,
+        ...parent.children.slice(index + 1),
+      ])
+      this.recordMorphParent(current, transaction)
+      setProtocolNodeParent(current, null)
+      this.rebuildIndexes()
+    } catch (error) {
+      this.mutationKey = previousMutationKey
+      this.restoreMorphTransaction(transaction)
+      this.rebuildIndexes()
+      throw error
+    }
+
+    for (const [retained] of transaction.completed) advanceNodeMorphRevision(this, retained)
+    const lifecycle = documentTreeMorphLifecycle(this)
+    if (lifecycle) {
+      for (const [retained, incoming] of transaction.completed) {
+        dispatchMorphLifecycle(this, () =>
+          lifecycle[MORPH_LIFECYCLE_ELEMENT_DISPATCH](retained, incoming),
+        )
+      }
+    }
+
+    return [parent.key, ...previousKeys, ...subtreeKeys(replacement)]
   }
 
   private materializeMorphPlan(

@@ -5216,6 +5216,47 @@ describe("Document visit controller", () => {
     ])
   })
 
+  test("morphs across an incompatible application root while retaining compatible descendants", async () => {
+    const history = historyFixture()
+    const { controller, pending, session } = harness({
+      documentXml:
+        '<Gallery id="gallery"><Group id="left"><Panel id="retained" tone="before"/></Group></Gallery>',
+      history: history.history,
+    })
+    const tree = session.tree
+    const root = session.tree.getElementById("gallery")
+    const retained = session.tree.getElementById("retained")
+    const retainedIdentity = session.getNodeSnapshot("id:retained")?.identity
+
+    const refreshing = controller.refreshCurrent("https://example.test/current", "morph")
+    pending[0]?.resolve(
+      response(
+        '<Screen id="screen"><Group id="right"><Panel id="retained" tone="after"/></Group></Screen>',
+        { url: "https://example.test/current" },
+      ),
+    )
+
+    expect(await refreshing).toMatchObject({ status: "committed" })
+    expect(session.tree).toBe(tree)
+    expect(session.tree.getElementById("gallery")).toBeUndefined()
+    expect(session.tree.getElementById("screen")).not.toBe(root)
+    expect(session.tree.getElementById("retained")).toBe(retained)
+    expect(session.getNodeSnapshot("id:retained")?.identity).toBe(retainedIdentity)
+    const currentRetained = session.tree.getElementById("retained")
+    if (!currentRetained) throw new Error("Expected retained incompatible-root morph fixture")
+    expect(attributeValue(currentRetained, "tone")).toBe("after")
+    expect(history.writes).toEqual([
+      {
+        entry: {
+          restorationIdentifier: "history-1",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        method: "replace",
+      },
+    ])
+  })
+
   test("uses root-configured morph and reset semantics for a fragment-free same-path replace", async () => {
     const history = historyFixture()
     const snapshotCache = new DocumentSnapshotCache()
@@ -5437,11 +5478,6 @@ describe("Document visit controller", () => {
 
   test("rejects unsupported document refresh morphs before history or tree commit", async () => {
     for (const candidate of [
-      {
-        documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
-        name: "incompatible application root",
-        responseXml: '<Other><Panel id="stable" tone="after"/></Other>',
-      },
       {
         documentXml: '<Gallery><Panel id="stable" tone="before"/></Gallery>',
         name: "permanent application root",
