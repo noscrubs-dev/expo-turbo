@@ -729,6 +729,80 @@ test("matches upstream Turbo advance, replace, and traversal history", async () 
   }
 })
 
+test("matches upstream Turbo for a 204 document response", async () => {
+  const initialDocument =
+    '<main id="root"><a id="empty-link" href="/empty">Empty</a><p id="old">Old</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const loader = new DocumentRequestLoader(
+    session,
+    {
+      fetch: async () => ({
+        headers: {},
+        redirected: false,
+        status: 204,
+        text: async () => "",
+        url: "https://example.test/empty",
+      }),
+    },
+    { next: () => "request-empty" },
+  )
+  const restorationIdentifiers = ["empty-initial", "empty-destination"]
+  const history = new DocumentHistory(
+    {
+      next() {
+        const identifier = restorationIdentifiers.shift()
+        if (!identifier) throw new Error("Empty-response differential exhausted its identifiers")
+        return identifier
+      },
+    },
+    { write: () => undefined },
+  )
+  history.initialize({ kind: "unmanaged", url: "https://example.test/demo" })
+  const visits = new DocumentVisitController(loader, realClock, { history })
+  const expoResult = await visits.visit("/empty")
+  const originalFetch = browser.fetch
+  browser.fetch = async () => new browser.Response(null, { status: 204 })
+  ;(turbo.session as typeof turbo.session & { clearCache(): void }).clearCache()
+  browser.history.replaceState({}, "", "/demo")
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const responseHandled = new Promise<void>((resolve) => {
+      browser.document.addEventListener("turbo:before-fetch-response", () => resolve(), {
+        once: true,
+      })
+    })
+    const link = browser.document.getElementById("empty-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser empty-response differential link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await responseHandled
+    await Promise.resolve()
+
+    expect(expoResult.status).toBe("empty")
+    expect(visits.state.status).toBe("completed")
+    expect(history.current?.url).toBe(browser.location.href)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+    await browser.happyDOM.abort()
+  }
+})
+
 test("matches upstream Turbo for an authoritative 422 document response", async () => {
   const initialDocument =
     '<main id="root"><a id="invalid-link" href="/invalid">Invalid</a><p id="old">Old</p></main>'

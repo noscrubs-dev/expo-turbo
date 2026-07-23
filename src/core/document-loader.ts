@@ -283,6 +283,13 @@ export class DocumentRequestLoader {
     this.session.captureSnapshot(cache)
   }
 
+  retargetCurrentDocument(url: string): void {
+    this.session.mutate((tree) => {
+      tree.retargetDocumentUrl(url)
+      return [tree.document.key]
+    })
+  }
+
   [DOCUMENT_REQUEST_LOADER_PREPARE_RENDER](
     lifecycle: DocumentVisitLifecycle,
     detail: Readonly<{

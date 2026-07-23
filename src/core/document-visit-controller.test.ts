@@ -4116,11 +4116,10 @@ describe("Document visit controller", () => {
     expect(fixture.history.current).toBe(fixture.writes[1]?.entry)
   })
 
-  test("keeps explicit no-tree responses out of document history", async () => {
+  test("advances document history for a successful no-tree response", async () => {
     const fixture = historyFixture()
     const { controller, pending, session } = harness({ history: fixture.history })
     const tree = session.tree
-    const historyEntry = fixture.history.current
 
     const empty = controller.visit("/empty")
     pending[0]?.resolve(
@@ -4132,12 +4131,18 @@ describe("Document visit controller", () => {
     )
 
     expect(await empty).toMatchObject({ status: "empty" })
-    expect(fixture.writes).toEqual([])
-    expect(fixture.history.current).toBe(historyEntry)
+    expect(fixture.writes).toEqual([
+      {
+        entry: expect.objectContaining({ url: "https://example.test/empty" }),
+        method: "push",
+      },
+    ])
+    expect(fixture.history.current?.url).toBe("https://example.test/empty")
     expect(session.tree).toBe(tree)
+    expect(session.tree.document.url).toBe("https://example.test/empty")
   })
 
-  test("keeps an explicit replace no-tree response out of cache and history", async () => {
+  test("replaces document history and caches the outgoing tree for a no-tree response", async () => {
     const snapshotCache = new DocumentSnapshotCache()
     const fixture = historyFixture()
     const { controller, pending, session } = harness({
@@ -4145,7 +4150,6 @@ describe("Document visit controller", () => {
       snapshotCache,
     })
     const tree = session.tree
-    const historyEntry = fixture.history.current
 
     const visit = controller.visit("/empty-replacement", { action: "replace" })
     pending[0]?.resolve(
@@ -4157,10 +4161,16 @@ describe("Document visit controller", () => {
     )
 
     expect(await visit).toMatchObject({ status: "empty" })
-    expect(snapshotCache.size).toBe(0)
-    expect(fixture.writes).toEqual([])
-    expect(fixture.history.current).toBe(historyEntry)
+    expect(snapshotCache.get("https://example.test/current")?.getElementById("old")).toBeDefined()
+    expect(fixture.writes).toEqual([
+      {
+        entry: expect.objectContaining({ url: "https://example.test/empty-replacement" }),
+        method: "replace",
+      },
+    ])
+    expect(fixture.history.current?.url).toBe("https://example.test/empty-replacement")
     expect(session.tree).toBe(tree)
+    expect(session.tree.document.url).toBe("https://example.test/empty-replacement")
   })
 
   test("rejects misaligned history before request ownership or lifecycle changes", async () => {
