@@ -484,10 +484,9 @@ export class LifecycleCableAdapter implements CableAdapter {
     }
     this.pendingCable = undefined
     if (!this.isCable(cable)) {
-      this.report(
+      this.settlePendingFactoryFailure(
         lifecycleError("Action Cable lifecycle adapter factory returned an invalid adapter"),
       )
-      if (this.retry) this.scheduleRetry()
       return
     }
     if (
@@ -507,8 +506,20 @@ export class LifecycleCableAdapter implements CableAdapter {
     if (this.pendingCable !== pending) return
     this.pendingCable = undefined
     if (!this.active || pending.generation !== this.generation || !this.canConnect()) return
-    this.report(lifecycleError("Action Cable lifecycle adapter factory failed"))
-    if (this.retry) this.scheduleRetry()
+    this.settlePendingFactoryFailure(
+      lifecycleError("Action Cable lifecycle adapter factory failed"),
+    )
+  }
+
+  private settlePendingFactoryFailure(error: SubscriptionError): void {
+    this.report(error)
+    if (this.retry) {
+      this.scheduleRetry()
+      return
+    }
+    for (const record of this.records) {
+      if (record.active) this.invoke(record, "disconnected", false)
+    }
   }
 
   private isCable(value: unknown): value is DisposableCableAdapter {

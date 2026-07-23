@@ -238,6 +238,27 @@ describe("Action Cable lifecycle adapter", () => {
     expect(cable.records.map((record) => record.identifier)).toEqual(["protected"])
   })
 
+  test("settles an asynchronous credential failure terminally without retry policy", async () => {
+    const errors: SubscriptionError[] = []
+    const events: string[] = []
+    const adapter = new LifecycleCableAdapter({
+      createCable: async () => {
+        throw new Error("credential-secret")
+      },
+      lifecycle: new FakeLifecycle("active"),
+      onError: (error) => {
+        errors.push(error)
+      },
+    })
+
+    adapter.subscribe("protected", callbacks(events))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(errors).toEqual([new SubscriptionError("Action Cable lifecycle adapter factory failed")])
+    expect(events).toEqual(["disconnected:false"])
+  })
+
   test("recreates one credential-bearing transport while preserving logical subscriptions", () => {
     const { adapter, cables, errors, lifecycle } = createManagedCable()
     const events: string[] = []

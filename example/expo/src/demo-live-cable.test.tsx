@@ -544,8 +544,8 @@ describe("standalone Rails Action Cable proof", () => {
     expect(socket.closeCalls).toBe(1);
   });
 
-  test("uses a protected Rails ticket only as a native socket header", async () => {
-    const ticket = "short-lived-ticket";
+  test("fetches a fresh protected Rails header ticket for each socket generation", async () => {
+    const tickets = ["short-lived-ticket-1", "short-lived-ticket-2"] as const;
     const ticketUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_ticket";
     const documentUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_document";
     const frameUrl = "http://demo.example:3000/api/expo_turbo/demo/protected_frame";
@@ -559,12 +559,14 @@ describe("standalone Rails Action Cable proof", () => {
     const document = `<Gallery id="demo-protected-document"><turbo-frame id="demo-protected-frame" src="/api/expo_turbo/demo/protected_frame"><DemoText id="demo-protected-frame-loading">Loading the protected Action Cable Frame</DemoText></turbo-frame></Gallery>`;
     const frame = `<turbo-frame id="demo-protected-frame"><DemoText id="demo-protected-stream-message">Waiting for a protected Action Cable broadcast</DemoText><turbo-cable-stream-source id="demo-protected-stream-source" channel="ExpoTurbo::Rails::Cable::ProtectedStreamsChannel" signed-stream-name="${signedStreamName}" data-grant="demo-protected-frame" /></turbo-frame>`;
     const requests: RecordedRequest[] = [];
+    const lifecycle = new FakeDemoLiveCableLifecycle();
     const sockets: FakeActionCableSocket[] = [];
     const socketCalls: Readonly<{
       headers: Readonly<Record<string, string>> | undefined;
       protocols: readonly string[];
       url: string;
     }>[] = [];
+    let ticketIssue = 0;
     const proof = await createDemoLiveProtectedCableRuntime({
       createSocket(url, protocols, headers) {
         const socket = new FakeActionCableSocket();
@@ -575,6 +577,8 @@ describe("standalone Rails Action Cable proof", () => {
       fetch: async (url, request) => {
         requests.push({ request, url });
         if (url === ticketUrl) {
+          const ticket = tickets[ticketIssue++];
+          if (!ticket) throw new Error("unexpected protected ticket request");
           return {
             headers: { forEach: () => undefined },
             redirected: false,
@@ -607,19 +611,17 @@ describe("standalone Rails Action Cable proof", () => {
         }
         throw new Error("unexpected protected demo request");
       },
+      lifecycle,
       origin: "http://demo.example:3000",
     });
     let renderer: ReactTestRenderer | undefined;
 
     try {
       expect(requests[0]).toMatchObject({
-        request: { headers: { Accept: "text/plain" }, method: "GET" },
-        url: ticketUrl,
-      });
-      expect(requests[1]).toMatchObject({
         request: { headers: { Accept: EXPO_TURBO_MIME_TYPE }, method: "GET" },
         url: documentUrl,
       });
+      expect(requests.some((request) => request.url === ticketUrl)).toBe(false);
       await act(async () => {
         renderer = create(
           createElement(DemoLiveCablePanel, {
@@ -634,16 +636,23 @@ describe("standalone Rails Action Cable proof", () => {
       });
       const socket = sockets[0];
       if (!socket) throw new Error("missing protected Action Cable socket");
+      expect(requests.filter((request) => request.url === ticketUrl)).toHaveLength(1);
+      expect(requests.find((request) => request.url === ticketUrl)).toMatchObject({
+        request: { headers: { Accept: "text/plain" }, method: "GET" },
+        url: ticketUrl,
+      });
 
       expect(socketCalls).toEqual([
         {
-          headers: { "X-Expo-Turbo-Demo-Ticket": ticket },
+          headers: { "X-Expo-Turbo-Demo-Ticket": tickets[0] },
           protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
           url: "ws://demo.example:3000/cable",
         },
       ]);
       expect(socketCalls[0]?.url).not.toContain("?");
-      expect(requests.every((request) => !request.url.includes(ticket))).toBe(true);
+      expect(requests.every((request) => !tickets.some((ticket) => request.url.includes(ticket)))).toBe(
+        true,
+      );
       const button = () =>
         renderer?.root.findByProps({ accessibilityLabel: "Broadcast protected XML replace" });
       expect(button()?.props.disabled).toBe(true);
@@ -684,6 +693,20 @@ describe("standalone Rails Action Cable proof", () => {
       expect(message ? nodeTextContent(message) : undefined).toBe(
         "Protected broadcast from the standalone Rails demo",
       );
+
+      await act(async () => {
+        lifecycle.emit("background");
+        lifecycle.emit("active");
+        await nextTurn();
+        await nextTurn();
+      });
+      expect(requests.filter((request) => request.url === ticketUrl)).toHaveLength(2);
+      expect(socketCalls[1]).toEqual({
+        headers: { "X-Expo-Turbo-Demo-Ticket": tickets[1] },
+        protocols: [ACTION_CABLE_V1_JSON_PROTOCOL],
+        url: "ws://demo.example:3000/cable",
+      });
+      expect(socketCalls[0]?.headers).not.toEqual(socketCalls[1]?.headers);
     } finally {
       await act(async () => {
         renderer?.unmount();
@@ -694,11 +717,9 @@ describe("standalone Rails Action Cable proof", () => {
 
     const socket = sockets[0];
     if (!socket) throw new Error("missing protected Action Cable socket");
-    expect(socket.sent).toEqual([
-      encodeActionCableSubscribe(identifier),
-      encodeActionCableUnsubscribe(identifier),
-    ]);
+    expect(socket.sent).toEqual([encodeActionCableSubscribe(identifier)]);
     expect(socket.closeCalls).toBe(1);
+    expect(sockets[1]?.closeCalls).toBe(1);
   });
 
   test("applies an ordered HTTP Stream response from a Rails-authored link", async () => {
