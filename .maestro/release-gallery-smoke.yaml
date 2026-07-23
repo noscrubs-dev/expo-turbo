@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Expo Turbo Compatibility
+    visible: Expo Turbo
     timeout: 120000
 - scrollUntilVisible:
     element:

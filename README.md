@@ -267,9 +267,9 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-23**:
 
-- Changed: Added a Maestro-only smoke for the installed standalone iOS Release application and documented the independent source-consumer build order.
+- Changed: Added a Maestro-only smoke for the installed standalone iOS and Android Release applications and documented the independent source-consumer build order.
 - Why: Static Expo exports and Expo Go did not prove that the generated native application could bundle the package's public `dist/` exports and launch without Metro.
-- Impact: A clean detached checkout now builds the root package before the example's `file:../..` install, produces a signed-disabled iPhone Simulator Release app, and passes direct gallery and mounted-Frame assertions through Maestro. Android Release interaction and physical iOS/Android evidence remain open.
+- Impact: A clean detached checkout now builds the root package before the example's `file:../..` install, produces an iPhone Simulator Release app and a signed Android emulator Release APK, and passes direct gallery and mounted-Frame assertions through Maestro on both platforms. Physical iOS/Android evidence remains open.
 
 **2026-07-23**:
 
