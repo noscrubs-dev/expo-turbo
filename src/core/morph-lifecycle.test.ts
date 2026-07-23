@@ -228,19 +228,26 @@ describe("morph lifecycle", () => {
       return undefined
     })
     const document = session(
-      '<Gallery id="gallery"><Group id="left"><Panel id="permanent" data-turbo-permanent=""/></Group><Old id="wrapper"><Field id="field"/></Old><Group id="right"/></Gallery>',
+      '<Gallery id="gallery"><Group id="left"><Panel id="permanent" data-turbo-permanent=""/><turbo-frame id="permanent-frame" data-turbo-permanent=""><ClientOwned id="frame-child"/></turbo-frame></Group><Old id="wrapper"><Field id="field"/></Old><Group id="right"/></Gallery>',
       lifecycle,
     )
 
     await dispatchTurboStreamFragment(
       document,
-      '<turbo-stream action="update" target="gallery" method="morph"><template><Group id="left"/><New id="wrapper"><Field id="field" tone="after"/></New><Group id="right"><Panel id="permanent"/></Group></template></turbo-stream>',
+      '<turbo-stream action="update" target="gallery" method="morph"><template><Group id="left"/><New id="wrapper"><Field id="field" tone="after"/></New><Group id="right"><Panel id="permanent"/><turbo-frame id="permanent-frame"><ServerOwned id="ignored"/></turbo-frame></Group></template></turbo-stream>',
     )
 
     expect(document.tree.getElementById("permanent")?.parent).toBe(
       document.tree.getElementById("right"),
     )
+    expect(document.tree.getElementById("permanent-frame")?.parent).toBe(
+      document.tree.getElementById("right"),
+    )
+    expect(document.tree.getElementById("frame-child")).toBeDefined()
+    expect(document.tree.getElementById("ignored")).toBeUndefined()
     expect(events.filter((event) => event.endsWith(":permanent"))).toEqual([])
+    expect(events.filter((event) => event.endsWith(":permanent-frame"))).toEqual([])
+    expect(events.filter((event) => event.endsWith(":frame-child"))).toEqual([])
     expect(events.filter((event) => event.endsWith(":field"))).toEqual([
       "before:field",
       "after:field",

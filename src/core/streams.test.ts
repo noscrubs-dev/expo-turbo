@@ -637,6 +637,60 @@ describe("Turbo Stream dispatcher", () => {
     }
   })
 
+  test("moves permanent Frame subtrees without morphing or reloading their contents", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoGroup id="left"><turbo-frame id="permanent-frame" src="/client" refresh="morph" data-turbo-permanent=""><ClientOwned id="locked"/></turbo-frame></DemoGroup><DemoGroup id="right"/></DemoForm></Gallery>',
+    )
+    const frame = document.tree.getElementById("permanent-frame")
+    const locked = document.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || !locked) throw new Error("permanent Frame fixture is missing")
+    const snapshot = document.getNodeSnapshot(frame.key)
+    let disposals = 0
+    document.registerDisposal(frame.key, () => {
+      disposals += 1
+    })
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"/><DemoGroup id="right"><turbo-frame id="permanent-frame" src="/server" refresh="morph"><ServerOwned id="ignored"/></turbo-frame></DemoGroup></template></turbo-stream>',
+    )
+
+    const right = document.tree.getElementById("right")
+    if (!right) throw new Error("permanent Frame destination is missing")
+    expect(report.actions[0]?.status).toBe("applied")
+    expect(document.tree.getElementById("permanent-frame")).toBe(frame)
+    expect(document.tree.getElementById("locked")).toBe(locked)
+    expect(document.tree.getElementById("ignored")).toBeUndefined()
+    expect(frame.parent).toBe(right)
+    expect(attributeValue(frame, "src")).toBe("/client")
+    expect(document.getNodeSnapshot(frame.key)?.identity).toBe(snapshot?.identity)
+    expect(document.getNodeSnapshot(frame.key)?.morphRevision).toBe(0)
+    expect(disposals).toBe(0)
+  })
+
+  test("admits an incoming permanent Frame and preserves it on later morphs", async () => {
+    const document = session('<Gallery><DemoForm id="form"/></Gallery>')
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><turbo-frame id="permanent-frame" src="/first" data-turbo-permanent=""><First id="locked"/></turbo-frame></template></turbo-stream>',
+    )
+    const frame = document.tree.getElementById("permanent-frame")
+    const locked = document.tree.getElementById("locked")
+    if (frame?.kind !== "frame" || !locked) throw new Error("incoming permanent Frame is missing")
+
+    await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="form" method="morph"><template><turbo-frame id="permanent-frame" src="/second"><Second id="ignored"/></turbo-frame></template></turbo-stream>',
+    )
+
+    expect(document.tree.getElementById("permanent-frame")).toBe(frame)
+    expect(document.tree.getElementById("locked")).toBe(locked)
+    expect(document.tree.getElementById("ignored")).toBeUndefined()
+    expect(attributeValue(frame, "src")).toBe("/first")
+    expect(attributeValue(frame, "data-turbo-permanent")).toBe("")
+  })
+
   test("admits new permanent nodes and preserves nested permanent state opaquely", async () => {
     const document = session(
       '<Gallery><DemoForm id="form"><DemoPanel id="outer" data-turbo-permanent="" tone="client"><DemoPanel id="nested" data-turbo-permanent="" tone="nested-client"/></DemoPanel><DemoText id="becomes-permanent" tone="before"/></DemoForm></Gallery>',
@@ -699,29 +753,24 @@ describe("Turbo Stream dispatcher", () => {
     expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
-  test("rejects active permanent nodes without an ordinary stable identity", async () => {
-    for (const invalid of [
-      '<DemoText data-turbo-permanent=""/>',
-      '<turbo-frame id="permanent-frame" data-turbo-permanent=""/>',
-    ]) {
-      const document = session(
-        `<Gallery><DemoForm id="form">${invalid}<DemoText id="kept"/></DemoForm><Later id="later"/></Gallery>`,
+  test("rejects active permanent nodes without a stable identity", async () => {
+    const document = session(
+      '<Gallery><DemoForm id="form"><DemoText data-turbo-permanent=""/><DemoText id="kept"/></DemoForm><Later id="later"/></Gallery>',
+    )
+    const form = document.tree.getElementById("form")
+    const before = document.getNodeSnapshot("id:form")
+
+    const reports = (
+      await dispatchTurboStreamFragment(
+        document,
+        '<turbo-stream action="update" target="form" method="morph"><template><DemoText id="kept"/></template></turbo-stream><turbo-stream action="remove" target="later"/>',
       )
-      const form = document.tree.getElementById("form")
-      const before = document.getNodeSnapshot("id:form")
+    ).actions
 
-      const reports = (
-        await dispatchTurboStreamFragment(
-          document,
-          '<turbo-stream action="update" target="form" method="morph"><template><DemoText id="kept"/></template></turbo-stream><turbo-stream action="remove" target="later"/>',
-        )
-      ).actions
-
-      expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
-      expect(document.tree.getElementById("form")).toBe(form)
-      expect(document.getNodeSnapshot("id:form")).toBe(before)
-      expect(document.tree.getElementById("later")).toBeUndefined()
-    }
+    expect(reports.map((report) => report.status)).toEqual(["error", "applied"])
+    expect(document.tree.getElementById("form")).toBe(form)
+    expect(document.getNodeSnapshot("id:form")).toBe(before)
+    expect(document.tree.getElementById("later")).toBeUndefined()
   })
 
   test("reorders compatible IDs, retains anonymous ordinals, and remounts incompatible children", async () => {
@@ -944,11 +993,6 @@ describe("Turbo Stream dispatcher", () => {
         name: "permanent payload node without an id",
         stream:
           '<turbo-stream action="update" target="form" method="morph"><template><DemoGroup id="left"><DemoInput id="field"/></DemoGroup><DemoGroup id="right"/><DemoText data-turbo-permanent=""/></template></turbo-stream>',
-      },
-      {
-        name: "permanent protocol payload node",
-        stream:
-          '<turbo-stream action="update" target="form" method="morph"><template><turbo-frame id="incoming-frame" data-turbo-permanent=""><DemoText/></turbo-frame></template></turbo-stream>',
       },
       {
         name: "permanent Stream envelope",

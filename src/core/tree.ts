@@ -286,6 +286,25 @@ function isCompatibleStreamOuterMorphShape(
   )
 }
 
+function isCompatiblePermanentMorphElement(
+  current: ProtocolElement,
+  source: ProtocolElement,
+): boolean {
+  const id = attributeValue(current, "id")
+  return (
+    id !== undefined &&
+    id === attributeValue(source, "id") &&
+    isCompatibleStreamOuterMorphShape(current, source)
+  )
+}
+
+function isSupportedPermanentMorphElement(element: ProtocolElement): boolean {
+  const id = attributeValue(element, "id")
+  return (
+    (element.kind === "element" || element.kind === "frame") && id !== undefined && id.trim() !== ""
+  )
+}
+
 function isCompatibleAnonymousMorphElement(
   current: ProtocolElement,
   source: ProtocolElement,
@@ -1080,9 +1099,9 @@ export class DocumentTree {
       }
       if (!isElement(source)) return
       const id = attributeValue(source, "id")
-      if (isTurboPermanent(source) && (source.kind !== "element" || !id?.trim())) {
+      if (isTurboPermanent(source) && !isSupportedPermanentMorphElement(source)) {
         throw new TargetError(
-          "Native morph permanent nodes require an ordinary application element with a stable id",
+          "Native morph permanent nodes require an application element or Frame with a stable id",
           { ...(id ? { target: id } : {}) },
         )
       }
@@ -1147,7 +1166,14 @@ export class DocumentTree {
         const sameParent = currentById.get(id)
         const active = this.idIndex.get(id)
         const current = sameParent ?? active
-        if (!sameParent && active && (active.kind !== "element" || source.kind !== "element")) {
+        const permanentProtocolPair =
+          active && isTurboPermanent(active) && isCompatiblePermanentMorphElement(active, source)
+        if (
+          !sameParent &&
+          active &&
+          (active.kind !== "element" || source.kind !== "element") &&
+          !permanentProtocolPair
+        ) {
           throw new TargetError(`Native morph cannot reparent protocol id ${JSON.stringify(id)}`, {
             target: id,
           })
@@ -1191,6 +1217,22 @@ export class DocumentTree {
           ...(id ? { target: id } : {}),
         })
       }
+      if (current && isTurboPermanent(current)) {
+        const currentId = attributeValue(current, "id")
+        if (!isSupportedPermanentMorphElement(current)) {
+          throw new TargetError(
+            "Native morph permanent nodes require an application element or Frame with a stable id",
+            { ...(currentId ? { target: currentId } : {}) },
+          )
+        }
+        if (!isElement(source) || !isCompatiblePermanentMorphElement(current, source)) {
+          throw new TargetError(
+            "Native morph permanent nodes require one compatible incoming identity",
+            { ...(id ? { target: id } : {}) },
+          )
+        }
+        return { current, type: "permanent" } as const
+      }
       if (
         current &&
         frameRefresh &&
@@ -1200,22 +1242,6 @@ export class DocumentTree {
         return { current, type: "frame-reload" } as const
       }
       if (isElement(source) && source.kind === "element" && current) {
-        if (isTurboPermanent(current)) {
-          const currentId = attributeValue(current, "id")
-          if (current.kind !== "element" || !currentId?.trim()) {
-            throw new TargetError(
-              "Native morph permanent nodes require an ordinary application element with a stable id",
-              { ...(currentId ? { target: currentId } : {}) },
-            )
-          }
-          if (!isCompatibleMorphElement(current, source)) {
-            throw new TargetError(
-              "Native morph permanent nodes require one compatible incoming identity",
-              { ...(id ? { target: id } : {}) },
-            )
-          }
-          return { current, type: "permanent" } as const
-        }
         if (
           isCompatibleMorphElement(current, source) ||
           isCompatibleAnonymousMorphElement(current, source)
@@ -1283,9 +1309,9 @@ export class DocumentTree {
       }
       if (isElement(current) && isTurboPermanent(current)) {
         const id = attributeValue(current, "id")
-        if (current.kind !== "element" || !id?.trim()) {
+        if (!isSupportedPermanentMorphElement(current)) {
           throw new TargetError(
-            "Native morph permanent nodes require an ordinary application element with a stable id",
+            "Native morph permanent nodes require an application element or Frame with a stable id",
             { ...(id ? { target: id } : {}) },
           )
         }
