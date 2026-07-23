@@ -12613,7 +12613,7 @@ describe("React protocol renderer", () => {
     }[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><turbo-frame id="frame" src="/before" target="before"><DemoText>Before</DemoText></turbo-frame></Gallery>',
+        '<Gallery><turbo-frame id="frame" src="/before" target="before"><DemoText id="copy">Before</DemoText></turbo-frame></Gallery>',
         { url: "https://example.test/gallery" },
       ),
     )
@@ -12630,15 +12630,20 @@ describe("React protocol renderer", () => {
     )
     const renderer = render(session, registryWithCounters(), { frames })
     const frame = session.tree.getElementById("frame")
-    if (frame?.kind !== "frame") throw new Error("Frame fixture is missing")
+    const copy = session.tree.getElementById("copy")
+    if (frame?.kind !== "frame" || !copy) throw new Error("Frame fixture is missing")
     const controller = frames.get("frame")
 
     expect(pending).toHaveLength(1)
-    act(() => {
-      session.setAttribute(frame.key, "src", "/after")
-      session.setAttribute(frame.key, "target", "after")
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="frame" method="morph"><template><turbo-frame id="frame" src="/after" target="after"><DemoText id="copy">Morphed</DemoText></turbo-frame></template></turbo-stream>',
+      )
     })
 
+    expect(session.tree.getElementById("frame")).toBe(frame)
+    expect(session.tree.getElementById("copy")).toBe(copy)
     expect(frames.get("frame")).toBe(controller)
     expect(pending).toHaveLength(2)
     expect(pending[0]?.request.signal?.aborted).toBe(true)
@@ -12670,6 +12675,90 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("After")
 
     act(() => renderer.unmount())
+  })
+
+  test("transfers mounted controller ownership when an outer Frame morph changes id", async () => {
+    const pending: {
+      request: TurboRequest
+      resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="before" src="/before"><DemoText id="copy">Before</DemoText></turbo-frame></Gallery>',
+        { url: "https://example.test/gallery" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: (request) =>
+            new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+        },
+        { next: () => `request-${pending.length + 1}` },
+      ),
+    )
+    const unmounted: FrameController[] = []
+    let renderedController: FrameController | undefined
+    function FrameBoundary(props: ExpoTurboFrameBoundaryProps): ReactNode {
+      renderedController = props.controller
+      useEffect(
+        () => () => {
+          unmounted.push(props.controller)
+        },
+        [props.controller],
+      )
+      return createElement("frame-boundary", null, props.children)
+    }
+    const renderer = render(session, registryWithCounters(), {
+      frameComponent: FrameBoundary,
+      frames,
+    })
+    const frame = session.tree.getElementById("before")
+    const copy = session.tree.getElementById("copy")
+    if (frame?.kind !== "frame" || !copy) throw new Error("Frame morph fixture is missing")
+    const before = frames.get("before")
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="before" method="morph"><template><turbo-frame id="after" src="/after"><DemoText id="copy">After</DemoText></turbo-frame></template></turbo-stream>',
+      )
+    })
+    const after = frames.get("after")
+
+    expect(session.tree.getElementById("after")).toBe(frame)
+    expect(session.tree.getElementById("copy")).toBe(copy)
+    expect(after).not.toBe(before)
+    expect(renderedController).toBe(after)
+    expect(unmounted).toEqual([before])
+    expect(before.state).toMatchObject({ connected: false, status: "canceled" })
+    expect(pending).toHaveLength(2)
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(pending[1]?.request.url).toBe("https://example.test/after")
+
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="before"><DemoText>Stale</DemoText></turbo-frame>',
+      url: "https://example.test/before",
+    })
+    pending[1]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="after"><DemoText>Current</DemoText></turbo-frame>',
+      url: "https://example.test/after",
+    })
+    await act(async () => {
+      await after.loaded
+    })
+    expect(JSON.stringify(renderer.toJSON())).toContain("Current")
+
+    act(() => renderer.unmount())
+    expect(unmounted).toEqual([before, after])
   })
 
   test("connects eager Frame controllers and cancels them when a subtree unmounts", async () => {

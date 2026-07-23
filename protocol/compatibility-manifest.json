@@ -364,7 +364,8 @@
       "expectedReports": [
         {"action": "replace", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
         {"action": "update", "status": "applied", "matchedTargets": 1, "appliedTargets": 1},
-        {"action": "update", "status": "applied", "matchedTargets": 2, "appliedTargets": 2}
+        {"action": "update", "status": "applied", "matchedTargets": 2, "appliedTargets": 2},
+        {"action": "replace", "status": "applied", "matchedTargets": 1, "appliedTargets": 1}
       ],
       "identityAssertions": [
         {"id": "replace", "outcome": "retained"},
@@ -374,7 +375,10 @@
         {"id": "update-stable", "outcome": "retained"},
         {"id": "update-old", "outcome": "removed"},
         {"id": "one", "outcome": "retained"},
-        {"id": "two", "outcome": "retained"}
+        {"id": "two", "outcome": "retained"},
+        {"id": "morph-frame", "outcome": "retained"},
+        {"id": "frame-stable", "outcome": "retained"},
+        {"id": "frame-old", "outcome": "removed"}
       ],
       "provenance": {"kind": "native-equivalent", "baseline": "turbo-8.0.23"}
     }

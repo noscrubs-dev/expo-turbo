@@ -271,6 +271,21 @@ function isCompatibleApplicationMorphShape(
   )
 }
 
+function isCompatibleStreamOuterMorphShape(
+  current: ProtocolElement,
+  source: ProtocolElement,
+): boolean {
+  return (
+    isCompatibleApplicationMorphShape(current, source) ||
+    (current.kind === "frame" &&
+      source.kind === "frame" &&
+      current.tagName === source.tagName &&
+      current.localName === source.localName &&
+      current.namespaceUri === source.namespaceUri &&
+      current.prefix === source.prefix)
+  )
+}
+
 function isCompatibleAnonymousMorphElement(
   current: ProtocolElement,
   source: ProtocolElement,
@@ -803,8 +818,9 @@ export class DocumentTree {
   }
 
   /**
-   * Reconciles one exact Stream `replace method="morph"` application-element root.
-   * The target retains identity only when its replacement root has the same exact shape.
+   * Reconciles one exact Stream `replace method="morph"` application-element or
+   * Frame root. The target retains identity only when its replacement root has
+   * the same exact shape.
    */
   private morphStreamReplaceElement(
     target: ProtocolElement,
@@ -816,15 +832,15 @@ export class DocumentTree {
     const roots = meaningfulMorphRoots(sources)
     const source = roots.length === 1 ? roots[0] : undefined
     if (
-      target.kind !== "element" ||
+      (target.kind !== "element" && target.kind !== "frame") ||
       !targetId ||
       !source ||
       !isElement(source) ||
-      source.kind !== "element" ||
-      !isCompatibleApplicationMorphShape(target, source)
+      !isCompatibleStreamOuterMorphShape(target, source) ||
+      (target.kind === "frame" && !attributeValue(source, "id"))
     ) {
       throw new TargetError(
-        "Native Stream outer morph requires one compatible application-element root",
+        "Native Stream outer morph requires one compatible application-element or identified Frame root",
         { ...(targetId ? { target: targetId } : {}) },
       )
     }

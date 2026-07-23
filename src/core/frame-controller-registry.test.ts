@@ -188,6 +188,64 @@ describe("Frame controller registry visits", () => {
     expect(current.requests).toEqual([])
   })
 
+  test("releases old controller ownership when a retained Frame changes id", async () => {
+    const pending: {
+      readonly request: TurboRequest
+      readonly resolve: (response: TurboResponse) => void
+    }[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="before" src="/before"><Panel id="content"/></turbo-frame></Gallery>',
+        { url: "https://example.test/document" },
+      ),
+    )
+    const loader = new FrameRequestLoader(
+      session,
+      {
+        fetch: (request) =>
+          new Promise<TurboResponse>((resolve) => pending.push({ request, resolve })),
+      },
+      { next: () => `request-${pending.length + 1}` },
+    )
+    const registry = new FrameControllerRegistry(session, loader)
+    const before = registry.get("before")
+    const loading = before.connect()
+
+    expect(pending).toHaveLength(1)
+    await dispatchTurboStreamFragment(
+      session,
+      '<turbo-stream action="replace" target="before" method="morph"><template><turbo-frame id="after" src="/after"><Panel id="content"/></turbo-frame></template></turbo-stream>',
+    )
+    const after = registry.get("after")
+    await Promise.resolve()
+
+    expect(after).not.toBe(before)
+    expect(before.state).toMatchObject({ connected: false, status: "canceled" })
+    expect(pending[0]?.request.signal?.aborted).toBe(true)
+    expect(() => registry.get("before")).toThrow(FrameMissingError)
+    pending[0]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="before"><Stale/></turbo-frame>',
+      url: "https://example.test/before",
+    })
+    await expect(loading).resolves.toMatchObject({ status: "canceled" })
+
+    const reloaded = after.connect()
+    expect(pending).toHaveLength(2)
+    expect(pending[1]?.request.headers["Turbo-Frame"]).toBe("after")
+    expect(pending[1]?.request.url).toBe("https://example.test/after")
+    pending[1]?.resolve({
+      headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+      redirected: false,
+      status: 200,
+      text: async () => '<turbo-frame id="after"><Current/></turbo-frame>',
+      url: "https://example.test/after",
+    })
+    await expect(reloaded).resolves.toMatchObject({ status: "completed" })
+  })
+
   test("keeps exact connected autofocus valid across unrelated Frame mutations", async () => {
     const { registry, session } = harness()
     const controller = registry.get("named")
