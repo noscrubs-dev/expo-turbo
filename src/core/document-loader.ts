@@ -51,6 +51,7 @@ import {
   fetchWithRequestLifecycle,
   type RequestLifecycle,
   RequestLifecycleTransportError,
+  requestLifecycleDefaultHandlingPrevented,
   requestLifecycleOption,
   settleRequestOperation,
 } from "./request-lifecycle"
@@ -701,9 +702,9 @@ export class DocumentRequestLoader {
         if (fetched.status === "canceled") return this.canceled(active)
         if (fetched.status === "rejected") {
           if (fetched.error instanceof ExpoTurboError) {
-            throw markDocumentTransportError(fetched.error)
+            throw markDocumentTransportError(fetched.error, requestedUrl)
           }
-          throw createDocumentTransportError()
+          throw createDocumentTransportError(undefined, requestedUrl)
         }
         response = fetched.value
       }
@@ -723,9 +724,9 @@ export class DocumentRequestLoader {
           if (body.status === "canceled") return this.canceled(active, finalUrl)
           if (body.status === "rejected") {
             if (body.error instanceof ExpoTurboError) {
-              throw markDocumentTransportError(body.error)
+              throw markDocumentTransportError(body.error, finalUrl)
             }
-            throw createDocumentTransportError(responseStatus)
+            throw createDocumentTransportError(responseStatus, finalUrl)
           }
           xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
@@ -733,20 +734,32 @@ export class DocumentRequestLoader {
             commit = { classification, finalUrl, redirected, response }
           }
         } else {
-          this.assertContentType(response)
+          this.assertContentType(response, {
+            classification,
+            redirected,
+            responseStatus,
+            url: finalUrl,
+          })
           const body = await settleRequestOperation(active.controller.signal, () => response.text())
           if (body.status === "canceled") return this.canceled(active, finalUrl)
           if (body.status === "rejected") {
             if (body.error instanceof ExpoTurboError) {
-              throw markDocumentTransportError(body.error)
+              throw markDocumentTransportError(body.error, finalUrl)
             }
-            throw createDocumentTransportError(responseStatus)
+            throw createDocumentTransportError(responseStatus, finalUrl)
           }
           xml = body.value
           if (!this.owns(active)) return this.canceled(active, finalUrl)
         }
         if (!commit) {
-          if (response.status === 201) this.assertContentType(response)
+          if (response.status === 201) {
+            this.assertContentType(response, {
+              classification,
+              redirected,
+              responseStatus,
+              url: finalUrl,
+            })
+          }
           const tree = parseExpoTurboDocument(xml, {
             ...(this.options.limits ? { limits: this.options.limits } : {}),
             url: finalUrl,
@@ -761,10 +774,13 @@ export class DocumentRequestLoader {
       }
       this.release(active)
       if (error instanceof RequestLifecycleTransportError) {
-        throw error.relabel("Document request failed", {
+        const relabeled = error.relabel("Document request failed", {
           method: "GET",
           ...(responseStatus !== undefined ? { responseStatus } : {}),
         })
+        throw requestLifecycleDefaultHandlingPrevented(relabeled)
+          ? relabeled
+          : markDocumentTransportError(relabeled, requestedUrl)
       }
       if (error instanceof ExpoTurboError) throw error
       throw new RequestError("Document request failed", {
@@ -1001,13 +1017,22 @@ export class DocumentRequestLoader {
     return report
   }
 
-  private assertContentType(response: TurboResponse): void {
+  private assertContentType(
+    response: TurboResponse,
+    outcome: Readonly<{
+      classification: DocumentResponseClassification
+      redirected: boolean
+      responseStatus: number
+      url: string
+    }>,
+  ): void {
     const contentType = responseContentType(response)
     if (contentType !== EXPO_TURBO_MIME_TYPE) {
       throw markDocumentContentTypeError(
         new ContentTypeError(`Expected ${EXPO_TURBO_MIME_TYPE}`, {
           contentType: contentType ?? "missing",
         }),
+        outcome,
       )
     }
   }

@@ -2074,7 +2074,7 @@ describe("Document visit controller", () => {
     }
   })
 
-  test("keeps no-preview explicit replace tree and history unchanged on canonical failure", async () => {
+  test("retargets a no-preview explicit replace after canonical transport failure", async () => {
     const snapshotCache = new DocumentSnapshotCache()
     snapshotCache.put(
       "https://example.test/next",
@@ -2096,8 +2096,21 @@ describe("Document visit controller", () => {
       RequestError,
     )
     expect(current.session.tree).toBe(tree)
-    expect(fixture.history.current).toBe(entry)
-    expect(fixture.writes).toEqual([])
+    expect(fixture.history.current).not.toBe(entry)
+    expect(fixture.history.current).toMatchObject({
+      restorationIndex: entry?.restorationIndex,
+      url: "https://example.test/next",
+    })
+    expect(fixture.writes).toEqual([
+      {
+        entry: expect.objectContaining({
+          restorationIndex: entry?.restorationIndex,
+          url: "https://example.test/next",
+        }),
+        method: "replace",
+      },
+    ])
+    expect(current.session.tree.document.url).toBe("https://example.test/next")
     expect(snapshotCache.get("https://example.test/next")?.getElementById("retained")).toBeDefined()
   })
 
@@ -4509,21 +4522,24 @@ describe("Document visit controller", () => {
     }
   })
 
-  test("publishes typed transport failures while preserving the current document", async () => {
+  test("publishes typed transport failures while preserving the current document tree", async () => {
     const fixtures: ReadonlyArray<{
       error: typeof ContentTypeError | typeof ParseError | typeof RequestError
       fetch: FetchAdapter["fetch"]
+      navigationUrl?: string
       reloadCause?: "content-type" | "transport"
       requestLifecycle?: RequestLifecycle
     }> = [
       {
         error: RequestError,
         fetch: async () => Promise.reject(new Error("network unavailable")),
+        navigationUrl: "https://example.test/failure",
         reloadCause: "transport",
       },
       {
         error: ContentTypeError,
         fetch: async () => Promise.reject(new ContentTypeError("fetch adapter rejected")),
+        navigationUrl: "https://example.test/failure",
         reloadCause: "transport",
       },
       {
@@ -4532,17 +4548,20 @@ describe("Document visit controller", () => {
           response("", {
             text: async () => Promise.reject(new Error("response body unavailable")),
           }),
+        navigationUrl: "https://example.test/response",
         reloadCause: "transport",
       },
       {
         error: RequestError,
         fetch: async () => Promise.reject(new Error("lifecycle network unavailable")),
+        navigationUrl: "https://example.test/failure",
         reloadCause: "transport",
         requestLifecycle: new RequestLifecycle(),
       },
       {
         error: ContentTypeError,
         fetch: async () => response("{}", { headers: { "Content-Type": "application/json" } }),
+        navigationUrl: "https://example.test/response",
         reloadCause: "content-type",
       },
       {
@@ -4591,9 +4610,16 @@ describe("Document visit controller", () => {
       expect(errors[0]).toBeInstanceOf(fixture.error)
       expect(clock.timers[0]?.cleared).toBe(true)
       expect(session.tree).toBe(tree)
-      expect(snapshotCache.size).toBe(0)
-      expect(cacheEvents).toBe(0)
-      expect(history.writes).toEqual([])
+      expect(snapshotCache.size).toBe(fixture.navigationUrl ? 1 : 0)
+      expect(cacheEvents).toBe(fixture.navigationUrl ? 1 : 0)
+      expect(history.writes).toHaveLength(fixture.navigationUrl ? 1 : 0)
+      if (fixture.navigationUrl) {
+        expect(history.writes[0]).toMatchObject({
+          entry: { url: fixture.navigationUrl },
+          method: "push",
+        })
+        expect(session.tree.document.url).toBe(fixture.navigationUrl)
+      }
       expect(reloads).toEqual(
         fixture.reloadCause ? [{ cause: fixture.reloadCause, reason: "request-failed" }] : [],
       )

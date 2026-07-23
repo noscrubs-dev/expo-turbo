@@ -29,6 +29,8 @@ import {
   DOCUMENT_LOAD_DISCARD_HANDLING,
   DOCUMENT_LOAD_PREFETCHED_RESPONSE,
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
+  documentContentTypeErrorResponse,
+  documentTransportErrorUrl,
   isDocumentContentTypeError,
   isDocumentTransportError,
 } from "./document-loader-lifecycle-internal"
@@ -1250,6 +1252,8 @@ export class DocumentVisitController {
     let redirectDelegation: RequestOperationResult<DocumentVisitDelegation> | undefined
     let redirectFollowupUrl: string | undefined
     let render: PreparedDocumentRender | undefined
+    let requestDocumentClaimSerial: number | undefined
+    let requestTreeGeneration: number | undefined
     const reloadEligible =
       action !== "restore" && eventAction !== "restore" && historyGuard?.kind !== "traversal"
     const options = {
@@ -1412,6 +1416,8 @@ export class DocumentVisitController {
         },
       }),
       onRequestStart: () => {
+        requestDocumentClaimSerial = this.loader.documentClaimSerial
+        requestTreeGeneration = this.loader.treeState.generation
         if (continuation) {
           this.assertPreviewContinuation(continuation, "claimed")
           this.previewContinuationEpoch = undefined
@@ -1512,6 +1518,12 @@ export class DocumentVisitController {
           !continuation
         ) {
           try {
+            if (requestDocumentClaimSerial !== undefined) {
+              this.assertDocumentClaimSerial(requestDocumentClaimSerial)
+            }
+            if (requestTreeGeneration !== undefined) {
+              this.assertTreeGeneration(requestTreeGeneration)
+            }
             if (report.url !== historyPlan.proposal.entry.url) {
               historyPlan = {
                 base: historyPlan.base,
@@ -1609,6 +1621,56 @@ export class DocumentVisitController {
         const rendering = this.documentRenderResult(render, epoch)
         const rendered = typeof rendering === "boolean" ? rendering : await rendering
         if (!rendered && render) this.loader.discardDocumentRefreshScroll(render.commit.generation)
+        const contentTypeResponse = documentContentTypeErrorResponse(error)
+        const failedVisitUrl = contentTypeResponse?.url ?? documentTransportErrorUrl(error)
+        if (
+          failedVisitUrl &&
+          !requestLifecycleDefaultHandlingPrevented(error) &&
+          historyPlan &&
+          failedVisitUrl !== historyPlan.base.url &&
+          !historyGuard &&
+          !continuation &&
+          epoch !== undefined &&
+          epoch === this.visitEpoch &&
+          this.status === "started"
+        ) {
+          try {
+            if (requestDocumentClaimSerial !== undefined) {
+              this.assertDocumentClaimSerial(requestDocumentClaimSerial)
+            }
+            if (requestTreeGeneration !== undefined) {
+              this.assertTreeGeneration(requestTreeGeneration)
+            }
+            if (failedVisitUrl !== historyPlan.proposal.entry.url) {
+              historyPlan = {
+                base: historyPlan.base,
+                history: historyPlan.history,
+                proposal: historyPlan.history.retargetProposal(
+                  historyPlan.proposal,
+                  failedVisitUrl,
+                ),
+              }
+            }
+            this.assertHistoryPlan(historyPlan)
+            if (snapshotCache) {
+              if (this.visitLifecycle) this.notifyBeforeCache()
+              if (attemptEpoch !== undefined) this.assertAttemptEpoch(attemptEpoch)
+              this.assertHistoryPlan(historyPlan)
+              this.loader.captureCurrentSnapshot(snapshotCache)
+              this.assertHistoryPlan(historyPlan)
+            }
+            historyPlan.history.commitProposal(historyPlan.proposal)
+            this.loader.retargetCurrentDocument(failedVisitUrl)
+          } catch (historyError) {
+            const historyFailure =
+              historyError instanceof Error
+                ? historyError
+                : new StateError("Failed document visit history commit failed")
+            this.finishAfterDocumentRender(render, rendered, epoch, "failed", false)
+            this.notifyError(historyFailure)
+            throw historyFailure
+          }
+        }
         if (
           redirectFollowupUrl &&
           epoch !== undefined &&
