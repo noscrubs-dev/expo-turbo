@@ -1373,6 +1373,145 @@ test("matches upstream Turbo generated-form link destination Frame response", as
   }
 })
 
+test("matches upstream Turbo prevented missing-Frame handling for a generated-form link", async () => {
+  const initialDocument =
+    '<main id="root"><a id="save-link" href="/save?value=missing" data-turbo-method="post" data-turbo-frame="destination">Save</a><turbo-frame id="destination"><p id="old-destination">Old</p></turbo-frame></main>'
+  const missingResponse = '<main><p id="outside">Outside</p></main>'
+  const responseUrl = "https://example.test/save"
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  const expoFrameBefore = session.tree.getElementById("destination")
+  if (!expoFrameBefore) throw new Error("Expo generated-form missing Frame is missing")
+  const expoEvents: unknown[] = []
+  const lifecycle = new FrameLifecycle()
+  lifecycle.subscribe("frame-missing", (event) => {
+    expoEvents.push({
+      frameId: event.detail.frameId,
+      response: event.detail.response,
+      type: event.type,
+    })
+    event.preventDefault()
+  })
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(
+    session,
+    {
+      fetch: async (request) => {
+        expoRequest = request
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => missingResponse,
+          url: responseUrl,
+        }
+      },
+    },
+    { frameLifecycle: lifecycle },
+  )
+  const links = new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-frame-missing",
+  })
+  const expoResult = await links.submit("id:save-link", "/save?value=missing")
+
+  const browserEvents: unknown[] = []
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  let browserFrameListenerTarget: HappyElement | undefined
+  const handleBrowserMissing = (received: HappyEvent) => {
+    const event = received as unknown as CustomEvent<{ response: Response }>
+    browserEvents.push({
+      frameId: (event.target as Element | null)?.id,
+      response: {
+        redirected: event.detail.response.redirected,
+        status: event.detail.response.status,
+        url: event.detail.response.url,
+      },
+      type: event.type.replace("turbo:", ""),
+    })
+    event.preventDefault()
+  }
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(missingResponse, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: responseUrl,
+    })
+    return response
+  }
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const browserFrameBefore = browser.document.getElementById("destination")
+    const link = browser.document.getElementById("save-link")
+    if (!(browserFrameBefore instanceof browser.HTMLElement)) {
+      throw new Error("Browser generated-form missing Frame is missing")
+    }
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser generated-form missing Frame link is missing")
+    }
+    browserFrameBefore.addEventListener("turbo:frame-missing", handleBrowserMissing)
+    browserFrameListenerTarget = browserFrameBefore
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      destination: { frameId: "destination", kind: "frame" },
+      effectiveMethod: "POST",
+      responseStatus: 200,
+      status: "prevented",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body?.value).toBe(browserRequestBody)
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(expoEvents).toEqual(browserEvents)
+    const browserFrameAfter = browser.document.getElementById("destination")
+    const expoFrameAfter = session.tree.getElementById("destination")
+    if (!browserFrameAfter || !expoFrameAfter) {
+      throw new Error("Generated-form missing differential lost its destination Frame")
+    }
+    expect(browserFrameAfter).toBe(browserFrameBefore)
+    expect(expoFrameAfter.key).toBe(expoFrameBefore.key)
+    const browserResult = normalizeBrowserNode(browserFrameAfter)
+    if (!browserResult || typeof browserResult === "string") {
+      throw new Error("Browser generated-form missing Frame result is invalid")
+    }
+    expect(normalizeProtocolNode(expoFrameAfter)).toEqual({
+      ...browserResult,
+      attributes: browserResult.attributes.filter(([name]) => name !== "complete"),
+    })
+    expect(browser.document.getElementById("outside")).toBeNull()
+    expect(session.tree.getElementById("outside")).toBeUndefined()
+  } finally {
+    browserFrameListenerTarget?.removeEventListener("turbo:frame-missing", handleBrowserMissing)
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo redirected generated-form Frame success", async () => {
   const initialDocument =
     '<main id="root"><a id="save-link" href="/save?value=accepted" data-turbo-method="post" data-turbo-frame="destination">Save</a><turbo-frame id="destination" class="mounted" src="/old"><p id="old-destination">Old</p></turbo-frame></main>'
