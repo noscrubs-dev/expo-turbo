@@ -1,0 +1,27 @@
+appId: host.exp.Exponent
+---
+- launchApp:
+    clearState: true
+- openLink: ${EXPO_URL}
+- waitForAnimationToEnd
+- tapOn:
+    text: Open
+    optional: true
+- extendedWaitUntil:
+    visible: Expo Turbo Compatibility
+    timeout: 120000
+- extendedWaitUntil:
+    visible: Continue
+    timeout: 30000
+- tapOn: Continue
+- extendedWaitUntil:
+    visible: Close
+    timeout: 30000
+- tapOn: Close
+- scrollUntilVisible:
+    element:
+      text: Frame-scoped native link
+    direction: DOWN
+    timeout: 60000
+- waitForAnimationToEnd
+- assertVisible: Submit a generated form and promote this mounted Frame through shared history.
