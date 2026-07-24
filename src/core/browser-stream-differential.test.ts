@@ -1269,6 +1269,95 @@ test("matches upstream Turbo generated-form Stream link response", async () => {
   }
 })
 
+test("matches upstream Turbo generated-form GET document response", async () => {
+  const initialDocument =
+    '<main id="root"><a id="search-link" href="/profile?source=generated&amp;tag=one&amp;tag=two+words" data-turbo-method="get">Search</a><p id="old">Old</p></main>'
+  const responseDocument =
+    '<main id="root"><a id="search-link" href="/profile?source=generated&amp;tag=one&amp;tag=two+words" data-turbo-method="get">Search again</a><p id="result">Generated GET result</p></main>'
+  const session = new DocumentSession(
+    parseExpoTurboDocument(initialDocument, { url: "https://example.test/demo" }),
+  )
+  let expoRequest: TurboRequest | undefined
+  const submissions = new FormSubmissionController(session, {
+    fetch: async (request) => {
+      expoRequest = request
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => responseDocument,
+        url: request.url,
+      }
+    },
+  })
+  const expoResult = await new FormLinkSubmissionController(session, submissions, {
+    next: () => "request-generated-get-document",
+  }).submit("id:search-link", "/profile?source=generated&tag=one&tag=two+words")
+
+  let browserRequestUrl: string | undefined
+  let browserRequestMethod: string | undefined
+  let browserRequestBody: string | undefined
+  let browserFrameHeader: string | null | undefined
+  const originalFetch = browser.fetch
+  browser.fetch = async (input, init) => {
+    browserRequestUrl = String(input)
+    browserRequestMethod = init?.method
+    browserRequestBody = typeof init?.body === "string" ? init.body : init?.body?.toString()
+    const requestHeaders = init?.headers as { get?: unknown } | undefined
+    browserFrameHeader =
+      typeof requestHeaders?.get === "function"
+        ? (requestHeaders.get as (name: string) => string | null)("Turbo-Frame")
+        : new browser.Headers(init?.headers).get("Turbo-Frame")
+    const response = new browser.Response(`<html><body>${responseDocument}</body></html>`, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    })
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      value: browserRequestUrl,
+    })
+    return response
+  }
+  browser.history.replaceState({}, "", "/demo")
+  turbo.start()
+  try {
+    browser.document.body.innerHTML = initialDocument
+    const link = browser.document.getElementById("search-link")
+    if (!(link instanceof browser.HTMLAnchorElement)) {
+      throw new Error("Browser generated-form GET document link is missing")
+    }
+    link.dispatchEvent(
+      new browser.MouseEvent("click", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        composed: true,
+      }),
+    )
+    await browser.happyDOM.waitUntilComplete()
+
+    expect(expoResult).toMatchObject({
+      application: "document",
+      destination: { kind: "document" },
+      effectiveMethod: "GET",
+      responseStatus: 200,
+      status: "applied",
+    })
+    expect(expoRequest?.url).toBe(browserRequestUrl)
+    expect(expoRequest?.method).toBe(browserRequestMethod)
+    expect(expoRequest?.body).toBeUndefined()
+    expect(browserRequestBody).toBeUndefined()
+    expect(expoRequest?.headers["Turbo-Frame"]).toBe(browserFrameHeader ?? undefined)
+    expect(session.tree.document.url).toBe(browser.location.href)
+    expect(normalizeProtocolNode(activeProtocolRoot(session))).toEqual(
+      normalizeBrowserNode(browser.document.getElementById("root") as HappyElement),
+    )
+  } finally {
+    browser.fetch = originalFetch
+    turbo.session.stop()
+  }
+})
+
 test("matches upstream Turbo generated-form link destination Frame response", async () => {
   const initialDocument =
     '<main id="root"><turbo-frame id="source"><a id="save-link" href="/save?value=invalid" data-turbo-method="post" data-turbo-frame="destination">Save</a><p id="source-state">Source</p></turbo-frame><turbo-frame id="destination" class="mounted"><p id="old-destination">Old</p></turbo-frame></main>'
