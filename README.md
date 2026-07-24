@@ -1,7 +1,49 @@
-# expo-turbo
+# Expo Turbo
 
-A host-neutral XML protocol runtime for Expo React Native and Rails, targeting
-Turbo 8.0.23 semantics.
+Expo Turbo lets a Rails application send Turbo-style pages and updates to an
+Expo React Native application.
+
+Rails renders XML instead of browser HTML. The Expo app reads that XML and maps
+its element names to React Native components that the app has already
+registered. This gives Rails and Expo a shared format for documents, links,
+forms, Frames, Streams, and Action Cable updates while the mobile app keeps
+control of its native UI and behavior.
+
+## Why it exists
+
+Turbo already gives Rails applications a way to update browser pages without
+building a separate client-side API for every interaction. Expo Turbo brings
+the supported parts of that model to React Native, where there is no browser
+DOM.
+
+It is not a browser or a way for the server to run arbitrary code in an app.
+Rails may select only components and values that the Expo app explicitly
+allows. The app still owns navigation, authentication, networking, native
+styles, accessibility, and product state.
+
+## How Rails and Expo work together
+
+1. A Rails controller uses the `expo_turbo-rails` gem to render a validated XML
+   document, Frame, or Stream response.
+2. The `expo-turbo` TypeScript package parses that response and applies the
+   supported Turbo behavior.
+3. The Expo app renders registered React Native components and supplies the
+   platform-specific behavior the runtime needs.
+4. Rails continues to own routes, authorization, views, caching, and
+   broadcasts.
+
+In the phrase **host-neutral XML protocol runtime**:
+
+- **XML protocol** means Rails and Expo exchange a defined set of XML documents
+  and updates.
+- **Runtime** means the package reads those messages and carries out supported
+  visits, form submissions, Frame loads, and Stream updates.
+- **Host-neutral** means the core does not assume a particular app, router,
+  network client, storage system, or authentication scheme. The Expo app
+  provides those pieces through adapters.
+
+The implementation targets the supported native equivalents of Turbo `8.0.23`
+semantics. It does not try to copy browser-only DOM behavior.
 
 > [!IMPORTANT]
 > `0.1.0` is launch-ready source, not a published stable release. The package,
@@ -9,6 +51,26 @@ Turbo 8.0.23 semantics.
 > Android simulator Release audits are complete for the supported surface.
 > Physical iOS/Android and manual assistive-technology evidence must still pass
 > before the final candidate bytes are published to npm and RubyGems.
+
+## Try it from source
+
+The stable packages have not been published yet. To inspect and test the
+current source:
+
+```sh
+git clone https://github.com/noscrubs-dev/expo-turbo.git
+cd expo-turbo
+bun install --frozen-lockfile
+bun run check
+```
+
+Start with the
+[getting-started guide](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/getting-started.md).
+The
+[standalone Expo app](https://github.com/noscrubs-dev/expo-turbo/tree/main/example/expo)
+and
+[standalone Rails host](https://github.com/noscrubs-dev/expo-turbo/tree/main/example/rails)
+are the canonical integration examples.
 
 ## Release status
 
@@ -26,38 +88,25 @@ and
 [0.1.0 release-readiness checklist](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/release-readiness-0.1.0.md)
 for the exact boundary.
 
-## Install
+## Install after the stable release
 
-The registry commands below become valid only after the stable `0.1.0` release
-is announced:
+These registry commands become valid only after the stable `0.1.0` release is
+announced:
 
 ```sh
 bun add expo-turbo
 bundle add expo_turbo-rails
 ```
 
-Until then, use a checked-out source commit:
+Until then, use the checked-out source steps above.
 
-```sh
-git clone https://github.com/noscrubs-dev/expo-turbo.git
-cd expo-turbo
-bun install --frozen-lockfile
-bun run check
-```
-
-Start with the
-[getting-started guide](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/getting-started.md),
-then use the
-[standalone Expo app](https://github.com/noscrubs-dev/expo-turbo/tree/main/example/expo)
-and
-[standalone Rails host](https://github.com/noscrubs-dev/expo-turbo/tree/main/example/rails)
-as the canonical integration examples.
-
-## Support checklist
+## Detailed support checklist
 
 A checked item is implemented and covered by the current public source and test
-suite. “Native equivalent” means the protocol outcome is supported through
-explicit native adapters; it does not claim browser DOM behavior.
+suite. This is the detailed technical reference; newcomers can start with the
+overview and examples above. “Native equivalent” means the protocol outcome is
+supported through explicit native adapters; it does not claim browser DOM
+behavior.
 
 ### Protocol and runtime
 
@@ -153,10 +202,11 @@ explicit native adapters; it does not claim browser DOM behavior.
 - [ ] Final paired candidate from the final gated commit
 - [ ] Stable npm/RubyGems publication and clean registry verification
 
-## Explicit boundaries
+## Responsibilities and limits
 
-Expo Turbo reuses Turbo's wire and server semantics; it is not a headless DOM
-port of `@hotwired/turbo`.
+Expo Turbo reuses Turbo's message format and server behavior where they make
+sense on native platforms. It is not a browser DOM port of
+`@hotwired/turbo`.
 
 - Browser DOM targets, bubbling/composed paths, `<head>`/script/CSS behavior,
   selection ranges, shadow DOM, hover, and physical repaint timing are N/A.
