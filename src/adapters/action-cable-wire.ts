@@ -1,4 +1,4 @@
-import { SubscriptionError } from "../core/errors"
+import { SubscriptionError } from "../core/errors.js"
 
 /** The Action Cable subprotocol implemented by the server baseline. */
 export const ACTION_CABLE_V1_JSON_PROTOCOL = "actioncable-v1-json" as const

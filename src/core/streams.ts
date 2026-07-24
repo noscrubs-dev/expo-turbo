@@ -1,17 +1,17 @@
-import { applicationAutofocusCandidatesFromNodes } from "./autofocus-candidates-internal"
+import { applicationAutofocusCandidatesFromNodes } from "./autofocus-candidates-internal.js"
 import type {
   CustomStreamActionRegistry,
   CustomStreamActionResult,
   DefinedStreamAction,
-} from "./custom-stream-actions"
-import type { DocumentRefreshRequester } from "./document-refresh-controller"
-import { ActionError, type ExpoTurboError } from "./errors"
-import { isExpoTurboError } from "./expo-turbo-error-internal"
-import { type ParseOptions, parseTurboStreamFragment } from "./parser"
-import { querySelectorAll } from "./selectors"
-import { type DocumentSession, SessionCommitError } from "./session"
-import { isSessionCommitError, markSessionCommitError } from "./session-commit-error-internal"
-import { stageStandaloneStreamAutofocus } from "./stream-autofocus-internal"
+} from "./custom-stream-actions.js"
+import type { DocumentRefreshRequester } from "./document-refresh-controller.js"
+import { ActionError, type ExpoTurboError } from "./errors.js"
+import { isExpoTurboError } from "./expo-turbo-error-internal.js"
+import { type ParseOptions, parseTurboStreamFragment } from "./parser.js"
+import { querySelectorAll } from "./selectors.js"
+import { type DocumentSession, SessionCommitError } from "./session.js"
+import { isSessionCommitError, markSessionCommitError } from "./session-commit-error-internal.js"
+import { stageStandaloneStreamAutofocus } from "./stream-autofocus-internal.js"
 import {
   createBeforeStreamRenderEvent,
   createStreamActionEvent,
@@ -25,8 +25,8 @@ import {
   type StreamRenderer,
   type StreamRenderResult,
   streamLifecycleOption,
-} from "./stream-lifecycle"
-import { resolveThenableResult } from "./thenable-result"
+} from "./stream-lifecycle.js"
+import { resolveThenableResult } from "./thenable-result.js"
 import {
   attributeValue,
   type DocumentTree,
@@ -36,7 +36,7 @@ import {
   type ProtocolElement,
   type ProtocolNode,
   type ProtocolParentNode,
-} from "./tree"
+} from "./tree.js"
 
 const BUILT_IN_ACTIONS = new Set([
   "after",

@@ -1,6 +1,6 @@
-import type { FrameAutoscrollBehavior, ScrollAlignment } from "../adapters"
-import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
-import { FrameMissingError, StateError, TargetError } from "./errors"
+import type { FrameAutoscrollBehavior, ScrollAlignment } from "../adapters/index.js"
+import { applicationAutofocusCandidates } from "./autofocus-candidates-internal.js"
+import { FrameMissingError, StateError, TargetError } from "./errors.js"
 import {
   type BeforeFrameRenderEvent,
   createBeforeFrameRenderEvent,
@@ -9,16 +9,16 @@ import {
   type FrameRenderer,
   type FrameRenderMethod,
   waitUntilBeforeFrameRenderResumed,
-} from "./frame-lifecycle"
-import { type ParseLimits, parseExpoTurboDocument } from "./parser"
-import type { DocumentSession } from "./session"
+} from "./frame-lifecycle.js"
+import { type ParseLimits, parseExpoTurboDocument } from "./parser.js"
+import type { DocumentSession } from "./session.js"
 import {
   dispatchEmbeddedTurboStreamElements,
   type StreamActionDispatchOptions,
   type StreamDispatchControl,
   type StreamDispatchReport,
-} from "./streams"
-import { consumeThenableResult } from "./thenable-result"
+} from "./streams.js"
+import { consumeThenableResult } from "./thenable-result.js"
 import {
   attributeValue,
   type DocumentTree,
@@ -27,7 +27,7 @@ import {
   type ProtocolElement,
   type ProtocolNode,
   replaceFrameChildrenPreservingPermanents,
-} from "./tree"
+} from "./tree.js"
 
 export interface PreparedFrameResponse {
   readonly frameId: string

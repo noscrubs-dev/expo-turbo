@@ -1,13 +1,13 @@
-import { StateError } from "./errors"
-import type { FrameController } from "./frame-controller"
-import type { FrameControllerRegistry } from "./frame-controller-registry"
+import { StateError } from "./errors.js"
+import type { FrameController } from "./frame-controller.js"
+import type { FrameControllerRegistry } from "./frame-controller-registry.js"
 import {
   activeFrameAutofocusCandidates,
   type FrameAutoscrollIntent,
-} from "./frame-response-application"
-import type { FrameResponseReport } from "./frames"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement, type ProtocolNode } from "./tree"
+} from "./frame-response-application.js"
+import type { FrameResponseReport } from "./frames.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement, type ProtocolNode } from "./tree.js"
 
 export interface FrameRenderEffects {
   readonly autofocus?: readonly string[]

@@ -1,9 +1,9 @@
-import { StateError } from "./errors"
-import type { FrameController } from "./frame-controller"
-import type { FrameControllerRegistry } from "./frame-controller-registry"
-import type { FrameHistoryCommitPlan, FrameHistoryCoordinator } from "./frame-history"
-import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
-import type { ProtocolElement } from "./tree"
+import { StateError } from "./errors.js"
+import type { FrameController } from "./frame-controller.js"
+import type { FrameControllerRegistry } from "./frame-controller-registry.js"
+import type { FrameHistoryCommitPlan, FrameHistoryCoordinator } from "./frame-history.js"
+import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader.js"
+import type { ProtocolElement } from "./tree.js"
 
 type FrameHistoryVisit = (
   source: string,

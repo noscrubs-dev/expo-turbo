@@ -1,6 +1,6 @@
 import { type Options, selectAll } from "css-select"
 
-import { TargetError } from "./errors"
+import { TargetError } from "./errors.js"
 import {
   attributeValue,
   type DocumentTree,
@@ -8,7 +8,7 @@ import {
   nodeTextContent,
   type ProtocolElement,
   type ProtocolNode,
-} from "./tree"
+} from "./tree.js"
 
 type SelectorAdapter = NonNullable<Options<ProtocolNode, ProtocolElement>["adapter"]>
 

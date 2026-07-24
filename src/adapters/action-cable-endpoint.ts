@@ -1,4 +1,4 @@
-import { SubscriptionError } from "../core/errors"
+import { SubscriptionError } from "../core/errors.js"
 
 function endpointError(): SubscriptionError {
   return new SubscriptionError("Action Cable endpoint is invalid")

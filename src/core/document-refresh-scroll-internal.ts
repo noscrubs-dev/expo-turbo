@@ -1,5 +1,5 @@
-import type { DocumentSession } from "./session"
-import type { DocumentTree, ProtocolDocument } from "./tree"
+import type { DocumentSession } from "./session.js"
+import type { DocumentTree, ProtocolDocument } from "./tree.js"
 
 interface DocumentRefreshScrollBinding {
   readonly document: ProtocolDocument

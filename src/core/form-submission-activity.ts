@@ -1,9 +1,9 @@
-import type { ExpoTurboErrorCode } from "./errors"
-import { StateError } from "./errors"
-import type { FormSubmissionMethod } from "./form-request"
-import type { FormResponseClassification } from "./form-request-transport"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+import type { ExpoTurboErrorCode } from "./errors.js"
+import { StateError } from "./errors.js"
+import type { FormSubmissionMethod } from "./form-request.js"
+import type { FormResponseClassification } from "./form-request-transport.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 export type FormSubmissionActivityStatus = "idle" | "submitting"
 export type FormSubmissionUnappliedReason =

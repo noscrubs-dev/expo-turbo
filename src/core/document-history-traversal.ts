@@ -1,10 +1,10 @@
-import type { DocumentHistoryEntry } from "./document-history"
+import type { DocumentHistoryEntry } from "./document-history.js"
 import type {
   DocumentTraversalRestoreResult,
   DocumentVisitController,
-} from "./document-visit-controller"
-import { StateError } from "./errors"
-import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
+} from "./document-visit-controller.js"
+import { StateError } from "./errors.js"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle.js"
 
 export interface DocumentHistoryTraversalSource {
   subscribe(listener: (entry: DocumentHistoryEntry) => void): DocumentHistoryTraversalUnsubscribe

@@ -1,6 +1,6 @@
-import { StateError } from "./errors"
-import type { DocumentSession } from "./session"
-import type { ProtocolNode } from "./tree"
+import { StateError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolNode } from "./tree.js"
 
 export type StateListener = () => void
 

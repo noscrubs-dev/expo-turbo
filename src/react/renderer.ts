@@ -33,60 +33,60 @@ import type {
   FrameAutoscrollAdapter,
   NavigationAdapter,
   VisitAction,
-} from "../adapters"
+} from "../adapters/index.js"
 import {
   type ComponentStyleLayers,
   resolveComponentStyle,
   type StyleAdapter,
-} from "../adapters/styles"
-import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal"
-import type { CableStreamSourceCollection } from "../core/cable-stream-sources"
-import { consumeDocumentAutofocus } from "../core/document-autofocus-internal"
-import { notifyDocumentMorphFrameReloads } from "../core/document-morph-frame-reload-internal"
+} from "../adapters/styles.js"
+import { wasCableStreamSourceErrorReported } from "../core/cable-stream-source-errors-internal.js"
+import type { CableStreamSourceCollection } from "../core/cable-stream-sources.js"
+import { consumeDocumentAutofocus } from "../core/document-autofocus-internal.js"
+import { notifyDocumentMorphFrameReloads } from "../core/document-morph-frame-reload-internal.js"
 import type {
   DocumentPreloadLeaseRequester,
   DocumentPreloadRequester,
-} from "../core/document-preloader"
+} from "../core/document-preloader.js"
 import {
   consumeDocumentRefreshScroll,
   discardDocumentRefreshScroll,
-} from "../core/document-refresh-scroll-internal"
+} from "../core/document-refresh-scroll-internal.js"
 import {
   acknowledgeDocumentRender,
   documentRenderLifecycleRevision,
   hasDocumentRenderTicket,
   retainDocumentRenderer,
   subscribeDocumentRenderLifecycle,
-} from "../core/document-render-lifecycle-internal"
+} from "../core/document-render-lifecycle-internal.js"
 import type {
   DocumentVisitController,
   DocumentVisitDelegation,
   DocumentVisitResult,
   DocumentVisitSnapshot,
-} from "../core/document-visit-controller"
+} from "../core/document-visit-controller.js"
 import {
   dispatchDocumentVisitBeforePrefetch,
   dispatchDocumentVisitLinkClick,
-} from "../core/document-visit-controller-internal"
+} from "../core/document-visit-controller-internal.js"
 import {
   ExpoTurboError,
   RegistryError,
   RequestError,
   StateError,
   TargetError,
-} from "../core/errors"
-import type { FormLinkSubmissionController } from "../core/form-link-submission"
-import type { FormRequestPlan } from "../core/form-request"
+} from "../core/errors.js"
+import type { FormLinkSubmissionController } from "../core/form-link-submission.js"
+import type { FormRequestPlan } from "../core/form-request.js"
 import type {
   FormSubmissionActivitySnapshot,
   FormSubmissionTerminalSnapshot,
   FormSubmitterActivitySnapshot,
-} from "../core/form-submission-activity"
+} from "../core/form-submission-activity.js"
 import type {
   FormSubmissionControllerSubmitOptions,
   FormSubmissionReport,
-} from "../core/form-submission-controller"
-import type { FormSubmissionProposal } from "../core/form-submission-proposal"
+} from "../core/form-submission-controller.js"
+import type { FormSubmissionProposal } from "../core/form-submission-proposal.js"
 import type {
   ActiveFormRequestPlanOptions,
   ActiveFormRetryOptions,
@@ -101,42 +101,45 @@ import type {
   FormControlSelection,
   SuccessfulFormEntriesOptions,
   SuccessfulFormEntry,
-} from "../core/forms"
-import { consumeFrameRenderEffects } from "../core/frame-autofocus-internal"
-import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller"
-import type { FrameControllerCollection, FrameVisitResult } from "../core/frame-controller-registry"
-import type { FramePreloadRequester } from "../core/frame-preloader"
+} from "../core/forms.js"
+import { consumeFrameRenderEffects } from "../core/frame-autofocus-internal.js"
+import type { FrameController, FrameControllerSnapshot } from "../core/frame-controller.js"
+import type {
+  FrameControllerCollection,
+  FrameVisitResult,
+} from "../core/frame-controller-registry.js"
+import type { FramePreloadRequester } from "../core/frame-preloader.js"
 import {
   acknowledgeFrameRender,
   frameRenderLifecycleRevision,
   hasFrameRenderTicket,
   retainFrameRenderer,
   subscribeFrameRenderLifecycle,
-} from "../core/frame-render-lifecycle-internal"
-import type { FrameAutoscrollIntent } from "../core/frame-response-application"
-import { resolveFormSubmissionDestination } from "../core/frames"
-import { type ProtocolDirection, protocolDirection } from "../core/protocol-direction"
+} from "../core/frame-render-lifecycle-internal.js"
+import type { FrameAutoscrollIntent } from "../core/frame-response-application.js"
+import { resolveFormSubmissionDestination } from "../core/frames.js"
+import { type ProtocolDirection, protocolDirection } from "../core/protocol-direction.js"
 import {
   type ExternalDocumentLinkScheme,
   resolveDocumentLinkAnchor,
   resolveDocumentLinkFragment,
   resolveDocumentLinkUrl,
   resolveProtocolUrl,
-} from "../core/protocol-request"
-import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle"
-import type { DocumentSession, NodeSnapshot } from "../core/session"
-import { subscribeBeforeSessionMutation } from "../core/session-mutation-internal"
+} from "../core/protocol-request.js"
+import { requestLifecycleDefaultHandlingPrevented } from "../core/request-lifecycle.js"
+import type { DocumentSession, NodeSnapshot } from "../core/session.js"
+import { subscribeBeforeSessionMutation } from "../core/session-mutation-internal.js"
 import type {
   DocumentStateScopes,
   DocumentStateStore,
   StateScopeKind,
   StateSnapshot,
-} from "../core/state"
+} from "../core/state.js"
 import {
   consumeStandaloneStreamAutofocus,
   streamAutofocusLifecycleRevision,
   subscribeStreamAutofocusLifecycle,
-} from "../core/stream-autofocus-internal"
+} from "../core/stream-autofocus-internal.js"
 import {
   attributeValue,
   isElement,
@@ -144,16 +147,20 @@ import {
   type ProtocolElement,
   type ProtocolNode,
   renderedTextValue,
-} from "../core/tree"
-import { classifyTopLevelLocation } from "../core/visitability"
+} from "../core/tree.js"
+import { classifyTopLevelLocation } from "../core/visitability.js"
 import type {
   ComponentActionExecutor,
   ComponentActionLifecycle,
   ComponentActionParams,
   ComponentActionResult,
   RegistryComponentAction,
-} from "../registry/component-actions"
-import type { ComponentRegistry, DecodedComponent, RegistryComponent } from "../registry/registry"
+} from "../registry/component-actions.js"
+import type {
+  ComponentRegistry,
+  DecodedComponent,
+  RegistryComponent,
+} from "../registry/registry.js"
 
 type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode">
 

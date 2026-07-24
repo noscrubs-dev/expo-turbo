@@ -2,7 +2,7 @@ import type {
   BeforeDocumentRenderEventDetail,
   DocumentMorphEventDetail,
   DocumentRenderMethod,
-} from "./document-visit-lifecycle"
+} from "./document-visit-lifecycle.js"
 
 export type DocumentRefreshScrollPolicy = "preserve" | "reset"
 

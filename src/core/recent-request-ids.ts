@@ -1,4 +1,4 @@
-import { RequestError } from "./errors"
+import { RequestError } from "./errors.js"
 
 export const RECENT_REQUEST_ID_LIMIT = 20
 

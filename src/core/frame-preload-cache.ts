@@ -1,4 +1,4 @@
-import { PropsError, TargetError } from "./errors"
+import { PropsError, TargetError } from "./errors.js"
 
 export const FRAME_PRELOAD_CACHE_SIZE = 10
 

@@ -1,4 +1,4 @@
-import type { FrameRenderMethod } from "./frame-lifecycle"
+import type { FrameRenderMethod } from "./frame-lifecycle.js"
 
 const frameLoadRenderMethods = new WeakMap<object, FrameRenderMethod>()
 

@@ -1,4 +1,4 @@
-import { StateError } from "./errors"
+import { StateError } from "./errors.js"
 import {
   FRAME_LIFECYCLE_LOAD_DISPATCH,
   FRAME_LIFECYCLE_RENDER_DISPATCH,
@@ -7,9 +7,9 @@ import {
   FrameRenderEvent,
   type FrameRenderEventDetail,
   type FrameRenderMethod,
-} from "./frame-lifecycle"
-import type { DocumentSession } from "./session"
-import type { ProtocolElement } from "./tree"
+} from "./frame-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolElement } from "./tree.js"
 
 export type FrameRenderOutcome = "failed" | "rendered" | "superseded" | "unavailable"
 

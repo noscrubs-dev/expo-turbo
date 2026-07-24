@@ -3,28 +3,28 @@ import type {
   FormConfirmationAdapter,
   NavigationAdapter,
   VisitAction,
-} from "../adapters"
+} from "../adapters/index.js"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
   type FrameRequestCheckpoint,
-} from "./destination-request-ownership"
+} from "./destination-request-ownership.js"
 import type {
   DocumentHistory,
   DocumentHistoryEntry,
   DocumentHistoryProposal,
-} from "./document-history"
-import { documentCachePolicy, documentVisitControl } from "./document-metadata"
+} from "./document-history.js"
+import { documentCachePolicy, documentVisitControl } from "./document-metadata.js"
 import {
   beginDocumentNavigation,
   currentDocumentNavigationEpoch,
-} from "./document-navigation-epoch"
+} from "./document-navigation-epoch.js"
 import {
   dispatchDocumentLoad,
   type PreparedDocumentRender,
   prepareDocumentRender,
-} from "./document-render-lifecycle-internal"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+} from "./document-render-lifecycle-internal.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
 import {
   BeforeCacheEvent,
   BeforeVisitEvent,
@@ -35,7 +35,7 @@ import {
   documentVisitLifecycleOption,
   runBeforeDocumentRender,
   VisitEvent,
-} from "./document-visit-lifecycle"
+} from "./document-visit-lifecycle.js"
 import {
   ExpoTurboError,
   type ExpoTurboErrorCode,
@@ -43,25 +43,25 @@ import {
   RequestError,
   StateError,
   TargetError,
-} from "./errors"
-import type { FormRequestPlan, FormSubmissionMethod } from "./form-request"
+} from "./errors.js"
+import type { FormRequestPlan, FormSubmissionMethod } from "./form-request.js"
 import type {
   FormRequestExecutionReport,
   FormResponseCandidate,
   FormResponseClassification,
-} from "./form-request-transport"
+} from "./form-request-transport.js"
 import {
   admitFormRequestPlan,
   executeAdmittedFormRequest,
   replaceAdmittedFormRequest,
-} from "./form-request-transport"
+} from "./form-request-transport.js"
 import type {
   FormSubmissionActivityLease,
   FormSubmissionDuplicateBehavior,
   FormSubmissionTerminalFailureInput,
   FormSubmissionTerminalReportInput,
   FormSubmissionUnappliedReason,
-} from "./form-submission-activity"
+} from "./form-submission-activity.js"
 import {
   createFormSubmissionHandle,
   FORM_SUBMISSION_LIFECYCLE_END_DISPATCH,
@@ -73,14 +73,17 @@ import {
   formSubmissionLifecycleOption,
   SubmitEndEvent,
   SubmitStartEvent,
-} from "./form-submission-lifecycle"
+} from "./form-submission-lifecycle.js"
 import {
   assertActiveFormSubmissionProposal,
   type FormSubmissionProposal,
   type FormSubmissionProposalIdentity,
-} from "./form-submission-proposal"
-import { notifyMountedFrameAutofocus, recordFrameAutofocusReport } from "./frame-autofocus-internal"
-import type { FrameControllerRegistry } from "./frame-controller-registry"
+} from "./form-submission-proposal.js"
+import {
+  notifyMountedFrameAutofocus,
+  recordFrameAutofocusReport,
+} from "./frame-autofocus-internal.js"
+import type { FrameControllerRegistry } from "./frame-controller-registry.js"
 import {
   admitFrameFormHistoryResponse,
   assertFrameFormHistoryPlanCurrent,
@@ -91,8 +94,8 @@ import {
   invalidateFrameFormHistoryCache,
   prepareFrameFormHistoryCommit,
   stageFrameFormHistoryResponse,
-} from "./frame-history"
-import { resolveMountedFrameHistory } from "./frame-history-internal"
+} from "./frame-history.js"
+import { resolveMountedFrameHistory } from "./frame-history-internal.js"
 import {
   BeforeFrameMorphEvent,
   createFrameMissingEvent,
@@ -105,13 +108,13 @@ import {
   type FrameMissingEvent,
   type FrameRenderMethod,
   frameLifecycleOption,
-} from "./frame-lifecycle"
+} from "./frame-lifecycle.js"
 import {
   dispatchFrameLoad,
   dispatchFrameRender,
   type PreparedFrameRender,
   prepareFrameRender,
-} from "./frame-render-lifecycle-internal"
+} from "./frame-render-lifecycle-internal.js"
 import {
   activeFrameAutofocusCandidates,
   assertPreparedFrameMutationCurrent,
@@ -126,37 +129,37 @@ import {
   prepareFrameResponseTree,
   renderPreparedFrameMutation,
   waitForPreparedFrameBeforeRender,
-} from "./frame-response-application"
-import type { FormSubmissionDestination, FrameResponseReport } from "./frames"
-import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser"
+} from "./frame-response-application.js"
+import type { FormSubmissionDestination, FrameResponseReport } from "./frames.js"
+import { type ParseLimits, parseExpoTurboDocument, parseTurboStreamFragment } from "./parser.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   resolveProtocolUrl,
   TURBO_STREAM_MIME_TYPE,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   type RequestLifecycle,
   requestLifecycleDefaultHandlingPrevented,
   requestLifecycleOption,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { streamLifecycleOption } from "./stream-lifecycle"
+} from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { streamLifecycleOption } from "./stream-lifecycle.js"
 import {
   dispatchEmbeddedTurboStreamElements,
   dispatchGuardedTurboStreamElements,
   type StreamActionDispatchOptions,
   type StreamDispatchReport,
   streamRenderSchedulerOption,
-} from "./streams"
+} from "./streams.js"
 import {
   DocumentTree,
   isElement,
   type ProtocolDocument,
   type ProtocolElement,
   type ProtocolNode,
-} from "./tree"
-import { classifyTopLevelLocation } from "./visitability"
+} from "./tree.js"
+import { classifyTopLevelLocation } from "./visitability.js"
 
 export type FormSubmissionProposalFactory = (signal: AbortSignal) => FormSubmissionProposal
 

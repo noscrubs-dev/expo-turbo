@@ -1,4 +1,4 @@
-import { SubscriptionError } from "../core/errors"
+import { SubscriptionError } from "../core/errors.js"
 import type {
   CableAdapter,
   CableCallbacks,
@@ -7,7 +7,7 @@ import type {
   LifecycleAdapter,
   LifecycleState,
   Unsubscribe,
-} from "./index"
+} from "./index.js"
 
 export interface DisposableCableAdapter extends CableAdapter {
   dispose(): void

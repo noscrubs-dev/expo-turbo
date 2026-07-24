@@ -1,15 +1,15 @@
-import { FrameMissingError, TargetError } from "./errors"
-import { commitPreparedFrameResponse, prepareFrameResponse } from "./frame-response-application"
-import type { ParseLimits } from "./parser"
-import type { DocumentSession } from "./session"
-import type { StreamActionDispatchOptions, StreamDispatchReport } from "./streams"
+import { FrameMissingError, TargetError } from "./errors.js"
+import { commitPreparedFrameResponse, prepareFrameResponse } from "./frame-response-application.js"
+import type { ParseLimits } from "./parser.js"
+import type { DocumentSession } from "./session.js"
+import type { StreamActionDispatchOptions, StreamDispatchReport } from "./streams.js"
 import {
   attributeValue,
   type DocumentTree,
   isElement,
   type ProtocolElement,
   type ProtocolNode,
-} from "./tree"
+} from "./tree.js"
 
 export interface ResolveFrameTargetOptions {
   readonly elementTarget?: string | null

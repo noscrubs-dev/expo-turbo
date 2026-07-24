@@ -1,24 +1,32 @@
-import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
-import { documentCachePolicy } from "./document-metadata"
-import type { DocumentPrefetchCache, DocumentPrefetchedResponse } from "./document-prefetch-cache"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors"
-import { type ParseLimits, parseExpoTurboDocument } from "./parser"
+import type {
+  FetchAdapter,
+  RequestIdAdapter,
+  TurboRequest,
+  TurboResponse,
+} from "../adapters/index.js"
+import { documentCachePolicy } from "./document-metadata.js"
+import type {
+  DocumentPrefetchCache,
+  DocumentPrefetchedResponse,
+} from "./document-prefetch-cache.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
+import { ContentTypeError, ParseError, PropsError, RequestError, TargetError } from "./errors.js"
+import { type ParseLimits, parseExpoTurboDocument } from "./parser.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   protocolRequestHeaders,
   resolveSameOriginProtocolUrl,
   responseContentType,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   admitRequestLifecycle,
   fetchWithRequestLifecycle,
   type RequestLifecycle,
   RequestLifecycleTransportError,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { classifyTopLevelLocation } from "./visitability"
+} from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { classifyTopLevelLocation } from "./visitability.js"
 
 export interface DocumentPreloaderOptions {
   readonly capabilityHash?: string

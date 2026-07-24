@@ -1,32 +1,32 @@
-import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters"
-import { registerDocumentMorphFrameReloader } from "./document-morph-frame-reload-internal"
-import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller"
-import { FrameMissingError, TargetError } from "./errors"
+import type { NavigationAdapter, VisibilityAdapter, VisitAction } from "../adapters/index.js"
+import { registerDocumentMorphFrameReloader } from "./document-morph-frame-reload-internal.js"
+import type { DocumentVisitController, DocumentVisitResult } from "./document-visit-controller.js"
+import { FrameMissingError, TargetError } from "./errors.js"
 import {
   registerMountedFrameAutofocusNotifier,
   stageFrameAutofocusReport,
-} from "./frame-autofocus-internal"
-import { FrameController } from "./frame-controller"
-import { type FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history"
+} from "./frame-autofocus-internal.js"
+import { FrameController } from "./frame-controller.js"
+import { type FrameHistoryCoordinator, prepareFrameHistoryCommit } from "./frame-history.js"
 import {
   type MountedFrameHistoryBinding,
   registerMountedFrameHistoryResolver,
   visitFrameWithHistory,
-} from "./frame-history-internal"
-import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader"
+} from "./frame-history-internal.js"
+import type { FrameLoadReport, FrameRequestLoader } from "./frame-loader.js"
 import {
   consumeFrameMorphReloads,
   registerFrameMorphReloadController,
-} from "./frame-morph-reload-internal"
-import type { FrameResponseReport } from "./frames"
+} from "./frame-morph-reload-internal.js"
+import type { FrameResponseReport } from "./frames.js"
 import {
   type ResolvedFrameTarget,
   type ResolveFrameTargetOptions,
   resolveFrameTarget,
-} from "./frames"
-import { resolveProtocolUrl } from "./protocol-request"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+} from "./frames.js"
+import { resolveProtocolUrl } from "./protocol-request.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 export interface FrameControllerCollection {
   delete(frameId: string, controller?: FrameController): void

@@ -1,21 +1,21 @@
-import type { RequestIdAdapter, VisitAction } from "../adapters"
-import { PropsError, RequestError, StateError, TargetError } from "./errors"
-import { buildFormRequest, type FormRequestPlan } from "./form-request"
-import { formSubmissionActivity } from "./form-submission-activity"
+import type { RequestIdAdapter, VisitAction } from "../adapters/index.js"
+import { PropsError, RequestError, StateError, TargetError } from "./errors.js"
+import { buildFormRequest, type FormRequestPlan } from "./form-request.js"
+import { formSubmissionActivity } from "./form-submission-activity.js"
 import type {
   FormSubmissionController,
   FormSubmissionControllerSubmitOptions,
   FormSubmissionReport,
-} from "./form-submission-controller"
+} from "./form-submission-controller.js"
 import {
   admitFormSubmissionProposal,
   type FormSubmissionProposal,
-} from "./form-submission-proposal"
-import type { FormMode, SuccessfulFormEntry } from "./forms"
-import { type FormSubmissionDestination, resolveFormSubmissionDestination } from "./frames"
-import type { DocumentSession } from "./session"
-import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
-import { classifyTopLevelLocation } from "./visitability"
+} from "./form-submission-proposal.js"
+import type { FormMode, SuccessfulFormEntry } from "./forms.js"
+import { type FormSubmissionDestination, resolveFormSubmissionDestination } from "./frames.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree.js"
+import { classifyTopLevelLocation } from "./visitability.js"
 
 export interface FormLinkSubmissionControllerOptions {
   readonly capabilityHash?: string

@@ -1,19 +1,19 @@
-import type { DocumentScrollPosition } from "../core/document-history"
-import type { DocumentVisitStatus } from "../core/document-visit-controller"
-import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-activity"
-import type { ProtocolInspectorAdapter } from "../core/inspector"
-import type { StyleAdapter } from "./styles"
+import type { DocumentScrollPosition } from "../core/document-history.js"
+import type { DocumentVisitStatus } from "../core/document-visit-controller.js"
+import type { FormSubmissionTerminalSnapshot } from "../core/form-submission-activity.js"
+import type { ProtocolInspectorAdapter } from "../core/inspector.js"
+import type { StyleAdapter } from "./styles.js"
 
-export type { DocumentHistoryHostAdapter } from "../core/document-history"
+export type { DocumentHistoryHostAdapter } from "../core/document-history.js"
 export type {
   DocumentHistoryTraversalSource,
   DocumentHistoryTraversalUnsubscribe,
-} from "../core/document-history-traversal"
-export * from "./action-cable-endpoint"
-export * from "./action-cable-lifecycle"
-export * from "./action-cable-websocket"
-export * from "./action-cable-wire"
-export * from "./styles"
+} from "../core/document-history-traversal.js"
+export * from "./action-cable-endpoint.js"
+export * from "./action-cable-lifecycle.js"
+export * from "./action-cable-websocket.js"
+export * from "./action-cable-wire.js"
+export * from "./styles.js"
 
 export type Unsubscribe = () => void
 

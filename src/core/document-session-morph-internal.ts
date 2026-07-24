@@ -1,6 +1,6 @@
-import { StateError } from "./errors"
-import type { DocumentSession } from "./session"
-import type { DocumentTree } from "./tree"
+import { StateError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import type { DocumentTree } from "./tree.js"
 
 type DocumentSessionMorpher = (tree: DocumentTree) => void
 

@@ -62,9 +62,17 @@ jobs:
           cd "$consumer"
           npm init --yes >/dev/null
           npm install --ignore-scripts "$GITHUB_WORKSPACE/$tarball"
-          EXPECTED_VERSION="$package_version" bun --eval '
-            import { EXPO_TURBO_RUNTIME_VERSION } from "expo-turbo";
-            if (EXPO_TURBO_RUNTIME_VERSION !== process.env.EXPECTED_VERSION) {
+          EXPECTED_VERSION="$package_version" node --input-type=module --eval '
+            const entrypoints = [
+              "expo-turbo",
+              "expo-turbo/adapters",
+              "expo-turbo/core",
+              "expo-turbo/react",
+              "expo-turbo/registry",
+              "expo-turbo/testing",
+            ];
+            const [root] = await Promise.all(entrypoints.map((entrypoint) => import(entrypoint)));
+            if (root.EXPO_TURBO_RUNTIME_VERSION !== process.env.EXPECTED_VERSION) {
               throw new Error("artifact version mismatch");
             }
           '

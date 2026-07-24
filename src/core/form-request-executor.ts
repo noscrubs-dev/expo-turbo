@@ -1,19 +1,19 @@
-import type { FetchAdapter } from "../adapters"
-import { ExpoTurboError, RequestError } from "./errors"
-import type { FormRequestPlan } from "./form-request"
+import type { FetchAdapter } from "../adapters/index.js"
+import { ExpoTurboError, RequestError } from "./errors.js"
+import type { FormRequestPlan } from "./form-request.js"
 import {
   admitFormRequestPlan,
   executeAdmittedFormRequest,
   type FormRequestExecutionReport,
-} from "./form-request-transport"
-import type { RecentRequestIds } from "./recent-request-ids"
-import { type RequestLifecycle, requestLifecycleOption } from "./request-lifecycle"
+} from "./form-request-transport.js"
+import type { RecentRequestIds } from "./recent-request-ids.js"
+import { type RequestLifecycle, requestLifecycleOption } from "./request-lifecycle.js"
 
 export type {
   FormRequestExecutionReport,
   FormResponseCandidate,
   FormResponseClassification,
-} from "./form-request-transport"
+} from "./form-request-transport.js"
 
 export type FormRequestPlanFactory = (signal: AbortSignal) => FormRequestPlan
 

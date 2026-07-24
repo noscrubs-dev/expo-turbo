@@ -1,7 +1,7 @@
-import type { FrameController } from "./frame-controller"
-import type { FrameResponseReport } from "./frames"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+import type { FrameController } from "./frame-controller.js"
+import type { FrameResponseReport } from "./frames.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 interface FrameMorphReloadReportBinding {
   readonly frame: ProtocolElement

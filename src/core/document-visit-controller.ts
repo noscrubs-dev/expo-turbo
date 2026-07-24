@@ -1,4 +1,4 @@
-import type { ClockAdapter, NavigationAdapter, VisitAction } from "../adapters"
+import type { ClockAdapter, NavigationAdapter, VisitAction } from "../adapters/index.js"
 import type {
   DocumentHistory,
   DocumentHistoryEntry,
@@ -6,11 +6,11 @@ import type {
   DocumentHistoryTraversalDirection,
   DocumentRestorationData,
   DocumentScrollPosition,
-} from "./document-history"
+} from "./document-history.js"
 import {
   enableDocumentLoadRefreshScroll,
   withDocumentLoadRenderMethod,
-} from "./document-load-render-method-internal"
+} from "./document-load-render-method-internal.js"
 import {
   type DocumentCommitCandidate,
   DocumentCommitError,
@@ -23,7 +23,7 @@ import {
   type DocumentSnapshotRestoreOptions,
   type DocumentSnapshotRestoreReport,
   type DocumentTreeCommitCandidate,
-} from "./document-loader"
+} from "./document-loader.js"
 import {
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
   DOCUMENT_LOAD_DISCARD_HANDLING,
@@ -33,19 +33,19 @@ import {
   documentTransportErrorUrl,
   isDocumentContentTypeError,
   isDocumentTransportError,
-} from "./document-loader-lifecycle-internal"
+} from "./document-loader-lifecycle-internal.js"
 import type {
   DocumentPrefetchCache,
   DocumentPrefetchedResponse,
   DocumentPrefetchLease,
-} from "./document-prefetch-cache"
+} from "./document-prefetch-cache.js"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
   dispatchDocumentLoad,
   type PreparedDocumentRender,
-} from "./document-render-lifecycle-internal"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { registerDocumentVisitControllerLifecycle } from "./document-visit-controller-internal"
+} from "./document-render-lifecycle-internal.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
+import { registerDocumentVisitControllerLifecycle } from "./document-visit-controller-internal.js"
 import {
   admitDocumentVisitLifecycle,
   BeforeCacheEvent,
@@ -64,20 +64,20 @@ import {
   type DocumentVisitLifecycle,
   runBeforeDocumentRender,
   VisitEvent,
-} from "./document-visit-lifecycle"
-import { PropsError, RequestError, StateError, TargetError } from "./errors"
-import { resolveProtocolUrl } from "./protocol-request"
+} from "./document-visit-lifecycle.js"
+import { PropsError, RequestError, StateError, TargetError } from "./errors.js"
+import { resolveProtocolUrl } from "./protocol-request.js"
 import {
   RequestLifecycleTransportError,
   type RequestOperationResult,
   requestLifecycleDefaultHandlingPrevented,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentTree } from "./tree"
+} from "./request-lifecycle.js"
+import type { DocumentTree } from "./tree.js"
 import {
   classifyTopLevelLocationAgainstRoot,
   type TopLevelLocationDisposition,
-} from "./visitability"
+} from "./visitability.js"
 
 export const DOCUMENT_VISIT_PROGRESS_DELAY_MS = 500
 

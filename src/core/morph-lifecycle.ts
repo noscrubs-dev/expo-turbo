@@ -1,7 +1,7 @@
-import { ActionError, PropsError, StateError } from "./errors"
-import { CancellableEvent, NotificationEvent } from "./events"
-import { consumeThenableResult } from "./thenable-result"
-import type { ProtocolElement } from "./tree"
+import { ActionError, PropsError, StateError } from "./errors.js"
+import { CancellableEvent, NotificationEvent } from "./events.js"
+import { consumeThenableResult } from "./thenable-result.js"
+import type { ProtocolElement } from "./tree.js"
 
 export type MorphAttributeMutationType = "remove" | "update"
 

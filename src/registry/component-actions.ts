@@ -1,7 +1,7 @@
 import type { z } from "zod"
 
-import { ActionError, RegistryError } from "../core/errors"
-import { resolveStateReferences, type StateReferenceInput, type StateStore } from "../core/state"
+import { ActionError, RegistryError } from "../core/errors.js"
+import { resolveStateReferences, type StateReferenceInput, type StateStore } from "../core/state.js"
 
 export type ComponentActionStateStore = StateStore
 

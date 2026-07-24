@@ -1,4 +1,4 @@
-import type { DocumentTree, ProtocolAttribute, ProtocolNode } from "./tree"
+import type { DocumentTree, ProtocolAttribute, ProtocolNode } from "./tree.js"
 
 function escapeAttribute(value: string): string {
   return value

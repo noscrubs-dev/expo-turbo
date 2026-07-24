@@ -1,10 +1,10 @@
-import type { VisitAction } from "../adapters"
-import { StateError } from "./errors"
-import type { FormRequestPlan } from "./form-request"
-import type { ExactFormSubmissionActivity } from "./form-submission-activity"
-import type { FormSubmissionDestination } from "./frames"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+import type { VisitAction } from "../adapters/index.js"
+import { StateError } from "./errors.js"
+import type { FormRequestPlan } from "./form-request.js"
+import type { ExactFormSubmissionActivity } from "./form-submission-activity.js"
+import type { FormSubmissionDestination } from "./frames.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 declare const FORM_SUBMISSION_PROPOSAL: unique symbol
 

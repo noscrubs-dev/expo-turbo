@@ -1,4 +1,4 @@
-import { PropsError, TargetError } from "./errors"
+import { PropsError, TargetError } from "./errors.js"
 
 export const DOCUMENT_PREFETCH_CACHE_TTL_MS = 10_000
 

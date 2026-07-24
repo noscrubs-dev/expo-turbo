@@ -1,8 +1,8 @@
-import type { ClockAdapter } from "../adapters"
-import type { DocumentVisitController } from "./document-visit-controller"
-import { RequestError, StateError } from "./errors"
-import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
-import type { DocumentSession } from "./session"
+import type { ClockAdapter } from "../adapters/index.js"
+import type { DocumentVisitController } from "./document-visit-controller.js"
+import { RequestError, StateError } from "./errors.js"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
 
 export const DOCUMENT_REFRESH_DEBOUNCE_MS = 150
 

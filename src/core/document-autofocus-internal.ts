@@ -1,7 +1,7 @@
-import { applicationAutofocusCandidates } from "./autofocus-candidates-internal"
-import { StateError } from "./errors"
-import type { DocumentSession } from "./session"
-import type { DocumentTree, ProtocolDocument, ProtocolNode } from "./tree"
+import { applicationAutofocusCandidates } from "./autofocus-candidates-internal.js"
+import { StateError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import type { DocumentTree, ProtocolDocument, ProtocolNode } from "./tree.js"
 
 export interface PreparedDocumentAutofocus {
   readonly generation: number

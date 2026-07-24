@@ -1,5 +1,5 @@
-import type { DocumentSession } from "./session"
-import type { ProtocolNode } from "./tree"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolNode } from "./tree.js"
 
 interface StreamAutofocusBinding {
   readonly candidates: readonly string[]

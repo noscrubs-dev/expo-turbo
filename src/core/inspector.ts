@@ -1,4 +1,4 @@
-import type { ExpoTurboErrorCode, ExpoTurboErrorContext } from "./errors"
+import type { ExpoTurboErrorCode, ExpoTurboErrorContext } from "./errors.js"
 
 export interface InspectorRequest {
   readonly id: string

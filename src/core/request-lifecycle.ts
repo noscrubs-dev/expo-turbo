@@ -6,9 +6,9 @@ import {
   type TurboRequest,
   type TurboRequestBody,
   type TurboResponse,
-} from "../adapters"
-import { ExpoTurboError, type ExpoTurboErrorContext, PropsError, RequestError } from "./errors"
-import { CancellableEvent, PausableEvent } from "./events"
+} from "../adapters/index.js"
+import { ExpoTurboError, type ExpoTurboErrorContext, PropsError, RequestError } from "./errors.js"
+import { CancellableEvent, PausableEvent } from "./events.js"
 
 export type RequestLifecycleContext =
   | Readonly<{

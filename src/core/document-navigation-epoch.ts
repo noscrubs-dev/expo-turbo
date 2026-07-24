@@ -1,4 +1,4 @@
-import type { DocumentSession } from "./session"
+import type { DocumentSession } from "./session.js"
 
 const documentNavigationEpochs = new WeakMap<DocumentSession, number>()
 const documentNavigationListeners = new WeakMap<DocumentSession, Set<() => void>>()

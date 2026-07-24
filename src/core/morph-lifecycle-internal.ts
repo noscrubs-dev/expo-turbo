@@ -1,5 +1,5 @@
-import type { MorphLifecycle } from "./morph-lifecycle"
-import type { DocumentTree } from "./tree"
+import type { MorphLifecycle } from "./morph-lifecycle.js"
+import type { DocumentTree } from "./tree.js"
 
 const lifecycles = new WeakMap<DocumentTree, MorphLifecycle>()
 const dispatching = new WeakSet<DocumentTree>()
