@@ -1,4 +1,4 @@
-import { isSessionCommitError } from "./session-commit-error-internal"
+import { isSessionCommitError } from "./session-commit-error-internal.js"
 
 type ThenMethod = (
   resolve: (value?: unknown) => void,

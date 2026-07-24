@@ -1,5 +1,5 @@
-import type { RestorationIdentifierAdapter } from "../adapters"
-import { PropsError, StateError } from "./errors"
+import type { RestorationIdentifierAdapter } from "../adapters/index.js"
+import { PropsError, StateError } from "./errors.js"
 
 export type DocumentHistoryTraversalDirection = "back" | "forward"
 

@@ -1,6 +1,6 @@
-import { PropsError, RequestError, StateError } from "./errors"
-import { NotificationEvent } from "./events"
-import type { FormSubmissionDestination } from "./frames"
+import { PropsError, RequestError, StateError } from "./errors.js"
+import { NotificationEvent } from "./events.js"
+import type { FormSubmissionDestination } from "./frames.js"
 
 export type FormSubmissionState = "stopped" | "stopping" | "waiting"
 

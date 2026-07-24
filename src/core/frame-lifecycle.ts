@@ -1,7 +1,7 @@
-import { FrameMissingError, PropsError, RequestError, StateError } from "./errors"
-import { CancellableEvent, NotificationEvent } from "./events"
-import { consumeThenableResult } from "./thenable-result"
-import type { ProtocolElement } from "./tree"
+import { FrameMissingError, PropsError, RequestError, StateError } from "./errors.js"
+import { CancellableEvent, NotificationEvent } from "./events.js"
+import { consumeThenableResult } from "./thenable-result.js"
+import type { ProtocolElement } from "./tree.js"
 
 export type FrameMissingVisitAction = "advance" | "replace"
 

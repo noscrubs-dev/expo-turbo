@@ -1,10 +1,10 @@
-import type { Unsubscribe, VisibilityAdapter } from "../adapters"
-import { FrameMissingError, StateError, TargetError } from "./errors"
+import type { Unsubscribe, VisibilityAdapter } from "../adapters/index.js"
+import { FrameMissingError, StateError, TargetError } from "./errors.js"
 import {
   type FrameRenderEffects,
   registerFrameAutofocusController,
   stageFrameAutofocusReport,
-} from "./frame-autofocus-internal"
+} from "./frame-autofocus-internal.js"
 import {
   assertFrameHistoryCommitPlan,
   FRAME_HISTORY_PLAN_OPTION,
@@ -14,10 +14,10 @@ import {
   finalizeFrameHistoryVisit,
   frameHistoryCommittedCandidate,
   prepareFrameHistoryCommit,
-} from "./frame-history"
-import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal"
-import type { FrameRenderMethod } from "./frame-lifecycle"
-import { withFrameLoadRenderMethod } from "./frame-load-render-method-internal"
+} from "./frame-history.js"
+import { isFrameCommitProtected, registerFrameHistoryVisit } from "./frame-history-internal.js"
+import type { FrameRenderMethod } from "./frame-lifecycle.js"
+import { withFrameLoadRenderMethod } from "./frame-load-render-method-internal.js"
 import {
   FRAME_RENDER_PREPARE_OPTION,
   FRAME_REQUEST_LOADER_DISPATCH_FRAME_LOAD,
@@ -27,16 +27,16 @@ import {
   type FrameLoadOptions,
   type FrameLoadReport,
   type FrameRequestLoader,
-} from "./frame-loader"
-import { notifyFrameMorphReload } from "./frame-morph-reload-internal"
+} from "./frame-loader.js"
+import { notifyFrameMorphReload } from "./frame-morph-reload-internal.js"
 import {
   clearFrameRenderSuppression,
   type PreparedFrameRender,
-} from "./frame-render-lifecycle-internal"
-import type { FrameResponseReport } from "./frames"
-import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+} from "./frame-render-lifecycle-internal.js"
+import type { FrameResponseReport } from "./frames.js"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 export type FrameLoadingStyle = "eager" | "lazy"
 export type FrameControllerStatus =

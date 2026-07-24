@@ -1,16 +1,16 @@
-import type { CableAdapter, CableCallbacks, CableSubscription } from "../adapters"
+import type { CableAdapter, CableCallbacks, CableSubscription } from "../adapters/index.js"
 import {
   markCableStreamSourceErrorReported,
   wasCableStreamSourceErrorReported,
-} from "./cable-stream-source-errors-internal"
-import { ExpoTurboError, StateError, SubscriptionError } from "./errors"
-import type { DocumentSession } from "./session"
+} from "./cable-stream-source-errors-internal.js"
+import { ExpoTurboError, StateError, SubscriptionError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
 import {
   dispatchGuardedTurboStreamFragment,
   type StreamDispatchOptions,
   type StreamDispatchReport,
-} from "./streams"
-import { attributeValue, type ProtocolElement } from "./tree"
+} from "./streams.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 const MAX_PENDING_CABLE_MESSAGES = 100
 const STANDARD_STREAM_CHANNEL = "Turbo::StreamsChannel"

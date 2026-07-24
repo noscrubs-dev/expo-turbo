@@ -1,4 +1,4 @@
-import type { DocumentSession, SessionListener } from "./session"
+import type { DocumentSession, SessionListener } from "./session.js"
 
 const listenersBySession = new WeakMap<DocumentSession, Set<SessionListener>>()
 

@@ -1,5 +1,10 @@
-import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
-import { documentVisitControl } from "./document-metadata"
+import type {
+  FetchAdapter,
+  RequestIdAdapter,
+  TurboRequest,
+  TurboResponse,
+} from "../adapters/index.js"
+import { documentVisitControl } from "./document-metadata.js"
 import {
   ContentTypeError,
   FrameMissingError,
@@ -7,24 +12,24 @@ import {
   PropsError,
   RequestError,
   TargetError,
-} from "./errors"
-import type { FramePreloadCache, FramePreloadEntry } from "./frame-preload-cache"
-import { parseExpoTurboDocument } from "./parser"
+} from "./errors.js"
+import type { FramePreloadCache, FramePreloadEntry } from "./frame-preload-cache.js"
+import { parseExpoTurboDocument } from "./parser.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   protocolRequestHeaders,
   resolveSameOriginProtocolUrl,
   responseContentType,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   fetchWithRequestLifecycle,
   type RequestLifecycle,
   RequestLifecycleTransportError,
   requestLifecycleOption,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { attributeValue } from "./tree"
+} from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue } from "./tree.js"
 
 export type FramePreloadReport = Readonly<{
   readonly frameId: string

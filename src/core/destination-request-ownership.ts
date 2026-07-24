@@ -1,6 +1,6 @@
-import { StateError } from "./errors"
-import type { DocumentSession } from "./session"
-import { attributeValue, type ProtocolElement } from "./tree"
+import { StateError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 export interface DestinationRequestLease {
   readonly controller: AbortController

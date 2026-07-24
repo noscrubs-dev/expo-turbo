@@ -1,15 +1,20 @@
-import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
+import type {
+  FetchAdapter,
+  RequestIdAdapter,
+  TurboRequest,
+  TurboResponse,
+} from "../adapters/index.js"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
-} from "./destination-request-ownership"
-import type { DocumentScrollPosition } from "./document-history"
+} from "./destination-request-ownership.js"
+import type { DocumentScrollPosition } from "./document-history.js"
 import {
   documentLoadBeforeRender,
   documentLoadRefreshScroll,
   documentLoadRenderMethod,
   notifyDocumentLoadMorph,
-} from "./document-load-render-method-internal"
+} from "./document-load-render-method-internal.js"
 import {
   createDocumentTransportError,
   DOCUMENT_BEFORE_SNAPSHOT_CAPTURE,
@@ -18,35 +23,35 @@ import {
   DOCUMENT_LOAD_REQUEST_DISPATCHED,
   markDocumentContentTypeError,
   markDocumentTransportError,
-} from "./document-loader-lifecycle-internal"
+} from "./document-loader-lifecycle-internal.js"
 import {
   type DocumentRefreshSettings,
   documentCachePolicy,
   documentRefreshSettings,
-} from "./document-metadata"
-import { beginDocumentNavigation } from "./document-navigation-epoch"
-import type { DocumentPrefetchedResponse } from "./document-prefetch-cache"
+} from "./document-metadata.js"
+import { beginDocumentNavigation } from "./document-navigation-epoch.js"
+import type { DocumentPrefetchedResponse } from "./document-prefetch-cache.js"
 import {
   discardDocumentRefreshScroll,
   prepareDocumentRefreshScroll,
   suppressPreparedDocumentRefreshScroll,
-} from "./document-refresh-scroll-internal"
+} from "./document-refresh-scroll-internal.js"
 import {
   DOCUMENT_REQUEST_LOADER_PREPARE_RENDER,
   type PreparedDocumentRender,
   prepareDocumentRender,
-} from "./document-render-lifecycle-internal"
-import { morphCurrentDocument } from "./document-session-morph-internal"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import type { DocumentRenderMethod, DocumentVisitLifecycle } from "./document-visit-lifecycle"
-import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors"
-import { type ParseLimits, parseExpoTurboDocument } from "./parser"
+} from "./document-render-lifecycle-internal.js"
+import { morphCurrentDocument } from "./document-session-morph-internal.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
+import type { DocumentRenderMethod, DocumentVisitLifecycle } from "./document-visit-lifecycle.js"
+import { ContentTypeError, ExpoTurboError, RequestError, StateError } from "./errors.js"
+import { type ParseLimits, parseExpoTurboDocument } from "./parser.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   protocolRequestHeaders,
   resolveSameOriginProtocolUrl,
   responseContentType,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   fetchWithRequestLifecycle,
   type RequestLifecycle,
@@ -54,14 +59,14 @@ import {
   requestLifecycleDefaultHandlingPrevented,
   requestLifecycleOption,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { type DocumentTree, morphCurrentDocumentRoot } from "./tree"
+} from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { type DocumentTree, morphCurrentDocumentRoot } from "./tree.js"
 import {
   classifyTopLevelLocation,
   documentRootLocation,
   type TopLevelLocationDisposition,
-} from "./visitability"
+} from "./visitability.js"
 
 export type DocumentResponseClassification = "client-error" | "server-error" | "success"
 

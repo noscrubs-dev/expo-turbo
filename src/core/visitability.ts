@@ -1,6 +1,6 @@
-import { TargetError } from "./errors"
-import { resolveProtocolUrl } from "./protocol-request"
-import { attributeValue, type DocumentTree, isElement } from "./tree"
+import { TargetError } from "./errors.js"
+import { resolveProtocolUrl } from "./protocol-request.js"
+import { attributeValue, type DocumentTree, isElement } from "./tree.js"
 
 export const TURBO_UNVISITABLE_EXTENSIONS = Object.freeze([
   ".7z",

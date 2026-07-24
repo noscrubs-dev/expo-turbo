@@ -1,4 +1,4 @@
-import { attributeValue, type DocumentTree, isElement } from "./tree"
+import { attributeValue, type DocumentTree, isElement } from "./tree.js"
 
 export interface DocumentCachePolicy {
   readonly cacheable: boolean

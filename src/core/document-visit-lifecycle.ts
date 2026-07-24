@@ -1,8 +1,8 @@
-import type { VisitAction } from "../adapters"
-import { PropsError, StateError } from "./errors"
-import { CancellableEvent, NotificationEvent, PausableEvent } from "./events"
-import { consumeThenableResult, resolveThenableResult } from "./thenable-result"
-import type { ProtocolDocument } from "./tree"
+import type { VisitAction } from "../adapters/index.js"
+import { PropsError, StateError } from "./errors.js"
+import { CancellableEvent, NotificationEvent, PausableEvent } from "./events.js"
+import { consumeThenableResult, resolveThenableResult } from "./thenable-result.js"
+import type { ProtocolDocument } from "./tree.js"
 
 export type DocumentVisitDirection = "back" | "forward" | "none"
 

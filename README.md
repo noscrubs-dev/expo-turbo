@@ -273,6 +273,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-24**:
 
+- Changed: Made every emitted ESM import Node-compatible and added clean Node checks for all six public package entrypoints.
+- Why: Independent verification of candidate run `30056741302` found that its Bun-validated tarball failed under the declared Node engine because TypeScript had emitted extensionless relative directory imports.
+- Impact: NodeNext now validates production source specifiers, local packaging imports every built entrypoint with Node, and the release clean consumer uses Node rather than Bun. Candidate run `30056741302` is rejected and must not be published; a replacement candidate is required after this fix merges.
+
+**2026-07-24**:
+
 - Changed: Rebuilt the signed Android emulator `Release` APK from exact source baseline `6668d48`, made both multipart Maestro flows scroll directly to their actionable controls, and recorded three passing flows.
 - Why: The prior Android evidence predated the completed browser matrix, and the intermediate-heading scroll could stall in the long gallery even while the target control remained reachable.
 - Impact: Current `main` passes the installed gallery smoke plus fallback and native-picker multipart `422` retry flows without Expo Go, Metro, AppleScript, or other macOS UI automation.

@@ -1,10 +1,10 @@
-import { ActionError, type ExpoTurboError, PropsError, StateError } from "./errors"
-import { CancellableEvent, NotificationEvent } from "./events"
-import type { DocumentSession } from "./session"
-import { isSessionCommitError } from "./session-commit-error-internal"
-import type { StreamActionReport } from "./streams"
-import { consumeThenableResult } from "./thenable-result"
-import type { ProtocolElement } from "./tree"
+import { ActionError, type ExpoTurboError, PropsError, StateError } from "./errors.js"
+import { CancellableEvent, NotificationEvent } from "./events.js"
+import type { DocumentSession } from "./session.js"
+import { isSessionCommitError } from "./session-commit-error-internal.js"
+import type { StreamActionReport } from "./streams.js"
+import { consumeThenableResult } from "./thenable-result.js"
+import type { ProtocolElement } from "./tree.js"
 
 export interface StreamRenderResult {
   readonly appliedTargets: number

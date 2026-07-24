@@ -4,7 +4,7 @@ import {
   DOCUMENT_VISIT_LIFECYCLE_CLICK_DISPATCH,
   type DocumentVisitLifecycle,
   LinkClickEvent,
-} from "./document-visit-lifecycle"
+} from "./document-visit-lifecycle.js"
 
 const controllerLifecycles = new WeakMap<object, DocumentVisitLifecycle | undefined>()
 

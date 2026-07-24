@@ -1,5 +1,5 @@
-import { PropsError } from "./errors"
-import { attributeValue, type ProtocolElement } from "./tree"
+import { PropsError } from "./errors.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
 export type ProtocolDirection = "auto" | "ltr" | "rtl"
 

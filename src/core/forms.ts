@@ -1,10 +1,10 @@
-import type { FocusAdapter, TurboMultipartFile, VisitAction } from "../adapters"
-import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
+import type { FocusAdapter, TurboMultipartFile, VisitAction } from "../adapters/index.js"
+import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors.js"
 import {
   buildFormRequest,
   type FormRequestPlan,
   type FormRequestProtocolOptions,
-} from "./form-request"
+} from "./form-request.js"
 import {
   type ExactFormSubmissionActivity,
   type FormSubmissionActivityListener,
@@ -12,21 +12,21 @@ import {
   type FormSubmissionTerminalSnapshot,
   type FormSubmitterActivitySnapshot,
   formSubmissionActivity,
-} from "./form-submission-activity"
+} from "./form-submission-activity.js"
 import type {
   FormSubmissionController,
   FormSubmissionControllerSubmitOptions,
   FormSubmissionReport,
-} from "./form-submission-controller"
+} from "./form-submission-controller.js"
 import {
   admitFormSubmissionProposal,
   constrainFormSubmissionProposalToSafeTransport,
   type FormSubmissionProposal,
-} from "./form-submission-proposal"
-import { resolveFormSubmissionDestination } from "./frames"
-import { protocolRequestHeaders } from "./protocol-request"
-import type { DocumentSession } from "./session"
-import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree"
+} from "./form-submission-proposal.js"
+import { resolveFormSubmissionDestination } from "./frames.js"
+import { protocolRequestHeaders } from "./protocol-request.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree.js"
 
 interface FormControlBase {
   readonly disabled?: boolean

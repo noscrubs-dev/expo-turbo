@@ -1,4 +1,4 @@
-import type { DocumentTree } from "./tree"
+import type { DocumentTree } from "./tree.js"
 
 type DocumentTreeMutationGuard = () => void
 

@@ -2,14 +2,14 @@ import type {
   CableReconnectRequest,
   CableStreamSourceConnectionSnapshot,
   ObservableCableStreamSourceCollection,
-} from "./cable-stream-sources"
-import type { DocumentRefreshRequester } from "./document-refresh-controller"
-import type { DocumentVisitController } from "./document-visit-controller"
-import { RequestError, StateError } from "./errors"
-import type { FrameControllerSnapshot } from "./frame-controller"
-import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import type { ProtocolElement } from "./tree"
+} from "./cable-stream-sources.js"
+import type { DocumentRefreshRequester } from "./document-refresh-controller.js"
+import type { DocumentVisitController } from "./document-visit-controller.js"
+import { RequestError, StateError } from "./errors.js"
+import type { FrameControllerSnapshot } from "./frame-controller.js"
+import { requestLifecycleDefaultHandlingPrevented } from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolElement } from "./tree.js"
 
 export interface FrameReconnectController {
   readonly state: Pick<FrameControllerSnapshot, "busy" | "connected" | "disabled" | "source">

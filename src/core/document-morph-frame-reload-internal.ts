@@ -1,5 +1,5 @@
-import type { DocumentSession } from "./session"
-import type { ProtocolDocument, ProtocolElement } from "./tree"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolDocument, ProtocolElement } from "./tree.js"
 
 type DocumentMorphFrameReloader = (frames: readonly ProtocolElement[]) => void
 

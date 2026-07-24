@@ -1,5 +1,5 @@
-import type { DocumentScrollPosition } from "./document-history"
-import { notifyDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal"
+import type { DocumentScrollPosition } from "./document-history.js"
+import { notifyDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal.js"
 import {
   DOCUMENT_VISIT_LIFECYCLE_LOAD_DISPATCH,
   DOCUMENT_VISIT_LIFECYCLE_RENDER_DISPATCH,
@@ -8,10 +8,10 @@ import {
   type DocumentRenderEventDetail,
   type DocumentRenderMethod,
   type DocumentVisitLifecycle,
-} from "./document-visit-lifecycle"
-import { StateError } from "./errors"
-import type { DocumentSession } from "./session"
-import type { ProtocolDocument } from "./tree"
+} from "./document-visit-lifecycle.js"
+import { StateError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolDocument } from "./tree.js"
 
 export type DocumentRenderOutcome = "failed" | "rendered" | "superseded" | "unavailable"
 

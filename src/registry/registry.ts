@@ -1,9 +1,9 @@
 import type { ComponentType, ReactNode } from "react"
 import type { z } from "zod"
 
-import { PropsError, RegistryError } from "../core/errors"
-import type { FormContainerRole } from "../core/forms"
-import { protocolDirection } from "../core/protocol-direction"
+import { PropsError, RegistryError } from "../core/errors.js"
+import type { FormContainerRole } from "../core/forms.js"
+import { protocolDirection } from "../core/protocol-direction.js"
 import {
   attributeValue,
   isElement,
@@ -11,9 +11,9 @@ import {
   type ProtocolNode,
   renderedNodeTextContent,
   renderedTextValue,
-} from "../core/tree"
-import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions"
-import type { AttributeCodec } from "./codecs"
+} from "../core/tree.js"
+import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions.js"
+import type { AttributeCodec } from "./codecs.js"
 
 const RESERVED_TAGS = new Set([
   "expo-turbo-fragment",

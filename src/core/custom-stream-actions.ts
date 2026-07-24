@@ -1,8 +1,8 @@
 import type { z } from "zod"
 
-import { ActionError, RegistryError } from "./errors"
-import type { DocumentSession } from "./session"
-import type { ProtocolElement, ProtocolNode } from "./tree"
+import { ActionError, RegistryError } from "./errors.js"
+import type { DocumentSession } from "./session.js"
+import type { ProtocolElement, ProtocolNode } from "./tree.js"
 
 const RESERVED_STREAM_ACTIONS = new Set([
   "after",

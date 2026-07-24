@@ -1,20 +1,20 @@
-import { destinationCommitActive } from "./destination-request-ownership"
+import { destinationCommitActive } from "./destination-request-ownership.js"
 import {
   prepareDocumentAutofocus,
   stageDocumentAutofocus,
   suppressDocumentAutofocus,
-} from "./document-autofocus-internal"
-import { stageDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal"
-import { stageDocumentRefreshScroll } from "./document-refresh-scroll-internal"
-import { registerDocumentSessionMorpher } from "./document-session-morph-internal"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { DisposalError, StateError, TargetError } from "./errors"
-import { type MorphLifecycle, morphLifecycleOption } from "./morph-lifecycle"
-import { installMorphLifecycle, morphLifecycleDispatchActive } from "./morph-lifecycle-internal"
-import { RecentRequestIds } from "./recent-request-ids"
-import { markSessionCommitError } from "./session-commit-error-internal"
-import { notifyBeforeSessionMutation } from "./session-mutation-internal"
-import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal"
+} from "./document-autofocus-internal.js"
+import { stageDocumentMorphFrameReloads } from "./document-morph-frame-reload-internal.js"
+import { stageDocumentRefreshScroll } from "./document-refresh-scroll-internal.js"
+import { registerDocumentSessionMorpher } from "./document-session-morph-internal.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
+import { DisposalError, StateError, TargetError } from "./errors.js"
+import { type MorphLifecycle, morphLifecycleOption } from "./morph-lifecycle.js"
+import { installMorphLifecycle, morphLifecycleDispatchActive } from "./morph-lifecycle-internal.js"
+import { RecentRequestIds } from "./recent-request-ids.js"
+import { markSessionCommitError } from "./session-commit-error-internal.js"
+import { notifyBeforeSessionMutation } from "./session-mutation-internal.js"
+import { pruneStandaloneStreamAutofocus } from "./stream-autofocus-internal.js"
 import {
   type DocumentTree,
   isElement,
@@ -22,8 +22,8 @@ import {
   nodeMorphRevision,
   type ProtocolNode,
   preserveDocumentPermanentElements,
-} from "./tree"
-import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard"
+} from "./tree.js"
+import { registerDocumentTreeMutationGuard } from "./tree-mutation-guard.js"
 
 export type SessionListener = () => void
 export type DisposalHook = () => void

@@ -5,7 +5,7 @@ import {
   type Node as XmlNode,
 } from "@xmldom/xmldom"
 
-import { ParseError } from "./errors"
+import { ParseError } from "./errors.js"
 import {
   DocumentTree,
   type ProtocolAttribute,
@@ -15,7 +15,7 @@ import {
   type ProtocolNode,
   type ProtocolParentNode,
   type SourceLocation,
-} from "./tree"
+} from "./tree.js"
 
 export interface ParseLimits {
   readonly maxAttributesPerElement: number

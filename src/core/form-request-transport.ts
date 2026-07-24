@@ -3,8 +3,8 @@ import {
   isTurboMultipartBody,
   type TurboRequest,
   type TurboResponse,
-} from "../adapters"
-import { ContentTypeError, ExpoTurboError, RequestError } from "./errors"
+} from "../adapters/index.js"
+import { ContentTypeError, ExpoTurboError, RequestError } from "./errors.js"
 import {
   FORM_TEXT_PLAIN,
   FORM_URL_ENCODED,
@@ -12,23 +12,23 @@ import {
   type FormSubmissionMethod,
   MAX_FORM_MULTIPART_BODY_BYTES,
   MAX_FORM_TEXT_PLAIN_BODY_BYTES,
-} from "./form-request"
+} from "./form-request.js"
 import {
   isAdmittedFormRequestPlan,
   admitFormRequestPlan as markFormRequestPlan,
-} from "./form-request-plan"
+} from "./form-request-plan.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   resolveSameOriginProtocolUrl,
   responseContentType,
   TURBO_STREAM_MIME_TYPE,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   fetchWithRequestLifecycle,
   type RequestLifecycle,
   type RequestLifecycleContext,
   RequestLifecycleTransportError,
-} from "./request-lifecycle"
+} from "./request-lifecycle.js"
 
 export type FormResponseClassification = "client-error" | "server-error" | "success"
 

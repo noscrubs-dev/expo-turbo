@@ -1,11 +1,11 @@
-import { ParseError, TargetError } from "./errors"
+import { ParseError, TargetError } from "./errors.js"
 import {
   MORPH_LIFECYCLE_BEFORE_ATTRIBUTE_DISPATCH,
   MORPH_LIFECYCLE_BEFORE_ELEMENT_DISPATCH,
   MORPH_LIFECYCLE_ELEMENT_DISPATCH,
-} from "./morph-lifecycle"
-import { dispatchMorphLifecycle, documentTreeMorphLifecycle } from "./morph-lifecycle-internal"
-import { assertDocumentTreeMutationAllowed } from "./tree-mutation-guard"
+} from "./morph-lifecycle.js"
+import { dispatchMorphLifecycle, documentTreeMorphLifecycle } from "./morph-lifecycle-internal.js"
+import { assertDocumentTreeMutationAllowed } from "./tree-mutation-guard.js"
 
 export interface SourceLocation {
   readonly column: number

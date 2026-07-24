@@ -1,4 +1,4 @@
-import { attributeValue, isElement, type ProtocolNode, type ProtocolParentNode } from "./tree"
+import { attributeValue, isElement, type ProtocolNode, type ProtocolParentNode } from "./tree.js"
 
 export function applicationAutofocusCandidatesFromNodes(
   nodes: readonly ProtocolNode[],

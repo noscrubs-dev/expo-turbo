@@ -1,11 +1,11 @@
-import { SubscriptionError } from "../core/errors"
+import { SubscriptionError } from "../core/errors.js"
 import {
   ACTION_CABLE_V1_JSON_PROTOCOL,
   decodeActionCableV1Frame,
   encodeActionCableSubscribe,
   encodeActionCableUnsubscribe,
-} from "./action-cable-wire"
-import type { CableAdapter, CableCallbacks, CableSubscription, ClockAdapter } from "./index"
+} from "./action-cable-wire.js"
+import type { CableAdapter, CableCallbacks, CableSubscription, ClockAdapter } from "./index.js"
 
 export type ActionCableWebSocketEventType = "close" | "error" | "message" | "open"
 

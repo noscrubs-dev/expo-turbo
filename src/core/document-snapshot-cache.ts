@@ -1,6 +1,6 @@
-import { documentCachePolicy } from "./document-metadata"
-import { PropsError, TargetError } from "./errors"
-import { DocumentTree } from "./tree"
+import { documentCachePolicy } from "./document-metadata.js"
+import { PropsError, TargetError } from "./errors.js"
+import { DocumentTree } from "./tree.js"
 
 export const DOCUMENT_SNAPSHOT_CACHE_SIZE = 10
 

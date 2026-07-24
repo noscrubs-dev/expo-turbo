@@ -3,11 +3,11 @@ import type {
   TurboMultipartFile,
   TurboRequest,
   TurboRequestBody,
-} from "../adapters"
-import { RequestError, TargetError } from "./errors"
-import { admitFormRequestPlan } from "./form-request-plan"
-import type { SuccessfulFormEntry } from "./forms"
-import { protocolRequestHeaders, resolveSameOriginProtocolUrl } from "./protocol-request"
+} from "../adapters/index.js"
+import { RequestError, TargetError } from "./errors.js"
+import { admitFormRequestPlan } from "./form-request-plan.js"
+import type { SuccessfulFormEntry } from "./forms.js"
+import { protocolRequestHeaders, resolveSameOriginProtocolUrl } from "./protocol-request.js"
 
 export const FORM_URL_ENCODED = "application/x-www-form-urlencoded" as const
 export const FORM_TEXT_PLAIN = "text/plain" as const

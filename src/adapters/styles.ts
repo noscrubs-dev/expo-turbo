@@ -1,4 +1,4 @@
-import { PropsError, RegistryError } from "../core/errors"
+import { PropsError, RegistryError } from "../core/errors.js"
 
 const TOKEN_PATTERN = /^[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*$/
 const MAX_TOKEN_LENGTH = 64

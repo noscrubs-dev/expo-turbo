@@ -55,7 +55,7 @@
     "examples:check": "bun run example:expo:check && bun run example:rails:check",
     "format": "biome check --write src scripts package.json tsconfig.json tsconfig.build.json tsconfig.scripts.json biome.json",
     "lint": "biome check src scripts package.json tsconfig.json tsconfig.build.json tsconfig.scripts.json biome.json",
-    "pack:check": "bun pm pack --dry-run && bun run artifact:boundaries:check",
+    "pack:check": "bun pm pack --dry-run && node --input-type=module --eval \"const paths = ['./dist/index.js', './dist/adapters/index.js', './dist/core/index.js', './dist/react/index.js', './dist/registry/index.js', './dist/testing/index.js']; const [root] = await Promise.all(paths.map((path) => import(path))); const { version } = JSON.parse(await (await import('node:fs/promises')).readFile(new URL('./package.json', import.meta.url), 'utf8')); if (root.EXPO_TURBO_RUNTIME_VERSION !== version) throw new Error('runtime version mismatch')\" && bun run artifact:boundaries:check",
     "prepack": "bun run build",
     "scripts:typecheck": "tsc -p tsconfig.scripts.json --noEmit",
     "test": "bun test --path-ignore-patterns=example",

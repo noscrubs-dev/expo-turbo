@@ -1,4 +1,4 @@
-import { markExpoTurboError } from "./expo-turbo-error-internal"
+import { markExpoTurboError } from "./expo-turbo-error-internal.js"
 
 export type ExpoTurboErrorCode =
   | "action"

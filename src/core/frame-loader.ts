@@ -1,9 +1,14 @@
-import type { FetchAdapter, RequestIdAdapter, TurboRequest, TurboResponse } from "../adapters"
+import type {
+  FetchAdapter,
+  RequestIdAdapter,
+  TurboRequest,
+  TurboResponse,
+} from "../adapters/index.js"
 import {
   type DestinationRequestLease,
   destinationRequestOwnership,
-} from "./destination-request-ownership"
-import { documentVisitControl } from "./document-metadata"
+} from "./destination-request-ownership.js"
+import { documentVisitControl } from "./document-metadata.js"
 import {
   ContentTypeError,
   ExpoTurboError,
@@ -12,8 +17,8 @@ import {
   RequestError,
   StateError,
   TargetError,
-} from "./errors"
-import { recordFrameAutofocusReport } from "./frame-autofocus-internal"
+} from "./errors.js"
+import { recordFrameAutofocusReport } from "./frame-autofocus-internal.js"
 import {
   assertFrameHistoryCommitPlan,
   beginFrameHistoryRequest,
@@ -23,8 +28,8 @@ import {
   frameHistoryDocumentUrl,
   frameHistoryPlanCurrent,
   updateFrameHistoryResponseSource,
-} from "./frame-history"
-import { registerFrameCommitProtection } from "./frame-history-internal"
+} from "./frame-history.js"
+import { registerFrameCommitProtection } from "./frame-history-internal.js"
 import {
   BeforeFrameMorphEvent,
   createFrameMissingEvent,
@@ -37,16 +42,16 @@ import {
   type FrameMissingEvent,
   type FrameRenderMethod,
   frameLifecycleOption,
-} from "./frame-lifecycle"
-import { frameLoadRenderMethod } from "./frame-load-render-method-internal"
-import { recordFrameMorphReloadReport } from "./frame-morph-reload-internal"
-import { FramePreloadCache, type FramePreloadEntry } from "./frame-preload-cache"
+} from "./frame-lifecycle.js"
+import { frameLoadRenderMethod } from "./frame-load-render-method-internal.js"
+import { recordFrameMorphReloadReport } from "./frame-morph-reload-internal.js"
+import { FramePreloadCache, type FramePreloadEntry } from "./frame-preload-cache.js"
 import {
   dispatchFrameLoad,
   dispatchFrameRender,
   type PreparedFrameRender,
   prepareFrameRender,
-} from "./frame-render-lifecycle-internal"
+} from "./frame-render-lifecycle-internal.js"
 import {
   activeFrameAutofocusCandidates,
   assertPreparedFrameMutationCurrent,
@@ -60,27 +65,27 @@ import {
   prepareFrameResponseTree,
   renderPreparedFrameMutation,
   waitForPreparedFrameBeforeRender,
-} from "./frame-response-application"
-import type { FrameResponseReport } from "./frames"
-import { parseExpoTurboDocument } from "./parser"
+} from "./frame-response-application.js"
+import type { FrameResponseReport } from "./frames.js"
+import { parseExpoTurboDocument } from "./parser.js"
 import {
   EXPO_TURBO_MIME_TYPE,
   protocolRequestHeaders,
   resolveSameOriginProtocolUrl,
   responseContentType,
-} from "./protocol-request"
+} from "./protocol-request.js"
 import {
   fetchWithRequestLifecycle,
   type RequestLifecycle,
   requestLifecycleOption,
   settleRequestOperation,
-} from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { streamLifecycleOption } from "./stream-lifecycle"
-import { type StreamActionDispatchOptions, streamRenderSchedulerOption } from "./streams"
-import { attributeValue, type ProtocolElement } from "./tree"
+} from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { streamLifecycleOption } from "./stream-lifecycle.js"
+import { type StreamActionDispatchOptions, streamRenderSchedulerOption } from "./streams.js"
+import { attributeValue, type ProtocolElement } from "./tree.js"
 
-export { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
+export { EXPO_TURBO_MIME_TYPE } from "./protocol-request.js"
 
 export type FrameLoadStatus = "canceled" | "completed" | "empty" | "prevented" | "promoted"
 

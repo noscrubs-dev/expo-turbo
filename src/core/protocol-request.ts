@@ -1,6 +1,6 @@
-import type { TurboResponse } from "../adapters"
-import { type ExpoTurboErrorContext, RequestError, TargetError } from "./errors"
-import { EXPO_TURBO_PROTOCOL_VERSION, EXPO_TURBO_RUNTIME_VERSION } from "./versions"
+import type { TurboResponse } from "../adapters/index.js"
+import { type ExpoTurboErrorContext, RequestError, TargetError } from "./errors.js"
+import { EXPO_TURBO_PROTOCOL_VERSION, EXPO_TURBO_RUNTIME_VERSION } from "./versions.js"
 
 export const EXPO_TURBO_MIME_TYPE = "application/vnd.expo-turbo+xml" as const
 export const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html" as const

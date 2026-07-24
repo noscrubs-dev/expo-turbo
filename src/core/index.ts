@@ -1,14 +1,14 @@
-export * from "./cable-stream-sources"
-export * from "./custom-stream-actions"
-export * from "./document-history"
-export * from "./document-history-traversal"
-export * from "./document-loader"
-export * from "./document-metadata"
-export * from "./document-prefetch-cache"
-export * from "./document-preloader"
-export * from "./document-refresh-controller"
-export * from "./document-snapshot-cache"
-export * from "./document-visit-controller"
+export * from "./cable-stream-sources.js"
+export * from "./custom-stream-actions.js"
+export * from "./document-history.js"
+export * from "./document-history-traversal.js"
+export * from "./document-loader.js"
+export * from "./document-metadata.js"
+export * from "./document-prefetch-cache.js"
+export * from "./document-preloader.js"
+export * from "./document-refresh-controller.js"
+export * from "./document-snapshot-cache.js"
+export * from "./document-visit-controller.js"
 export {
   BeforeCacheEvent,
   BeforeDocumentRenderEvent,
@@ -34,12 +34,12 @@ export {
   type DocumentVisitLifecycleOptions,
   LinkClickEvent,
   VisitEvent,
-} from "./document-visit-lifecycle"
-export * from "./errors"
-export * from "./events"
-export * from "./form-link-submission"
-export * from "./form-request"
-export * from "./form-request-executor"
+} from "./document-visit-lifecycle.js"
+export * from "./errors.js"
+export * from "./events.js"
+export * from "./form-link-submission.js"
+export * from "./form-request.js"
+export * from "./form-request-executor.js"
 export type {
   FormSubmissionActivitySnapshot,
   FormSubmissionActivityStatus,
@@ -51,8 +51,8 @@ export type {
   FormSubmissionTerminalStatus,
   FormSubmissionUnappliedReason,
   FormSubmitterActivitySnapshot,
-} from "./form-submission-activity"
-export * from "./form-submission-controller"
+} from "./form-submission-activity.js"
+export * from "./form-submission-controller.js"
 export {
   type FormSubmissionFetchResponse,
   type FormSubmissionHandle,
@@ -65,16 +65,16 @@ export {
   type SubmitEndEventDetail,
   type SubmitStartEvent,
   type SubmitStartEventDetail,
-} from "./form-submission-lifecycle"
-export type { FormSubmissionProposal } from "./form-submission-proposal"
-export * from "./forms"
-export * from "./frame-controller"
-export * from "./frame-controller-registry"
+} from "./form-submission-lifecycle.js"
+export type { FormSubmissionProposal } from "./form-submission-proposal.js"
+export * from "./forms.js"
+export * from "./frame-controller.js"
+export * from "./frame-controller-registry.js"
 export {
   type FrameHistoryAction,
   FrameHistoryCoordinator,
   type FrameHistoryCoordinatorOptions,
-} from "./frame-history"
+} from "./frame-history.js"
 export {
   type BeforeFrameRenderEvent,
   type BeforeFrameRenderEventDetail,
@@ -98,13 +98,13 @@ export {
   type FrameResponseVisitReason,
   type FrameResponseVisitRequest,
   type FrameVisitControlReloadRequest,
-} from "./frame-lifecycle"
-export * from "./frame-loader"
-export * from "./frame-preload-cache"
-export * from "./frame-preloader"
-export * from "./frame-reconnect-reconciler"
-export * from "./frames"
-export * from "./inspector"
+} from "./frame-lifecycle.js"
+export * from "./frame-loader.js"
+export * from "./frame-preload-cache.js"
+export * from "./frame-preloader.js"
+export * from "./frame-reconnect-reconciler.js"
+export * from "./frames.js"
+export * from "./inspector.js"
 export {
   type BeforeMorphAttributeEvent,
   type BeforeMorphAttributeEventDetail,
@@ -117,9 +117,9 @@ export {
   type MorphLifecycleEvent,
   type MorphLifecycleEventMap,
   type MorphLifecycleOptions,
-} from "./morph-lifecycle"
-export * from "./parser"
-export * from "./recent-request-ids"
+} from "./morph-lifecycle.js"
+export * from "./parser.js"
+export * from "./recent-request-ids.js"
 export {
   BeforeFetchRequestEvent,
   BeforeFetchResponseEvent,
@@ -130,11 +130,11 @@ export {
   type RequestLifecycleEventMap,
   type RequestLifecycleResponse,
   RequestMutation,
-} from "./request-lifecycle"
-export * from "./selectors"
-export * from "./serializer"
-export * from "./session"
-export * from "./state"
+} from "./request-lifecycle.js"
+export * from "./selectors.js"
+export * from "./serializer.js"
+export * from "./session.js"
+export * from "./state.js"
 export {
   type BeforeStreamRenderEvent,
   type BeforeStreamRenderEventDetail,
@@ -150,7 +150,7 @@ export {
   type StreamRenderContext,
   type StreamRenderer,
   type StreamRenderResult,
-} from "./stream-lifecycle"
+} from "./stream-lifecycle.js"
 export {
   dispatchTurboStreamElements,
   dispatchTurboStreamFragment,
@@ -161,7 +161,7 @@ export {
   type StreamDispatchReport,
   type StreamRenderScheduleContext,
   type StreamRenderScheduler,
-} from "./streams"
+} from "./streams.js"
 export {
   attributeValue,
   DocumentTree,
@@ -180,6 +180,6 @@ export {
   renderedNodeTextContent,
   renderedTextValue,
   type SourceLocation,
-} from "./tree"
-export * from "./versions"
-export * from "./visitability"
+} from "./tree.js"
+export * from "./versions.js"
+export * from "./visitability.js"

@@ -1,15 +1,15 @@
-import type { NavigationAdapter, VisitAction } from "../adapters"
+import type { NavigationAdapter, VisitAction } from "../adapters/index.js"
 import {
   destinationRequestOwnership,
   type FrameRequestCheckpoint,
-} from "./destination-request-ownership"
-import type { DocumentHistory, DocumentHistoryEntry } from "./document-history"
-import { documentCachePolicy } from "./document-metadata"
+} from "./destination-request-ownership.js"
+import type { DocumentHistory, DocumentHistoryEntry } from "./document-history.js"
+import { documentCachePolicy } from "./document-metadata.js"
 import {
   currentDocumentNavigationEpoch,
   subscribeDocumentNavigation,
-} from "./document-navigation-epoch"
-import type { DocumentSnapshotCache } from "./document-snapshot-cache"
+} from "./document-navigation-epoch.js"
+import type { DocumentSnapshotCache } from "./document-snapshot-cache.js"
 import {
   BeforeCacheEvent,
   BeforeVisitEvent,
@@ -19,14 +19,14 @@ import {
   type DocumentVisitLifecycle,
   documentVisitLifecycleOption,
   VisitEvent,
-} from "./document-visit-lifecycle"
-import { StateError, TargetError } from "./errors"
-import type { FrameTreeCommitCandidate } from "./frame-loader"
-import { resolveProtocolUrl } from "./protocol-request"
-import { settleRequestOperation } from "./request-lifecycle"
-import type { DocumentSession } from "./session"
-import { attributeValue, type DocumentTree, type ProtocolElement } from "./tree"
-import { classifyTopLevelLocation, classifyTopLevelLocationAgainstRoot } from "./visitability"
+} from "./document-visit-lifecycle.js"
+import { StateError, TargetError } from "./errors.js"
+import type { FrameTreeCommitCandidate } from "./frame-loader.js"
+import { resolveProtocolUrl } from "./protocol-request.js"
+import { settleRequestOperation } from "./request-lifecycle.js"
+import type { DocumentSession } from "./session.js"
+import { attributeValue, type DocumentTree, type ProtocolElement } from "./tree.js"
+import { classifyTopLevelLocation, classifyTopLevelLocationAgainstRoot } from "./visitability.js"
 
 export type FrameHistoryAction = Exclude<VisitAction, "restore">
 
