@@ -197,7 +197,7 @@ export function DemoCompatibilityGallery() {
           <DemoLiveCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveProtectedCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveDocumentRefreshMorphProof origin={DEMO_LIVE_RAILS_ORIGIN} />
-          <DemoLiveFormProof origin={DEMO_LIVE_RAILS_ORIGIN} />
+          <DemoLiveFormProof origin={DEMO_LIVE_RAILS_ORIGIN} visibility={runtime.visibility} />
           <DemoLiveMorphProof origin={DEMO_LIVE_RAILS_ORIGIN} />
         </>
       ) : null}

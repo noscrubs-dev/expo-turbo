@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { DemoLiveFetchRequest } from "./demo-live-transport";
+import { DemoVisibilityRegistry } from "./demo-visibility";
 
 interface PressableProps {
   readonly accessibilityLabel?: string;
@@ -116,6 +117,49 @@ function takePending(pending: PendingFetch[], message: string): PendingFetch {
 
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+test("defers the standalone Rails Frame request until its gallery boundary is visible", async () => {
+  const origin = "http://demo.example:3001";
+  const formUrl = new URL(FORM_PATH, origin).toString();
+  const pending: PendingFetch[] = [];
+  const visibility = new DemoVisibilityRegistry();
+  visibility.setViewport({ height: 100, width: 100, x: 0, y: 0 });
+  const proof = createDemoLiveFormRuntime({
+    fetch: (url, request) =>
+      new Promise<DemoLiveFetchResponse>((resolve) => {
+        pending.push(Object.freeze({ request, resolve, url }));
+      }),
+    origin,
+    visibility,
+  });
+  const frame = proof.frames.get(FRAME_ID);
+
+  try {
+    await frame.connect();
+    expect(pending).toHaveLength(0);
+
+    const unregister = visibility.register(FRAME_ID, (listener) => listener(0, 0, 100, 100));
+    try {
+      await Promise.resolve();
+      const initial = takePending(pending, "The visible Frame did not request the Rails form");
+      expect(initial).toMatchObject({
+        request: {
+          headers: { Accept: EXPO_TURBO_MIME_TYPE, "Turbo-Frame": FRAME_ID },
+          method: "GET",
+        },
+        url: formUrl,
+      });
+      initial.resolve(response(formXml(""), { status: 200, url: formUrl }));
+      await frame.loaded;
+      expect(proof.session.tree.getElementById("demo-form")?.kind).toBe("element");
+    } finally {
+      unregister();
+    }
+  } finally {
+    proof.dispose();
+    visibility.dispose();
+  }
+});
+
 test("renders the bounded Rails Frame form panel through validation, no-content, and canonical recovery", async () => {
   const origin = "http://demo.example:3001";
   const formUrl = new URL(FORM_PATH, origin).toString();
@@ -145,6 +189,7 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     });
 
     expect(JSON.stringify(renderer?.toJSON())).toContain("Standalone Rails Frame form");
+    expect(renderer?.root.findByProps({ testID: "demo-live-form-panel" })).toBeDefined();
     const initial = takePending(pending, "The mounted Frame did not request the Rails form");
     expect(initial).toMatchObject({
       request: {

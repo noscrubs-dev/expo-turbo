@@ -10,8 +10,20 @@ import {
   parseExpoTurboDocument,
   StateError,
 } from "expo-turbo/core";
-import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
-import { type ReactNode, useEffect, useMemo } from "react";
+import {
+  type ExpoTurboFrameBoundaryProps,
+  ExpoTurboProvider,
+  ExpoTurboRoot,
+} from "expo-turbo/react";
+import {
+  type ComponentType,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as ReactNative from "react-native";
 import { Text, View } from "react-native";
 
@@ -23,6 +35,7 @@ import {
   nativeDemoLiveFetch,
   type DemoLiveFetch,
 } from "./demo-live-transport";
+import { DemoVisibilityRegistry } from "./demo-visibility";
 
 const FORM_PATH = "/api/expo_turbo/demo/form";
 const FRAME_ID = "demo-form-frame";
@@ -31,11 +44,13 @@ const liveRuntimeOwners = new WeakMap<DemoLiveFormRuntime, number>();
 export interface DemoLiveFormRuntimeOptions {
   readonly fetch?: DemoLiveFetch;
   readonly origin: string;
+  readonly visibility?: DemoVisibilityRegistry;
 }
 
 export interface DemoLiveFormRuntime {
   dispose(): void;
   readonly focus: DemoFocusRegistry;
+  readonly frameComponent?: ComponentType<ExpoTurboFrameBoundaryProps>;
   readonly formUrl: string;
   readonly forms: DocumentFormControls;
   readonly frames: FrameControllerRegistry;
@@ -54,8 +69,35 @@ function asDisplayError(error: unknown): Error {
     : new StateError("The standalone Rails form is unavailable");
 }
 
-function loadingDocument(formUrl: string): string {
-  return `<Gallery id="demo-live-form"><turbo-frame id="${FRAME_ID}" src="${formUrl}"><DemoText id="demo-live-form-loading">Loading the standalone Rails form</DemoText></turbo-frame></Gallery>`;
+function loadingDocument(formUrl: string, lazy: boolean): string {
+  return `<Gallery id="demo-live-form"><turbo-frame id="${FRAME_ID}"${lazy ? ' loading="lazy"' : ""} src="${formUrl}"><DemoText id="demo-live-form-loading">Loading the standalone Rails form</DemoText></turbo-frame></Gallery>`;
+}
+
+function createVisibleFrameComponent(
+  visibility: DemoVisibilityRegistry,
+): ComponentType<ExpoTurboFrameBoundaryProps> {
+  return function VisibleFrame({ children, state }: ExpoTurboFrameBoundaryProps) {
+    const boundary = useRef<View>(null);
+
+    useLayoutEffect(
+      () =>
+        visibility.register(state.frameId, (listener) => {
+          boundary.current?.measureInWindow(listener);
+        }),
+      [state.frameId],
+    );
+
+    return (
+      <View
+        collapsable={false}
+        onLayout={() => visibility.remeasure(state.frameId)}
+        ref={boundary}
+        style={{ gap: 8 }}
+      >
+        {children}
+      </View>
+    );
+  };
 }
 
 export function resolveDemoLiveFormEndpoint(origin: string): string {
@@ -73,8 +115,11 @@ export function createDemoLiveFormRuntime(
     throw new StateError("Standalone Rails form fetch is invalid");
   }
   const formUrl = resolveDemoLiveFormEndpoint(options.origin);
+  const frameComponent = options.visibility
+    ? createVisibleFrameComponent(options.visibility)
+    : undefined;
   const session = new DocumentSession(
-    parseExpoTurboDocument(loadingDocument(formUrl), { url: formUrl }),
+    parseExpoTurboDocument(loadingDocument(formUrl, options.visibility !== undefined), { url: formUrl }),
   );
   const transport: FetchAdapter = createDemoLiveFetchAdapter(fetch);
   let frameRequestId = 0;
@@ -83,11 +128,13 @@ export function createDemoLiveFormRuntime(
     new FrameRequestLoader(session, transport, {
       next: () => `demo-live-form-frame-${++frameRequestId}`,
     }),
+    options.visibility,
   );
   const focus = new DemoFocusRegistry();
   const state = new DocumentStateStore();
   const forms = new DocumentFormControls(session, {
     focus,
+    ...(frameComponent ? { frameComponent } : {}),
     formSemantics: DEMO_REGISTRY,
     submissionController: new FormSubmissionController(session, transport, {
       frameControllers: frames,
@@ -137,6 +184,7 @@ export function DemoLiveFormRuntimeProvider({
     <DemoFocusProvider focus={proof.focus}>
       <ExpoTurboProvider
         defaultDirection={ReactNative.I18nManager?.isRTL ? "rtl" : "ltr"}
+        frameComponent={proof.frameComponent}
         forms={proof.forms}
         frames={proof.frames}
         registry={DEMO_REGISTRY}
@@ -156,8 +204,13 @@ export function DemoLiveFormRuntimeProvider({
 }
 
 export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRuntime }>) {
+  const [error, setError] = useState<Error>();
+
+  useEffect(() => proof.frames.get(FRAME_ID).subscribeErrors(setError), [proof]);
+
   return (
     <View
+      testID="demo-live-form-panel"
       style={{
         borderColor: "#6d7f93",
         borderRadius: 12,
@@ -181,18 +234,26 @@ export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRunti
       <DemoLiveFormRuntimeProvider proof={proof}>
         <ExpoTurboRoot />
       </DemoLiveFormRuntimeProvider>
+      {error ? (
+        <Text selectable style={{ color: "#a62525" }}>
+          {error.name}: {error.message}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
-export function DemoLiveFormProof({ origin }: Readonly<{ origin: string }>) {
+export function DemoLiveFormProof({
+  origin,
+  visibility,
+}: Readonly<{ origin: string; visibility?: DemoVisibilityRegistry }>) {
   const result = useMemo<DemoLiveFormInitialization>(() => {
     try {
-      return Object.freeze({ proof: createDemoLiveFormRuntime({ origin }) });
+      return Object.freeze({ proof: createDemoLiveFormRuntime({ origin, visibility }) });
     } catch (nextError) {
       return Object.freeze({ error: asDisplayError(nextError) });
     }
-  }, [origin]);
+  }, [origin, visibility]);
 
   if (result.error) {
     return (
