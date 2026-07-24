@@ -1,5 +1,5 @@
 {
-  "manifestVersion": 2,
+  "manifestVersion": 3,
   "protocolVersion": "0.1",
   "baselines": {
     "turbo": "8.0.23",
@@ -8,6 +8,169 @@
       "target": "2.0.23"
     },
     "rails": "8.1.3"
+  },
+  "upstreamFunctionalBaseline": {
+    "repository": "https://github.com/hotwired/turbo",
+    "tag": "v8.0.23",
+    "commit": "13fc0db0d017d7313ed0cb4729ce9729c2686cef",
+    "suites": [
+      {
+        "path": "src/tests/functional/async_script_tests.js",
+        "dispositions": ["n-a"],
+        "rationale": "Browser script loading and DOMContentLoaded ordering do not exist in the native runtime; application code ships in the binary.",
+        "evidence": ["protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/autofocus_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Registered native focus handles cover document, Frame, and Stream autofocus while browser active-element and inert-DOM rules remain outside the native contract.",
+        "evidence": ["src/core/frame-controller.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/cache_observer_tests.js",
+        "dispositions": ["exact"],
+        "rationale": "Snapshot capture removes transient state and preserves authoritative redirected rendering through the bounded native cache.",
+        "evidence": ["src/core/document-snapshot-cache.test.ts", "src/core/document-visit-controller.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/drive_disabled_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Explicit XML ancestry and semantic native link or form registration replace DOM click and submit interception when Drive is opted in or out.",
+        "evidence": ["example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/drive_stylesheet_merging_tests.js",
+        "dispositions": ["n-a"],
+        "rationale": "React Native has no document head, stylesheet elements, or browser tracked-asset merge lifecycle.",
+        "evidence": ["protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/drive_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Host-injected navigation and explicit opt-in ancestry replace browser-default navigation while preserving same-origin Turbo ownership.",
+        "evidence": ["src/core/document-visit-controller.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/drive_view_transition_legacy_tests.js",
+        "dispositions": ["n-a"],
+        "rationale": "The browser View Transition API and its document metadata have no React Native protocol meaning.",
+        "evidence": ["protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/drive_view_transition_tests.js",
+        "dispositions": ["n-a"],
+        "rationale": "The browser View Transition API, reduced-motion integration, and document metadata have no React Native protocol meaning.",
+        "evidence": ["protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/form_mode_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Explicit registered form boundaries implement on, off, and opt-in ancestry without automatic DOM form interception.",
+        "evidence": ["example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/form_submission_tests.js",
+        "dispositions": ["exact", "native-equivalent"],
+        "rationale": "Request encoding, response outcomes, Frame targeting, and redirect safety are exact; registered controls, confirmation, pending presentation, validation, and announcements are native equivalents.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/form-submission-controller.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/frame_navigation_tests.js",
+        "dispositions": ["exact", "native-equivalent"],
+        "rationale": "Frame request and history outcomes follow the baseline while native visibility, host history, and logical request errors replace browser observers and DOM events.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/frame-controller.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/frame_tests.js",
+        "dispositions": ["exact", "native-equivalent", "n-a"],
+        "rationale": "Extraction, targeting, recurse, response, and request semantics are covered; logical native lifecycle and focus replace DOM surfaces, while server-sent script execution is prohibited.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/frame-controller.test.ts", "protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/import_tests.js",
+        "dispositions": ["n-a"],
+        "rationale": "Turbo's browser UMD and global-window import contract is not part of the ESM-only Expo Turbo package surface.",
+        "evidence": ["README.md"]
+      },
+      {
+        "path": "src/tests/functional/link_prefetch_observer_tests.js",
+        "dispositions": ["native-equivalent", "n-a"],
+        "rationale": "Bounded press-in prefetch reproduces request reuse and admission on touch-native hosts; browser hover timing and iframe observation are N/A.",
+        "evidence": ["src/core/document-preloader.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/loading_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Mounted Frame controllers and explicit native visibility registration replace IntersectionObserver while preserving eager, lazy, source-change, reload, and reconnect ownership.",
+        "evidence": ["src/core/frame-controller.test.ts", "example/expo/src/demo-visibility.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/navigation_tests.js",
+        "dispositions": ["native-equivalent", "n-a"],
+        "rationale": "Same-origin visits, forms, redirects, history, and anchors use host-native contracts; browser browsing contexts, iframes, SVG, and progress-bar DOM are N/A or explicitly delegated.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/document-history.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/page_refresh_stream_action_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Native current-document refresh matches debounce, request-ID suppression, generated request IDs, stale ownership, and canonical GET reconciliation.",
+        "evidence": ["src/core/document-visit-controller.test.ts", "src/core/recent-request-ids.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/page_refresh_tests.js",
+        "dispositions": ["native-equivalent", "n-a"],
+        "rationale": "The bounded native reconciler covers refresh morph, permanent identity, Frames, events, focus, and scroll policy; tracked head assets and DOM selection are N/A.",
+        "evidence": ["src/core/document-visit-controller.test.ts", "src/core/morph-lifecycle.test.ts", "protocol/README.md"]
+      },
+      {
+        "path": "src/tests/functional/pausable_rendering_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Typed document and Frame before-render lifecycles preserve cancellation, pause, resume, and controlled renderer replacement through logical handles.",
+        "evidence": ["src/core/document-visit-lifecycle.test.ts", "src/core/frame-lifecycle.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/pausable_requests_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "The typed request lifecycle preserves cancellable pause and resume before the host fetch boundary without DOM events.",
+        "evidence": ["src/core/request-lifecycle.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/preloader_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Safe document and Frame preload admission, lifecycle, cache reuse, opt-outs, and target boundaries are covered through semantic registered links.",
+        "evidence": ["src/core/document-preloader.test.ts", "src/core/frame-preloader.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/rendering_tests.js",
+        "dispositions": ["native-equivalent", "n-a"],
+        "rationale": "Logical render lifecycle, redirects, errors, direction, permanent identity, focus, and snapshots have native equivalents; head assets, CSS, scripts, and browser media state are N/A.",
+        "evidence": ["src/core/document-visit-controller.test.ts", "src/core/morph-lifecycle.test.ts", "example/expo/src/renderer.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/root_tests.js",
+        "dispositions": ["exact"],
+        "rationale": "Same-origin root visitability admits the root and descendants while rejecting paths outside the configured root, including prefix collisions.",
+        "evidence": ["src/core/visitability.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/scroll_restoration_tests.js",
+        "dispositions": ["native-equivalent"],
+        "rationale": "Injected anchor and root-history scroll adapters reproduce bounded landing and traversal restoration without browser scroll state.",
+        "evidence": ["src/core/document-history-traversal.test.ts", "example/expo/src/demo-runtime.test.tsx"]
+      },
+      {
+        "path": "src/tests/functional/stream_tests.js",
+        "dispositions": ["exact", "native-equivalent", "n-a"],
+        "rationale": "Structural actions and selectors are exact; custom actions, lifecycle, morph, and focus use typed native equivalents; scripts and browser SSE ownership are outside the first native transport.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/streams.test.ts", "src/core/stream-lifecycle.test.ts"]
+      },
+      {
+        "path": "src/tests/functional/visit_tests.js",
+        "dispositions": ["native-equivalent", "n-a"],
+        "rationale": "Visitability, cancellation, request lifecycle, Streams, redirects, cache, network errors, direction, and host history have native equivalents; browser fallback navigation is N/A.",
+        "evidence": ["src/core/browser-stream-differential.test.ts", "src/core/document-visit-controller.test.ts", "src/core/request-lifecycle.test.ts"]
+      }
+    ]
   },
   "features": [
     {
@@ -356,7 +519,7 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded official Turbo 8.0.23 structural, Stream-morph, eager plus ordinary/redirected/recurse/204/422/500/prevented-missing/visit-control-promoted Frame-navigation, form-request plus matching-Frame 422/500, Stream, prevented missing-Frame, visit-control-promoted, top-level GET, redirected POST, unsafe non-redirecting, authoritative top-level 422/500, empty 201/204, top-level Stream, generated-form unsafe-method, GET Stream and document, redirect safety plus redirected, empty 201/204, and authoritative 422/500 documents, cross-target Frame, empty Frame 204, prevented missing-Frame, visit-control-promoted Frame, and redirected Frame responses, history, and document-response browser differential, installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows, and installed Android Release gallery plus fallback/native-picker multipart 422 retry flows driven directly by Maestro exist, but complete differential coverage and final physical iOS/Android evidence remain open.",
+      "rationale": "All 26 functional suites from the pinned Turbo 8.0.23 source commit have exact, native-equivalent, and/or N/A dispositions with live evidence. Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded executable official-Turbo structural/response differential, installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows, and installed Android Release gallery plus fallback/native-picker multipart 422 retry flows driven directly by Maestro exist. Final standalone-gallery audit and physical iOS/Android evidence remain open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",

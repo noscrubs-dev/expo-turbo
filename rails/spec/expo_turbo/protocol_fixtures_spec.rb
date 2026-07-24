@@ -126,12 +126,65 @@ RSpec.describe "shared protocol fixtures" do
   it "pins the shared protocol compatibility baselines" do
     baselines = manifest.fetch("baselines")
 
-    expect(manifest.fetch("manifestVersion")).to eq(2)
+    expect(manifest.fetch("manifestVersion")).to eq(3)
     expect(manifest.fetch("protocolVersion")).to eq(ExpoTurbo::Rails::PROTOCOL_VERSION)
     expect(baselines.fetch("turbo")).to eq(ExpoTurbo::Rails::TURBO_BASELINE_VERSION)
     expect(baselines.fetch("turboRails").fetch("minimum")).to eq(ExpoTurbo::Rails::TURBO_RAILS_MINIMUM_VERSION)
     expect(baselines.fetch("turboRails").fetch("target")).to eq(ExpoTurbo::Rails::TURBO_RAILS_BASELINE_VERSION)
     expect(baselines.fetch("rails")).to eq(ExpoTurbo::Rails::RAILS_BASELINE_VERSION)
+  end
+
+  it "classifies every pinned upstream Turbo functional suite" do
+    upstream = manifest.fetch("upstreamFunctionalBaseline")
+    suites = upstream.fetch("suites")
+    expected_paths = %w[
+      async_script_tests.js
+      autofocus_tests.js
+      cache_observer_tests.js
+      drive_disabled_tests.js
+      drive_stylesheet_merging_tests.js
+      drive_tests.js
+      drive_view_transition_legacy_tests.js
+      drive_view_transition_tests.js
+      form_mode_tests.js
+      form_submission_tests.js
+      frame_navigation_tests.js
+      frame_tests.js
+      import_tests.js
+      link_prefetch_observer_tests.js
+      loading_tests.js
+      navigation_tests.js
+      page_refresh_stream_action_tests.js
+      page_refresh_tests.js
+      pausable_rendering_tests.js
+      pausable_requests_tests.js
+      preloader_tests.js
+      rendering_tests.js
+      root_tests.js
+      scroll_restoration_tests.js
+      stream_tests.js
+      visit_tests.js
+    ].map { |file| "src/tests/functional/#{file}" }
+
+    expect(upstream.fetch("repository")).to eq("https://github.com/hotwired/turbo")
+    expect(upstream.fetch("tag")).to eq("v#{ExpoTurbo::Rails::TURBO_BASELINE_VERSION}")
+    expect(upstream.fetch("commit")).to eq("13fc0db0d017d7313ed0cb4729ce9729c2686cef")
+    expect(suites.map { |suite| suite.fetch("path") }.sort).to eq(expected_paths.sort)
+
+    suites.each do |suite|
+      expect(suite.fetch("dispositions")).not_to be_empty
+      expect(suite.fetch("dispositions")).to all(be_in(%w[exact n-a native-equivalent]))
+      expect(suite.fetch("rationale").strip.length).to be >= 30
+      evidence = suite.fetch("evidence")
+      expect(evidence).not_to be_empty
+      expect(evidence).to all(match(ExpoTurboProtocolFixturesSpec::EVIDENCE_PATH))
+      if suite.fetch("dispositions").any? { |disposition| disposition != "n-a" }
+        expect(evidence).to include(match(ExpoTurboProtocolFixturesSpec::TEST_EVIDENCE))
+      end
+      evidence.each do |path|
+        expect(File).to exist(File.join(ExpoTurboProtocolFixturesSpec::REPOSITORY_DIRECTORY, path))
+      end
+    end
   end
 
   it "records unique feature dispositions with live repository evidence" do

@@ -95,6 +95,13 @@ interface CompatibilityFeature {
   readonly rationale: string
 }
 
+interface UpstreamFunctionalSuite {
+  readonly dispositions: readonly Exclude<FeatureDisposition, "incomplete">[]
+  readonly evidence: readonly string[]
+  readonly path: string
+  readonly rationale: string
+}
+
 interface ProtocolManifest {
   readonly baselines: {
     readonly rails: string
@@ -109,6 +116,12 @@ interface ProtocolManifest {
   readonly fixtures: readonly ProtocolFixture[]
   readonly manifestVersion: number
   readonly protocolVersion: string
+  readonly upstreamFunctionalBaseline: {
+    readonly commit: string
+    readonly repository: string
+    readonly suites: readonly UpstreamFunctionalSuite[]
+    readonly tag: string
+  }
 }
 
 const PROTOCOL_ROOT = new URL("../../protocol/", import.meta.url)
@@ -119,6 +132,7 @@ const FEATURE_ID = /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/
 const EVIDENCE_PATH =
   /^(?:README\.md|(?:\.maestro|docs|example|protocol|rails|src)\/[A-Za-z0-9._/-]+)$/
 const TEST_EVIDENCE = /(?:\.test\.ts|_spec\.rb)$/
+const UPSTREAM_FUNCTIONAL_PATH = /^src\/tests\/functional\/[a-z0-9_]+_tests\.js$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
@@ -134,18 +148,55 @@ function fixtureUrl(file: string): URL {
 function validateManifest(value: unknown): ProtocolManifest {
   if (
     !isRecord(value) ||
-    value.manifestVersion !== 2 ||
+    value.manifestVersion !== 3 ||
     typeof value.protocolVersion !== "string"
   ) {
     throw new Error("Protocol compatibility manifest has an invalid version")
   }
   if (
     !isRecord(value.baselines) ||
+    !isRecord(value.upstreamFunctionalBaseline) ||
     !Array.isArray(value.features) ||
     !Array.isArray(value.fixtures) ||
     !Array.isArray(value.behaviorFixtures)
   ) {
     throw new Error("Protocol compatibility manifest has invalid baselines or fixtures")
+  }
+
+  const upstream = value.upstreamFunctionalBaseline
+  if (
+    upstream.repository !== "https://github.com/hotwired/turbo" ||
+    upstream.tag !== "v8.0.23" ||
+    upstream.commit !== "13fc0db0d017d7313ed0cb4729ce9729c2686cef" ||
+    !Array.isArray(upstream.suites)
+  ) {
+    throw new Error("Protocol compatibility manifest has an invalid upstream baseline")
+  }
+  const upstreamPaths = new Set<string>()
+  for (const suite of upstream.suites) {
+    if (
+      !isRecord(suite) ||
+      typeof suite.path !== "string" ||
+      !UPSTREAM_FUNCTIONAL_PATH.test(suite.path) ||
+      upstreamPaths.has(suite.path) ||
+      !Array.isArray(suite.dispositions) ||
+      suite.dispositions.length === 0 ||
+      suite.dispositions.some(
+        (disposition) => !["exact", "n-a", "native-equivalent"].includes(String(disposition)),
+      ) ||
+      typeof suite.rationale !== "string" ||
+      suite.rationale.trim().length < 30 ||
+      !Array.isArray(suite.evidence) ||
+      suite.evidence.length === 0 ||
+      suite.evidence.some(
+        (path) => typeof path !== "string" || !EVIDENCE_PATH.test(path) || path.includes(".."),
+      ) ||
+      (suite.dispositions.some((disposition) => disposition !== "n-a") &&
+        !suite.evidence.some((path) => typeof path === "string" && TEST_EVIDENCE.test(path)))
+    ) {
+      throw new Error("Protocol compatibility manifest has an invalid upstream suite disposition")
+    }
+    upstreamPaths.add(suite.path)
   }
 
   const featureIds = new Set<string>()
@@ -322,12 +373,58 @@ describe("shared protocol fixtures", () => {
   test("pin the shared protocol compatibility baselines", async () => {
     const manifest = await loadManifest()
 
-    expect(manifest.manifestVersion).toBe(2)
+    expect(manifest.manifestVersion).toBe(3)
     expect(manifest.protocolVersion).toBe(EXPO_TURBO_PROTOCOL_VERSION)
     expect(manifest.baselines.turbo).toBe(TURBO_BASELINE_VERSION)
     expect(manifest.baselines.turboRails.minimum).toBe(TURBO_RAILS_MINIMUM_VERSION)
     expect(manifest.baselines.turboRails.target).toBe(TURBO_RAILS_BASELINE_VERSION)
     expect(manifest.baselines.rails).toBe(RAILS_BASELINE_VERSION)
+  })
+
+  test("classifies every pinned upstream Turbo functional suite", async () => {
+    const manifest = await loadManifest()
+    const expectedPaths = [
+      "async_script_tests.js",
+      "autofocus_tests.js",
+      "cache_observer_tests.js",
+      "drive_disabled_tests.js",
+      "drive_stylesheet_merging_tests.js",
+      "drive_tests.js",
+      "drive_view_transition_legacy_tests.js",
+      "drive_view_transition_tests.js",
+      "form_mode_tests.js",
+      "form_submission_tests.js",
+      "frame_navigation_tests.js",
+      "frame_tests.js",
+      "import_tests.js",
+      "link_prefetch_observer_tests.js",
+      "loading_tests.js",
+      "navigation_tests.js",
+      "page_refresh_stream_action_tests.js",
+      "page_refresh_tests.js",
+      "pausable_rendering_tests.js",
+      "pausable_requests_tests.js",
+      "preloader_tests.js",
+      "rendering_tests.js",
+      "root_tests.js",
+      "scroll_restoration_tests.js",
+      "stream_tests.js",
+      "visit_tests.js",
+    ].map((file) => `src/tests/functional/${file}`)
+
+    expect(manifest.upstreamFunctionalBaseline.repository).toBe("https://github.com/hotwired/turbo")
+    expect(manifest.upstreamFunctionalBaseline.tag).toBe(TURBO_BASELINE_VERSION.replace(/^/, "v"))
+    expect(manifest.upstreamFunctionalBaseline.commit).toBe(
+      "13fc0db0d017d7313ed0cb4729ce9729c2686cef",
+    )
+    expect(manifest.upstreamFunctionalBaseline.suites.map((suite) => suite.path).sort()).toEqual(
+      expectedPaths.sort(),
+    )
+    for (const suite of manifest.upstreamFunctionalBaseline.suites) {
+      for (const path of suite.evidence) {
+        await expect(readFile(new URL(path, REPOSITORY_ROOT))).resolves.toBeInstanceOf(Buffer)
+      }
+    }
   })
 
   test("records unique feature dispositions with live repository evidence", async () => {
