@@ -273,6 +273,12 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 **2026-07-24**:
 
+- Changed: Froze and independently verified the replacement paired `0.1.0` candidate from exact public commit `17aec4f`.
+- Why: Candidate run `30056741302` exposed Node-incompatible ESM specifiers, so its bytes were rejected and could not be reused after PR #372 fixed the artifact.
+- Impact: Candidate run `30057454059` passed package, gem matrix, both examples, OIDC, provenance, checksum, six-entrypoint Node, and unpacked-gem verification. Merging this evidence supersedes the run for publication; the final physical/accessibility-gated commit still requires one last frozen pair.
+
+**2026-07-24**:
+
 - Changed: Made every emitted ESM import Node-compatible and added clean Node checks for all six public package entrypoints.
 - Why: Independent verification of candidate run `30056741302` found that its Bun-validated tarball failed under the declared Node engine because TypeScript had emitted extensionless relative directory imports.
 - Impact: NodeNext now validates production source specifiers, local packaging imports every peer-free entrypoint with Node, and the release clean consumer imports all six public entrypoints with Node after installing the React peer. Candidate run `30056741302` is rejected and must not be published; a replacement candidate is required after this fix merges.
