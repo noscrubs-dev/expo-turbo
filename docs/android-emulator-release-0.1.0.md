@@ -66,3 +66,13 @@ logs/device state; it did not perform UI interaction.
 
 Physical iOS and Android device testing, VoiceOver/TalkBack evidence, broader
 Android behavior coverage, and stable registry publication remain open.
+
+## Current core-interaction recertification
+
+Exact runtime commit `608164efb7fa5ed4a1805d28a6a3dd150033c76d` was rebuilt
+with the command above, reinstalled, and passed
+`.maestro/release-core-interactions.yaml` on the same emulator. That flow
+visibly applied the direct ordered Stream update, loaded the ordinary Rails
+Frame response, and reached the named Frame's native anchor target. The package
+gate (1,171 tests plus package/boundary inspection), the Expo gate (336 tests),
+and web/iOS/Android production exports also passed for that commit.
