@@ -4,6 +4,9 @@ This is a non-publishing candidate record. It does not announce a stable
 release, reserve a registry version, or close the remaining compatibility
 gates.
 
+See the current [0.1.0 release-readiness checklist](./release-readiness-0.1.0.md)
+before using this historical candidate evidence.
+
 | Field | Value |
 | --- | --- |
 | Public commit | `17aec4f906d53dc71cf4778befd44c6f3c54b98b` |

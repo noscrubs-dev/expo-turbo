@@ -15,8 +15,8 @@ import {
 } from "./index"
 
 describe("package status", () => {
-  test("does not claim runtime compatibility", () => {
-    expect(EXPO_TURBO_STATUS).toBe("foundation")
+  test("reports the source as prerelease until stable publication", () => {
+    expect(EXPO_TURBO_STATUS).toBe("prerelease")
     expect(FormSubmissionController).toBeFunction()
     expect(FrameCommitError).toBeFunction()
     expect(FrameLifecycle).toBeFunction()

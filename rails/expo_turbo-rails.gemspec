@@ -6,8 +6,8 @@ Gem::Specification.new do |spec|
   spec.name = "expo_turbo-rails"
   spec.version = ExpoTurbo::Rails::VERSION
   spec.authors = ["NoScrubs"]
-  spec.summary = "Rails integration scaffold for Expo Turbo"
-  spec.description = "Host-neutral Rails package scaffold for the planned Expo Turbo protocol"
+  spec.summary = "Rails integration for the Expo Turbo XML runtime"
+  spec.description = "Host-neutral XML rendering, Frames, Streams, validation, and Action Cable integration for Expo Turbo"
   spec.homepage = "https://github.com/noscrubs-dev/expo-turbo"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
