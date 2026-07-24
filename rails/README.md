@@ -2,7 +2,14 @@
 
 The Rails package for Expo Turbo. It registers the distinct `application/vnd.expo-turbo+xml` MIME type and provides an opt-in controller concern for rendering host-owned XML documents, matching native Frame responses, standard Turbo Stream response fragments, and immediate or queued public Stream broadcasts. Use `ExpoTurbo::Rails::Controller` rather than including its helper modules directly. The Engine remains route-free.
 
-The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. Its optional protected Cable boundary delegates all credentials and resource policy to the host; it does not make a compatibility claim.
+The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. Its optional protected Cable boundary delegates all credentials and resource policy to the host.
+
+> [!IMPORTANT]
+> Version `0.1.0` is present in source but is not yet published to RubyGems.
+> Follow the repository's
+> [release-readiness checklist](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/release-readiness-0.1.0.md)
+> and use the sibling path gem for source development until the stable release
+> is announced.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -196,4 +203,6 @@ bundle exec appraisal ruby "$(bundle show rake)/exe/rake"
 - Why: Public Turbo stream signatures cannot carry host resource authorization safely.
 - Impact: Protected hosts must configure the four callbacks above and terminate affected subscriptions or connections after grant expiry/revocation; public stream behavior remains unchanged.
 
-See the repository [README](../README.md) for project status and development commands.
+See the repository
+[README](https://github.com/noscrubs-dev/expo-turbo#readme) for project status
+and development commands.
