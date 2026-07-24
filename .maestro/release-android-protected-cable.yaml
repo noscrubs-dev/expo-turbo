@@ -1,0 +1,28 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- openLink: expoturboexample://device-test-protected-cable
+- extendedWaitUntil:
+    visible: Header-ticket Action Cable proof
+    timeout: 120000
+- extendedWaitUntil:
+    visible: Broadcast protected XML replace
+    timeout: 120000
+- tapOn: Broadcast protected XML replace
+- extendedWaitUntil:
+    visible: Protected broadcast from the standalone Rails demo
+    timeout: 30000
+- tapOn: Rotate protected Cable ticket
+- extendedWaitUntil:
+    visible: Action Cable recovered and reconciled
+    timeout: 60000
+- tapOn: Broadcast protected XML replace
+- assertVisible: Protected broadcast from the standalone Rails demo
+- tapOn: Revoke protected Cable ticket
+- extendedWaitUntil:
+    visible: "SubscriptionError: Action Cable WebSocket connection disconnected"
+    timeout: 30000

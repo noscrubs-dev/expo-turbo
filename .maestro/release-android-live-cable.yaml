@@ -1,0 +1,33 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- openLink: expoturboexample://device-test-live-cable
+- extendedWaitUntil:
+    visible: Anonymous Action Cable proof
+    timeout: 120000
+- extendedWaitUntil:
+    visible: Broadcast XML replace
+    timeout: 120000
+- tapOn: Apply sibling Rails HTTP Stream response
+- extendedWaitUntil:
+    visible: Rendered from XML partial
+    timeout: 30000
+- assertVisible: Second sibling
+- tapOn: Increment local count
+- assertVisible: "Local count: 1"
+- tapOn: Apply state-preserving Rails Stream morph
+- extendedWaitUntil:
+    visible: "Local count: 1"
+    timeout: 30000
+- tapOn: Broadcast XML replace
+- extendedWaitUntil:
+    visible: Broadcast from the standalone Rails demo
+    timeout: 30000
+- tapOn: Refresh canonical document
+- extendedWaitUntil:
+    visible: Broadcast XML replace
+    timeout: 30000

@@ -1,0 +1,31 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- openLink: expoturboexample://device-test-live-form-secondary
+- extendedWaitUntil:
+    visible: Save consent
+    timeout: 120000
+- tapOn: Save consent
+- extendedWaitUntil:
+    visible: Accept the demo terms before saving
+    timeout: 30000
+- tapOn: Accept demo terms
+- tapOn: Save consent
+- extendedWaitUntil:
+    notVisible: Accept the demo terms before saving
+    timeout: 30000
+- assertVisible: Save consent
+- tapOn: Save plan
+- extendedWaitUntil:
+    visible: Choose a supported demo plan
+    timeout: 30000
+- tapOn: Pro plan
+- tapOn: Save plan
+- extendedWaitUntil:
+    notVisible: Choose a supported demo plan
+    timeout: 30000
+- assertVisible: Save plan

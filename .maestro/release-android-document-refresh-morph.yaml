@@ -1,0 +1,26 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- openLink: expoturboexample://device-test-document-refresh-morph
+- extendedWaitUntil:
+    visible: Rails document Refresh morph
+    timeout: 120000
+- extendedWaitUntil:
+    visible: "Local count: 0"
+    timeout: 30000
+- tapOn: Increment document refresh morph counter
+- assertVisible: "Local count: 1"
+- tapOn: Refresh current Rails document with a state-preserving morph
+- extendedWaitUntil:
+    visible: "Local count: 1"
+    timeout: 30000
+- assertVisible: Local state survives the Rails document refresh
+- tapOn: Echo request ID and suppress document refresh
+- extendedWaitUntil:
+    visible: Rails echoed the originating request ID, so the document Refresh Stream was suppressed.
+    timeout: 30000
+- assertVisible: "Local count: 1"

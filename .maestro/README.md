@@ -1,53 +1,73 @@
-# Maestro iOS evidence
+# Maestro device evidence
 
-These flows drive the standalone Expo example through Expo Go. Start Metro from
-`example/expo` on the port named by the flow, then select a dedicated simulator:
+These flows exercise the standalone Expo example through either Expo Go or an
+installed release build. They are interaction evidence rather than package CI.
+Keep selectors accessibility-visible and deterministic; deeply nested live
+panels use `device-test-*` routes that mount the same production proof component
+without copying or changing its runtime behavior.
 
-```sh
-bun run start -- --lan --port 8082
-maestro --device <simulator-uuid> test \
-  -e EXPO_URL=exp://<metro-lan-address>:8082/--/demo \
-  .maestro/gallery-smoke.yaml
-```
+## Physical Android
 
-With the standalone Rails host running on the origin compiled into Metro, the
-controlled ordinary Frame-morph proof is:
+Start the standalone Rails host, reverse its port to the connected device, and
+install a release build compiled for the reversed origin:
 
 ```sh
-maestro --device <simulator-uuid> test \
-  -e EXPO_URL=exp://<metro-lan-address>:8082/--/demo \
-  .maestro/live-frame-morph.yaml
+cd example/rails
+bin/rails server -b 0.0.0.0 -p 3001
+
+adb -s <serial> reverse tcp:3001 tcp:3001
+
+cd ../expo/android
+NODE_ENV=production \
+EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 \
+./gradlew app:assembleRelease
+adb -s <serial> install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-The flows are interaction evidence, not part of package or Expo bundle CI. Keep
-them deterministic, text-addressable, and isolated from a developer's simulator.
-
-For an installed iOS `Release` build compiled with
-`EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN`, the live nested Frame and Rails Frame-form
-proofs run without Expo Go or Metro:
-
-```sh
-maestro --device <simulator-uuid> test \
-  .maestro/release-ios-live-frame-morph.yaml
-maestro --device <simulator-uuid> test \
-  .maestro/release-ios-live-frame-form.yaml
-```
-
-The form flow submits the real Rails `422`, verifies a subsequent `204` leaves
-that mounted Frame and error intact, then follows the valid canonical `303` and
-verifies the error is gone.
-
-The installed cross-platform Release audit uses one flow on both simulators:
+Run the installed-app suite:
 
 ```sh
 MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
-  maestro --device <simulator-or-emulator-id> \
-  test .maestro/release-core-interactions.yaml
+  maestro --device <serial> test .maestro/release-android-live-form-contracts.yaml
+MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
+  maestro --device <serial> test .maestro/release-android-live-form-secondary.yaml
+MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
+  maestro --device <serial> test .maestro/release-android-live-frame-morph.yaml
+MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
+  maestro --device <serial> test .maestro/release-android-document-refresh-morph.yaml
+MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
+  maestro --device <serial> test .maestro/release-android-live-cable.yaml
+MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
+  maestro --device <serial> test .maestro/release-android-protected-cable.yaml
 ```
 
-It starts each scenario from fresh app state and verifies a direct ordered
-Stream update, an ordinary Rails Frame GET, and a document link targeting an
-anchor inside a named Frame. On Android, the flow focuses the known first-name
-field before dismissing the keyboard; a bare Android `hideKeyboard` can send
-Back when no keyboard owns that action. The iOS-only dismissals use Maestro's
-platform condition.
+The live-form flow covers the real Rails `422` local-draft morph, `204`
+no-content preservation, text/plain canonical `303`, consent validation and
+success, and plan validation and success. The Frame flow covers reload morph,
+ordinary morph renderer selection, and paused/resumed before-frame-render. The
+document flow proves local component state survives a Rails Refresh morph and
+that an originating request ID suppresses its duplicate refresh. Cable flows
+cover sibling HTTP Streams, HTTP morph state, public broadcasts, canonical
+refresh, protected broadcasts, credential rotation/recovery, and revocation.
+
+The picker flow additionally needs a fixture in Android Downloads:
+
+```sh
+adb -s <serial> push \
+  .maestro/fixtures/expo-turbo-android-picked.txt \
+  /sdcard/Download/expo-turbo-android-picked.txt
+adb -s <serial> shell am broadcast \
+  -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
+  -d file:///sdcard/Download/expo-turbo-android-picked.txt
+```
+
+## Expo Go
+
+Start Metro from `example/expo` on the port named by the flow:
+
+```sh
+bun run start -- --lan --port 8082
+maestro --device <device-id> test \
+  -e EXPO_URL=exp://<metro-lan-address>:8082/--/demo \
+  .maestro/gallery-smoke.yaml
+```
