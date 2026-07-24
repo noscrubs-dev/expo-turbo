@@ -14,17 +14,11 @@ appId: dev.noscrubs.expoturbo.example
 - hideKeyboard
 - scrollUntilVisible:
     element:
-      text: Standalone Rails Frame form
-    direction: DOWN
-    timeout: 240000
-    speed: 80
-    visibilityPercentage: 50
-    centerElement: true
-- scrollUntilVisible:
-    element:
       text: Validate selected attachment (return 422)
     direction: DOWN
-    timeout: 60000
+    timeout: 240000
+    speed: 40
+    visibilityPercentage: 20
 - tapOn: Validate selected attachment (return 422)
 - extendedWaitUntil:
     visible: Retry this selected attachment
