@@ -378,6 +378,83 @@ describe("demo app runtime ownership", () => {
     }
   });
 
+  test("reports the direct gallery Stream result for device automation", async () => {
+    const runtime = createDemoRuntime();
+    const navigation = new TestNavigation();
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(
+            DemoRuntimeProvider,
+            { runtime },
+            createElement(
+              DemoRouterRouteOwner,
+              {
+                focused: true,
+                navigation,
+                routeKey: INITIAL_ROUTE_KEY,
+                runtime,
+              },
+              createElement(DemoCompatibilityGallery),
+            ),
+          ),
+          {
+            createNodeMock(element) {
+              if (element.type === "text-input") return { blur() {}, focus() {} };
+              if (element.type === "view") {
+                return {
+                  measureInWindow(
+                    listener: (x: number, y: number, width: number, height: number) => void,
+                  ) {
+                    listener(0, 0, 320, 40);
+                  },
+                };
+              }
+              return {};
+            },
+          },
+        );
+        await nextTurn();
+        await nextTurn();
+      });
+      if (!renderer) throw new Error("direct Stream gallery did not render");
+
+      const apply = renderer.root
+        .findAll((node) => String(node.type) === "pressable")
+        .find(
+          (pressable) =>
+            pressable.findAll(
+              (node) =>
+                String(node.type) === "native-text" &&
+                node.children.includes("Apply Stream update"),
+            ).length > 0,
+        );
+      if (!apply) throw new Error("direct Stream gallery action did not render");
+
+      await act(async () => {
+        apply.props.onPress();
+        await nextTurn();
+        await nextTurn();
+      });
+
+      expect(
+        renderer.root.findAll(
+          (node) =>
+            String(node.type) === "native-text" &&
+            node.children.includes("Direct Stream update applied"),
+        ),
+      ).toHaveLength(1);
+      expect(runtime.session.tree.getElementById("static-renderer")?.children).toHaveLength(1);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+        await Promise.resolve();
+      });
+    }
+  });
+
   test("keeps virtualized Frame responses inside the declared style vocabulary", async () => {
     const runtime = createDemoRuntime();
 

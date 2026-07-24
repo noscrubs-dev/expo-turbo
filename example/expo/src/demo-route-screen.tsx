@@ -34,6 +34,9 @@ const DEMO_LIVE_RAILS_ORIGIN = process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN;
 
 export function DemoCompatibilityGallery() {
   const runtime = useDemoRuntime();
+  const [directStreamProof, setDirectStreamProof] = useState<
+    "applied" | "failed" | "idle" | "pending"
+  >("idle");
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
   const autofocusScrollContainerCleanup = useRef<(() => void) | undefined>(undefined);
@@ -199,11 +202,20 @@ export function DemoCompatibilityGallery() {
       <Pressable
         accessibilityRole="button"
         onPress={() => {
+          setDirectStreamProof("pending");
           void dispatchTurboStreamFragment(
             runtime.session,
             '<turbo-stream action="update" target="static-renderer"><template><DemoText>Updated in place by an ordered Turbo Stream action.</DemoText></template></turbo-stream>',
             { streamLifecycle: runtime.streamLifecycle },
-          )
+          ).then(
+            (report) =>
+              setDirectStreamProof(
+                report.actions.length === 1 && report.actions[0]?.status === "applied"
+                  ? "applied"
+                  : "failed",
+              ),
+            () => setDirectStreamProof("failed"),
+          );
         }}
         style={({ pressed }) => ({
           alignItems: "center",
@@ -216,6 +228,19 @@ export function DemoCompatibilityGallery() {
           Apply Stream update
         </Text>
       </Pressable>
+      <Text
+        accessibilityLiveRegion="polite"
+        selectable
+        style={{ color: directStreamProof === "failed" ? "#a13d2d" : "#435160", fontSize: 13 }}
+      >
+        {directStreamProof === "idle"
+          ? "Direct Stream proof ready"
+          : directStreamProof === "pending"
+            ? "Direct Stream update pending"
+            : directStreamProof === "applied"
+              ? "Direct Stream update applied"
+              : "Direct Stream update failed"}
+      </Text>
       <Pressable
         accessibilityLabel="Refresh current document and reset root scroll"
         accessibilityRole="button"
