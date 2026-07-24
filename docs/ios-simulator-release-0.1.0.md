@@ -1,7 +1,7 @@
 # Expo Turbo 0.1.0 iOS Simulator Release evidence
 
 This record covers the public source baseline
-`91a28cc6487bf9038a96c45b513ff66bcf0f2650` on 2026-07-24. It is simulator
+`359388727f499b1ea111d787ff5edd75b03af0ab` on 2026-07-24. It is simulator
 evidence, not physical-device or stable-release evidence.
 
 ## Build and host
@@ -21,7 +21,7 @@ EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3100 \
   -configuration Release \
   -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,id=C29D25F3-C0E6-4480-9A9C-423266E91DD2' \
-  -derivedDataPath ios/build/live-release \
+  -derivedDataPath ios/build/current-main-release \
   CODE_SIGNING_ALLOWED=NO \
   build
 ```
@@ -38,7 +38,7 @@ Maestro 2.7.0 against the booted iPhone 17 Pro / iOS 26.5 simulator:
 ```sh
 xcrun simctl install \
   C29D25F3-C0E6-4480-9A9C-423266E91DD2 \
-  ios/build/live-release/Build/Products/Release-iphonesimulator/ExpoTurboCompatibility.app
+  ios/build/current-main-release/Build/Products/Release-iphonesimulator/ExpoTurboCompatibility.app
 
 maestro --device C29D25F3-C0E6-4480-9A9C-423266E91DD2 \
   test .maestro/release-gallery-smoke.yaml
