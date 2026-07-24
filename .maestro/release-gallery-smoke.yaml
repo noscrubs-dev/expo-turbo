@@ -5,6 +5,12 @@ appId: dev.noscrubs.expoturbo.example
 - extendedWaitUntil:
     visible: Expo Turbo
     timeout: 120000
+- extendedWaitUntil:
+    visible: First name
+    timeout: 30000
+- tapOn: Ada
+- hideKeyboard
+- waitForAnimationToEnd
 - scrollUntilVisible:
     element:
       text: Frame-scoped native link

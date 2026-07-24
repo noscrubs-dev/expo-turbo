@@ -7,6 +7,20 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 120000
 - scrollUntilVisible:
     element:
+      text: Compatibility gallery
+    direction: UP
+    timeout: 30000
+    speed: 80
+- scrollUntilVisible:
+    element:
+      text: First name
+    direction: DOWN
+    timeout: 60000
+- tapOn: Ada
+- hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
       text: Nested Frame refresh morph
     direction: DOWN
     timeout: 120000

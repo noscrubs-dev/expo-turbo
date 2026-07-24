@@ -1903,9 +1903,11 @@ describe("demo app runtime ownership", () => {
           (node) =>
             String(node.type) === "scroll-view" &&
             node.props.contentInsetAdjustmentBehavior === "automatic",
-        )
-        .at(0);
+      )
+      .at(0);
       if (!galleryScroll) throw new Error("gallery root ScrollView was not rendered");
+      expect(galleryScroll.props.automaticallyAdjustKeyboardInsets).toBe(true);
+      expect(galleryScroll.props.keyboardDismissMode).toBe("on-drag");
       const initialScrollContainerId = nativeRootScrollContainerIds.at(-1);
       if (!initialScrollContainerId) throw new Error("initial gallery ScrollView did not mount");
       const initialEntry = runtime.documentRuntime.history.current;

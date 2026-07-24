@@ -20,6 +20,18 @@ appId: dev.noscrubs.expoturbo.example
     when:
       platform: iOS
     commands:
+      - scrollUntilVisible:
+          element:
+            text: Compatibility gallery
+          direction: UP
+          timeout: 30000
+          speed: 80
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
       - hideKeyboard
 - waitForAnimationToEnd
 - scrollUntilVisible:
@@ -64,6 +76,18 @@ appId: dev.noscrubs.expoturbo.example
     when:
       platform: iOS
     commands:
+      - scrollUntilVisible:
+          element:
+            text: Compatibility gallery
+          direction: UP
+          timeout: 30000
+          speed: 80
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
       - hideKeyboard
 - waitForAnimationToEnd
 - scrollUntilVisible:
@@ -108,6 +132,18 @@ appId: dev.noscrubs.expoturbo.example
     when:
       platform: iOS
     commands:
+      - scrollUntilVisible:
+          element:
+            text: Compatibility gallery
+          direction: UP
+          timeout: 30000
+          speed: 80
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
       - hideKeyboard
 - waitForAnimationToEnd
 - scrollUntilVisible:

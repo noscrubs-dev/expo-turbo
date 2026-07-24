@@ -487,6 +487,7 @@ function DemoFormInputComponent({
           paddingVertical: 10,
           writingDirection: direction ?? "auto",
         }}
+        testID={`demo-form-input-${control.nodeKey.replaceAll(":", "-")}`}
         value={current}
       />
       {!validity.valid ? (

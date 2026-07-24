@@ -158,7 +158,9 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
       await Promise.resolve();
     });
     await proof.frames.get(FRAME_ID).loaded;
-    expect(renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.value).toBe("");
+    const firstName = renderer?.root.findByProps({ accessibilityLabel: "First name" });
+    expect(firstName?.props.testID).toBe("demo-form-input-id-demo-form-first-name");
+    expect(firstName?.props.value).toBe("");
     expect(
       renderer?.root.findByProps({
         accessibilityLabel: "Sample attachment: expo-turbo-upload.txt",

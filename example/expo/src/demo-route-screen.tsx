@@ -126,8 +126,10 @@ export function DemoCompatibilityGallery() {
 
   return (
     <ScrollView
+      automaticallyAdjustKeyboardInsets
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
+      keyboardDismissMode="on-drag"
       onContentSizeChange={() => {
         runtime.documentAnchorScroll.confirmDeferredAnchorContentSize();
         runtime.autofocusScroll.remeasure();
