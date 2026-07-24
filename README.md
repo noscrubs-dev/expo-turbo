@@ -275,7 +275,7 @@ The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rail
 
 - Changed: Made every emitted ESM import Node-compatible and added clean Node checks for all six public package entrypoints.
 - Why: Independent verification of candidate run `30056741302` found that its Bun-validated tarball failed under the declared Node engine because TypeScript had emitted extensionless relative directory imports.
-- Impact: NodeNext now validates production source specifiers, local packaging imports every built entrypoint with Node, and the release clean consumer uses Node rather than Bun. Candidate run `30056741302` is rejected and must not be published; a replacement candidate is required after this fix merges.
+- Impact: NodeNext now validates production source specifiers, local packaging imports every peer-free entrypoint with Node, and the release clean consumer imports all six public entrypoints with Node after installing the React peer. Candidate run `30056741302` is rejected and must not be published; a replacement candidate is required after this fix merges.
 
 **2026-07-24**:
 
