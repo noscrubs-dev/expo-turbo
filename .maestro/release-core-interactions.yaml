@@ -1,0 +1,122 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Apply Stream update
+    direction: DOWN
+    timeout: 240000
+    speed: 80
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Apply Stream update
+    direction: DOWN
+    timeout: 30000
+    speed: 80
+- tapOn: Apply Stream update
+- extendedWaitUntil:
+    visible: Direct Stream update applied
+    timeout: 30000
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Load this Frame through the shared Frame visit controller.
+    direction: DOWN
+    timeout: 120000
+    speed: 80
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Load this Frame through the shared Frame visit controller.
+    direction: DOWN
+    timeout: 30000
+- waitForAnimationToEnd
+- tapOn: Load this Frame through the shared Frame visit controller.
+- extendedWaitUntil:
+    visible: Frame link loaded
+    timeout: 30000
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Expo Turbo
+    timeout: 120000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: First name
+          direction: DOWN
+          timeout: 60000
+      - tapOn: Ada
+      - hideKeyboard
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: Jump from the document into the named Frame anchor target.
+    direction: DOWN
+    timeout: 120000
+    speed: 80
+- tapOn: Jump from the document into the named Frame anchor target.
+- extendedWaitUntil:
+    visible: Frame native anchor target
+    timeout: 30000

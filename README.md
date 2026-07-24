@@ -254,7 +254,8 @@ The manual **Release** workflow defaults to a non-publishing candidate run on me
 - [x] Production host-specific Action Cable credentials/tickets and identity policy are adopter-owned. The public standalone host proves authenticated native socket admission, short-lived header tickets, protected-resource authorization, rotation, targeted revocation, and reconnect reconciliation without embedding product policy.
 - [ ] Physical iOS/Android protected-Cable lifecycle, reachability, renderer-flush, and Frame-reconciliation evidence.
 - [x] All 26 Turbo 8.0.23 upstream functional-suite families have an explicit exact, native-equivalent, or N/A classification, and the supported structural/response slice has a pinned executable browser differential.
-- [ ] Final standalone compatibility-gallery audit and physical iOS/Android evidence.
+- [x] Final standalone compatibility-gallery audit: all 26 pinned Turbo functional-suite families are classified, supported shared semantics have executable fixture/browser differentials, package and example suites pass, web/iOS/Android production exports pass, and exact runtime commit `608164e` passes the same installed-Release Maestro flow on iOS and Android for a direct Stream update, ordinary Frame GET, and document-to-named-Frame anchor.
+- [ ] Physical iOS/Android evidence.
 - [ ] Stable npm/RubyGems publication. No registry release is supported yet.
 
 ## TypeScript API boundaries
@@ -274,6 +275,12 @@ The adapter surface is host-neutral. Core source does not import Expo Router, an
 The intended baseline is Turbo 8.0.23, Rails/Action Cable 8.1.3, and `turbo-rails` 2.0.23, with the gem also testing `turbo-rails` 2.0.10 compatibility. Those targets are planning constraints until the public conformance suite proves them.
 
 ## Changelog
+
+**2026-07-24**:
+
+- Changed: Added one shared installed-Release Maestro audit for direct Stream mutation, ordinary Rails Frame loading, and a document link targeting a named Frame anchor, plus an accessible direct-Stream result signal.
+- Why: The final gallery gate needed explicit cross-platform visible outcomes rather than inferring success from offscreen tree mutation or platform-specific flows.
+- Impact: Exact runtime commit `608164e` passes the package and Expo gates, all three production exports, and the same iOS/Android installed-Release flow. Physical-device evidence remains open.
 
 **2026-07-24**:
 
