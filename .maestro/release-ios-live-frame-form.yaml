@@ -2,74 +2,30 @@ appId: dev.noscrubs.expoturbo.example
 ---
 - launchApp:
     clearState: true
+- openLink: expoturboexample://live-frame-form
 - extendedWaitUntil:
-    visible: Expo Turbo
+    visible: Standalone Rails Frame form
     timeout: 120000
-- scrollUntilVisible:
-    element:
-      text: First name
-    direction: DOWN
-    timeout: 60000
-- tapOn: Ada
-- hideKeyboard
-- waitForAnimationToEnd
-- scrollUntilVisible:
-    element:
-      text: Compatibility gallery
-    direction: UP
+- extendedWaitUntil:
+    visible:
+      id: demo-form-input-id-demo-form-first-name
     timeout: 120000
-    speed: 80
-- scrollUntilVisible:
-    element:
-      text: Standalone Rails Frame form
-    direction: DOWN
-    timeout: 240000
-    speed: 80
-    visibilityPercentage: 50
-    centerElement: true
-- scrollUntilVisible:
-    element:
-      text: First name
-    direction: DOWN
-    timeout: 30000
 - tapOn:
-    text: First name
-    index: 1
+    id: demo-form-input-id-demo-form-first-name
 - inputText: invalid release
 - hideKeyboard
-- scrollUntilVisible:
-    element:
-      text: Save first name
-    direction: DOWN
-    timeout: 30000
 - tapOn: Save first name
 - extendedWaitUntil:
     visible: This demo name is unavailable
     timeout: 30000
-- scrollUntilVisible:
-    element:
-      text: First name
-    direction: UP
-    timeout: 30000
 - tapOn:
-    text: First name
-    index: 1
+    id: demo-form-input-id-demo-form-first-name
 - eraseText
 - inputText: Ada
 - hideKeyboard
-- scrollUntilVisible:
-    element:
-      text: Complete without replacing Frame
-    direction: DOWN
-    timeout: 30000
 - tapOn: Complete without replacing Frame
 - extendedWaitUntil:
     visible: This demo name is unavailable
-    timeout: 30000
-- scrollUntilVisible:
-    element:
-      text: Save first name
-    direction: UP
     timeout: 30000
 - tapOn: Save first name
 - extendedWaitUntil:

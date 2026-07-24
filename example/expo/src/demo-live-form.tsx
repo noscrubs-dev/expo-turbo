@@ -203,7 +203,10 @@ export function DemoLiveFormRuntimeProvider({
   );
 }
 
-export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRuntime }>) {
+export function DemoLiveFormPanel({
+  proof,
+  showExplanation = true,
+}: Readonly<{ proof: DemoLiveFormRuntime; showExplanation?: boolean }>) {
   const [error, setError] = useState<Error>();
 
   useEffect(() => proof.frames.get(FRAME_ID).subscribeErrors(setError), [proof]);
@@ -222,15 +225,17 @@ export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRunti
       <Text selectable style={{ fontSize: 18, fontWeight: "600" }}>
         Standalone Rails Frame form
       </Text>
-      <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
-        This native-only panel loads one canonical Rails Frame form. Ordinary invalid names render
-        matching 422 XML. The explicit local-draft action instead uses a standard 422 Stream morph:
-        compatible native components retain their draft while Rails adds the validation error. Complete
-        a valid name without replacing this Frame, save it to follow the canonical redirect, or use the
-        narrowly scoped text/plain submitter for the same Rails-owned response path. It also starts with
-        one bounded, host-owned Blob and can replace it through the native Files picker; the Rails demo
-        accepts only a bounded UTF-8 text/plain file and discards its bytes after validation.
-      </Text>
+      {showExplanation ? (
+        <Text selectable style={{ color: "#435160", lineHeight: 20 }}>
+          This native-only panel loads one canonical Rails Frame form. Ordinary invalid names render
+          matching 422 XML. The explicit local-draft action instead uses a standard 422 Stream morph:
+          compatible native components retain their draft while Rails adds the validation error. Complete
+          a valid name without replacing this Frame, save it to follow the canonical redirect, or use the
+          narrowly scoped text/plain submitter for the same Rails-owned response path. It also starts with
+          one bounded, host-owned Blob and can replace it through the native Files picker; the Rails demo
+          accepts only a bounded UTF-8 text/plain file and discards its bytes after validation.
+        </Text>
+      ) : null}
       <DemoLiveFormRuntimeProvider proof={proof}>
         <ExpoTurboRoot />
       </DemoLiveFormRuntimeProvider>
@@ -245,8 +250,13 @@ export function DemoLiveFormPanel({ proof }: Readonly<{ proof: DemoLiveFormRunti
 
 export function DemoLiveFormProof({
   origin,
+  showExplanation,
   visibility,
-}: Readonly<{ origin: string; visibility?: DemoVisibilityRegistry }>) {
+}: Readonly<{
+  origin: string;
+  showExplanation?: boolean;
+  visibility?: DemoVisibilityRegistry;
+}>) {
   const result = useMemo<DemoLiveFormInitialization>(() => {
     try {
       return Object.freeze({ proof: createDemoLiveFormRuntime({ origin, visibility }) });
@@ -263,5 +273,5 @@ export function DemoLiveFormProof({
     );
   }
   if (!result.proof) throw new StateError("Standalone Rails form initialization failed");
-  return <DemoLiveFormPanel proof={result.proof} />;
+  return <DemoLiveFormPanel proof={result.proof} showExplanation={showExplanation} />;
 }
