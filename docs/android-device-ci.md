@@ -1,0 +1,78 @@
+# Android device CI
+
+Expo Turbo runs its shared Maestro behavior suite on a headless Android
+emulator without a paid device service. The runner lives in a dedicated KVM
+virtual machine on NoScrubs' Dabba host.
+
+## Security boundary
+
+- GitHub-hosted `ubuntu-latest` runners execute all public and fork pull-request
+  checks. Those jobs receive no private runner, KVM device, signing key, Docker
+  socket, or private-network access.
+- The self-hosted runner belongs to the `expo-turbo-android-trusted` organization
+  runner group. GitHub restricts that group to this public repository and to
+  `.github/workflows/android-device.yml` from `refs/heads/main`.
+- The trusted workflow runs only after a push to protected `main`, or after a
+  maintainer with write access dispatches the main-owned workflow. A dispatch
+  may supply a branch, tag, or SHA to test, making that explicit maintainer
+  action the approval boundary for non-main code.
+- The runner has the unique `expo-turbo-android-trusted` label and capacity one.
+  A label is routing metadata, not the security boundary; the workflow-restricted
+  runner group is what prevents fork-authored workflows from selecting it.
+- VM commands, Rails, the Android emulator, ADB, and Maestro run as `expo-ci`.
+  That account has no sudo rule and belongs only to `expo-ci` and `kvm`.
+- The workflow has read-only repository permission, does not persist checkout
+  credentials, and receives no repository or organization secrets.
+
+## Capacity and cadence
+
+The initial VM allocation is four host-passthrough vCPUs, 8 GB RAM, and a
+60 GB disk. One workflow runs at a time and queued runs are not canceled. The
+lane runs after every protected-main push and may also be dispatched manually.
+The workflow retains Rails, emulator, Android logcat, JUnit, environment, and
+resource-sampling evidence for 14 days.
+
+The lane builds only the emulator's x86_64 release APK before starting the
+emulator. This sequencing is intentional: an initial four-ABI build overlapping
+the emulator exhausted 8 GB and the kernel killed QEMU. With the phases
+separated, validation used at most 5,723 MB, retained at least 2,223 MB
+available memory, and used 19,325 MB of the 60 GB disk. The VM therefore remains
+at its initial size.
+
+Resize the VM only after `resources.log` from a successful or failed run shows
+sustained memory pressure, CPU saturation, or disk exhaustion. Do not infer a
+need to resize from a single slow dependency download.
+
+## Host and guest inventory
+
+- Proxmox VM ID: `104`
+- VM name: `expo-turbo-ci`
+- Address: `10.77.0.24/24` on Dabba's existing `vmbr1`
+- AVD: `expo-turbo-api35`
+- Emulator serial: `emulator-5580`
+- Android image: Google APIs API 35, x86_64
+- Node.js: 20.19.2
+- Java: OpenJDK 21
+- Bun: 1.3.14
+- Maestro: 2.7.0
+
+The VM is intentionally not a general-purpose build host. Do not add Docker,
+deployment credentials, signing keys, product secrets, additional repositories,
+or interactive developer workloads.
+
+The runner bootstraps the emulator's bundled Chrome profile before the shared
+suite so external-link assertions exercise the destination rather than Chrome's
+first-run screen. This changes only disposable emulator state.
+
+## Maintenance
+
+The runner package and Android command-line tools are installed from checksummed
+upstream archives. Android SDK packages are pinned in the provisioning record.
+When changing a pinned tool, update this document and rerun the full shared
+suite before accepting the change.
+
+If the runner is unavailable, public PR checks remain unaffected. A device-lane
+failure is classified as infrastructure only when the app assertions did not
+begin and the retained emulator/ADB/host evidence identifies setup failure.
+Assertion failures and app crashes are product failures and are never hidden by
+an automatic retry.

@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=form"
 - extendedWaitUntil:
@@ -32,6 +32,7 @@ appId: dev.noscrubs.expoturbo.example
     id: demo-form-input-id-first-name
     focused: true
 - inputText: Ada
+- hideKeyboard
 - tapOn:
     id: demo-form-submitter-id-collect-form
 - assertVisible: Confirm form submission

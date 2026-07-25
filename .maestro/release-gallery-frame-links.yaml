@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=frame-ordinary"
 - extendedWaitUntil:
@@ -17,7 +17,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=frame-anchor"
 - extendedWaitUntil:
@@ -31,7 +31,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=frame-preload"
 - extendedWaitUntil:
@@ -52,7 +52,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=frames"
 - extendedWaitUntil:

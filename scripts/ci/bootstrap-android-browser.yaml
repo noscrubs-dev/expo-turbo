@@ -1,0 +1,14 @@
+appId: com.android.chrome
+---
+- launchApp
+- runFlow:
+    when:
+      visible: Use without an account
+    commands:
+      - tapOn: Use without an account
+- runFlow:
+    when:
+      visible: Got it
+    commands:
+      - tapOn: Got it
+- stopApp

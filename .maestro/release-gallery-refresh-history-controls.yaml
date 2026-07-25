@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=root-controls"
 - extendedWaitUntil:
@@ -17,7 +17,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=root-controls"
 - extendedWaitUntil:
@@ -37,7 +37,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-refresh"
 - extendedWaitUntil:
@@ -51,7 +51,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-replace-morph"
 - extendedWaitUntil:
@@ -74,7 +74,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-autofocus"
 - extendedWaitUntil:
@@ -90,7 +90,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=history"
 - scrollUntilVisible:

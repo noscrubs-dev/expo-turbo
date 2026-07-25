@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-query"
 - extendedWaitUntil:
@@ -17,7 +17,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-preload"
 - extendedWaitUntil:
@@ -34,7 +34,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-prefetch"
 - extendedWaitUntil:
@@ -48,7 +48,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-router"
 - extendedWaitUntil:
@@ -62,7 +62,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-anchor"
 - extendedWaitUntil:
@@ -76,7 +76,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-replace"
 - extendedWaitUntil:
@@ -91,7 +91,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-generated"
 - extendedWaitUntil:
@@ -108,7 +108,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=link-external-disabled"
 - extendedWaitUntil:
