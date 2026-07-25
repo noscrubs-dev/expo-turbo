@@ -1,0 +1,46 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: expoturboexample://live-frame-form
+- extendedWaitUntil:
+    notVisible: Compatibility gallery
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      id: demo-live-form-test-entry
+    timeout: 120000
+- assertVisible: Live Rails Frame form
+- assertVisible: Standalone Rails Frame form
+- hideKeyboard
+- tapOn: Choose a text file
+- extendedWaitUntil:
+    visible: Recent
+    timeout: 30000
+- tapOn: expo-turbo-android-picked.txt
+- scrollUntilVisible:
+    element:
+      text: "Selected: expo-turbo-android-picked.txt"
+    direction: DOWN
+    timeout: 30000
+- tapOn:
+    id: demo-form-submitter-id-demo-form-upload-retry
+- extendedWaitUntil:
+    visible: Retry this selected attachment
+    timeout: 30000
+- assertVisible: "Selected: expo-turbo-android-picked.txt"
+- tapOn:
+    id: demo-form-submitter-id-demo-form-upload-retry
+- extendedWaitUntil:
+    visible: Retry this selected attachment
+    timeout: 30000
+- assertVisible: "Selected: expo-turbo-android-picked.txt"
+- tapOn:
+    id: demo-form-submitter-id-demo-form-upload
+- extendedWaitUntil:
+    notVisible: Retry this selected attachment
+    timeout: 30000
+- assertVisible: Rails Frame form

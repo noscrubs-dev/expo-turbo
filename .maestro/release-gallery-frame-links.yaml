@@ -1,0 +1,46 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=frame-ordinary"
+- extendedWaitUntil:
+    visible: Load ordinary Frame
+    timeout: 30000
+- tapOn: Load ordinary Frame
+- extendedWaitUntil:
+    visible: Frame link loaded
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=frame-anchor"
+- extendedWaitUntil:
+    visible: Jump within Frame
+    timeout: 30000
+- tapOn: Jump within Frame
+- extendedWaitUntil:
+    visible: Frame native anchor target
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=frame-preload"
+- extendedWaitUntil:
+    visible: Use preloaded Frame fragment
+    timeout: 30000
+- tapOn: Use preloaded Frame fragment
+- extendedWaitUntil:
+    visible: Preloaded Frame preview
+    timeout: 30000
+- extendedWaitUntil:
+    visible: Loaded Frame fragment target
+    timeout: 30000

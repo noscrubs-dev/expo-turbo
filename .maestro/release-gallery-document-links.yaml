@@ -1,0 +1,126 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-query"
+- extendedWaitUntil:
+    visible: Open query document
+    timeout: 30000
+- tapOn: Open query document
+- extendedWaitUntil:
+    visible: Query-bearing document visit completed
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-preload"
+- extendedWaitUntil:
+    visible: Open preloaded document
+    timeout: 30000
+- tapOn: Open preloaded document
+- extendedWaitUntil:
+    visible: Cached preview is visible
+    timeout: 30000
+- extendedWaitUntil:
+    visible: Canonical document replaced the preview
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-prefetch"
+- extendedWaitUntil:
+    visible: Reuse press-in response
+    timeout: 30000
+- tapOn: Reuse press-in response
+- extendedWaitUntil:
+    visible: Press-in response reused
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-router"
+- extendedWaitUntil:
+    visible: Open nested Router document
+    timeout: 30000
+- tapOn: Open nested Router document
+- extendedWaitUntil:
+    visible: Generic nested Router path reached
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-anchor"
+- extendedWaitUntil:
+    visible: Jump to root anchor
+    timeout: 30000
+- tapOn: Jump to root anchor
+- extendedWaitUntil:
+    visible: Native anchor target
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-replace"
+- extendedWaitUntil:
+    visible: Replace Router entry
+    timeout: 30000
+- tapOn: Replace Router entry
+- extendedWaitUntil:
+    visible: Query-bearing document visit completed
+    timeout: 30000
+- assertNotVisible: Replace Router entry
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-generated"
+- extendedWaitUntil:
+    visible: Submit generated link
+    timeout: 30000
+- tapOn: Submit generated link
+- assertVisible: Confirm form submission
+- assertVisible: Submit this generated form link?
+- tapOn: Continue
+- extendedWaitUntil:
+    visible: Expected application/vnd.expo-turbo+xml or text/vnd.turbo-stream.html
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-external-disabled"
+- extendedWaitUntil:
+    visible: Disabled native link
+    timeout: 30000
+- tapOn: Disabled native link
+- assertVisible: Disabled native link
+- tapOn: Open external link
+- extendedWaitUntil:
+    visible: Example Domain
+    timeout: 30000
+- pressKey: BACK
+- extendedWaitUntil:
+    visible: Disabled native link
+    timeout: 30000

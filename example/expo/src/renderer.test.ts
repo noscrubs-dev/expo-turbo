@@ -10199,6 +10199,61 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("reclassifies a stable Frame link after replacing an ordinary link with a generated form", async () => {
+    const frameRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><turbo-frame id="link-frame"><DocumentLink id="ordinary-link" href="/demo/frame-linked" /></turbo-frame></Gallery>',
+      async () => {
+        throw new Error("generated form links must not use the document loader")
+      },
+      "https://example.test/demo",
+      undefined,
+      async (request) => {
+        frameRequests.push(request)
+        throw new Error("generated form links must not use the Frame GET loader")
+      },
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request) {
+              generatedRequests.push(request)
+              return {
+                headers: {},
+                redirected: false,
+                status: 204,
+                text: async () => "",
+                url: request.url,
+              }
+            },
+          }),
+          { next: () => "generated-replacement-link" },
+        ),
+    )
+
+    act(() => {
+      harness.session.replaceTree(
+        parseExpoTurboDocument(
+          '<Gallery><turbo-frame id="link-frame"><DocumentLink id="generated-link" href="/demo/frame-form" data-turbo-method="post" /></turbo-frame></Gallery>',
+          { url: "https://example.test/demo" },
+        ),
+      )
+    })
+    await act(async () => {
+      await harness.activation("/demo/frame-form")()
+    })
+
+    expect(frameRequests).toEqual([])
+    expect(generatedRequests).toHaveLength(1)
+    expect(generatedRequests[0]).toMatchObject({
+      headers: { "Turbo-Frame": "link-frame" },
+      method: "POST",
+      url: "https://example.test/demo/frame-form",
+    })
+    act(() => harness.renderer.unmount())
+  })
+
   test("falls back through host navigation when generated form-link interception is disabled", async () => {
     const documentRequests: TurboRequest[] = []
     const generatedRequests: TurboRequest[] = []
@@ -10359,6 +10414,95 @@ describe("React protocol renderer", () => {
         .filter((direction): direction is string => direction !== undefined),
     ).toEqual(["rtl", "inherit"])
 
+    act(() => renderer.unmount())
+  })
+
+  test("routes the replaced demo generated Frame link through form submission after press-in", async () => {
+    mock.module("react-native", () => ({
+      AccessibilityInfo: { announceForAccessibility: () => undefined },
+      Alert: { alert: () => undefined },
+      AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
+      FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
+      Linking: { openURL: async () => undefined },
+      Platform: { OS: "web" },
+      Pressable: (props: Readonly<Record<string, unknown>>) => createElement("pressable", props),
+      ScrollView: (props: Readonly<Record<string, unknown>>) =>
+        createElement("scroll-view", props),
+      Text: (props: Readonly<Record<string, unknown>>) => createElement("native-text", props),
+      TextInput: (props: Readonly<Record<string, unknown>>) => createElement("text-input", props),
+      View: (props: Readonly<Record<string, unknown>>) => createElement("view", props),
+    }))
+    const { DEMO_DOCUMENT, DEMO_REGISTRY } = await import("./demo-registry")
+    const { DEMO_DEVICE_TEST_SCENARIOS } = await import("./demo-device-test-scenarios")
+    const frameRequests: TurboRequest[] = []
+    const submitted: Array<{ href: string; nodeKey: string }> = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(DEMO_DOCUMENT, { url: "https://example.test/demo" }),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async (request) => {
+            frameRequests.push(request)
+            throw new Error("Generated demo links must not use the Frame loader")
+          },
+        },
+        { next: () => "demo-generated-frame-request" },
+      ),
+    )
+    const documentController = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        {
+          fetch: async () => {
+            throw new Error("Generated demo links must not use the document loader")
+          },
+        },
+        { next: () => "demo-generated-document-request" },
+      ),
+      {
+        clearTimeout: () => undefined,
+        now: () => 0,
+        setTimeout: () => Object.freeze({}),
+      },
+    )
+    const formLinks = {
+      shouldInterceptSubmission: () => true,
+      submit: async (nodeKey: string, href: string) => {
+        submitted.push({ href, nodeKey })
+        return {}
+      },
+    } as unknown as FormLinkSubmissionController
+    const renderer = render(session, DEMO_REGISTRY, { documentController, formLinks, frames })
+    act(() => {
+      session.replaceTree(
+        parseExpoTurboDocument(DEMO_DEVICE_TEST_SCENARIOS["frame-promote"], {
+          url: "https://example.test/demo",
+        }),
+      )
+    })
+    const link = renderer.root.find(
+      (node) =>
+        String(node.type) === "pressable" &&
+        node.props.accessibilityLabel === "Promote generated Frame form",
+    )
+
+    act(() => link.props.onPressIn())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    })
+    expect(frameRequests).toHaveLength(0)
+    await act(async () => {
+      link.props.onPress()
+      await nextTurn()
+    })
+
+    expect(submitted).toEqual([
+      { href: "/demo/frame-form", nodeKey: "id:device-test-frame-promote" },
+    ])
+    expect(frameRequests).toHaveLength(0)
     act(() => renderer.unmount())
   })
 

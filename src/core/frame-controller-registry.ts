@@ -174,6 +174,22 @@ export class FrameControllerRegistry
       : undefined
   }
 
+  acknowledgeFormResponseSource(frame: ProtocolElement, source: string): void {
+    if (frame.kind !== "frame") return
+    const frameId = attributeValue(frame, "id")
+    if (!frameId || this.session.tree.getElementById(frameId) !== frame) return
+    const current = this.controllers.get(frameId)
+    if (current?.node === frame) current.controller.acknowledgeFormResponseSource(source)
+  }
+
+  expectFormResponseSource(frame: ProtocolElement, source: string): void {
+    if (frame.kind !== "frame") return
+    const frameId = attributeValue(frame, "id")
+    if (!frameId || this.session.tree.getElementById(frameId) !== frame) return
+    const current = this.controllers.get(frameId)
+    if (current?.node === frame) current.controller.expectFormResponseSource(source)
+  }
+
   delete(frameId: string, controller?: FrameController): void {
     const current = this.controllers.get(frameId)
     if (!current || (controller && current.controller !== controller)) return

@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Expo Turbo
+    visible: Rendered from XML
     timeout: 120000
 - openLink: expoturboexample://device-test-live-form-secondary
 - extendedWaitUntil:

@@ -183,6 +183,11 @@ function DemoDocumentLinkComponent({
             })
             .finally(() => setPending(false));
         }}
+        testID={
+          accessibilityLabel
+            ? `demo-document-link-${accessibilityLabel.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "")}`
+            : undefined
+        }
         style={({ pressed }) => ({
           alignItems: "center",
           backgroundColor: pressed ? "#d5e6f7" : "#e7f1fb",
@@ -837,6 +842,7 @@ function DemoFormSubmitterComponent(props: {
           })
           .catch(() => undefined);
       }}
+      testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
       style={({ pressed }) => ({
         alignItems: "center",
         backgroundColor: pressed ? "#19375a" : "#285589",
@@ -946,7 +952,7 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoDocumentLink href="/demo/linked?autofocus=scroll">
     <DemoText>Open the root autofocus-scroll proof and focus the measured native field below the viewport.</DemoText>
   </DemoDocumentLink>
-  <DemoDocumentLink href="/demo/routes/ios-proof/details?source=gallery&amp;tag=a&amp;tag=b&amp;empty=">
+  <DemoDocumentLink href="/demo/routes/routing-proof/details?source=gallery&amp;tag=a&amp;tag=b&amp;empty=">
     <DemoText>Open a nested generic Router path and retain its ordered query metadata through native history.</DemoText>
   </DemoDocumentLink>
   <DemoDocumentLink href="#native-anchor-target">
@@ -969,7 +975,8 @@ export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
       <DemoDocumentLink href="/demo/frame-linked">
         <DemoText>Load this Frame through the shared Frame visit controller.</DemoText>
       </DemoDocumentLink>
-      <DemoDocumentLink href="/demo/frame-form" data-turbo-method="post" data-turbo-action="advance">
+      <DemoAnchorTarget id="device-test-frame-promotion" />
+      <DemoDocumentLink id="device-test-frame-promote" accessibility-label="Promote mounted Frame form" href="/demo/frame-form" data-turbo-method="post" data-turbo-action="advance">
         <DemoText>Submit a generated form and promote this mounted Frame through shared history.</DemoText>
       </DemoDocumentLink>
       <DemoDocumentLink href="#frame-native-anchor-target">

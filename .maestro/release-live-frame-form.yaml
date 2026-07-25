@@ -1,0 +1,91 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: expoturboexample://live-frame-form
+- extendedWaitUntil:
+    notVisible: Compatibility gallery
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      id: demo-live-form-test-entry
+    timeout: 120000
+- assertVisible: Live Rails Frame form
+- assertVisible: Standalone Rails Frame form
+- extendedWaitUntil:
+    visible:
+      id: demo-form-input-id-demo-form-first-name
+    timeout: 120000
+- assertVisible: "Frame demo-form-frame: complete"
+- tapOn:
+    id: demo-form-input-id-demo-form-first-name
+- inputText: invalid release
+- hideKeyboard
+- tapOn: Save first name
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- tapOn:
+    id: demo-form-input-id-demo-form-first-name
+- eraseText
+- inputText: Ada
+- hideKeyboard
+- tapOn: Complete without replacing Frame
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- tapOn: Save first name
+- extendedWaitUntil:
+    notVisible: This demo name is unavailable
+    timeout: 30000
+- assertVisible: Rails Frame form
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: expoturboexample://live-frame-form
+- extendedWaitUntil:
+    notVisible: Compatibility gallery
+    timeout: 120000
+- extendedWaitUntil:
+    visible:
+      id: demo-live-form-test-entry
+    timeout: 120000
+- assertVisible: Live Rails Frame form
+- assertVisible:
+    id: demo-form-input-id-demo-form-first-name
+- assertVisible: "Frame demo-form-frame: complete"
+- assertVisible: Rails Frame form
+- tapOn:
+    id: demo-form-input-id-demo-form-first-name
+- inputText: invalid-local-draft
+- hideKeyboard
+- tapOn: Save name and preserve local draft
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- assertVisible:
+    id: demo-form-input-id-demo-form-first-name
+    text: invalid-local-draft
+- tapOn: Complete without replacing Frame
+- extendedWaitUntil:
+    visible: This demo name is unavailable
+    timeout: 30000
+- assertVisible:
+    id: demo-form-input-id-demo-form-first-name
+    text: invalid-local-draft
+- tapOn:
+    id: demo-form-input-id-demo-form-first-name
+- eraseText
+- inputText: Ada
+- hideKeyboard
+- tapOn: Save first name as text/plain
+- extendedWaitUntil:
+    notVisible: This demo name is unavailable
+    timeout: 30000
+- assertVisible: Rails Frame form

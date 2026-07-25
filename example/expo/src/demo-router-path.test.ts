@@ -25,9 +25,9 @@ describe("demo Expo Router document path", () => {
   test("maps canonical query-bearing document URLs to their generic Router paths", () => {
     expect(
       encodeDemoRouterDocumentPath(
-        "https://example.test/demo/routes/ios-proof?tag=a&tag=b&z=",
+        "https://example.test/demo/routes/routing-proof?tag=a&tag=b&z=",
       ),
-    ).toEqual(["demo", "routes", "ios-proof"]);
+    ).toEqual(["demo", "routes", "routing-proof"]);
     expect(
       encodeDemoRouterDocumentPath("https://example.test/demo?flag&space=+&encoded=%20"),
     ).toEqual(["demo"]);

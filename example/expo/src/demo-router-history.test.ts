@@ -30,13 +30,13 @@ const LINKED_URL = "https://example.test/demo/linked";
 const GALLERY_QUERY_URL = "https://example.test/demo?source=deep-link&tag=a&tag=b";
 const LINKED_QUERY_URL = "https://example.test/demo/linked?flag=&space=+&encoded=%20";
 const NESTED_QUERY_URL =
-  "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
+  "https://example.test/demo/routes/routing-proof/details?source=gallery&tag=a&tag=b&empty=";
 const DIRECT_QUERY_INPUT_PATH =
-  "/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=+&encoded=%20";
+  "/demo/routes/routing-proof/details?source=direct&tag=a&tag=b&empty=&plus=+&encoded=%20";
 const DIRECT_QUERY_PATH =
-  "/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
+  "/demo/routes/routing-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
 const DIRECT_QUERY_URL =
-  "https://example.test/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
+  "https://example.test/demo/routes/routing-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
 
 type WriteBehavior =
   | "collateral"
@@ -394,7 +394,7 @@ describe("demo Expo Router history bridge", () => {
     expect(pushed.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
       "demo",
       "routes",
-      "ios-proof",
+      "routing-proof",
       "details",
     ]);
     expect(pushed.params?.source).toBe("gallery");
@@ -586,14 +586,14 @@ describe("demo Expo Router history bridge", () => {
       destinationUrl: NESTED_QUERY_URL,
       name: "nested query",
       rawUrl:
-        "exp://127.0.0.1:8081/--/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=#generic-native-anchor-target",
+        "exp://127.0.0.1:8081/--/demo/routes/routing-proof/details?source=gallery&tag=a&tag=b&empty=#generic-native-anchor-target",
       routeParams: {
-        [DEMO_ROUTER_PATH_PARAM]: ["demo", "routes", "ios-proof", "details"],
+        [DEMO_ROUTER_PATH_PARAM]: ["demo", "routes", "routing-proof", "details"],
         empty: "",
         source: "gallery",
         tag: ["a", "b"],
       },
-      routePath: "demo/routes/ios-proof/details",
+      routePath: "demo/routes/routing-proof/details",
     },
   ] as const) {
     test(`adopts a native-created cross-document ${scenario.name} Expo Go route without another push`, () => {

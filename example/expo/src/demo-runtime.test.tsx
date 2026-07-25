@@ -179,11 +179,11 @@ const AUTOFOCUS_SCROLL_URL = "https://example.test/demo/linked?autofocus=scroll"
 const SAME_PATH_REPLACE_URL = "https://example.test/demo/linked?replace=morph";
 const SAME_PATH_REPLACED_URL = "https://example.test/demo/linked?replace=morph&revision=next";
 const GENERIC_ROUTE_URL =
-  "https://example.test/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=";
+  "https://example.test/demo/routes/routing-proof/details?source=gallery&tag=a&tag=b&empty=";
 const DIRECT_QUERY_PATH =
-  "/--/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
+  "/--/demo/routes/routing-proof/details?source=direct&tag=a&tag=b&empty=&plus= &encoded= ";
 const DIRECT_QUERY_URL =
-  "https://example.test/demo/routes/ios-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
+  "https://example.test/demo/routes/routing-proof/details?source=direct&tag=a&tag=b&empty=&plus=%20&encoded=";
 
 interface FixtureTimer {
   readonly callback: () => void;
@@ -856,7 +856,7 @@ describe("demo app runtime ownership", () => {
     expect(navigation.state.routes[1]?.params?.[DEMO_ROUTER_PATH_PARAM]).toEqual([
       "demo",
       "routes",
-      "ios-proof",
+      "routing-proof",
       "details",
     ]);
     expect(decodeDemoRouterHistoryEntry(navigation.state.routes[1]?.params)?.url).toBe(
@@ -1575,14 +1575,14 @@ describe("demo app runtime ownership", () => {
       destinationUrl: GENERIC_ROUTE_URL,
       name: "nested query",
       rawUrl:
-        "exp://127.0.0.1:8081/--/demo/routes/ios-proof/details?source=gallery&tag=a&tag=b&empty=#generic-native-anchor-target",
+        "exp://127.0.0.1:8081/--/demo/routes/routing-proof/details?source=gallery&tag=a&tag=b&empty=#generic-native-anchor-target",
       routeParams: {
-        [DEMO_ROUTER_PATH_PARAM]: ["demo", "routes", "ios-proof", "details"],
+        [DEMO_ROUTER_PATH_PARAM]: ["demo", "routes", "routing-proof", "details"],
         empty: "",
         source: "gallery",
         tag: ["a", "b"],
       },
-      routePath: "demo/routes/ios-proof/details",
+      routePath: "demo/routes/routing-proof/details",
     },
   ] as const) {
     test(`restores a later cross-document ${scenario.name} Expo Go link through its native-created route`, async () => {

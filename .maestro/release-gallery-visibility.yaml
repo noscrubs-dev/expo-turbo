@@ -1,0 +1,60 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=visibility-nested"
+- extendedWaitUntil:
+    visible: Nested lazy Frame visibility
+    timeout: 30000
+- tapOn: Jump within nested ScrollView
+- extendedWaitUntil:
+    visible: Nested native anchor target
+    timeout: 30000
+- extendedWaitUntil:
+    visible: The nested clipping chain admitted this Frame exactly once after it entered both visible regions.
+    timeout: 30000
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=visibility-flatlist"
+- extendedWaitUntil:
+    visible: Frame flatlist-lazy-frame-one
+    timeout: 30000
+- extendedWaitUntil:
+    visible: Virtualized lazy Frame loaded
+    timeout: 30000
+- swipe:
+    start: 80%, 60%
+    end: 20%, 60%
+    duration: 800
+- extendedWaitUntil:
+    visible: Frame flatlist-lazy-frame-two
+    timeout: 30000
+- extendedWaitUntil:
+    visible: Virtualized lazy Frame loaded
+    timeout: 30000
+- swipe:
+    start: 80%, 60%
+    end: 20%, 60%
+    duration: 800
+- extendedWaitUntil:
+    visible: Frame flatlist-lazy-frame-three
+    timeout: 30000
+- extendedWaitUntil:
+    visible: Virtualized lazy Frame loaded
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=visibility-preview"
+- extendedWaitUntil:
+    visible: Recursive Frame source loaded
+    timeout: 30000

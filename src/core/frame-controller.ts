@@ -108,6 +108,7 @@ export class FrameController {
   private pendingAutofocus: PendingFrameAutofocus | undefined
   private pendingAutoscroll: PendingFrameAutoscroll | undefined
   private pendingFrameRender: Readonly<{ epoch: number; prepared: PreparedFrameRender }> | undefined
+  private pendingFormResponseSource: string | undefined
   private previewVisible = false
   private visitFinalization: AbortController | undefined
   private loadedPromise: Promise<FrameLoadReport | undefined> = Promise.resolve(undefined)
@@ -167,6 +168,26 @@ export class FrameController {
 
   get target(): string | undefined {
     return attributeValue(this.frame, "target")
+  }
+
+  /**
+   * Accepts a canonical source published by an owning Frame form response.
+   * The response itself will commit the Frame contents, so reconciliation must
+   * not turn this source update into a competing GET.
+   */
+  acknowledgeFormResponseSource(source: string): void {
+    this.assertLoadAdmission()
+    if (attributeValue(this.frame, "src") !== source) {
+      throw new StateError("Frame form response source was not published", {
+        frameId: this.frameId,
+      })
+    }
+    this.pendingFormResponseSource = undefined
+    if (this.snapshot.source !== source) this.publish()
+  }
+
+  expectFormResponseSource(source: string): void {
+    this.pendingFormResponseSource = source
   }
 
   connect(): Promise<FrameLoadReport | undefined> {
@@ -325,6 +346,17 @@ export class FrameController {
       !loadingChanged &&
       !targetChanged
     ) {
+      return Promise.resolve(undefined)
+    }
+    if (
+      sourceChanged &&
+      source === this.pendingFormResponseSource &&
+      !disabledChanged &&
+      !loadingChanged &&
+      !targetChanged
+    ) {
+      this.pendingFormResponseSource = undefined
+      this.publish()
       return Promise.resolve(undefined)
     }
 

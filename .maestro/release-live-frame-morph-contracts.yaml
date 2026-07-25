@@ -3,13 +3,14 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Expo Turbo
+    visible: Rendered from XML
     timeout: 120000
 - openLink: expoturboexample://device-test-live-frame-morph
 - extendedWaitUntil:
     visible: Nested Frame refresh morph
     timeout: 120000
 - assertVisible: Reload the outer Frame to begin the morph cascade
+- assertVisible: Waiting for the nested Frame reload
 - tapOn: Reload outer morph Frame
 - extendedWaitUntil:
     visible: Outer Frame response

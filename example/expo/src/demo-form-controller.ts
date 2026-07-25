@@ -29,13 +29,17 @@ export function createDemoFormController(
     session,
     {
       async fetch(request): Promise<TurboResponse> {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        if (request.headers["Turbo-Frame"] === "link-frame") {
+        const deviceTestDelay = session.tree.getElementById("device-test-native-form")
+          ? 3_000
+          : 400;
+        await new Promise((resolve) => setTimeout(resolve, deviceTestDelay));
+        const frameId = request.headers["Turbo-Frame"];
+        if (frameId === "link-frame" || frameId === "device-test-link-frame") {
           return {
             headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
             redirected: false,
             status: 200,
-            text: async () => `<turbo-frame id="link-frame">
+            text: async () => `<turbo-frame id="${frameId}">
               <DemoCard title="Frame form promoted">
                 <DemoText>The generated form reused the mounted Frame history scope and promoted its final URL.</DemoText>
               </DemoCard>

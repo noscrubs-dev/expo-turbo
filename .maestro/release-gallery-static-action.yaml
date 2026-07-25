@@ -1,0 +1,25 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=static"
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 30000
+- assertVisible: Native direction inheritance
+- assertVisible: Explicit LTR override
+- assertVisible: Host-native automatic direction
+- scrollUntilVisible:
+    element:
+      text: Run typed component action
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+- tapOn: Run typed component action
+- extendedWaitUntil:
+    visible: "Recorded: Hello from validated XML"
+    timeout: 30000
+- assertVisible: "Document state: Hello from validated XML"

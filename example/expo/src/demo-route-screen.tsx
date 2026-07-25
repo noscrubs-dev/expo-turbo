@@ -9,9 +9,17 @@ import * as Linking from "expo-linking";
 import { EXPO_TURBO_STATUS } from "expo-turbo";
 import { dispatchTurboStreamFragment, StateError } from "expo-turbo/core";
 import { ExpoTurboRoot } from "expo-turbo/react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Pressable,
+  InteractionManager,
   Platform,
   ScrollView,
   Text,
@@ -19,6 +27,10 @@ import {
   View,
 } from "react-native";
 
+import {
+  isDemoDeviceTestScenarioActive,
+  subscribeDemoDeviceTestScenario,
+} from "./demo-device-test-control";
 import type { DemoRouterNavigation } from "./demo-router-history";
 import { DemoRouterRouteOwner } from "./demo-router-route-owner";
 import { DemoLiveCableProof, DemoLiveProtectedCableProof } from "./demo-live-cable";
@@ -34,6 +46,9 @@ const DEMO_LIVE_RAILS_ORIGIN = process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN;
 
 export function DemoCompatibilityGallery() {
   const runtime = useDemoRuntime();
+  const [deviceTestScenario, setDeviceTestScenario] = useState(
+    isDemoDeviceTestScenarioActive,
+  );
   const [directStreamProof, setDirectStreamProof] = useState<
     "applied" | "failed" | "idle" | "pending"
   >("idle");
@@ -123,6 +138,17 @@ export function DemoCompatibilityGallery() {
   useEffect(() => {
     remeasure();
   }, [remeasure, window.height, window.width]);
+  useEffect(
+    () => subscribeDemoDeviceTestScenario(() => setDeviceTestScenario(true)),
+    [],
+  );
+  useEffect(() => {
+    if (!deviceTestScenario) return;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 });
+    });
+    return () => interaction.cancel();
+  }, [deviceTestScenario]);
 
   return (
     <ScrollView
@@ -184,6 +210,24 @@ export function DemoCompatibilityGallery() {
           Registry capability: {REGISTRY_CAPABILITY_SMOKE}
         </Text>
       </View>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          runtime.documentAnchorScroll.requestDeferredAnchor("device-test-frame-promotion")
+        }
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#d5e6f7" : "#e7f1fb",
+          borderColor: "#9ebcda",
+          borderRadius: 12,
+          borderWidth: 1,
+          padding: 12,
+        })}
+      >
+        <Text style={{ color: "#172230", fontSize: 15, fontWeight: "600" }}>
+          Reveal mounted Frame promotion
+        </Text>
+      </Pressable>
       <View
         collapsable={false}
         onLayout={(event) =>
@@ -192,7 +236,7 @@ export function DemoCompatibilityGallery() {
       >
         <ExpoTurboRoot />
       </View>
-      {Platform.OS !== "web" && DEMO_LIVE_RAILS_ORIGIN ? (
+      {Platform.OS !== "web" && DEMO_LIVE_RAILS_ORIGIN && !deviceTestScenario ? (
         <>
           <DemoLiveCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />
           <DemoLiveProtectedCableProof origin={DEMO_LIVE_RAILS_ORIGIN} />

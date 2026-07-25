@@ -1,0 +1,23 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=frame-promote"
+- extendedWaitUntil:
+    visible: Frame promotion device proof
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: demo-document-link-promote-generated-frame-form
+    direction: DOWN
+    visibilityPercentage: 100
+    timeout: 10000
+- takeScreenshot: promotion-before-tap
+- tapOn:
+    id: demo-document-link-promote-generated-frame-form
+- extendedWaitUntil:
+    visible: Frame form promoted
+    timeout: 30000

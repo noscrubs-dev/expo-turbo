@@ -3,7 +3,7 @@ appId: dev.noscrubs.expoturbo.example
 - launchApp:
     clearState: true
 - extendedWaitUntil:
-    visible: Expo Turbo
+    visible: Rendered from XML
     timeout: 120000
 - openLink: expoturboexample://device-test-live-cable
 - extendedWaitUntil:
@@ -30,4 +30,13 @@ appId: dev.noscrubs.expoturbo.example
 - tapOn: Refresh canonical document
 - extendedWaitUntil:
     visible: Broadcast XML replace
+    timeout: 30000
+- pressKey: HOME
+- launchApp
+- extendedWaitUntil:
+    visible: Action Cable recovered and reconciled
+    timeout: 60000
+- tapOn: Broadcast XML replace
+- extendedWaitUntil:
+    visible: Broadcast from the standalone Rails demo
     timeout: 30000

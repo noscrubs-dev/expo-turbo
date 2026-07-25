@@ -1,0 +1,108 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=root-controls"
+- extendedWaitUntil:
+    visible: Root controls device proof
+    timeout: 30000
+- tapOn: Refresh current document and reset root scroll
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=root-controls"
+- extendedWaitUntil:
+    visible: Root controls device proof
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Visit Frame source
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 80
+- tapOn: Visit Frame source
+- extendedWaitUntil:
+    visible: Recursive Frame source loaded
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-refresh"
+- extendedWaitUntil:
+    visible: Open Refresh Stream document
+    timeout: 30000
+- tapOn: Open Refresh Stream document
+- extendedWaitUntil:
+    visible: Refresh Stream is ready
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-replace-morph"
+- extendedWaitUntil:
+    visible: Open replace morph document
+    timeout: 30000
+- tapOn: Open replace morph document
+- extendedWaitUntil:
+    visible: Same-path replace morph is ready
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Commit a same-path replace morph and reset the owning root scroll.
+    direction: DOWN
+    timeout: 30000
+- tapOn: Commit a same-path replace morph and reset the owning root scroll.
+- extendedWaitUntil:
+    visible: Same-path replace morph committed
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=link-autofocus"
+- extendedWaitUntil:
+    visible: Open autofocus document
+    timeout: 30000
+- tapOn: Open autofocus document
+- extendedWaitUntil:
+    visible:
+      id: demo-form-input-id-root-autofocus-scroll-target
+      focused: true
+    timeout: 30000
+
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=history"
+- scrollUntilVisible:
+    element:
+      text: Open history restoration document
+    direction: DOWN
+    timeout: 30000
+- tapOn: Open history restoration document
+- extendedWaitUntil:
+    visible: Native history scroll restoration is ready
+    timeout: 30000
+- pressKey: BACK
+- extendedWaitUntil:
+    visible: Native history scroll checkpoint
+    timeout: 30000

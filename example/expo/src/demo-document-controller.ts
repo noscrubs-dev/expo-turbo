@@ -163,7 +163,7 @@ const AUTOFOCUS_SCROLL_DOCUMENT = `<Gallery data-turbo-root="/demo">
 
 const GENERIC_ROUTE_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="generic-route-document" title="Generic nested Router path reached" tone="positive" style-tokens="space:comfortable surface:elevated">
-    <DemoText>The standalone host safely mapped this document's nested /demo/routes/ios-proof/details path into Expo Router catch-all segments while the opaque history entry retained its repeated and empty query values.</DemoText>
+    <DemoText>The standalone host safely mapped this document's nested /demo/routes/routing-proof/details path into Expo Router catch-all segments while the opaque history entry retained its repeated and empty query values.</DemoText>
   </DemoCard>
   <DemoCard id="generic-anchor-spacer-one" title="Nested-route anchor spacer one" style-tokens="space:comfortable">
     <DemoText>The live raw Expo Go proof keeps its registered target below the initial root viewport.</DemoText>
@@ -246,7 +246,7 @@ export function createDemoFixtureFetchAdapter(
         xml = HISTORY_SCROLL_DOCUMENT;
       } else if (url.pathname === "/demo/linked" && url.search === "?autofocus=scroll") {
         xml = AUTOFOCUS_SCROLL_DOCUMENT;
-      } else if (url.pathname === "/demo/routes/ios-proof/details") {
+      } else if (url.pathname === "/demo/routes/routing-proof/details") {
         xml =
           url.searchParams.get("source") === "direct"
             ? DIRECT_QUERY_ROUTE_DOCUMENT

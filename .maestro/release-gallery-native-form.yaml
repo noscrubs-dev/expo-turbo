@@ -1,0 +1,63 @@
+appId: dev.noscrubs.expoturbo.example
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=form"
+- extendedWaitUntil:
+    visible: Live native form controls
+    timeout: 30000
+- assertVisible: Form ready
+- eraseText
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 20
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+- scrollUntilVisible:
+    element:
+      id: demo-form-input-id-first-name
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 20
+- assertVisible:
+    id: demo-form-input-id-first-name
+    focused: true
+- inputText: Ada
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+- assertVisible: Confirm form submission
+- assertVisible: Send this immutable preview?
+- tapOn:
+    text: Continue
+    waitToSettleTimeoutMs: 100
+- assertVisible: Submitting preview…
+- extendedWaitUntil:
+    visible: Form submission failed. Check the form and retry.
+    timeout: 30000
+- assertVisible:
+    id: demo-form-input-id-first-name
+    text: Ada
+- assertVisible:
+    id: demo-form-input-id-city
+    text: London
+- assertVisible:
+    id: demo-form-input-id-legend-note
+    text: Still included
+- tapOn: Retry from current values
+- assertVisible: Confirm form submission
+- tapOn:
+    text: Continue
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible: Form submission complete. Nothing changed.
+    timeout: 30000
+- assertVisible: Dismiss result
+- tapOn: Dismiss result
+- assertVisible: Form ready

@@ -3914,8 +3914,19 @@ describe("FormSubmissionController", () => {
       )
       session.setAttribute("id:status", "phase", "before-cache")
     })
+    session.removeAttribute("id:frame-a", "src")
     const current = mountedFrameHistoryFixture(session, "frame-a", cache, undefined, true, {
       visitLifecycle: lifecycle,
+    })
+    const mounted = current.frameControllers.get("frame-a")
+    await mounted.connect()
+    session.setAttribute("id:frame-a", "src", "/frame-a")
+    mounted.acknowledgeFormResponseSource("/frame-a")
+    const reconciliations: Promise<unknown>[] = []
+    session.subscribe("id:frame-a", () => {
+      queueMicrotask(() => {
+        reconciliations.push(mounted.reconcileAttributes())
+      })
     })
     const controller = new FormSubmissionController(
       session,
@@ -3933,9 +3944,12 @@ describe("FormSubmissionController", () => {
       },
     )
 
-    await expect(
-      controller.submit(proposal(registry(session, "form-a"), "safe-frame-history")),
-    ).resolves.toMatchObject({ application: "frame", status: "applied" })
+    const result = await controller.submit(
+      proposal(registry(session, "form-a"), "safe-frame-history"),
+    )
+    expect(result).toMatchObject({ application: "frame", status: "applied" })
+    await Promise.resolve()
+    await expect(Promise.all(reconciliations)).resolves.toEqual([undefined])
 
     expect(events).toEqual(["before-cache"])
     const outgoing = cache.get("https://example.test/current")

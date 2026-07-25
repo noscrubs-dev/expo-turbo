@@ -153,6 +153,7 @@ import {
   streamRenderSchedulerOption,
 } from "./streams.js"
 import {
+  attributeValue,
   DocumentTree,
   isElement,
   type ProtocolDocument,
@@ -708,6 +709,12 @@ export class FormSubmissionController {
                 admittedResponse.contentType === EXPO_TURBO_MIME_TYPE
               ) {
                 try {
+                  const expectedSource = new URL(admittedResponse.url)
+                  expectedSource.hash = ""
+                  this.options.frameControllers?.expectFormResponseSource(
+                    destinationFrame,
+                    expectedSource.toString(),
+                  )
                   stageFrameFormHistoryResponse(
                     frameHistoryPlan,
                     this.session,
@@ -719,6 +726,13 @@ export class FormSubmissionController {
                       publishSource: admittedResponse.responseStatus !== 201,
                     },
                   )
+                  const publishedSource = attributeValue(destinationFrame, "src")
+                  if (admittedResponse.responseStatus !== 201 && publishedSource) {
+                    this.options.frameControllers?.acknowledgeFormResponseSource(
+                      destinationFrame,
+                      publishedSource,
+                    )
+                  }
                 } finally {
                   if (invalidatesCache) this.options.snapshotCache?.clear()
                 }
@@ -811,6 +825,10 @@ export class FormSubmissionController {
             destinationFrame,
             plan.request.url,
             response.url,
+          )
+          this.options.frameControllers?.acknowledgeFormResponseSource(
+            destinationFrame,
+            attributeValue(destinationFrame, "src") ?? response.url,
           )
           if (!this.isCurrent(activeLease, proposal)) {
             return settle(this.canceled(response, proposal.destination))
