@@ -1129,6 +1129,16 @@ describe("standalone Rails Action Cable proof", () => {
         await Promise.resolve();
       });
       expect(replaceButton()?.props.disabled).toBe(false);
+      expect(
+        renderer?.root.findByProps({
+          accessibilityLabel: "Action Cable background pause observed",
+        }),
+      ).toBeDefined();
+      expect(
+        renderer?.root.findByProps({
+          accessibilityLabel: "Action Cable recovered and reconciled",
+        }),
+      ).toBeDefined();
 
       await act(async () => {
         lifecycle.emit("active");

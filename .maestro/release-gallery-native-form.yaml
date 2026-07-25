@@ -10,6 +10,8 @@ appId: dev.noscrubs.expoturbo.example
     visible: Live native form controls
     timeout: 30000
 - assertVisible: Form ready
+- tapOn:
+    id: demo-form-input-id-first-name
 - eraseText
 - hideKeyboard
 - scrollUntilVisible:

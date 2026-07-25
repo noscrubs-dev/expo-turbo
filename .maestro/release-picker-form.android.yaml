@@ -15,7 +15,13 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 120000
 - assertVisible: Live Rails Frame form
 - assertVisible: Standalone Rails Frame form
-- hideKeyboard
+- scrollUntilVisible:
+    element:
+      text: Choose a text file
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+    centerElement: true
 - tapOn: Choose a text file
 - extendedWaitUntil:
     visible: Recent

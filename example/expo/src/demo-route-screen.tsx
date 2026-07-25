@@ -20,6 +20,8 @@ import {
 import {
   Pressable,
   InteractionManager,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
   ScrollView,
   Text,
@@ -55,6 +57,9 @@ export function DemoCompatibilityGallery() {
   const window = useWindowDimensions();
   const scrollView = useRef<ScrollView>(null);
   const autofocusScrollContainerCleanup = useRef<(() => void) | undefined>(undefined);
+  const keyboardGeometry = useRef<
+    Readonly<{ height: number; screenY: number }> | undefined
+  >(undefined);
   const scrollX = useRef(0);
   const scrollY = useRef(0);
   const setScrollView = useCallback(
@@ -67,8 +72,25 @@ export function DemoCompatibilityGallery() {
         getScrollY: () => scrollY.current,
         isAvailable: () => Boolean(node.getNativeScrollRef?.()),
         measure: (listener) => {
-          node.getNativeScrollRef?.()?.measureInWindow(listener);
+          node.getNativeScrollRef?.()?.measureInWindow((x, y, width, height) => {
+            const keyboard = keyboardGeometry.current;
+            const measuredBottom = y + height;
+            const visibleBottom =
+              keyboard === undefined
+                ? measuredBottom
+                : keyboard.screenY < measuredBottom - 1
+                  ? keyboard.screenY
+                  : measuredBottom - keyboard.height;
+            listener(
+              x,
+              y,
+              width,
+              Math.max(0, Math.min(height, visibleBottom - y)),
+            );
+          });
         },
+        reveal: (nativeHandle) =>
+          node.scrollResponderScrollNativeHandleToKeyboard(nativeHandle, 24, true),
         scrollTo: (options) => node.scrollTo(options),
       });
     },
@@ -138,6 +160,24 @@ export function DemoCompatibilityGallery() {
   useEffect(() => {
     remeasure();
   }, [remeasure, window.height, window.width]);
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", (event) => {
+      keyboardGeometry.current = {
+        height: event.endCoordinates.height,
+        screenY: event.endCoordinates.screenY,
+      };
+      runtime.autofocusScroll.remeasure();
+      runtime.autofocusScroll.revealActive();
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      keyboardGeometry.current = undefined;
+      runtime.autofocusScroll.remeasure();
+    });
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [runtime.autofocusScroll]);
   useEffect(
     () => subscribeDemoDeviceTestScenario(() => setDeviceTestScenario(true)),
     [],
@@ -151,7 +191,11 @@ export function DemoCompatibilityGallery() {
   }, [deviceTestScenario]);
 
   return (
-    <ScrollView
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={{ flex: 1 }}
+    >
+      <ScrollView
       automaticallyAdjustKeyboardInsets
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ gap: 16, padding: 24 }}
@@ -326,7 +370,8 @@ export function DemoCompatibilityGallery() {
           Visit Frame source
         </Text>
       </Pressable>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 

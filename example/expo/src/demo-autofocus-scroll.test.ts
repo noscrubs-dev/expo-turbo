@@ -104,6 +104,20 @@ describe("demo autofocus scrolling", () => {
     expect(scrolls).toEqual([{ animated: false, y: 119 }])
   })
 
+  test("corrects the active target when the usable viewport shrinks until blur", () => {
+    const current = harness({ target: { height: 44, width: 320, x: 0, y: 350 } })
+
+    current.registry.scrollTo("id:field")
+    expect(current.scrolls).toEqual([])
+
+    current.viewport.emit({ height: 180, width: 320, x: 0, y: 100 })
+    expect(current.scrolls).toEqual([{ animated: false, y: 139 }])
+
+    current.registry.cancel("id:field")
+    current.viewport.emit({ height: 120, width: 320, x: 0, y: 100 })
+    expect(current.scrolls).toEqual([{ animated: false, y: 139 }])
+  })
+
   test("keeps stale target measurements and unregisters identity-safe", () => {
     const current = harness()
     const replacement = measurement()

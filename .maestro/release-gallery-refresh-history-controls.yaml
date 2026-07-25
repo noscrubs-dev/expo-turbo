@@ -11,7 +11,7 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 30000
 - tapOn: Refresh current document and reset root scroll
 - extendedWaitUntil:
-    visible: Rendered from XML
+    visible: Run typed component action
     timeout: 30000
 
 - launchApp:

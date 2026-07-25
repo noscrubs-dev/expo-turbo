@@ -385,6 +385,9 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
     });
     expect(JSON.stringify(renderer?.toJSON())).toContain("Retry this selected attachment");
     expect(
+      renderer?.root.findByProps({ testID: "demo-live-form-submission-status" }).props.children,
+    ).toBe("Rails form response 422 completed after loading");
+    expect(
       renderer?.root.findByProps({ accessibilityLabel: "Sample attachment: picked-notes.txt" }),
     ).toBeDefined();
 
@@ -405,6 +408,9 @@ test("renders the bounded Rails Frame form panel through validation, no-content,
       retryUpload.resolve(response(formXml(""), { redirected: true, status: 200, url: formUrl }));
       await Promise.resolve();
     });
+    expect(
+      renderer?.root.findByProps({ testID: "demo-live-form-submission-status" }).props.children,
+    ).toBe("Rails form response 200 completed after loading");
 
     await act(async () => {
       renderer?.root.findByProps({ accessibilityLabel: "First name" }).props.onChangeText("Ada");

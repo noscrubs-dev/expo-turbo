@@ -5,6 +5,7 @@ import {
   DocumentStateStore,
   ExpoTurboError,
   FormSubmissionController,
+  FormSubmissionLifecycle,
   FrameControllerRegistry,
   FrameRequestLoader,
   parseExpoTurboDocument,
@@ -56,6 +57,7 @@ export interface DemoLiveFormRuntime {
   readonly frames: FrameControllerRegistry;
   readonly session: DocumentSession;
   readonly state: DocumentStateStore;
+  readonly submissionLifecycle: FormSubmissionLifecycle;
 }
 
 type DemoLiveFormInitialization = Readonly<{
@@ -132,12 +134,14 @@ export function createDemoLiveFormRuntime(
   );
   const focus = new DemoFocusRegistry();
   const state = new DocumentStateStore();
+  const submissionLifecycle = new FormSubmissionLifecycle();
   const forms = new DocumentFormControls(session, {
     focus,
     ...(frameComponent ? { frameComponent } : {}),
     formSemantics: DEMO_REGISTRY,
     submissionController: new FormSubmissionController(session, transport, {
       frameControllers: frames,
+      submissionLifecycle,
     }),
   });
   let disposed = false;
@@ -157,6 +161,7 @@ export function createDemoLiveFormRuntime(
     frames,
     session,
     state,
+    submissionLifecycle,
   });
 }
 
@@ -208,8 +213,31 @@ export function DemoLiveFormPanel({
   showExplanation = true,
 }: Readonly<{ proof: DemoLiveFormRuntime; showExplanation?: boolean }>) {
   const [error, setError] = useState<Error>();
+  const [submissionStatus, setSubmissionStatus] = useState("Rails form is ready");
 
   useEffect(() => proof.frames.get(FRAME_ID).subscribeErrors(setError), [proof]);
+  useEffect(() => {
+    const unsubscribeStart = proof.submissionLifecycle.subscribe("submit-start", () => {
+      setSubmissionStatus("Rails form submission loading state observed");
+    });
+    const unsubscribeEnd = proof.submissionLifecycle.subscribe("submit-end", (event) => {
+      if ("error" in event.detail) {
+        setSubmissionStatus("Rails form submission failed after loading");
+        return;
+      }
+      if ("fetchResponse" in event.detail) {
+        setSubmissionStatus(
+          `Rails form response ${event.detail.fetchResponse.status} completed after loading`,
+        );
+        return;
+      }
+      setSubmissionStatus("Rails form submission stopped after loading");
+    });
+    return () => {
+      unsubscribeStart();
+      unsubscribeEnd();
+    };
+  }, [proof]);
 
   return (
     <View
@@ -239,6 +267,9 @@ export function DemoLiveFormPanel({
       <DemoLiveFormRuntimeProvider proof={proof}>
         <ExpoTurboRoot />
       </DemoLiveFormRuntimeProvider>
+      <Text accessibilityLiveRegion="polite" selectable testID="demo-live-form-submission-status">
+        {submissionStatus}
+      </Text>
       {error ? (
         <Text selectable style={{ color: "#a62525" }}>
           {error.name}: {error.message}

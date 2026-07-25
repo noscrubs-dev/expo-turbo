@@ -19,7 +19,21 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-input-id-demo-form-first-name
     timeout: 120000
-- assertVisible: "Frame demo-form-frame: complete"
+- scrollUntilVisible:
+    element:
+      id: demo-live-form-submission-status
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 50
+- assertVisible:
+    id: demo-live-form-submission-status
+    text: Rails form is ready
+- scrollUntilVisible:
+    element:
+      id: demo-form-input-id-demo-form-first-name
+    direction: UP
+    timeout: 30000
+    visibilityPercentage: 100
 - tapOn:
     id: demo-form-input-id-demo-form-first-name
 - inputText: invalid release
@@ -59,7 +73,21 @@ appId: dev.noscrubs.expoturbo.example
 - assertVisible: Live Rails Frame form
 - assertVisible:
     id: demo-form-input-id-demo-form-first-name
-- assertVisible: "Frame demo-form-frame: complete"
+- scrollUntilVisible:
+    element:
+      id: demo-live-form-submission-status
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 50
+- assertVisible:
+    id: demo-live-form-submission-status
+    text: Rails form is ready
+- scrollUntilVisible:
+    element:
+      id: demo-form-input-id-demo-form-first-name
+    direction: UP
+    timeout: 30000
+    visibilityPercentage: 100
 - assertVisible: Rails Frame form
 - tapOn:
     id: demo-form-input-id-demo-form-first-name

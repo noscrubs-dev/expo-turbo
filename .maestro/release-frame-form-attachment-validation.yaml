@@ -15,22 +15,59 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 120000
 - assertVisible: Live Rails Frame form
 - assertVisible: Standalone Rails Frame form
-- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-demo-form-upload-retry
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
 - tapOn:
     id: demo-form-submitter-id-demo-form-upload-retry
 - extendedWaitUntil:
     visible: Retry this selected attachment
     timeout: 30000
 - assertVisible: "Ready: expo-turbo-upload.txt"
+- scrollUntilVisible:
+    element:
+      id: demo-live-form-submission-status
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+- assertVisible: Rails form response 422 completed after loading
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-demo-form-upload-retry
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
 - tapOn:
     id: demo-form-submitter-id-demo-form-upload-retry
 - extendedWaitUntil:
     visible: Retry this selected attachment
     timeout: 30000
 - assertVisible: "Ready: expo-turbo-upload.txt"
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-demo-form-upload
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
 - tapOn:
     id: demo-form-submitter-id-demo-form-upload
 - extendedWaitUntil:
     notVisible: Retry this selected attachment
     timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: demo-live-form-submission-status
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+- assertVisible: Rails form response 200 completed after loading
+- scrollUntilVisible:
+    element:
+      text: Rails Frame form
+    direction: UP
+    timeout: 30000
+    visibilityPercentage: 100
 - assertVisible: Rails Frame form

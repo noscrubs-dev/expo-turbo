@@ -108,6 +108,7 @@ export class FrameController {
   private pendingAutofocus: PendingFrameAutofocus | undefined
   private pendingAutoscroll: PendingFrameAutoscroll | undefined
   private pendingFrameRender: Readonly<{ epoch: number; prepared: PreparedFrameRender }> | undefined
+  private formResponseSourceAcknowledged = false
   private pendingFormResponseSource: string | undefined
   private previewVisible = false
   private visitFinalization: AbortController | undefined
@@ -177,16 +178,22 @@ export class FrameController {
    */
   acknowledgeFormResponseSource(source: string): void {
     this.assertLoadAdmission()
+    if (this.pendingFormResponseSource === undefined) return
+    if (this.pendingFormResponseSource !== source) {
+      throw new StateError("Frame form response source did not match the expected source", {
+        frameId: this.frameId,
+      })
+    }
     if (attributeValue(this.frame, "src") !== source) {
       throw new StateError("Frame form response source was not published", {
         frameId: this.frameId,
       })
     }
-    this.pendingFormResponseSource = undefined
-    if (this.snapshot.source !== source) this.publish()
+    this.formResponseSourceAcknowledged = true
   }
 
   expectFormResponseSource(source: string): void {
+    this.formResponseSourceAcknowledged = false
     this.pendingFormResponseSource = source
   }
 
@@ -355,8 +362,11 @@ export class FrameController {
       !loadingChanged &&
       !targetChanged
     ) {
-      this.pendingFormResponseSource = undefined
-      this.publish()
+      if (this.formResponseSourceAcknowledged) {
+        this.formResponseSourceAcknowledged = false
+        this.pendingFormResponseSource = undefined
+        this.publish()
+      }
       return Promise.resolve(undefined)
     }
 

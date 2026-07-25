@@ -709,12 +709,14 @@ export class FormSubmissionController {
                 admittedResponse.contentType === EXPO_TURBO_MIME_TYPE
               ) {
                 try {
-                  const expectedSource = new URL(admittedResponse.url)
-                  expectedSource.hash = ""
-                  this.options.frameControllers?.expectFormResponseSource(
-                    destinationFrame,
-                    expectedSource.toString(),
-                  )
+                  if (admittedResponse.responseStatus !== 201) {
+                    const expectedSource = new URL(admittedResponse.url)
+                    expectedSource.hash = ""
+                    this.options.frameControllers?.expectFormResponseSource(
+                      destinationFrame,
+                      expectedSource.toString(),
+                    )
+                  }
                   stageFrameFormHistoryResponse(
                     frameHistoryPlan,
                     this.session,
@@ -726,13 +728,6 @@ export class FormSubmissionController {
                       publishSource: admittedResponse.responseStatus !== 201,
                     },
                   )
-                  const publishedSource = attributeValue(destinationFrame, "src")
-                  if (admittedResponse.responseStatus !== 201 && publishedSource) {
-                    this.options.frameControllers?.acknowledgeFormResponseSource(
-                      destinationFrame,
-                      publishedSource,
-                    )
-                  }
                 } finally {
                   if (invalidatesCache) this.options.snapshotCache?.clear()
                 }

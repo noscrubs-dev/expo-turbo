@@ -32,7 +32,11 @@ appId: dev.noscrubs.expoturbo.example
     visible: Broadcast XML replace
     timeout: 30000
 - pressKey: HOME
-- launchApp
+- launchApp:
+    stopApp: false
+- extendedWaitUntil:
+    visible: Action Cable background pause observed
+    timeout: 60000
 - extendedWaitUntil:
     visible: Action Cable recovered and reconciled
     timeout: 60000

@@ -18,8 +18,21 @@ appId: dev.noscrubs.expoturbo.example
     direction: DOWN
     timeout: 30000
     visibilityPercentage: 100
+    centerElement: true
 - tapOn: Run typed component action
 - extendedWaitUntil:
     visible: "Recorded: Hello from validated XML"
     timeout: 30000
 - assertVisible: "Document state: Hello from validated XML"
+- scrollUntilVisible:
+    element:
+      text: Apply Stream update
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+    centerElement: true
+- tapOn: Apply Stream update
+- extendedWaitUntil:
+    visible: Direct Stream update applied
+    timeout: 30000
+- assertVisible: Updated in place by an ordered Turbo Stream action.

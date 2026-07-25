@@ -636,6 +636,7 @@ const protectedCablePanelOptions = Object.freeze({
 } satisfies DemoLiveCablePanelOptions);
 
 export function DemoLiveCablePanel({
+  backgrounded = false,
   description =
     "This native-only panel loads the sibling Rails XML document and its eager public Cable Frame. Its Rails-authored GET link applies one sibling HTTP Stream response; fixed local controls broadcast either a replace or ordinary refresh Stream. Refresh debounces a canonical document GET, while any re-confirmed lifecycle or network transport reloads only that active Frame. This example host injects AppState, Expo Network, a bounded stale monitor, and five finite exponential retry attempts; it has no user document navigation, server-owned Frame form, production auth, or unbounded client retry.",
   proof,
@@ -646,7 +647,13 @@ export function DemoLiveCablePanel({
   replaceButtonLabel = "Broadcast XML replace",
   sourceKey = DEMO_STREAM_SOURCE_KEY,
   title = "Anonymous Action Cable proof",
-}: Readonly<{ ownsRuntime?: boolean; proof: DemoLiveCableRuntime }> & DemoLiveCablePanelOptions) {
+}: Readonly<{
+  backgrounded?: boolean;
+  ownsRuntime?: boolean;
+  proof: DemoLiveCableRuntime;
+}> &
+  DemoLiveCablePanelOptions) {
+  const [backgroundPauseObserved, setBackgroundPauseObserved] = useState(false);
   const [broadcasting, setBroadcasting] = useState<"refresh" | "replace" | "revoke" | undefined>();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | undefined>();
@@ -669,6 +676,13 @@ export function DemoLiveCablePanel({
             source.nodeKey === sourceKey && source.state === "connected",
       );
       if (
+        backgrounded &&
+        !nextConnected &&
+        connectionState.current.everConnected
+      ) {
+        setBackgroundPauseObserved(true);
+      }
+      if (
         nextConnected &&
         !connectionState.current.connected &&
         connectionState.current.everConnected
@@ -683,7 +697,7 @@ export function DemoLiveCablePanel({
     };
     updateConnection();
     return proof.streamSources.subscribeConnection(updateConnection);
-  }, [proof, sourceKey]);
+  }, [backgrounded, proof, sourceKey]);
 
   useEffect(
     () =>
@@ -706,6 +720,11 @@ export function DemoLiveCablePanel({
         {recovered ? (
           <Text accessibilityLabel="Action Cable recovered and reconciled" selectable>
             Action Cable recovered and reconciled.
+          </Text>
+        ) : null}
+        {backgroundPauseObserved ? (
+          <Text accessibilityLabel="Action Cable background pause observed" selectable>
+            Action Cable background pause observed.
           </Text>
         ) : null}
         <Pressable
@@ -877,7 +896,12 @@ export function DemoLiveCableProof({
       <>
         {backgrounded ? pausedMessage : null}
         <View style={{ display: backgrounded ? "none" : "flex" }}>
-          <DemoLiveCablePanel ownsRuntime={false} proof={proof} {...panelOptions} />
+          <DemoLiveCablePanel
+            backgrounded={backgrounded}
+            ownsRuntime={false}
+            proof={proof}
+            {...panelOptions}
+          />
         </View>
       </>
     );

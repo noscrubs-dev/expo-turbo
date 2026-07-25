@@ -477,9 +477,15 @@ function DemoFormInputComponent({
         accessibilityLabel={label}
         accessibilityState={control.accessibilityState}
         editable={!control.disabled}
-        onBlur={focusHandlers.onBlur}
+        onBlur={() => {
+          autofocusScroll.onBlur();
+          focusHandlers.onBlur();
+        }}
         onChangeText={setCurrent}
-        onFocus={focusHandlers.onFocus}
+        onFocus={() => {
+          focusHandlers.onFocus();
+          autofocusScroll.onFocus();
+        }}
         onLayout={autofocusScroll.onLayout}
         ref={inputRef}
         style={{
@@ -825,35 +831,48 @@ function DemoFormSubmitterComponent(props: {
   const { label, name, value } = props;
   const formBinding = useExpoTurboForm();
   const control = useExpoTurboFormControl({ kind: "submitter", name, value });
+  const loadingObserved = useDocumentState<boolean>(
+    `demo-submission-loading-observed:${control.nodeKey}`,
+  );
   const requestId = useRef(0);
+  useEffect(() => {
+    if (control.submitsWith) loadingObserved.set(true);
+  }, [control.submitsWith, loadingObserved]);
   return (
-    <Pressable
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      accessibilityState={control.accessibilityState}
-      disabled={control.disabled}
-      onPress={() => {
-        const submitter = control.selection();
-        if (!formBinding.shouldInterceptSubmission({ submitter })) return;
-        void formBinding
-          .submit({
-            protocol: { requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}` },
-            submitter,
-          })
-          .catch(() => undefined);
-      }}
-      testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
-      style={({ pressed }) => ({
-        alignItems: "center",
-        backgroundColor: pressed ? "#19375a" : "#285589",
-        borderRadius: 10,
-        padding: 12,
-      })}
-    >
-      <Text style={{ color: "white", fontWeight: "600" }}>
-        {control.submitsWith ?? label}
-      </Text>
-    </Pressable>
+    <View style={{ gap: 4 }}>
+      <Pressable
+        accessibilityLabel={label}
+        accessibilityRole="button"
+        accessibilityState={control.accessibilityState}
+        disabled={control.disabled}
+        onPress={() => {
+          const submitter = control.selection();
+          if (!formBinding.shouldInterceptSubmission({ submitter })) return;
+          void formBinding
+            .submit({
+              protocol: { requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}` },
+              submitter,
+            })
+            .catch(() => undefined);
+        }}
+        testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
+        style={({ pressed }) => ({
+          alignItems: "center",
+          backgroundColor: pressed ? "#19375a" : "#285589",
+          borderRadius: 10,
+          padding: 12,
+        })}
+      >
+        <Text style={{ color: "white", fontWeight: "600" }}>
+          {control.submitsWith ?? label}
+        </Text>
+      </Pressable>
+      {loadingObserved.value ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: "#435160", fontSize: 13 }}>
+          Submission loading state observed
+        </Text>
+      ) : null}
+    </View>
   );
 }
 

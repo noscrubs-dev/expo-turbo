@@ -41,6 +41,31 @@ appId: dev.noscrubs.expoturbo.example
 - extendedWaitUntil:
     visible: Preloaded Frame preview
     timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Loaded Frame fragment target
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+- assertVisible: Loaded Frame fragment target
+
+- launchApp:
+    clearState: true
 - extendedWaitUntil:
-    visible: Loaded Frame fragment target
+    visible: Rendered from XML
+    timeout: 120000
+- openLink: "expoturboexample://device-test-gallery?scenario=frames"
+- extendedWaitUntil:
+    visible: Jump within Frame
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: Jump into named Frame anchor
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 100
+    centerElement: true
+- tapOn: Jump into named Frame anchor
+- extendedWaitUntil:
+    visible: Frame native anchor target
     timeout: 30000

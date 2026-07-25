@@ -8,6 +8,14 @@ Status values are `Pass`, `Fail`, `Pending`, and `Not run`. A flow name is the
 evidence locator; Maestro's timestamped artifacts live under
 `~/.maestro/tests/`.
 
+The checked-in release flows form one union suite. Platform columns below record
+executions of that same suite; they do not define different contract sets.
+
+| Platform execution | Device | Shared contracts | Atomic observations | Union suite result | Artifact |
+| --- | --- | ---: | ---: | --- | --- |
+| Android | OnePlus `65c6e2cf` | **71/71 Pass** | **115/115 Pass** | **15/15 flows Pass** | `2026-07-25_091034` |
+| iOS | Physical device not available for this run | **0/71 run** | **0/115 run** | Not run | — |
+
 | # | Shared user-visible contract | Android evidence | iOS evidence |
 | ---: | --- | --- | --- |
 | 1 | Release app boots to the Expo Turbo gallery | Pass — `release-gallery-static-action.yaml` | Not run |
@@ -15,8 +23,8 @@ evidence locator; Maestro's timestamped artifacts live under
 | 3 | XML static card renders | Pass — `release-gallery-static-action.yaml` | Not run |
 | 4 | RTL inheritance and nested LTR/auto direction render | Pass — `release-gallery-static-action.yaml` | Not run |
 | 5 | Typed component action records its validated XML message | Pass — `release-gallery-static-action.yaml` | Not run |
-| 6 | Direct Stream update mutates the static renderer | Pass — prior installed-release evidence | Not run |
-| 7 | Stream completion is accessibility-visible | Pass — prior installed-release evidence | Not run |
+| 6 | Direct Stream update mutates the static renderer | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Not run |
+| 7 | Stream completion is accessibility-visible | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Not run |
 | 8 | Required native first-name field blocks empty submission | Pass — `release-gallery-native-form.yaml` | Not run |
 | 9 | Invalid native field is focused and announced | Pass — `release-gallery-native-form.yaml` | Not run |
 | 10 | Restoring a valid native first name re-enables submission | Pass — `release-gallery-native-form.yaml` | Not run |
@@ -40,12 +48,12 @@ evidence locator; Maestro's timestamped artifacts live under
 | 28 | Disabled document link remains noninteractive | Pass — `release-gallery-document-links.yaml` | Not run |
 | 29 | Refresh Stream document commits canonical update and resets scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Not run |
 | 30 | Same-path replace morph commits and resets root scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Not run |
-| 31 | Root autofocus visit reveals and focuses its measured field | Fail — focused input remains behind the Android keyboard, `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_075230` | Not run |
-| 32 | Native back restores cached document and root scroll checkpoint | Pending | Not run |
+| 31 | Root autofocus visit reveals and focuses its measured field | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Not run |
+| 32 | Native back restores cached document and root scroll checkpoint | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Not run |
 | 33 | Ordinary frame-scoped link commits the matching Frame | Pass — `release-gallery-frame-links.yaml` | Not run |
-| 34 | Generated form promotes the mounted Frame through history without a competing Frame GET | Pass — cleaned direct-entry `release-gallery-frame-promotion.yaml`, artifact `2026-07-25_071005` | Not run |
+| 34 | Generated form promotes the mounted Frame through history without a competing Frame GET | Pass — `release-gallery-frame-promotion.yaml`, artifact `2026-07-25_091034` | Not run |
 | 35 | In-Frame fragment link reaches its native anchor | Pass — `release-gallery-frame-links.yaml` | Not run |
-| 36 | Document-to-named-Frame fragment reaches the same anchor | Pass — prior installed-release evidence | Not run |
+| 36 | Document-to-named-Frame fragment reaches the same anchor | Pass — `release-gallery-frame-links.yaml`, artifact `2026-07-25_091034` | Not run |
 | 37 | Preloaded Frame preview revalidates then reveals fragment | Pass — `release-gallery-frame-links.yaml` | Not run |
 | 38 | Nested ScrollView anchor uses its declared container | Pass — `release-gallery-visibility.yaml` | Not run |
 | 39 | Nested lazy Frame loads only after entering both clip regions | Pass — `release-gallery-visibility.yaml` | Not run |
@@ -60,14 +68,14 @@ evidence locator; Maestro's timestamped artifacts live under
 | 48 | Rails HTTP morph preserves local component state | Pass — `release-live-cable.yaml` | Not run |
 | 49 | Public Cable replace broadcasts XML | Pass — `release-live-cable.yaml` | Not run |
 | 50 | Public refresh broadcast reconciles canonical document | Pass — `release-live-cable.yaml` | Not run |
-| 51 | Background pauses anonymous Cable | Pending — the app backgrounds, but the paused surface is not observable while Android owns the foreground, artifact `2026-07-25_075541` | Not run |
-| 52 | Foreground reconnects, resubscribes, and reconciles once | Pending — the anonymous panel did not expose recovery within 60 seconds after the physical background cycle, artifact `2026-07-25_075541` | Not run |
+| 51 | Background pauses anonymous Cable | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Not run |
+| 52 | Foreground reconnects, resubscribes, and reconciles once | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Not run |
 | 53 | Protected header-ticket Cable admits and connects | Pass — `release-protected-cable.yaml` | Not run |
 | 54 | Protected broadcast replaces the message | Pass — `release-protected-cable.yaml` | Not run |
 | 55 | Ticket rotation creates a recovered transport generation | Pass — `release-protected-cable.yaml` | Not run |
-| 56 | Rotated old transport stops receiving | Pass — rotation recovered and one subsequent protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_075421` | Not run |
+| 56 | Rotated old transport stops receiving | Pass — rotation recovered and one subsequent protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Not run |
 | 57 | Ticket revocation disconnects/rejects prior admission | Pass — `release-protected-cable.yaml` | Not run |
-| 58 | Fresh protected admission recovers after revocation | Pass — disconnect was visible, fresh admission recovered, and the next protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_075421` | Not run |
+| 58 | Fresh protected admission recovers after revocation | Pass — disconnect was visible, fresh admission recovered, and the next protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Not run |
 | 59 | Canonical Rails document Refresh morph loads | Pass — `release-document-refresh-morph.yaml` | Not run |
 | 60 | Document-refresh local counter increments | Pass — `release-document-refresh-morph.yaml` | Not run |
 | 61 | Refresh Stream performs canonical GET/morph | Pass — `release-document-refresh-morph.yaml` | Not run |
@@ -80,7 +88,7 @@ evidence locator; Maestro's timestamped artifacts live under
 | 68 | Consent and plan validation/success paths complete | Pass — `release-live-form-secondary.yaml` | Not run |
 | 69 | Nested Frame reload, pause/resume, and morph cascade complete | Pass — `release-live-frame-morph-contracts.yaml` | Not run |
 | 70 | Built-in and selected attachments survive matching 422 | Pass — `release-frame-form-attachment-validation.yaml`; Android picker branch in `release-picker-form.android.yaml` | Not run |
-| 71 | Attachment success/retry and user-visible loading/error recovery complete | Pending | Not run |
+| 71 | Attachment success/retry and user-visible loading/error recovery complete | Pass — `release-frame-form-attachment-validation.yaml`, artifact `2026-07-25_091034` | Not run |
 
 ## Inventory reconciliation
 
@@ -114,11 +122,10 @@ is not counted several times. No inventory item is dropped:
 
 Atomic item 5 is the cross-cutting accessibility-visible boundary-state
 contract. Its assertions are distributed through interaction rows and row 71,
-so it remains incomplete while row 71 is pending.
+and passes with the completed row 71 evidence.
 
-Current Android result: **66/71 Pass, 1/71 Fail, 4/71 Pending**. The unresolved
-rows are 31, 32, 51, 52, and 71. Strictly propagating those row states back to
-the inventory gives **98/115 covered** and **17/115 not fully passing**.
+Current Android result: **71/71 grouped contracts Pass** and **115/115 atomic
+observations Pass** on the OnePlus device in artifact `2026-07-25_091034`.
 iOS remains **0/71 run** and must be recorded separately when a physical device
 is available.
 
