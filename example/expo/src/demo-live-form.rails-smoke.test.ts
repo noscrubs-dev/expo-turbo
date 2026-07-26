@@ -11,6 +11,7 @@ import {
   attributeValue,
   DocumentFormControls,
   DocumentSession,
+  DocumentStateStore,
   EXPO_TURBO_MIME_TYPE,
   FormSubmissionController,
   FrameControllerRegistry,
@@ -409,6 +410,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
   })
   const frames = new FrameControllerRegistry(session, frameLoader)
   const focus = new DemoFocusRegistry()
+  const state = new DocumentStateStore()
   const formController = new FormSubmissionController(session, fetch, {
     frameControllers: frames,
   })
@@ -444,6 +446,7 @@ liveTest("renders and submits the real Rails Frame form through the Expo provide
               frames,
               registry: DEMO_REGISTRY,
               session,
+              state,
               styles: DEMO_STYLE_ADAPTER,
             },
             createElement(ExpoTurboRoot),

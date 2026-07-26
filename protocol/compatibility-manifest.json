@@ -265,7 +265,7 @@
         "src/core/frame-lifecycle.test.ts",
         "src/core/frame-controller.test.ts",
         "example/expo/src/demo-live-morph.test.tsx",
-        ".maestro/live-frame-render-pause.yaml"
+        ".maestro/release-live-frame-morph-contracts.yaml"
       ]
     },
     {
@@ -361,12 +361,15 @@
     {
       "id": "forms.android-multipart",
       "area": "forms",
-      "disposition": "incomplete",
-      "rationale": "Multipart codecs and the Expo picker adapter are covered in unit/export builds. Installed Android Release emulator flows submit both the example-owned fallback Blob and an Android Files-picker document to the standalone Rails host, receive matching 422 XML, and retain each attachment for retry. Physical-device upload evidence remains open.",
+      "disposition": "native-equivalent",
+      "rationale": "Multipart codecs and the Expo picker adapter are covered in unit/export builds. Installed Android Release emulator flows and the physical OnePlus shared suite submit both the example-owned fallback Blob and an Android Files-picker document to the standalone Rails host, receive matching 422 XML, and retain each attachment for retry.",
       "evidence": [
         "README.md",
-        ".maestro/release-android-frame-form.yaml",
-        ".maestro/release-android-picker-form.yaml"
+        "example/expo/src/demo-document-picker.test.ts",
+        "example/expo/src/demo-live-form.test.tsx",
+        ".maestro/COVERAGE.md",
+        ".maestro/release-frame-form-attachment-validation.yaml",
+        ".maestro/release-picker-form.android.yaml"
       ]
     },
     {
@@ -463,8 +466,13 @@
       "id": "cable.production-auth-device",
       "area": "cable",
       "disposition": "incomplete",
-      "rationale": "The standalone public host proves short-lived header tickets, protected-resource authorization, credential rotation, targeted revocation, reconnect reconciliation, and later protected delivery. Product-specific identity, tenant, and distributed revocation policy belongs to future host adoption and is not a public-release gate; physical iOS/Android lifecycle and network evidence remains open.",
-      "evidence": ["README.md"]
+      "rationale": "The standalone public host proves short-lived header tickets, protected-resource authorization, credential rotation, targeted revocation, reconnect reconciliation, and later protected delivery. The physical Android union suite covers lifecycle, network, protected-Cable, and renderer-flush behavior. Product-specific identity, tenant, and distributed revocation policy belongs to future host adoption and is not a public-release gate; physical iOS evidence remains open.",
+      "evidence": [
+        "README.md",
+        ".maestro/COVERAGE.md",
+        ".maestro/release-live-cable.yaml",
+        ".maestro/release-protected-cable.yaml"
+      ]
     },
     {
       "id": "cable.missed-broadcast-replay",
@@ -519,17 +527,16 @@
       "id": "release.device-conformance",
       "area": "release",
       "disposition": "incomplete",
-      "rationale": "All 26 functional suites from the pinned Turbo 8.0.23 source commit have exact, native-equivalent, and/or N/A dispositions with live evidence. Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded executable official-Turbo structural/response differential, installed iOS Release live Rails nested-morph plus Frame-form 422/204/303 flows, installed Android Release fallback/native-picker multipart 422 retry flows, and one shared installed-Release audit of direct Stream, ordinary Frame GET, and named-Frame anchor behavior on both simulators exist. Physical iOS/Android evidence remains open.",
+      "rationale": "All 26 functional suites from the pinned Turbo 8.0.23 source commit have exact, native-equivalent, and/or N/A dispositions with live evidence. Unit, integration, export, Rails desktop smoke, Expo Go flows, a bounded executable official-Turbo structural/response differential, installed iOS and Android Release evidence, and complete physical Android shared-suite evidence exist. Physical iOS evidence remains open.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/protocol-fixtures.test.ts",
-        ".maestro/live-frame-morph.yaml",
-        ".maestro/release-gallery-smoke.yaml",
-        ".maestro/release-core-interactions.yaml",
-        ".maestro/release-ios-live-frame-morph.yaml",
-        ".maestro/release-ios-live-frame-form.yaml",
-        ".maestro/release-android-frame-form.yaml",
-        ".maestro/release-android-picker-form.yaml",
+        ".maestro/COVERAGE.md",
+        ".maestro/release-gallery-static-action.yaml",
+        ".maestro/release-live-frame-morph-contracts.yaml",
+        ".maestro/release-live-frame-form.yaml",
+        ".maestro/release-frame-form-attachment-validation.yaml",
+        ".maestro/release-picker-form.android.yaml",
         "docs/ios-simulator-release-0.1.0.md",
         "docs/android-emulator-release-0.1.0.md"
       ]

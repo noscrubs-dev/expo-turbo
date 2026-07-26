@@ -2,26 +2,21 @@
 
 This private Expo SDK 57 application is the standalone native consumer and future compatibility gallery for `expo-turbo`. It owns its manifest and Bun lockfile, is not part of a package-manager workspace, and resolves the public package root through `file:../..`.
 
-The Rails-backed nested Frame morph panel exposes automatic direct `reload()` morphing, a normal Frame visit whose stable `before-frame-render` listener selects the package-owned bounded morph renderer, and an explicitly paused ordinary visit. The paused path keeps the prior outer/nested content visible until the host resumes that exact admitted response, after which it commits and runs the acknowledged nested canonical reload cascade.
+The Rails-backed nested Frame morph panel exposes automatic direct `reload()`
+morphing, a normal Frame visit whose stable `before-frame-render` listener
+selects the package-owned bounded morph renderer, and an explicitly paused
+ordinary visit. The paused path keeps the prior outer/nested content visible
+until the host resumes that exact admitted response, after which it commits and
+runs the acknowledged nested canonical reload cascade.
 
-`.maestro/live-frame-morph.yaml` drives that ordinary visit through Expo Go on
-iOS and asserts both visible Rails responses. It deliberately reacquires the
-control after dismissing the gallery's initial form autofocus so long-scroll
-layout changes cannot turn a stale coordinate into a false interaction.
-`.maestro/live-frame-render-pause.yaml` separately starts the paused path,
-asserts the accessible paused state and unchanged prior Frame content, resumes
-through the host control, and observes both Rails responses. Simulator UI
-interaction is Maestro-only.
+The checked-in release flows form one shared union suite documented in
+[`.maestro/README.md`](../../.maestro/README.md). The current evidence matrix in
+[`.maestro/COVERAGE.md`](../../.maestro/COVERAGE.md) records 71/71 contracts and
+115/115 atomic observations passing on a physical OnePlus Android device; the
+physical iOS column remains unrun. That matrix is authoritative when older
+scenario descriptions below discuss the narrower simulator proof that first
+introduced a behavior.
 
-`.maestro/release-gallery-smoke.yaml` launches the installed standalone
-`Release` application directly on iOS or Android, without Expo Go or a
-development server, and asserts the gallery plus its mounted Frame content.
-`.maestro/release-ios-live-frame-morph.yaml` additionally drives the installed
-iOS `Release` application against the compiled standalone Rails origin and
-asserts the ordinary outer morph plus acknowledged nested canonical reload.
-`.maestro/release-ios-live-frame-form.yaml` drives that same installed build
-through the live Rails Frame form's authoritative `422`, state-preserving
-`204`, and adapter-followed canonical `303`.
 The source package must be built before the example's independent `file:../..`
 install so Bun snapshots the generated `dist/` exports into that consumer.
 
@@ -74,10 +69,9 @@ bunx expo prebuild --platform ios --no-install
 cd ios && pod install
 ```
 
-The iPhone 17 Pro simulator and Pixel 2 API 33 emulator Release builds plus
-`.maestro/release-gallery-smoke.yaml` pass from a clean detached checkout. This
-closes simulator/emulator release admission only; physical iOS/Android evidence
-remains required.
+The iPhone 17 Pro simulator and Pixel 2 API 33 emulator Release builds pass from
+a clean detached checkout. Physical Android union-suite evidence is complete;
+physical iOS evidence remains required.
 
 For an Android Release build that includes the optional live Rails panels, keep
 the demo origin in the environment that runs Gradle's JavaScript bundle task:
@@ -102,7 +96,7 @@ adb push .maestro/fixtures/expo-turbo-android-picked.txt \
 adb shell am broadcast \
   -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
   -d file:///sdcard/Download/expo-turbo-android-picked.txt
-maestro test .maestro/release-android-picker-form.yaml
+maestro test .maestro/release-picker-form.android.yaml
 ```
 
 Run those commands from the public suite root. Maestro controls both the
@@ -124,10 +118,10 @@ the non-published example; the package does not weaken a consuming
 application's Android network-security policy. An installed Android Release
 emulator build uses this path to submit the example-owned fallback Blob, receive
 the matching Rails `422` response, and retain the attachment for retry through
-`.maestro/release-android-frame-form.yaml`. A second Release flow selects the
+`.maestro/release-frame-form-attachment-validation.yaml`. A second Release flow selects the
 checked-in text fixture through Android Files, submits the provider-backed Expo
-`File`, and retains its selected filename after matching `422` XML. Physical
-Android upload evidence remains open.
+`File`, and retains its selected filename after matching `422` XML. The same
+paths pass on the physical Android device recorded in `.maestro/COVERAGE.md`.
 
 The opt-in Rails panels are not rendered on web because the standalone Rails host intentionally has no CORS/origin policy. On native, the anonymous Action Cable panel uses `GET /api/expo_turbo/demo/document`, whose eager `turbo-frame#demo-frame` loads `GET /api/expo_turbo/demo/frame`; that Frame owns the panel's only public Cable source. The Rails-authored document contains one `data-turbo-stream` link that negotiates `GET /api/expo_turbo/demo/stream` and applies ordered update/append XML siblings, plus `?mode=morph`, which returns a normally newline-formatted Rails partial as `replace method="morph"`. That latter path preserves the exact `DemoStreamMorphProbe` root and its local counter while replacing the server message. Focused core/renderer tests, a real-Rails smoke, and an iPhone Simulator/Expo Go run cover it; that simulator run stays connected beyond the six-second monitor window and receives a live Rails replacement, proving ordinary server pings do not falsely trigger recovery. Android interaction, release-build, and physical-device confirmation remain later work. The same-origin `/cable` endpoint and local-only `POST /api/expo_turbo/demo/broadcast` deliver a fixed Expo XML `replace` or `?kind=refresh` control. Ordinary `refresh` Streams use the panel's injected `DocumentRefreshController`, debounce, and issue one canonical whole-document GET; they are intentionally distinct from bounded socket replacement reconciliation. The injected adapter honors an explicit Action Cable `disconnect` with `reconnect: true` or an opt-in stale-socket replacement by re-confirming the active Frame-scoped source, then uses `FrameReconnectReconciler` to issue one scroll-preserving canonical GET for the active outermost Frame—not a document GET. This example host treats only AppState `background` as destructive: it stops any in-flight generated Stream link before disposing the panel runtime, leaves iOS `inactive` alone, and creates a fresh document/Frame/socket/subscription path on later `active`; it has no user document navigation, server-owned Frame form, generic Frame navigation, auth, network monitoring, or generic client retry/backoff. The fixture deliberately has no document-level source; a document-level source would instead take document recovery. This remains bounded Stream/reconnect proof, not a general navigation surface or physical-device evidence.
 

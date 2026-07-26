@@ -22,6 +22,10 @@ machine-readable source of truth.
   the shared Maestro core-interaction flow.
 - [x] Android Emulator Release flows pass fallback-Blob and native Files-picker
   multipart submission through the real Rails host.
+- [x] The physical Android union suite passes all 71 shared contracts and 115
+  atomic observations, including fallback-Blob and native Files-picker
+  multipart, lifecycle/network recovery, protected Cable, renderer flush, and
+  Frame reconciliation.
 - [x] The web gallery passes the automated WCAG 2.0/2.1 A/AA axe audit and
   accessibility-tree naming checks.
 - [x] A paired non-publishing candidate was clean-installed, checksummed, and
@@ -34,15 +38,13 @@ machine-readable source of truth.
 
 ## Required before stable publication
 
-- [ ] Run the release gallery and multipart proof on a physical Android device.
 - [ ] Run the required lifecycle, network, protected-Cable, renderer-flush, and
-  Frame-reconciliation proofs on physical iOS and Android devices.
+  Frame-reconciliation proofs on a physical iOS device.
 - [ ] Complete manual VoiceOver, TalkBack, and browser screen-reader
   speech/navigation checks.
-- [ ] Commit the resulting evidence and close the five `incomplete` manifest
-  entries: `forms.android-multipart`, `cable.production-auth-device`,
-  `accessibility.physical-evidence`, `release.device-conformance`, and
-  `release.registry-publication`.
+- [ ] Commit the remaining evidence and close the four `incomplete` manifest
+  entries: `cable.production-auth-device`, `accessibility.physical-evidence`,
+  `release.device-conformance`, and `release.registry-publication`.
 - [ ] Run a new non-publishing candidate workflow from the final gated `main`
   commit.
 - [ ] Independently download and verify the final npm tarball and gem,

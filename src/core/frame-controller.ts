@@ -356,6 +356,7 @@ export class FrameController {
       return Promise.resolve(undefined)
     }
     if (
+      this.pendingFormResponseSource !== undefined &&
       sourceChanged &&
       source === this.pendingFormResponseSource &&
       !disabledChanged &&

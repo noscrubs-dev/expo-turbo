@@ -72,6 +72,18 @@ mock.module("react-native", () => ({
   Alert: { alert: () => undefined },
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
   FlatList: (props: Readonly<Record<string, unknown>>) => createElement("flat-list", props),
+  InteractionManager: {
+    runAfterInteractions(callback: () => void) {
+      callback();
+      return { cancel: () => undefined };
+    },
+  },
+  Keyboard: {
+    addListener: () => ({ remove: () => undefined }),
+    dismiss: () => undefined,
+  },
+  KeyboardAvoidingView: (props: Readonly<Record<string, unknown>>) =>
+    createElement("keyboard-avoiding-view", props),
   Linking: { openURL: async () => undefined },
   Platform: { OS: "web" },
   Pressable: (props: Readonly<Record<string, unknown>>) =>

@@ -48,9 +48,11 @@ semantics. It does not try to copy browser-only DOM behavior.
 > [!IMPORTANT]
 > `0.1.0` is launch-ready source, not a published stable release. The package,
 > gem, standalone examples, automated conformance suite, and installed iOS and
-> Android simulator Release audits are complete for the supported surface.
-> Physical iOS/Android and manual assistive-technology evidence must still pass
-> before the final candidate bytes are published to npm and RubyGems.
+> Android simulator Release audits are complete for the supported surface. The
+> physical Android union suite also passes all 71 contracts and 115 atomic
+> observations. Physical iOS and manual assistive-technology evidence must
+> still pass before the final candidate bytes are published to npm and
+> RubyGems.
 
 ## Try it from source
 
@@ -79,8 +81,8 @@ are the canonical integration examples.
 | TypeScript package | `0.1.0` with `prerelease` status; builds, packs, and clean-installs all six public entrypoints |
 | Rails gem | `0.1.0`; builds and clean-installs against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
-| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass the shared Maestro core flow |
-| Stable publication | Not published; physical-device, accessibility, final-candidate, and registry verification gates remain |
+| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android passes 71/71 shared contracts |
+| Stable publication | Not published; physical iOS, accessibility, final-candidate, and registry verification gates remain |
 
 See the
 [machine-readable compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
@@ -151,7 +153,7 @@ behavior.
 - [x] Component-owned draft preservation through compatible morphs
 - [x] Bounded host-provided Blob/file entries and native picker adapters
 - [x] Installed Android Emulator multipart proof through the real Rails host
-- [ ] Physical Android multipart proof
+- [x] Physical Android fallback-Blob and Files-picker multipart proof
 
 ### Streams and morphing
 
@@ -173,7 +175,8 @@ behavior.
 - [x] Document- and Frame-aware reconciliation after reconnect
 - [x] Public XML Stream namespaces and protected host-authorized subscriptions
 - [x] Short-lived header-ticket, resource-grant, revocation, and rotation example
-- [ ] Physical iOS/Android lifecycle, network, protected-Cable, and renderer-flush evidence
+- [x] Physical Android lifecycle, network, protected-Cable, and renderer-flush evidence
+- [ ] Physical iOS lifecycle, network, protected-Cable, and renderer-flush evidence
 
 ### Rails gem
 
@@ -197,7 +200,8 @@ behavior.
 - [x] Installed signed Android Emulator Release audit through real Rails
 - [x] Automated web WCAG 2.0/2.1 A/AA axe audit and accessibility-tree checks
 - [x] Paired candidate build, clean installs, checksums, and provenance proof
-- [ ] Physical iOS/Android conformance evidence
+- [x] Physical Android conformance evidence: 71/71 contracts and 115/115 observations
+- [ ] Physical iOS conformance evidence
 - [ ] Manual VoiceOver, TalkBack, and browser screen-reader evidence
 - [ ] Final paired candidate from the final gated commit
 - [ ] Stable npm/RubyGems publication and clean registry verification
