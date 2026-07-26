@@ -19,7 +19,6 @@ import {
 } from "react";
 import {
   Pressable,
-  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -182,12 +181,9 @@ export function DemoCompatibilityGallery() {
     () => subscribeDemoDeviceTestScenario(() => setDeviceTestScenario(true)),
     [],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!deviceTestScenario) return;
-    const interaction = InteractionManager.runAfterInteractions(() => {
-      scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 });
-    });
-    return () => interaction.cancel();
+    scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 });
   }, [deviceTestScenario]);
 
   return (
