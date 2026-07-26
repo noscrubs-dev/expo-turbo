@@ -49,10 +49,10 @@ semantics. It does not try to copy browser-only DOM behavior.
 > `0.1.0` is launch-ready source, not a published stable release. The package,
 > gem, standalone examples, automated conformance suite, and installed iOS and
 > Android simulator Release audits are complete for the supported surface. The
-> physical Android union suite also passes all 71 contracts and 115 atomic
-> observations. Physical iOS and manual assistive-technology evidence must
-> still pass before the final candidate bytes are published to npm and
-> RubyGems.
+> physical Android and iOS union suites also pass all 71 contracts and 115
+> atomic observations on each platform, including native provider multipart
+> proof. Manual assistive-technology evidence remains pending before the final
+> candidate bytes are published to npm and RubyGems.
 
 ## Try it from source
 
@@ -81,8 +81,8 @@ are the canonical integration examples.
 | TypeScript package | `0.1.0` with `prerelease` status; builds, packs, and clean-installs all six public entrypoints |
 | Rails gem | `0.1.0`; builds and clean-installs against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
-| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android passes 71/71 shared contracts |
-| Stable publication | Not published; physical iOS, accessibility, final-candidate, and registry verification gates remain |
+| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android and iOS each pass 71/71 shared contracts |
+| Stable publication | Not published; accessibility, final-candidate, and registry verification gates remain |
 
 See the
 [machine-readable compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
@@ -154,6 +154,7 @@ behavior.
 - [x] Bounded host-provided Blob/file entries and native picker adapters
 - [x] Installed Android Emulator multipart proof through the real Rails host
 - [x] Physical Android fallback-Blob and Files-picker multipart proof
+- [x] Physical iOS fallback-Blob and Files-picker multipart proof
 
 ### Streams and morphing
 
@@ -176,7 +177,7 @@ behavior.
 - [x] Public XML Stream namespaces and protected host-authorized subscriptions
 - [x] Short-lived header-ticket, resource-grant, revocation, and rotation example
 - [x] Physical Android lifecycle, network, protected-Cable, and renderer-flush evidence
-- [ ] Physical iOS lifecycle, network, protected-Cable, and renderer-flush evidence
+- [x] Physical iOS lifecycle, network, protected-Cable, and renderer-flush evidence
 
 ### Rails gem
 
@@ -201,7 +202,7 @@ behavior.
 - [x] Automated web WCAG 2.0/2.1 A/AA axe audit and accessibility-tree checks
 - [x] Paired candidate build, clean installs, checksums, and provenance proof
 - [x] Physical Android conformance evidence: 71/71 contracts and 115/115 observations
-- [ ] Physical iOS conformance evidence
+- [x] Physical iOS conformance evidence: 71/71 contracts and 115/115 observations
 - [ ] Manual VoiceOver, TalkBack, and browser screen-reader evidence
 - [ ] Final paired candidate from the final gated commit
 - [ ] Stable npm/RubyGems publication and clean registry verification
@@ -304,6 +305,7 @@ bun run examples:check
 - [Compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
 - [0.1.0 release readiness](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/release-readiness-0.1.0.md)
 - [iOS Simulator Release evidence](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/ios-simulator-release-0.1.0.md)
+- [physical iOS Release evidence](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/ios-device-release-0.1.0.md)
 - [Android Emulator Release evidence](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/android-emulator-release-0.1.0.md)
 - [Web accessibility evidence](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/web-accessibility-0.1.0.md)
 - [Changelog](https://github.com/noscrubs-dev/expo-turbo/blob/main/CHANGELOG.md)

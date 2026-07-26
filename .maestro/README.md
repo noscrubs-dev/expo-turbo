@@ -35,9 +35,11 @@ MAESTRO_DRIVER_STARTUP_TIMEOUT=180000 \
   maestro --device <serial> test .maestro/release-live-frame-form.yaml
 ```
 
-All normal `release-*.yaml` flows are shared across platforms. Android is the
-current execution target; iOS remains `Not run` and must not be inferred from
-Android evidence.
+All normal `release-*.yaml` flows are shared across platforms. Android runs
+through Maestro; the completed physical-iOS execution used Appium/XCUITest
+because Maestro does not drive physical iOS devices. See the
+[coverage matrix](./COVERAGE.md) and
+[physical-iOS evidence record](../docs/ios-device-release-0.1.0.md).
 
 The picker flow additionally needs a fixture in Android Downloads:
 
@@ -50,5 +52,6 @@ adb -s <serial> shell am broadcast \
   -d file:///sdcard/Download/expo-turbo-android-picked.txt
 ```
 
-The Android picker flow is the sole platform-specific exception; see the
-rationale in the coverage matrix.
+The checked-in Android picker flow is the sole platform-specific Maestro
+exception. The physical-iOS evidence record documents the equivalent real Files
+provider proof.

@@ -5,8 +5,9 @@ row is shared unless its contract explicitly names a platform. Android and iOS
 are evidence columns, not separate test families.
 
 Status values are `Pass`, `Fail`, `Pending`, and `Not run`. A flow name is the
-evidence locator; Maestro's timestamped artifacts live under
-`~/.maestro/tests/`.
+evidence locator; Android Maestro artifacts live under `~/.maestro/tests/`.
+The physical-iOS execution used Appium/XCUITest and is recorded in
+[the physical-iOS evidence document](../docs/ios-device-release-0.1.0.md).
 
 The checked-in release flows form one union suite. Platform columns below record
 executions of that same suite; they do not define different contract sets.
@@ -14,81 +15,81 @@ executions of that same suite; they do not define different contract sets.
 | Platform execution | Device | Shared contracts | Atomic observations | Union suite result | Artifact |
 | --- | --- | ---: | ---: | --- | --- |
 | Android | OnePlus `65c6e2cf` | **71/71 Pass** | **115/115 Pass** | **15/15 flows Pass** | `2026-07-25_091034` |
-| iOS | Physical device not available for this run | **0/71 run** | **0/115 run** | Not run | — |
+| iOS | iPad mini (A17 Pro), iPadOS 26.5, `00008130-0011650A0C20001C` | **71/71 Pass** | **115/115 Pass** | **14/14 shared flows + Files provider Pass** | [2026-07-26 physical-iOS record](../docs/ios-device-release-0.1.0.md) |
 
 | # | Shared user-visible contract | Android evidence | iOS evidence |
 | ---: | --- | --- | --- |
-| 1 | Release app boots to the Expo Turbo gallery | Pass — `release-gallery-static-action.yaml` | Not run |
-| 2 | Package, protocol, and registry status is visible | Pass — `release-gallery-static-action.yaml` | Not run |
-| 3 | XML static card renders | Pass — `release-gallery-static-action.yaml` | Not run |
-| 4 | RTL inheritance and nested LTR/auto direction render | Pass — `release-gallery-static-action.yaml` | Not run |
-| 5 | Typed component action records its validated XML message | Pass — `release-gallery-static-action.yaml` | Not run |
-| 6 | Direct Stream update mutates the static renderer | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Not run |
-| 7 | Stream completion is accessibility-visible | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Not run |
-| 8 | Required native first-name field blocks empty submission | Pass — `release-gallery-native-form.yaml` | Not run |
-| 9 | Invalid native field is focused and announced | Pass — `release-gallery-native-form.yaml` | Not run |
-| 10 | Restoring a valid native first name re-enables submission | Pass — `release-gallery-native-form.yaml` | Not run |
-| 11 | Host confirmation can cancel without sending a request | Pass — `release-gallery-native-form.yaml` | Not run |
-| 12 | Host confirmation approval proceeds | Pass — `release-gallery-native-form.yaml` | Not run |
-| 13 | Submitter exposes busy/submits-with state | Pass — `release-gallery-native-form.yaml` | Not run |
-| 14 | Duplicate native submission is guarded | Pass — `release-gallery-native-form.yaml` | Not run |
-| 15 | First safe preview GET exposes the intentional MIME failure | Pass — `release-gallery-native-form.yaml` | Not run |
-| 16 | Form boundary exposes Retry after failure | Pass — `release-gallery-native-form.yaml` | Not run |
-| 17 | Retry preserves current first-name/city/legend values | Pass — `release-gallery-native-form.yaml` | Not run |
-| 18 | Retry completes with 204 and no tree replacement | Pass — `release-gallery-native-form.yaml` | Not run |
-| 19 | Dismiss result clears terminal form state | Pass — `release-gallery-native-form.yaml` | Not run |
-| 20 | Query document preserves repeated and empty parameters | Pass — `release-gallery-document-links.yaml` | Not run |
-| 21 | Preload shows cached preview before canonical replacement | Pass — `release-gallery-document-links.yaml` | Not run |
-| 22 | Press-in prefetch response is reused | Pass — `release-gallery-document-links.yaml` | Not run |
-| 23 | Nested generic Router path preserves query metadata | Pass — `release-gallery-document-links.yaml` | Not run |
-| 24 | Root fragment link reaches native anchor without a request | Pass — `release-gallery-document-links.yaml` | Not run |
-| 25 | Replace action replaces the Router entry | Pass — `release-gallery-document-links.yaml` | Not run |
-| 26 | Generated document-form link confirms and reaches typed failure UI | Pass — `release-gallery-document-links.yaml` | Not run |
-| 27 | Cross-origin link delegates to the host adapter | Pass — `release-gallery-document-links.yaml` | Not run |
-| 28 | Disabled document link remains noninteractive | Pass — `release-gallery-document-links.yaml` | Not run |
-| 29 | Refresh Stream document commits canonical update and resets scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Not run |
-| 30 | Same-path replace morph commits and resets root scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Not run |
-| 31 | Root autofocus visit reveals and focuses its measured field | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Not run |
-| 32 | Native back restores cached document and root scroll checkpoint | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Not run |
-| 33 | Ordinary frame-scoped link commits the matching Frame | Pass — `release-gallery-frame-links.yaml` | Not run |
-| 34 | Generated form promotes the mounted Frame through history without a competing Frame GET | Pass — `release-gallery-frame-promotion.yaml`, artifact `2026-07-25_091034` | Not run |
-| 35 | In-Frame fragment link reaches its native anchor | Pass — `release-gallery-frame-links.yaml` | Not run |
-| 36 | Document-to-named-Frame fragment reaches the same anchor | Pass — `release-gallery-frame-links.yaml`, artifact `2026-07-25_091034` | Not run |
-| 37 | Preloaded Frame preview revalidates then reveals fragment | Pass — `release-gallery-frame-links.yaml` | Not run |
-| 38 | Nested ScrollView anchor uses its declared container | Pass — `release-gallery-visibility.yaml` | Not run |
-| 39 | Nested lazy Frame loads only after entering both clip regions | Pass — `release-gallery-visibility.yaml` | Not run |
-| 40 | FlatList Frame one loads from native viewability | Pass — `release-gallery-visibility.yaml` | Not run |
-| 41 | FlatList Frame two waits for swipe/viewability | Pass — `release-gallery-visibility.yaml` | Not run |
-| 42 | Recycled FlatList Frame three uses its current ID | Pass — `release-gallery-visibility.yaml` | Not run |
-| 43 | Preview lazy Frame loads, recurses, and autoscrolls | Pass — `release-gallery-visibility.yaml` | Not run |
-| 44 | Programmatic Frame visit uses the shared controller | Pass — `release-gallery-refresh-history-controls.yaml` | Not run |
-| 45 | Anonymous Cable panel initializes and connects | Pass — `release-live-cable.yaml` | Not run |
-| 46 | HTTP sibling Streams update and append independently | Pass — `release-live-cable.yaml` | Not run |
-| 47 | Local HTTP morph counter increments | Pass — `release-live-cable.yaml` | Not run |
-| 48 | Rails HTTP morph preserves local component state | Pass — `release-live-cable.yaml` | Not run |
-| 49 | Public Cable replace broadcasts XML | Pass — `release-live-cable.yaml` | Not run |
-| 50 | Public refresh broadcast reconciles canonical document | Pass — `release-live-cable.yaml` | Not run |
-| 51 | Background pauses anonymous Cable | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Not run |
-| 52 | Foreground reconnects, resubscribes, and reconciles once | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Not run |
-| 53 | Protected header-ticket Cable admits and connects | Pass — `release-protected-cable.yaml` | Not run |
-| 54 | Protected broadcast replaces the message | Pass — `release-protected-cable.yaml` | Not run |
-| 55 | Ticket rotation creates a recovered transport generation | Pass — `release-protected-cable.yaml` | Not run |
-| 56 | Rotated old transport stops receiving | Pass — rotation recovered and one subsequent protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Not run |
-| 57 | Ticket revocation disconnects/rejects prior admission | Pass — `release-protected-cable.yaml` | Not run |
-| 58 | Fresh protected admission recovers after revocation | Pass — disconnect was visible, fresh admission recovered, and the next protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Not run |
-| 59 | Canonical Rails document Refresh morph loads | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 60 | Document-refresh local counter increments | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 61 | Refresh Stream performs canonical GET/morph | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 62 | Compatible local identity survives document morph | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 63 | Originating request ID applies sibling status action | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 64 | Matching document Refresh Stream is suppressed | Pass — `release-document-refresh-morph.yaml` | Not run |
-| 65 | Live Frame form returns authoritative matching 422 | Pass — `release-live-frame-form.yaml` | Not run |
-| 66 | Local-draft 422 morph preserves compatible input | Pass — `release-live-frame-form.yaml` | Not run |
-| 67 | Live Frame form supports 204, 303, and text/plain success | Pass — `release-live-frame-form.yaml` | Not run |
-| 68 | Consent and plan validation/success paths complete | Pass — `release-live-form-secondary.yaml` | Not run |
-| 69 | Nested Frame reload, pause/resume, and morph cascade complete | Pass — `release-live-frame-morph-contracts.yaml` | Not run |
-| 70 | Built-in and selected attachments survive matching 422 | Pass — `release-frame-form-attachment-validation.yaml`; Android picker branch in `release-picker-form.android.yaml` | Not run |
-| 71 | Attachment success/retry and user-visible loading/error recovery complete | Pass — `release-frame-form-attachment-validation.yaml`, artifact `2026-07-25_091034` | Not run |
+| 1 | Release app boots to the Expo Turbo gallery | Pass — `release-gallery-static-action.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 2 | Package, protocol, and registry status is visible | Pass — `release-gallery-static-action.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 3 | XML static card renders | Pass — `release-gallery-static-action.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 4 | RTL inheritance and nested LTR/auto direction render | Pass — `release-gallery-static-action.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 5 | Typed component action records its validated XML message | Pass — `release-gallery-static-action.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 6 | Direct Stream update mutates the static renderer | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 7 | Stream completion is accessibility-visible | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 8 | Required native first-name field blocks empty submission | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 9 | Invalid native field is focused and announced | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 10 | Restoring a valid native first name re-enables submission | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 11 | Host confirmation can cancel without sending a request | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 12 | Host confirmation approval proceeds | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 13 | Submitter exposes busy/submits-with state | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 14 | Duplicate native submission is guarded | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 15 | First safe preview GET exposes the intentional MIME failure | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 16 | Form boundary exposes Retry after failure | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 17 | Retry preserves current first-name/city/legend values | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 18 | Retry completes with 204 and no tree replacement | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 19 | Dismiss result clears terminal form state | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 20 | Query document preserves repeated and empty parameters | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 21 | Preload shows cached preview before canonical replacement | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 22 | Press-in prefetch response is reused | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 23 | Nested generic Router path preserves query metadata | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 24 | Root fragment link reaches native anchor without a request | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 25 | Replace action replaces the Router entry | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 26 | Generated document-form link confirms and reaches typed failure UI | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 27 | Cross-origin link delegates to the host adapter | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 28 | Disabled document link remains noninteractive | Pass — `release-gallery-document-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 29 | Refresh Stream document commits canonical update and resets scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 30 | Same-path replace morph commits and resets root scroll | Pass — `release-gallery-refresh-history-controls.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 31 | Root autofocus visit reveals and focuses its measured field | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 32 | Native back restores cached document and root scroll checkpoint | Pass — `release-gallery-refresh-history-controls.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 33 | Ordinary frame-scoped link commits the matching Frame | Pass — `release-gallery-frame-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 34 | Generated form promotes the mounted Frame through history without a competing Frame GET | Pass — `release-gallery-frame-promotion.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 35 | In-Frame fragment link reaches its native anchor | Pass — `release-gallery-frame-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 36 | Document-to-named-Frame fragment reaches the same anchor | Pass — `release-gallery-frame-links.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 37 | Preloaded Frame preview revalidates then reveals fragment | Pass — `release-gallery-frame-links.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 38 | Nested ScrollView anchor uses its declared container | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 39 | Nested lazy Frame loads only after entering both clip regions | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 40 | FlatList Frame one loads from native viewability | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 41 | FlatList Frame two waits for swipe/viewability | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 42 | Recycled FlatList Frame three uses its current ID | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 43 | Preview lazy Frame loads, recurses, and autoscrolls | Pass — `release-gallery-visibility.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 44 | Programmatic Frame visit uses the shared controller | Pass — `release-gallery-refresh-history-controls.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 45 | Anonymous Cable panel initializes and connects | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 46 | HTTP sibling Streams update and append independently | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 47 | Local HTTP morph counter increments | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 48 | Rails HTTP morph preserves local component state | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 49 | Public Cable replace broadcasts XML | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 50 | Public refresh broadcast reconciles canonical document | Pass — `release-live-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 51 | Background pauses anonymous Cable | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 52 | Foreground reconnects, resubscribes, and reconciles once | Pass — `release-live-cable.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 53 | Protected header-ticket Cable admits and connects | Pass — `release-protected-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 54 | Protected broadcast replaces the message | Pass — `release-protected-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 55 | Ticket rotation creates a recovered transport generation | Pass — `release-protected-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 56 | Rotated old transport stops receiving | Pass — rotation recovered and one subsequent protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 57 | Ticket revocation disconnects/rejects prior admission | Pass — `release-protected-cable.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 58 | Fresh protected admission recovers after revocation | Pass — disconnect was visible, fresh admission recovered, and the next protected broadcast committed, `release-protected-cable.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 59 | Canonical Rails document Refresh morph loads | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 60 | Document-refresh local counter increments | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 61 | Refresh Stream performs canonical GET/morph | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 62 | Compatible local identity survives document morph | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 63 | Originating request ID applies sibling status action | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 64 | Matching document Refresh Stream is suppressed | Pass — `release-document-refresh-morph.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 65 | Live Frame form returns authoritative matching 422 | Pass — `release-live-frame-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 66 | Local-draft 422 morph preserves compatible input | Pass — `release-live-frame-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 67 | Live Frame form supports 204, 303, and text/plain success | Pass — `release-live-frame-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 68 | Consent and plan validation/success paths complete | Pass — `release-live-form-secondary.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 69 | Nested Frame reload, pause/resume, and morph cascade complete | Pass — `release-live-frame-morph-contracts.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 70 | Built-in and selected attachments survive matching 422 | Pass — `release-frame-form-attachment-validation.yaml`; Android picker branch in `release-picker-form.android.yaml` | Pass — `release-frame-form-attachment-validation.yaml`; real Files-provider proof in the [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 71 | Attachment success/retry and user-visible loading/error recovery complete | Pass — `release-frame-form-attachment-validation.yaml`, artifact `2026-07-25_091034` | Pass — shared flow plus selected-file retry/success in the [physical iOS record](../docs/ios-device-release-0.1.0.md) |
 
 ## Inventory reconciliation
 
@@ -126,13 +127,16 @@ and passes with the completed row 71 evidence.
 
 Current Android result: **71/71 grouped contracts Pass** and **115/115 atomic
 observations Pass** on the OnePlus device in artifact `2026-07-25_091034`.
-iOS remains **0/71 run** and must be recorded separately when a physical device
-is available.
+Current iOS result: **71/71 grouped contracts Pass** and **115/115 atomic
+observations Pass** on the physical iPad in the
+[2026-07-26 evidence record](../docs/ios-device-release-0.1.0.md).
 
 ## Platform-specific exception
 
-`release-picker-form.android.yaml` is the only platform-specific flow. It drives
-Android DocumentsUI and a fixture under `/sdcard/Download`. The shared
-multipart/retention contract remains row 70; this file supplies only its Android
-provider evidence. An iOS provider interaction will require an objectively
-different picker driver when an iOS device is available.
+`release-picker-form.android.yaml` is the only checked-in platform-specific
+Maestro flow. It drives Android DocumentsUI and a fixture under
+`/sdcard/Download`. The shared multipart/retention contract remains row 70;
+this file supplies its Android provider evidence. The physical-iOS run used an
+Appium/XCUITest picker driver to select the fixture through the real Files
+provider, retain it through two matching `422` responses, retry, and complete
+the final multipart upload.

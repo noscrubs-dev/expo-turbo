@@ -26,6 +26,10 @@ machine-readable source of truth.
   atomic observations, including fallback-Blob and native Files-picker
   multipart, lifecycle/network recovery, protected Cable, renderer flush, and
   Frame reconciliation.
+- [x] The physical iOS union suite passes all 71 shared contracts and 115
+  atomic observations, including real Files-provider multipart, matching `422`
+  retention, lifecycle/network recovery, protected Cable, renderer flush, and
+  Frame reconciliation.
 - [x] The web gallery passes the automated WCAG 2.0/2.1 A/AA axe audit and
   accessibility-tree naming checks.
 - [x] A paired non-publishing candidate was clean-installed, checksummed, and
@@ -38,13 +42,12 @@ machine-readable source of truth.
 
 ## Required before stable publication
 
-- [ ] Run the required lifecycle, network, protected-Cable, renderer-flush, and
-  Frame-reconciliation proofs on a physical iOS device.
 - [ ] Complete manual VoiceOver, TalkBack, and browser screen-reader
   speech/navigation checks.
-- [ ] Commit the remaining evidence and close the four `incomplete` manifest
-  entries: `cable.production-auth-device`, `accessibility.physical-evidence`,
-  `release.device-conformance`, and `release.registry-publication`.
+- [x] Record physical-device evidence and close
+  `cable.production-auth-device` and `release.device-conformance`.
+- [ ] Close `accessibility.physical-evidence` after the deferred manual checks
+  and `release.registry-publication` after publication verification.
 - [ ] Run a new non-publishing candidate workflow from the final gated `main`
   commit.
 - [ ] Independently download and verify the final npm tarball and gem,

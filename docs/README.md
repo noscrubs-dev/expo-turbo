@@ -9,6 +9,7 @@ Public architecture, compatibility, authoring, and release evidence lives here:
 - [Selector decision](./selector-spike.md)
 - [Expo Turbo 0.1.0 non-publishing candidate](./release-candidate-0.1.0.md)
 - [Expo Turbo 0.1.0 iOS Simulator Release evidence](./ios-simulator-release-0.1.0.md)
+- [Expo Turbo 0.1.0 physical iOS Release evidence](./ios-device-release-0.1.0.md)
 - [Expo Turbo 0.1.0 Android Emulator Release evidence](./android-emulator-release-0.1.0.md)
 - [Android device CI](./android-device-ci.md)
 - [Expo Turbo 0.1.0 web accessibility evidence](./web-accessibility-0.1.0.md)

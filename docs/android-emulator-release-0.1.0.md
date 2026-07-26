@@ -64,8 +64,11 @@ logs/device state; it did not perform UI interaction.
   Android Files, received matching Rails `422` XML, and retained that selected
   file for retry.
 
-Physical iOS and Android device testing, VoiceOver/TalkBack evidence, broader
-Android behavior coverage, and stable registry publication remain open.
+At this emulator baseline, physical-device and assistive-technology evidence
+remained open. The later physical Android and
+[physical iOS](./ios-device-release-0.1.0.md) union suites completed device
+conformance; manual VoiceOver/TalkBack/browser screen-reader evidence and stable
+registry publication remain open.
 
 ## Current core-interaction recertification
 

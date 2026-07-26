@@ -65,7 +65,10 @@ macOS pointer/keyboard automation, or other UI-control mechanism was used.
 - `release-ios-live-frame-form.yaml` passed authoritative `422`, state-preserving
   `204`, and adapter-followed canonical `303` behavior.
 
-Physical iOS and Android device testing, VoiceOver/TalkBack evidence, and stable
+At this simulator baseline, physical-device and assistive-technology evidence
+remained open. The later physical Android and
+[physical iOS](./ios-device-release-0.1.0.md) union suites completed device
+conformance; manual VoiceOver/TalkBack/browser screen-reader evidence and stable
 registry publication remain open.
 
 ## Current core-interaction recertification

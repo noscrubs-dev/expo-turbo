@@ -34,11 +34,11 @@ Node verification found extensionless ESM directory imports that Bun had
 accepted. PR #372 fixed those imports, added NodeNext compilation, and changed
 the release clean consumer to Node before replacement run `30057454059`.
 
-Stable npm/RubyGems publication remains prohibited until the compatibility
-manifest's public conformance, physical-device, and accessibility evidence is
-complete. Product-host adoption is a separate future project and is not a
-public-release prerequisite. Merging this evidence record advances `main`, so
-run `30057454059` becomes the latest independently verified pipeline proof
-rather than the publishable candidate. The final gated commit must produce a
-new candidate, and stable publication must reuse that later run's exact frozen
-bytes.
+The later physical Android and iOS union suites completed public device
+conformance. Stable npm/RubyGems publication remains prohibited until the
+deferred manual accessibility evidence is resolved and the final gated commit
+produces a new candidate. Product-host adoption is a separate future project
+and is not a public-release prerequisite. Merging this historical evidence
+record advanced `main`, so run `30057454059` remains independently verified
+pipeline proof rather than the publishable candidate. Stable publication must
+reuse the later final run's exact frozen bytes.
