@@ -2,9 +2,13 @@ appId: com.android.chrome
 ---
 - launchApp
 - extendedWaitUntil:
-    visible: Use without an account
+    visible: Use without an account|Got it|Search or type web address
     timeout: 60000
-- tapOn: Use without an account
+- runFlow:
+    when:
+      visible: Use without an account
+    commands:
+      - tapOn: Use without an account
 - runFlow:
     when:
       visible: Got it

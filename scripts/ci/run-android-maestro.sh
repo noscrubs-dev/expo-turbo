@@ -39,6 +39,27 @@ readonly emulator_log="$artifacts/emulator.log"
 readonly resource_log="$artifacts/resources.log"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
 
+wait_for_stable_device() {
+  local consecutive_checks=0
+
+  for _ in $(seq 1 60); do
+    if [ "$(adb -s "$adb_serial" get-state 2>/dev/null)" = "device" ] &&
+      adb -s "$adb_serial" shell true >/dev/null 2>&1; then
+      consecutive_checks=$((consecutive_checks + 1))
+      if [ "$consecutive_checks" -eq 3 ]; then
+        return
+      fi
+    else
+      consecutive_checks=0
+      adb reconnect offline >/dev/null 2>&1 || true
+    fi
+    sleep 2
+  done
+
+  echo "Android emulator did not maintain a stable ADB connection." >&2
+  return 1
+}
+
 mkdir -p "$artifacts"
 : >"$rails_log"
 : >"$emulator_log"
@@ -174,7 +195,13 @@ adb -s "$adb_serial" shell am broadcast \
   -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
   -d file:///sdcard/Download/expo-turbo-android-picked.txt >/dev/null
 
-maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
+wait_for_stable_device
+if ! maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml; then
+  echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
+  adb reconnect offline >/dev/null 2>&1 || true
+  wait_for_stable_device
+  maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
+fi
 maestro --device "$adb_serial" test \
   --format junit \
   --output "$artifacts/maestro-junit.xml" \
