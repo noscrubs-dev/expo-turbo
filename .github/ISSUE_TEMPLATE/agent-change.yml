@@ -1,0 +1,80 @@
+name: Agent-ready change
+description: Give a coding agent enough context to reproduce, implement, and validate a change.
+title: "[Change]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write for a coding agent starting with zero context. Report observed facts separately from hypotheses, and do not submit a code patch.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Change type
+      options:
+        - Bug
+        - Compatibility gap
+        - Feature
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and impact
+      description: What happens today, who it affects, and why it matters.
+      placeholder: Describe observed behavior and impact. Label any suspected cause as a hypothesis.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest deterministic example and exact steps or commands.
+      placeholder: |
+        1. Environment and relevant package versions:
+        2. Minimal app, route, payload, or configuration:
+        3. Exact command or action:
+        4. Actual result:
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste minimal logs, errors, payloads, screenshots, or a reproduction repository. Remove secrets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior and constraints
+      description: State the desired result, compatibility requirements, and behavior that must not regress.
+    validations:
+      required: true
+
+  - type: textarea
+    id: investigation
+    attributes:
+      label: Compressed investigation and proposed solution
+      description: Optional. Paste conclusions from your agent or your own analysis, including relevant files and rejected approaches. Do not attach a patch.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance and validation
+      description: Give observable pass/fail criteria and the tests, platforms, or examples that should prove the fix.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agreement
+    attributes:
+      label: Submission check
+      options:
+        - label: I provided reproducible context rather than a code patch, and removed secrets or private data.
+          required: true

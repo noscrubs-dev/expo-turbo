@@ -13,12 +13,15 @@
 > Frames, Streams, forms, and Action Cable model to Expo React Native while
 > keeping the UI native.
 >
-> Contributions are welcome as **context, not code patches**. We do not merge
-> diff/patch PRs because the maintainers did not write this code and cannot
-> responsibly judge its implementation-level best practices. Either work with
-> an AI agent to reproduce and solve the issue locally, then ask it to compress
-> the relevant context into a PR, or write the prompt yourself with the issue,
-> reproduction, expected behavior, and proposed solution. Our coding agents
+> Contributions are welcome, with one caveat: please [open a guided
+> issue](https://github.com/noscrubs-dev/expo-turbo/issues/new?template=agent-change.yml)
+> with **context, not a code patch**. Pull requests are disabled because the
+> maintainers did not write this code and cannot responsibly judge its
+> implementation-level best practices. Write for an agent starting with zero
+> context: separate facts from hypotheses; include the problem and impact,
+> exact reproduction and evidence, expected behavior and constraints, plus how
+> the fix should be validated. You may investigate locally with your own agent
+> and paste its compressed findings and proposed solution. Our coding agents
 > will reproduce the problem, implement the change, and validate the fix.
 
 Expo Turbo lets a Rails application send Turbo-style pages and updates to an
