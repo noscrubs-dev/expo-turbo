@@ -15,8 +15,8 @@ import {
 } from "./index"
 
 describe("package status", () => {
-  test("reports the source as prerelease until stable publication", () => {
-    expect(EXPO_TURBO_STATUS).toBe("prerelease")
+  test("reports the declared source surface as stable", () => {
+    expect(EXPO_TURBO_STATUS).toBe("stable")
     expect(FormSubmissionController).toBeFunction()
     expect(FrameCommitError).toBeFunction()
     expect(FrameLifecycle).toBeFunction()

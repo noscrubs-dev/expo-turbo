@@ -87,7 +87,9 @@ fixture normalization represents its sibling Stream elements. Compact
 morph/refresh metadata, plus ordered top-level template tags. XML comments and
 envelope-level XML whitespace are not part of either normalized envelope.
 
-The package remains pre-release and does not yet claim complete Turbo compatibility.
+The stable package claims only the exact and native-equivalent surface recorded
+in the compatibility manifest; it does not claim complete Turbo compatibility
+or the still-pending manual assistive-technology evidence.
 
 ## State references
 

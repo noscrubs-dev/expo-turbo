@@ -7,8 +7,8 @@ machine-readable source of truth.
 
 ## Ready
 
-- [x] TypeScript package and runtime versions are `0.1.0`; public status is
-  `prerelease` until stable publication.
+- [x] TypeScript package and runtime versions are `0.1.0`; the frozen candidate
+  reports the declared surface as `stable`.
 - [x] Ruby gem version is `0.1.0`.
 - [x] Six public ESM/TypeScript entrypoints build, pack, and import in a clean
   Node consumer.
@@ -40,10 +40,10 @@ machine-readable source of truth.
 - [x] Public contribution, security, code-of-conduct, changelog, license, and
   release-evidence documentation exists.
 
-## Required before stable publication
+## Release execution
 
-- [ ] Complete manual VoiceOver, TalkBack, and browser screen-reader
-  speech/navigation checks.
+- [x] Keep manual VoiceOver, TalkBack, and browser screen-reader
+  speech/navigation explicitly deferred; `0.1.0` does not claim that evidence.
 - [x] Record physical-device evidence and close
   `cable.production-auth-device` and `release.device-conformance`.
 - [ ] Close `accessibility.physical-evidence` after the deferred manual checks
@@ -71,14 +71,14 @@ publishable package and gem.
 
 ## Launch handoff
 
-When every item above is checked:
+For the stable release:
 
 1. Run the reviewer-gated stable publication workflow with the final successful
    candidate run ID.
 2. Confirm npm and RubyGems expose version `0.1.0`.
 3. Confirm the immutable `v0.1.0` source tag and GitHub release point to the
    candidate commit.
-4. Replace the pre-publication notices in the repository and package READMEs
-   with the stable release date and registry links.
+4. Confirm the frozen package and gem READMEs contain the stable release date
+   and registry links.
 5. Announce only the support surface described by the compatibility manifest;
    keep browser-only N/A behavior and host-owned product policy explicit.

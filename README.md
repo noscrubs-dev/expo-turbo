@@ -46,18 +46,17 @@ The implementation targets the supported native equivalents of Turbo `8.0.23`
 semantics. It does not try to copy browser-only DOM behavior.
 
 > [!IMPORTANT]
-> `0.1.0` is launch-ready source, not a published stable release. The package,
-> gem, standalone examples, automated conformance suite, and installed iOS and
+> `0.1.0` is the stable release published on 2026-07-27. The package, gem,
+> standalone examples, automated conformance suite, and installed iOS and
 > Android simulator Release audits are complete for the supported surface. The
 > physical Android and iOS union suites also pass all 71 contracts and 115
 > atomic observations on each platform, including native provider multipart
-> proof. Manual assistive-technology evidence remains pending before the final
-> candidate bytes are published to npm and RubyGems.
+> proof. Manual VoiceOver, TalkBack, and browser screen-reader evidence remains
+> an explicit follow-up and is not claimed by the `0.1.0` compatibility surface.
 
 ## Try it from source
 
-The stable packages have not been published yet. To inspect and test the
-current source:
+To inspect and test the current source:
 
 ```sh
 git clone https://github.com/noscrubs-dev/expo-turbo.git
@@ -78,11 +77,11 @@ are the canonical integration examples.
 
 | Area | Current status |
 | --- | --- |
-| TypeScript package | `0.1.0` with `prerelease` status; builds, packs, and clean-installs all six public entrypoints |
-| Rails gem | `0.1.0`; builds and clean-installs against `turbo-rails` `2.0.10` and `2.0.23` |
+| TypeScript package | [`expo-turbo@0.1.0`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all six public entrypoints |
+| Rails gem | [`expo_turbo-rails` 0.1.0](https://rubygems.org/gems/expo_turbo-rails); clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
 | Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android and iOS each pass 71/71 shared contracts |
-| Stable publication | Not published; accessibility, final-candidate, and registry verification gates remain |
+| Stable publication | [`v0.1.0`](https://github.com/noscrubs-dev/expo-turbo/releases/tag/v0.1.0), published 2026-07-27 from one verified frozen npm/gem candidate |
 
 See the
 [machine-readable compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
@@ -90,17 +89,12 @@ and
 [0.1.0 release-readiness checklist](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/release-readiness-0.1.0.md)
 for the exact boundary.
 
-## Install after the stable release
-
-These registry commands become valid only after the stable `0.1.0` release is
-announced:
+## Install
 
 ```sh
 bun add expo-turbo
 bundle add expo_turbo-rails
 ```
-
-Until then, use the checked-out source steps above.
 
 ## Detailed support checklist
 

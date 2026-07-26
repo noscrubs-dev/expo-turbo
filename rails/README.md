@@ -5,11 +5,10 @@ The Rails package for Expo Turbo. It registers the distinct `application/vnd.exp
 The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. Its optional protected Cable boundary delegates all credentials and resource policy to the host.
 
 > [!IMPORTANT]
-> Version `0.1.0` is present in source but is not yet published to RubyGems.
-> Follow the repository's
-> [release-readiness checklist](https://github.com/noscrubs-dev/expo-turbo/blob/main/docs/release-readiness-0.1.0.md)
-> and use the sibling path gem for source development until the stable release
-> is announced.
+> Version [`0.1.0`](https://rubygems.org/gems/expo_turbo-rails) is the stable
+> release published on 2026-07-27. Manual VoiceOver, TalkBack, and browser
+> screen-reader evidence remains an explicit follow-up and is not claimed by
+> the `0.1.0` compatibility surface.
 
 ```ruby
 gem "expo_turbo-rails"

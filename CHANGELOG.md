@@ -4,11 +4,19 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.0 - 2026-07-27
+
+- Publish the first stable `expo-turbo` npm package and `expo_turbo-rails` gem
+  from one checksummed, attested candidate, with physical Android and iOS
+  conformance complete. Manual assistive-technology evidence remains an
+  explicit follow-up outside the declared `0.1.0` compatibility surface.
 - Reconcile the completed physical Android union-suite evidence across the
   compatibility manifest and release docs, close the Android multipart gap,
   update consolidated Maestro evidence paths, and repair the Frame-source plus
   standalone-example test regressions exposed by the expanded device suite.
-- Change `EXPO_TURBO_STATUS` from `foundation` to `prerelease` now that the declared `0.1.0` source surface and conformance inventory are complete; stable registry publication remains gated by physical-device and accessibility evidence.
+- Promote `EXPO_TURBO_STATUS` from `foundation` through `prerelease` to `stable`
+  after completing the declared `0.1.0` source surface, conformance inventory,
+  and physical-device evidence.
 - Document the `0.1.0` source installation and adopter boundaries, add a launch-oriented getting-started guide, and consolidate the exact remaining physical-device, accessibility, final-candidate, publication, and registry-verification gates.
 - Add deterministic Maestro-only iOS Simulator evidence for the Rails-backed controlled Frame morph visit. The flow opens the Expo Go gallery, settles initial live-form autofocus, reacquires the long-scroll target, triggers the ordinary `renderMorph()` visit, and observes both the outer response and acknowledged nested canonical reload without macOS UI automation.
 - Add a standalone Expo/Rails gallery proof for controlled ordinary Frame morph visits. A visible second control performs a normal matching Frame visit, selects `renderMorph()` through `before-frame-render`, retains the exact stable outer application node, ignores stale nested payload, and completes the renderer-acknowledged nested Frame reload cascade; focused and real-host smoke tests cover both requests.

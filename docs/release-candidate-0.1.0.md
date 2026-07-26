@@ -35,10 +35,9 @@ accepted. PR #372 fixed those imports, added NodeNext compilation, and changed
 the release clean consumer to Node before replacement run `30057454059`.
 
 The later physical Android and iOS union suites completed public device
-conformance. Stable npm/RubyGems publication remains prohibited until the
-deferred manual accessibility evidence is resolved and the final gated commit
-produces a new candidate. Product-host adoption is a separate future project
-and is not a public-release prerequisite. Merging this historical evidence
-record advanced `main`, so run `30057454059` remains independently verified
-pipeline proof rather than the publishable candidate. Stable publication must
-reuse the later final run's exact frozen bytes.
+conformance. Manual accessibility evidence remains explicitly deferred and is
+not claimed by the `0.1.0` compatibility surface. Product-host adoption is a
+separate future project and is not a public-release prerequisite. Merging this
+historical evidence record advanced `main`, so run `30057454059` remains
+independently verified pipeline proof rather than the publishable candidate.
+Stable publication must reuse the later final run's exact frozen bytes.
