@@ -11,6 +11,7 @@ on:
         options:
           - candidate
           - publish
+          - recover-gem
       candidate_run_id:
         description: Successful Release candidate workflow run ID required for stable publication
         required: false
@@ -319,7 +320,7 @@ jobs:
 
   stable-publication:
     name: Stable publication
-    if: ${{ inputs.operation == 'publish' }}
+    if: ${{ inputs.operation == 'publish' || inputs.operation == 'recover-gem' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -340,6 +341,7 @@ jobs:
         env:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           GITHUB_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -362,11 +364,14 @@ jobs:
             run.conclusion !== "success" ||
             run.event !== "workflow_dispatch" ||
             run.head_branch !== "main" ||
-            run.head_sha !== process.env.GITHUB_SHA ||
             run.path !== ".github/workflows/release.yml"
           ) {
-            throw new Error("Candidate run is not a successful release.yml run for this exact main commit")
+            throw new Error("Candidate run is not a successful release.yml run from main")
           }
+          if (process.env.OPERATION === "publish" && run.head_sha !== process.env.GITHUB_SHA) {
+            throw new Error("Candidate run is not for this exact main commit")
+          }
+          require("node:fs").appendFileSync(process.env.GITHUB_ENV, `CANDIDATE_COMMIT=${run.head_sha}\n`)
           NODE
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -392,7 +397,7 @@ jobs:
           const manifest = JSON.parse(readFileSync("release-candidate/release-candidate.json", "utf8"))
           const candidateRunId = Number(process.env.CANDIDATE_RUN_ID)
           const expectedRepository = process.env.GITHUB_REPOSITORY
-          const expectedCommit = process.env.GITHUB_SHA
+          const expectedCommit = process.env.CANDIDATE_COMMIT
           const packageName = manifest.package?.name
           const packageVersion = manifest.package?.version
           const gemName = manifest.gem?.name
@@ -445,24 +450,29 @@ jobs:
             --bundle release-candidate/provenance.jsonl \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-            --source-digest "$GITHUB_SHA" \
+            --source-digest "$CANDIDATE_COMMIT" \
             --source-ref refs/heads/main
           gh attestation verify "$GEM_ARTIFACT" \
             --bundle release-candidate/provenance.jsonl \
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-            --source-digest "$GITHUB_SHA" \
+            --source-digest "$CANDIDATE_COMMIT" \
             --source-ref refs/heads/main
       - name: Require both exact versions to be unpublished
         shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
           node <<'NODE'
           const npmResponse = await fetch(
             `https://registry.npmjs.org/${encodeURIComponent(process.env.NPM_NAME)}/${encodeURIComponent(process.env.PACKAGE_VERSION)}`,
           )
-          if (npmResponse.status !== 404) {
+          if (process.env.OPERATION === "publish" && npmResponse.status !== 404) {
             throw new Error(`npm ${process.env.NPM_NAME}@${process.env.PACKAGE_VERSION} is already present or unavailable: ${npmResponse.status}`)
+          }
+          if (process.env.OPERATION === "recover-gem" && !npmResponse.ok) {
+            throw new Error(`npm ${process.env.NPM_NAME}@${process.env.PACKAGE_VERSION} must already be published for gem recovery: ${npmResponse.status}`)
           }
           const gemResponse = await fetch(
             `https://rubygems.org/api/v1/versions/${encodeURIComponent(process.env.GEM_NAME)}.json`,
@@ -494,6 +504,7 @@ jobs:
       - name: Configure RubyGems trusted-publisher credentials
         uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
       - name: Publish the exact frozen npm and RubyGems bytes
+        if: ${{ inputs.operation == 'publish' }}
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -501,6 +512,10 @@ jobs:
           set -euo pipefail
           npm publish "$NPM_ARTIFACT" --access public --provenance
           gem push "$GEM_ARTIFACT"
+      - name: Recover the exact frozen RubyGems bytes
+        if: ${{ inputs.operation == 'recover-gem' }}
+        shell: bash
+        run: gem push "$GEM_ARTIFACT"
       - name: Verify registry downloads match the frozen checksums
         shell: bash
         run: |
@@ -556,6 +571,6 @@ jobs:
             release-candidate/SHA256SUMS \
             release-candidate/provenance.jsonl \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --target "$CANDIDATE_COMMIT" \
             --title "Expo Turbo $PACKAGE_VERSION" \
             --notes "Stable publication of the frozen candidate from workflow run ${{ inputs.candidate_run_id }}."
