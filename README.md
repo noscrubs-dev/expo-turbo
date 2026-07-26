@@ -4,6 +4,23 @@
 [![RubyGems version](https://img.shields.io/gem/v/expo_turbo-rails.svg)](https://rubygems.org/gems/expo_turbo-rails)
 [![CI](https://github.com/noscrubs-dev/expo-turbo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/noscrubs-dev/expo-turbo/actions/workflows/ci.yml?query=branch%3Amain)
 
+> [!IMPORTANT]
+> **This project is 100% AI-generated.** It began as a goal given to Codex and
+> took six days of iterative implementation, reproduction, testing, and
+> correction—not a one-shot generation. We did not meter the exact cost, but
+> estimate that the work used at least a few tens of thousands of dollars'
+> worth of inference. The goal is to bring Turbo's server-driven navigation,
+> Frames, Streams, forms, and Action Cable model to Expo React Native while
+> keeping the UI native.
+>
+> Contributions are welcome as **context, not code patches**. We do not merge
+> diff/patch PRs because the maintainers did not write this code and cannot
+> responsibly judge its implementation-level best practices. Either work with
+> an AI agent to reproduce and solve the issue locally, then ask it to compress
+> the relevant context into a PR, or write the prompt yourself with the issue,
+> reproduction, expected behavior, and proposed solution. Our coding agents
+> will reproduce the problem, implement the change, and validate the fix.
+
 Expo Turbo lets a Rails application send Turbo-style pages and updates to an
 Expo React Native application.
 
