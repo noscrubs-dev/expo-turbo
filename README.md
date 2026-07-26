@@ -1,5 +1,9 @@
 # Expo Turbo
 
+[![npm version](https://img.shields.io/npm/v/expo-turbo.svg)](https://www.npmjs.com/package/expo-turbo)
+[![RubyGems version](https://img.shields.io/gem/v/expo_turbo-rails.svg)](https://rubygems.org/gems/expo_turbo-rails)
+[![CI](https://github.com/noscrubs-dev/expo-turbo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/noscrubs-dev/expo-turbo/actions/workflows/ci.yml?query=branch%3Amain)
+
 Expo Turbo lets a Rails application send Turbo-style pages and updates to an
 Expo React Native application.
 
