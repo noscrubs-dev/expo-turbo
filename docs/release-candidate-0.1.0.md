@@ -39,6 +39,13 @@ commit with the unchanged package, gem, manifest, checksums, and provenance
 assets. Fresh registry consumers then repeated the six Node imports, npm
 signature/attestation audit, and both Bundler matrix loads.
 
+The follow-up automation fix reserves the immutable tag and an exact-asset
+draft GitHub release while the normal publication workflow still runs at the
+candidate commit. The draft becomes public only after both registries verify.
+A gem-only recovery therefore edits the already-bound draft instead of asking
+GitHub's workflow token to create a release at an older workflow-changing
+commit.
+
 The later physical Android and iOS union suites completed public device
 conformance. Manual accessibility evidence remains explicitly deferred and is
 not claimed by the `0.1.0` compatibility surface. Product-host adoption remains

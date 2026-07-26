@@ -488,20 +488,64 @@ jobs:
             }
           }
           NODE
-      - name: Require the source tag and GitHub release to be unused
+      - name: Reserve or verify the immutable source tag and draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Git tag $RELEASE_TAG already exists" >&2
-            exit 1
+
+          tag_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null || true)"
+          if [ -n "$tag_commit" ]; then
+            test "$tag_commit" = "$CANDIDATE_COMMIT"
+          else
+            if [ "$OPERATION" != "publish" ] || [ "$CANDIDATE_COMMIT" != "$GITHUB_SHA" ]; then
+              echo "Recovery requires $RELEASE_TAG to already point at the frozen candidate" >&2
+              exit 1
+            fi
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$CANDIDATE_COMMIT" \
+              --silent
           fi
+
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub release $RELEASE_TAG already exists" >&2
-            exit 1
+            test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = "true"
+          else
+            if [ "$OPERATION" != "publish" ] || [ "$CANDIDATE_COMMIT" != "$GITHUB_SHA" ]; then
+              echo "Recovery requires the frozen candidate's draft GitHub release" >&2
+              exit 1
+            fi
+            gh release create "$RELEASE_TAG" \
+              "$NPM_ARTIFACT" \
+              "$GEM_ARTIFACT" \
+              release-candidate/release-candidate.json \
+              release-candidate/SHA256SUMS \
+              release-candidate/provenance.jsonl \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "Expo Turbo $PACKAGE_VERSION" \
+              --notes "Stable publication of the frozen candidate from workflow run ${{ inputs.candidate_run_id }}."
           fi
+
+          release_assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
+          expected_assets="$(printf '%s\n' \
+            "SHA256SUMS" \
+            "$NPM_NAME-$PACKAGE_VERSION.tgz" \
+            "$GEM_NAME-$GEM_VERSION.gem" \
+            "provenance.jsonl" \
+            "release-candidate.json" | sort)"
+          test "$release_assets" = "$expected_assets"
+
+          release_download="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release_download"
+          cmp "$release_download/$NPM_NAME-$PACKAGE_VERSION.tgz" "$NPM_ARTIFACT"
+          cmp "$release_download/$GEM_NAME-$GEM_VERSION.gem" "$GEM_ARTIFACT"
+          cmp "$release_download/release-candidate.json" release-candidate/release-candidate.json
+          cmp "$release_download/SHA256SUMS" release-candidate/SHA256SUMS
+          cmp "$release_download/provenance.jsonl" release-candidate/provenance.jsonl
       - name: Configure RubyGems trusted-publisher credentials
         uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
       - name: Publish the exact frozen npm and RubyGems bytes
@@ -557,19 +601,16 @@ jobs:
             throw new Error("Published RubyGems artifact does not match the frozen candidate")
           }
           NODE
-      - name: Create the immutable source tag and GitHub release
+      - name: Publish the verified draft GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" \
-            "$NPM_ARTIFACT" \
-            "$GEM_ARTIFACT" \
-            release-candidate/release-candidate.json \
-            release-candidate/SHA256SUMS \
-            release-candidate/provenance.jsonl \
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = "$CANDIDATE_COMMIT"
+          gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$CANDIDATE_COMMIT" \
-            --title "Expo Turbo $PACKAGE_VERSION" \
-            --notes "Stable publication of the frozen candidate from workflow run ${{ inputs.candidate_run_id }}."
+            --verify-tag \
+            --draft=false \
+            --latest
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = "false"
