@@ -198,8 +198,8 @@ behavior.
 - [x] Physical Android conformance evidence: 71/71 contracts and 115/115 observations
 - [x] Physical iOS conformance evidence: 71/71 contracts and 115/115 observations
 - [ ] Manual VoiceOver, TalkBack, and browser screen-reader evidence
-- [ ] Final paired candidate from the final gated commit
-- [ ] Stable npm/RubyGems publication and clean registry verification
+- [x] Final paired candidate from the final gated commit
+- [x] Stable npm/RubyGems publication and clean registry verification
 
 ## Responsibilities and limits
 

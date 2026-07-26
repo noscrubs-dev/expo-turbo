@@ -13,7 +13,7 @@ on:
           - publish
           - recover-gem
       candidate_run_id:
-        description: Successful Release candidate workflow run ID required for stable publication
+        description: Successful Release candidate workflow run ID required for publication or recovery
         required: false
         type: string
 
@@ -459,7 +459,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-digest "$CANDIDATE_COMMIT" \
             --source-ref refs/heads/main
-      - name: Require both exact versions to be unpublished
+      - name: Require the expected registry state
         shell: bash
         env:
           OPERATION: ${{ inputs.operation }}
@@ -507,8 +507,6 @@ jobs:
       - name: Publish the exact frozen npm and RubyGems bytes
         if: ${{ inputs.operation == 'publish' }}
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           npm publish "$NPM_ARTIFACT" --access public --provenance

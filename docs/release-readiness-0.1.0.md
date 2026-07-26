@@ -32,8 +32,8 @@ machine-readable source of truth.
   Frame reconciliation.
 - [x] The web gallery passes the automated WCAG 2.0/2.1 A/AA axe audit and
   accessibility-tree naming checks.
-- [x] A paired non-publishing candidate was clean-installed, checksummed, and
-  attested; its Node ESM failure was fixed and the replacement proof passed.
+- [x] The final paired non-publishing candidate was clean-installed,
+  checksummed, attested, and published without rebuilding.
 - [x] Candidate and stable release automation builds paired artifacts, verifies
   provenance/checksums, and separates non-publishing from reviewer-gated
   publication.
@@ -46,24 +46,24 @@ machine-readable source of truth.
   speech/navigation explicitly deferred; `0.1.0` does not claim that evidence.
 - [x] Record physical-device evidence and close
   `cable.production-auth-device` and `release.device-conformance`.
-- [ ] Close `accessibility.physical-evidence` after the deferred manual checks
-  and `release.registry-publication` after publication verification.
-- [ ] Run a new non-publishing candidate workflow from the final gated `main`
+- [ ] Close `accessibility.physical-evidence` after the deferred manual checks.
+- [x] Close `release.registry-publication` after exact-byte publication and
+  registry verification.
+- [x] Run a new non-publishing candidate workflow from the final gated `main`
   commit.
-- [ ] Independently download and verify the final npm tarball and gem,
+- [x] Independently download and verify the final npm tarball and gem,
   checksums, provenance, clean Node imports, and both clean Bundler consumers.
-- [ ] Approve stable publication of those exact frozen bytes—without rebuilding
+- [x] Approve stable publication of those exact frozen bytes—without rebuilding
   them—to npm and RubyGems.
-- [ ] Verify registry downloads, metadata, checksums, versions, source tag,
+- [x] Verify registry downloads, metadata, checksums, versions, source tag,
   GitHub release, protocol version, and public commit all agree.
 
 ## Publication rule
 
-The previous
-[candidate](./release-candidate-0.1.0.md) proves the release machinery but is
-not publishable because later evidence commits advanced `main`. Stable
-publication must consume a successful candidate produced from the final gated
-commit and must reuse that candidate's exact npm and gem bytes.
+The published [release record](./release-candidate-0.1.0.md) identifies
+candidate run `30222494157` from commit
+`338bf95fc52d0c56fd90565872f20e3b72bc16bc`. npm, RubyGems, and the GitHub
+release expose that candidate's exact package and gem bytes.
 
 Product-specific routes, views, credentials, identity/tenant policy, and
 NoScrubs integration are adopter work. They do not block the independently
@@ -71,14 +71,14 @@ publishable package and gem.
 
 ## Launch handoff
 
-For the stable release:
+Completed stable-release handoff:
 
-1. Run the reviewer-gated stable publication workflow with the final successful
-   candidate run ID.
-2. Confirm npm and RubyGems expose version `0.1.0`.
-3. Confirm the immutable `v0.1.0` source tag and GitHub release point to the
-   candidate commit.
-4. Confirm the frozen package and gem READMEs contain the stable release date
-   and registry links.
-5. Announce only the support surface described by the compatibility manifest;
-   keep browser-only N/A behavior and host-owned product policy explicit.
+1. npm and RubyGems expose version `0.1.0`.
+2. The immutable `v0.1.0` source tag and GitHub release point to the candidate
+   commit.
+3. Registry downloads and GitHub release assets match the frozen checksums.
+4. The frozen package and gem READMEs contain the stable release date and
+   registry links.
+5. The announced surface remains limited to the compatibility manifest;
+   browser-only N/A behavior, deferred manual accessibility evidence, and
+   host-owned product policy remain explicit.
