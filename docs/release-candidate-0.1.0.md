@@ -44,7 +44,10 @@ draft GitHub release while the normal publication workflow still runs at the
 candidate commit. The draft becomes public only after both registries verify.
 A gem-only recovery therefore edits the already-bound draft instead of asking
 GitHub's workflow token to create a release at an older workflow-changing
-commit.
+commit. Disposable Actions
+[run 30223932177](https://github.com/noscrubs-dev/expo-turbo/actions/runs/30223932177)
+verified that the workflow token can create the tag, create and edit the draft
+release, and remove both cleanly.
 
 The later physical Android and iOS union suites completed public device
 conformance. Manual accessibility evidence remains explicitly deferred and is
