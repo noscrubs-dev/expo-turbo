@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem for a coding agent to investigate and fix.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write for a coding agent starting with zero context. Report observed facts separately from hypotheses, and do not submit a code patch.
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Include expo-turbo, expo_turbo-rails, Expo, React Native, Rails, and platform versions that apply.
+      placeholder: "expo-turbo 0.1.0, Expo 56, iOS 19..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Actual behavior and impact
+      description: What happens, how often, and who or what it affects.
+      placeholder: Describe only what you observed. Label any suspected cause as a hypothesis.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest deterministic example and exact steps or commands.
+      placeholder: |
+        1. Minimal app, route, payload, or configuration:
+        2. Exact command or action:
+        3. Actual result:
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Environment and evidence
+      description: Include OS, device or simulator, relevant configuration, minimal logs or errors, screenshots, and reproduction links. Remove secrets.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State what should happen instead and cite the relevant Turbo behavior or contract when possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: investigation
+    attributes:
+      label: Compressed investigation
+      description: Optional. Paste conclusions from your agent or your own analysis, including suspected cause, relevant files, and rejected approaches. Do not attach a patch.
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Regression criteria
+      description: Give observable pass/fail criteria and the tests, platforms, or examples that should prove the fix.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agreement
+    attributes:
+      label: Submission check
+      options:
+        - label: I searched existing issues, provided reproducible context rather than a code patch, and removed secrets or private data.
+          required: true

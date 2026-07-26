@@ -13,8 +13,8 @@
 > Frames, Streams, forms, and Action Cable model to Expo React Native while
 > keeping the UI native.
 >
-> Contributions are welcome, with one caveat: please [open a guided
-> issue](https://github.com/noscrubs-dev/expo-turbo/issues/new?template=agent-change.yml)
+> Contributions are welcome, with one caveat: please [open a guided bug report
+> or change request](https://github.com/noscrubs-dev/expo-turbo/issues/new/choose)
 > with **context, not a code patch**. Pull requests are disabled because the
 > maintainers did not write this code and cannot responsibly judge its
 > implementation-level best practices. Write for an agent starting with zero

@@ -1,5 +1,5 @@
-name: Agent-ready change
-description: Give a coding agent enough context to reproduce, implement, and validate a change.
+name: Change request
+description: Give a coding agent enough context to implement and validate a feature, compatibility change, or documentation update.
 title: "[Change]: "
 body:
   - type: markdown
@@ -12,7 +12,6 @@ body:
     attributes:
       label: Change type
       options:
-        - Bug
         - Compatibility gap
         - Feature
         - Documentation
