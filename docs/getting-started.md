@@ -70,8 +70,8 @@ An adopting Expo application should:
 
 1. Define application components with explicit Zod schemas and attribute
    codecs through `expo-turbo/registry`.
-2. Compose those definitions into a registry and pass it to
-   `ExpoTurboProvider` from `expo-turbo/react`.
+2. Render the high-level `ExpoTurbo` component from `expo-turbo/react` with
+   the document URL, registry, fetch adapter, and optional navigation adapter.
 3. Supply only the adapters the host needs: fetch, navigation/history,
    lifecycle/reachability, focus/scroll, styles, storage, observability, and
    optional Cable transport.
@@ -79,6 +79,24 @@ An adopting Expo application should:
    code or fall back to an unrelated JSON renderer.
 5. Keep credentials, origin selection, identity rotation, retry policy, and
    product state in the host.
+
+The standard host path owns session, visit, Frame, form, refresh, state, and
+disposal wiring:
+
+```tsx
+<ExpoTurbo
+  url={documentUrl}
+  registry={registry}
+  fetch={fetchAdapter}
+  navigation={navigationAdapter}
+  loading={<Loading />}
+  renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
+/>
+```
+
+Use `createExpoTurboRuntime` when the host needs to control loading and
+presentation separately. Import the individual primitives from
+`expo-turbo/core` only when custom runtime composition is required.
 
 Use
 [`example/expo/src/demo-registry.tsx`](../example/expo/src/demo-registry.tsx)
