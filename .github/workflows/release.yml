@@ -496,8 +496,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null || true)"
-          if [ -n "$tag_commit" ]; then
+          if tag_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null)"; then
             test "$tag_commit" = "$CANDIDATE_COMMIT"
           else
             if [ "$OPERATION" != "publish" ] || [ "$CANDIDATE_COMMIT" != "$GITHUB_SHA" ]; then

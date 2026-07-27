@@ -11,6 +11,9 @@ All notable public package, gem, and protocol changes will be recorded here.
   history coordination. Changing the component URL now performs a replace
   visit on the existing runtime, so Expo Router integrations no longer need a
   custom low-level runtime.
+- Make publication distinguish a missing release tag from a failed lookup by
+  checking the GitHub CLI exit status instead of treating its 404 response body
+  as a tag SHA.
 
 ## 0.1.1 - 2026-07-28
 
