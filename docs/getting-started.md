@@ -22,7 +22,7 @@ Expo SDK 57, React Native 0.86, Hermes, Rails 8.1.3, and
 
 ## Install
 
-After the stable `0.1.0` release is announced:
+Install the stable packages:
 
 ```sh
 bun add expo-turbo
@@ -128,7 +128,7 @@ The complete Rails API and examples are in the
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.0` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.1` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 

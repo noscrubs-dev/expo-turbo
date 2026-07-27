@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.1 - 2026-07-28
+
 - Add the high-level `ExpoTurbo` React component and
   `createExpoTurboRuntime` factory. Standard hosts now provide only their
   document URL, component registry, fetch adapter, and optional navigation
