@@ -199,7 +199,7 @@ describe("Document request loader", () => {
         Accept: EXPO_TURBO_MIME_TYPE,
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
         "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.1.2",
+        "X-Expo-Turbo-Runtime": "0.1.3",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",

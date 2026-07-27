@@ -35,6 +35,9 @@ export function ExpoTurbo({
 }: ExpoTurboProps): ReactNode {
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
+  const currentRuntimeRef = useRef<ExpoTurboRuntime | undefined>(undefined)
+  const latestUrlRef = useRef(url)
+  latestUrlRef.current = url
   const [attempt, setAttempt] = useState(0)
   const retry = useCallback(() => setAttempt((current) => current + 1), [])
   const [status, setStatus] = useState<
@@ -54,7 +57,6 @@ export function ExpoTurbo({
   // the runtime itself and replace it when their identities change.
   // biome-ignore lint/correctness/useExhaustiveDependencies: url is handled by the visit effect
   useEffect(() => {
-    let active = true
     const runtime = createExpoTurboRuntime({
       fetch,
       ...(history ? { history } : {}),
@@ -62,31 +64,57 @@ export function ExpoTurbo({
       registry,
       url,
     })
+    currentRuntimeRef.current = runtime
     setStatus({ state: "loading" })
-    void runtime.load().then(
-      () => {
-        if (active) setStatus({ runtime, state: "ready" })
+    return () => {
+      if (currentRuntimeRef.current === runtime) currentRuntimeRef.current = undefined
+      runtime.dispose()
+    }
+  }, [attempt, fetch, history, navigation, registry])
+
+  // The preceding effect replaces this ref whenever a runtime-defining input
+  // changes, so those inputs intentionally restart the visit effect too.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runtime identity is held in currentRuntimeRef
+  useEffect(() => {
+    const runtime = currentRuntimeRef.current
+    if (!runtime) return
+    const requestedUrl = new URL(url, runtime.session.tree.document.url).toString()
+    if (runtime.session.treeGeneration > 0 && runtime.session.tree.document.url === requestedUrl) {
+      setStatus({ runtime, state: "ready" })
+      return
+    }
+    let active = true
+    const initial =
+      runtime.session.treeGeneration === 0 && runtime.session.tree.document.url === requestedUrl
+    const visit = initial
+      ? runtime.load()
+      : history
+        ? runtime.controller.visit(url, { action: "replace" })
+        : runtime.controller.visit(url)
+    void visit.then(
+      (result) => {
+        if (
+          active &&
+          currentRuntimeRef.current === runtime &&
+          latestUrlRef.current === url &&
+          result.status === "committed" &&
+          "requestedUrl" in result &&
+          result.requestedUrl === requestedUrl &&
+          runtime.session.treeGeneration > 0
+        ) {
+          setStatus({ runtime, state: "ready" })
+        }
       },
       (reason: unknown) => {
-        if (active) fail(reason)
+        if (active && currentRuntimeRef.current === runtime && latestUrlRef.current === url) {
+          fail(reason)
+        }
       },
     )
     return () => {
       active = false
-      runtime.dispose()
     }
-  }, [attempt, fail, fetch, history, navigation, registry])
-
-  useEffect(() => {
-    if (status.state !== "ready" || status.runtime.session.tree.document.url === url) return
-    let active = true
-    void status.runtime.controller.visit(url, { action: "replace" }).catch((reason: unknown) => {
-      if (active) fail(reason)
-    })
-    return () => {
-      active = false
-    }
-  }, [fail, status, url])
+  }, [attempt, fail, fetch, history, navigation, registry, url])
 
   if (status.state === "loading") return loading
   if (status.state === "error") return renderError?.(status.error, retry) ?? null
@@ -99,6 +127,7 @@ export function ExpoTurbo({
       forms: runtime.forms,
       frames: runtime.frames,
       onError: ({ error }) => {
+        if (currentRuntimeRef.current !== runtime) return
         onErrorRef.current?.(error)
         setStatus({ error, state: "error" })
       },

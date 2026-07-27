@@ -3,7 +3,7 @@ import type { ComponentType } from "react"
 import { z } from "zod"
 
 import type { TurboResponse } from "../adapters/index.js"
-import { EXPO_TURBO_MIME_TYPE, isElement } from "../core/index.js"
+import { attributeValue, EXPO_TURBO_MIME_TYPE, isElement } from "../core/index.js"
 import { createRegistry, defineComponent, defineComponentModule } from "../registry/index.js"
 import { createExpoTurboRuntime } from "./runtime-factory.js"
 
@@ -85,5 +85,30 @@ describe("Expo Turbo runtime", () => {
       { method: "replace", url: "https://example.test/document" },
       { method: "push", url: "https://example.test/next" },
     ])
+  })
+
+  test("does not report a canceled initial visit as loaded", async () => {
+    let resolveResponse: ((value: TurboResponse) => void) | undefined
+    const pendingResponse = new Promise<TurboResponse>((resolve) => {
+      resolveResponse = resolve
+    })
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: () => pendingResponse,
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    const loading = runtime.load()
+    runtime.controller.cancel()
+    resolveResponse?.(response("<TestDocument />", "https://example.test/document"))
+
+    await expect(loading).resolves.toMatchObject({ status: "canceled" })
+    expect(runtime.session.treeGeneration).toBe(0)
+    const placeholder = runtime.session.tree.document.children.find(isElement)
+    expect(placeholder?.tagName).toBe("turbo-frame")
+    if (!placeholder) throw new Error("missing runtime placeholder")
+    expect(attributeValue(placeholder, "data-turbo-cache-control")).toBe("no-cache")
   })
 })

@@ -15,6 +15,7 @@ import {
   DocumentStateStore,
   DocumentVisitController,
   DocumentVisitLifecycle,
+  type DocumentVisitResult,
   FormSubmissionController,
   FrameControllerRegistry,
   FrameHistoryCoordinator,
@@ -29,7 +30,8 @@ const clock: ClockAdapter = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 }
 
-const PLACEHOLDER_DOCUMENT = "<ExpoTurboPlaceholder />"
+const PLACEHOLDER_DOCUMENT =
+  '<turbo-frame id="expo-turbo-placeholder" disabled="" data-turbo-cache-control="no-cache" />'
 
 export interface ExpoTurboRuntime {
   readonly controller: DocumentVisitController
@@ -39,7 +41,7 @@ export interface ExpoTurboRuntime {
   readonly session: DocumentSession
   readonly state: DocumentStateStore
   dispose(): void
-  load(): Promise<void>
+  load(): Promise<DocumentVisitResult>
 }
 
 export interface CreateExpoTurboRuntimeOptions {
@@ -126,8 +128,8 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
       scopes.dispose()
       state.dispose()
     },
-    async load(): Promise<void> {
-      await controller.visit(options.url)
+    load(): Promise<DocumentVisitResult> {
+      return controller.visit(options.url)
     },
   })
 }

@@ -4,6 +4,17 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.3 - 2026-07-28
+
+- Keep the high-level `ExpoTurbo` component in its loading state until the
+  latest requested URL commits. Canceled and superseded visits can no longer
+  expose the internal placeholder, the placeholder is excluded from snapshot
+  caching, and late results from disposed runtimes are ignored
+  ([#378](https://github.com/noscrubs-dev/expo-turbo/issues/378)).
+- Let `url` changes work without a history adapter by using an ordinary visit;
+  history-backed runtimes continue to use replace visits for host-router
+  synchronization.
+
 ## 0.1.2 - 2026-07-28
 
 - Let the high-level `ExpoTurbo` component and `createExpoTurboRuntime` factory

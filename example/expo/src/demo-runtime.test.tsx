@@ -126,7 +126,7 @@ const { createDemoRuntime, DemoRuntimeProvider, useDemoRuntime } = await import(
 const { createDemoFixtureFetchAdapter } = await import("./demo-document-controller");
 const { DEMO_REGISTRY } = await import("./demo-registry");
 const { DemoCompatibilityGallery } = await import("./demo-route-screen");
-const { ExpoTurboRoot } = await import("expo-turbo/react");
+const { ExpoTurbo, ExpoTurboRoot } = await import("expo-turbo/react");
 
 const globalWithAct = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -3111,6 +3111,126 @@ describe("demo app runtime ownership", () => {
     expect(runtime.session.tree.document.url).toBe(entry.url);
     expect(runtime.documentRuntime.history.current).toEqual(entry);
     expect(renderer?.root.findAll((node) => String(node.type) === "active-route")).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("keeps the high-level runtime loading until the latest SPA URL commits", async () => {
+    const fetch = new ControlledFetch();
+    const errors: Error[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    const tree = (url: string) =>
+      createElement(ExpoTurbo, {
+        fetch,
+        loading: createElement("runtime-loading"),
+        onError: (error) => errors.push(error),
+        registry: DEMO_REGISTRY,
+        url,
+      });
+
+    await act(async () => {
+      renderer = create(tree(GALLERY_URL));
+      await Promise.resolve();
+    });
+    const first = fetch.pending[0];
+    if (!first) throw new Error("missing initial high-level request");
+
+    await act(async () => {
+      renderer?.update(tree(LINKED_URL));
+      await nextTurn();
+    });
+
+    await act(async () => {
+      first.resolve(response(first.request));
+      await nextTurn();
+    });
+    expect(errors).toHaveLength(0);
+    expect(
+      renderer?.root.findAll((node) => String(node.type) === "runtime-loading"),
+    ).toHaveLength(1);
+
+    const second = fetch.pending[1];
+    if (!second) throw new Error("missing superseding high-level request");
+    expect(second.request.url).toBe(LINKED_URL);
+    await act(async () => {
+      second.resolve(
+        response(second.request, {
+          xml: `<Gallery data-turbo-root="/demo">
+            <DemoText>Latest SPA document</DemoText>
+          </Gallery>`,
+        }),
+      );
+      await nextTurn();
+    });
+    expect(
+      renderer?.root.findAll((node) => String(node.type) === "runtime-loading"),
+    ).toHaveLength(0);
+    expect(
+      renderer?.root.findAll((node) => node.children.includes("Latest SPA document")),
+    ).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("ignores a disposed high-level runtime when its inputs and URL are replaced", async () => {
+    const oldFetch = new ControlledFetch();
+    const newFetch = new ControlledFetch();
+    const errors: Error[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    const tree = (fetch: FetchAdapter, url: string) =>
+      createElement(ExpoTurbo, {
+        fetch,
+        loading: createElement("runtime-loading"),
+        onError: (error) => errors.push(error),
+        registry: DEMO_REGISTRY,
+        url,
+      });
+
+    await act(async () => {
+      renderer = create(tree(oldFetch, GALLERY_URL));
+      await Promise.resolve();
+    });
+    const oldRequest = oldFetch.pending[0];
+    if (!oldRequest) throw new Error("missing old high-level request");
+
+    await act(async () => {
+      renderer?.update(tree(newFetch, LINKED_URL));
+      await nextTurn();
+    });
+    const newRequest = newFetch.pending[0];
+    if (!newRequest) throw new Error("missing replacement high-level request");
+    expect(newRequest.request.url).toBe(LINKED_URL);
+
+    await act(async () => {
+      oldRequest.resolve(response(oldRequest.request));
+      await nextTurn();
+    });
+    expect(
+      renderer?.root.findAll((node) => String(node.type) === "runtime-loading"),
+    ).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+
+    await act(async () => {
+      newRequest.resolve(
+        response(newRequest.request, {
+          xml: `<Gallery data-turbo-root="/demo">
+            <DemoText>Replacement runtime document</DemoText>
+          </Gallery>`,
+        }),
+      );
+      await nextTurn();
+    });
+    expect(
+      renderer?.root.findAll((node) => node.children.includes("Replacement runtime document")),
+    ).toHaveLength(1);
+    expect(errors).toHaveLength(0);
 
     await act(async () => {
       renderer?.unmount();
