@@ -64,6 +64,15 @@ The runner bootstraps the emulator's bundled Chrome profile before the shared
 suite so external-link assertions exercise the destination rather than Chrome's
 first-run screen. This changes only disposable emulator state.
 
+## Recovery
+
+The lane builds dependencies and the release APK once. If Maestro then reports
+an explicit offline ADB transport together with zero-second cascade failures,
+the runner preserves the first attempt's logs and JUnit, restarts and
+reprovisions a clean emulator, and reruns the complete suite once against the
+same APK. Assertion-only failures, app crashes, and a failed second attempt
+remain failures.
+
 ## Maintenance
 
 The runner package and Android command-line tools are installed from checksummed
@@ -72,7 +81,21 @@ When changing a pinned tool, update this document and rerun the full shared
 suite before accepting the change.
 
 If the runner is unavailable, public PR checks remain unaffected. A device-lane
-failure is classified as infrastructure only when the app assertions did not
-begin and the retained emulator/ADB/host evidence identifies setup failure.
-Assertion failures and app crashes are product failures and are never hidden by
-an automatic retry.
+failure is classified as recoverable infrastructure only when the retained
+Maestro output contains an explicit offline ADB transport and the remaining
+flows collapse into zero-second failures. Assertion failures and app crashes
+are product failures and are never hidden by an automatic retry.
+
+## Changelog
+
+**2026-07-27**:
+
+- Changed: The Android lane now restarts a clean emulator and retries the full
+  Maestro suite once after a proven offline-ADB cascade, while reusing the
+  already-built APK.
+- Why: Run `30224788145` passed 10 flows before guest `adbd` terminated its
+  transport; the remaining five failed at zero seconds even though QEMU stayed
+  alive and host memory and disk remained healthy.
+- Impact: Transient device transport loss can recover without rebuilding, while
+  assertion failures and a failed retry still fail the workflow with evidence
+  from both attempts.

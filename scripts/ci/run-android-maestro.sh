@@ -161,48 +161,120 @@ curl --fail --silent --show-error --max-time 2 "$rails_origin/up" >/dev/null
 readonly apk="$PWD/example/expo/android/app/build/outputs/apk/release/app-release.apk"
 test -f "$apk"
 
-"$ANDROID_HOME/emulator/emulator" \
-  -avd "$avd_name" \
-  -port 5580 \
-  -no-window \
-  -no-audio \
-  -no-boot-anim \
-  -no-metrics \
-  -no-snapshot \
-  -wipe-data \
-  -gpu swiftshader_indirect \
-  -accel on >"$emulator_log" 2>&1 &
-emulator_pid=$!
-
-timeout 180 adb -s "$adb_serial" wait-for-device
-for _ in $(seq 1 120); do
-  if [ "$(adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
-    break
-  fi
-  sleep 2
-done
-test "$(adb -s "$adb_serial" shell getprop sys.boot_completed | tr -d '\r')" = "1"
-
-adb -s "$adb_serial" reverse tcp:3001 tcp:3001
-adb -s "$adb_serial" logcat -c
-
-adb -s "$adb_serial" install -r "$apk"
-
 readonly picker_fixture="$PWD/.maestro/fixtures/expo-turbo-android-picked.txt"
 test -f "$picker_fixture"
-adb -s "$adb_serial" push "$picker_fixture" /sdcard/Download/expo-turbo-android-picked.txt
-adb -s "$adb_serial" shell am broadcast \
-  -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
-  -d file:///sdcard/Download/expo-turbo-android-picked.txt >/dev/null
 
-wait_for_stable_device
-if ! maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml; then
-  echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
-  adb reconnect offline >/dev/null 2>&1 || true
+start_and_prepare_emulator() {
+  echo "=== Starting clean Android emulator ===" >>"$emulator_log"
+  "$ANDROID_HOME/emulator/emulator" \
+    -avd "$avd_name" \
+    -port 5580 \
+    -no-window \
+    -no-audio \
+    -no-boot-anim \
+    -no-metrics \
+    -no-snapshot \
+    -wipe-data \
+    -gpu swiftshader_indirect \
+    -accel on >>"$emulator_log" 2>&1 &
+  emulator_pid=$!
+
+  timeout 180 adb -s "$adb_serial" wait-for-device
+  for _ in $(seq 1 120); do
+    if [ "$(adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+      break
+    fi
+    sleep 2
+  done
+  test "$(adb -s "$adb_serial" shell getprop sys.boot_completed | tr -d '\r')" = "1"
+
+  adb -s "$adb_serial" reverse tcp:3001 tcp:3001
+  adb -s "$adb_serial" logcat -c
+  adb -s "$adb_serial" install -r "$apk"
+  adb -s "$adb_serial" push "$picker_fixture" /sdcard/Download/expo-turbo-android-picked.txt
+  adb -s "$adb_serial" shell am broadcast \
+    -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
+    -d file:///sdcard/Download/expo-turbo-android-picked.txt >/dev/null
+
   wait_for_stable_device
-  maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
+  if ! maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml; then
+    echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
+    adb reconnect offline >/dev/null 2>&1 || true
+    wait_for_stable_device
+    maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
+  fi
+}
+
+stop_emulator_for_retry() {
+  timeout 15 adb -s "$adb_serial" emu kill >/dev/null 2>&1 || true
+
+  if [ -n "$emulator_pid" ]; then
+    for _ in $(seq 1 30); do
+      if ! kill -0 "$emulator_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if kill -0 "$emulator_pid" 2>/dev/null; then
+      kill "$emulator_pid" 2>/dev/null || true
+      for _ in $(seq 1 15); do
+        if ! kill -0 "$emulator_pid" 2>/dev/null; then
+          break
+        fi
+        sleep 1
+      done
+    fi
+    if kill -0 "$emulator_pid" 2>/dev/null; then
+      kill -KILL "$emulator_pid" 2>/dev/null || true
+    fi
+    wait "$emulator_pid" 2>/dev/null || true
+  fi
+
+  emulator_pid=""
+  adb kill-server >/dev/null 2>&1 || true
+}
+
+run_maestro_suite() {
+  local attempt="$1"
+  local junit="$artifacts/maestro-junit-attempt-$attempt.xml"
+  local run_log="$artifacts/maestro-attempt-$attempt.log"
+  local status
+
+  set +e
+  maestro --device "$adb_serial" test \
+    --format junit \
+    --output "$junit" \
+    "$maestro_flow_path" 2>&1 | tee "$run_log"
+  status="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "$status" -eq 0 ]; then
+    cp "$junit" "$artifacts/maestro-junit.xml"
+  fi
+  return "$status"
+}
+
+start_and_prepare_emulator
+
+if run_maestro_suite 1; then
+  exit 0
+else
+  first_status=$?
 fi
-maestro --device "$adb_serial" test \
-  --format junit \
-  --output "$artifacts/maestro-junit.xml" \
-  "$maestro_flow_path"
+
+if ! grep -Eiq 'device offline|host:transport:[^)]*offline' "$artifacts/maestro-attempt-1.log" ||
+  ! grep -Eq '\[Failed\].*\(0s\)' "$artifacts/maestro-attempt-1.log"; then
+  exit "$first_status"
+fi
+
+echo "Maestro lost ADB transport and cascaded into zero-second failures; restarting the emulator and retrying the full suite once." >&2
+timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat-attempt-1.txt" 2>&1 || true
+stop_emulator_for_retry
+start_and_prepare_emulator
+
+if run_maestro_suite 2; then
+  exit 0
+else
+  second_status=$?
+  exit "$second_status"
+fi
