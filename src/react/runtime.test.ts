@@ -5,7 +5,7 @@ import { z } from "zod"
 import type { TurboResponse } from "../adapters/index.js"
 import { EXPO_TURBO_MIME_TYPE, isElement } from "../core/index.js"
 import { createRegistry, defineComponent, defineComponentModule } from "../registry/index.js"
-import { createExpoTurboRuntime } from "./index.js"
+import { createExpoTurboRuntime } from "./runtime-factory.js"
 
 const TestDocument = (() => null) as ComponentType
 const registry = createRegistry(
