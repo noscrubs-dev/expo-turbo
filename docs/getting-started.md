@@ -88,15 +88,21 @@ disposal wiring:
   url={documentUrl}
   registry={registry}
   fetch={fetchAdapter}
+  history={historyAdapter}
   navigation={navigationAdapter}
   loading={<Loading />}
   renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
 />
 ```
 
+Changing `url` performs a replace visit on the existing runtime. Supply
+`history` when document visits should write into the host router; Expo Turbo
+then owns history identity, snapshots, and document/Frame coordination.
+
 Use `createExpoTurboRuntime` when the host needs to control loading and
-presentation separately. Import the individual primitives from
-`expo-turbo/core` only when custom runtime composition is required.
+presentation separately. It accepts the same `history` adapter. Import the
+individual primitives from `expo-turbo/core` only when custom runtime
+composition is required.
 
 Use
 [`example/expo/src/demo-registry.tsx`](../example/expo/src/demo-registry.tsx)
@@ -128,7 +134,7 @@ The complete Rails API and examples are in the
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.1` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.2` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 

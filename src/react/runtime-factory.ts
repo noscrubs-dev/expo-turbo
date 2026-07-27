@@ -1,14 +1,23 @@
-import type { ClockAdapter, FetchAdapter, NavigationAdapter } from "../adapters/index.js"
+import type {
+  ClockAdapter,
+  DocumentHistoryHostAdapter,
+  FetchAdapter,
+  NavigationAdapter,
+} from "../adapters/index.js"
 import {
   DocumentFormControls,
+  DocumentHistory,
   DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
+  DocumentSnapshotCache,
   DocumentStateScopes,
   DocumentStateStore,
   DocumentVisitController,
+  DocumentVisitLifecycle,
   FormSubmissionController,
   FrameControllerRegistry,
+  FrameHistoryCoordinator,
   FrameRequestLoader,
   parseExpoTurboDocument,
 } from "../core/index.js"
@@ -35,6 +44,7 @@ export interface ExpoTurboRuntime {
 
 export interface CreateExpoTurboRuntimeOptions {
   readonly fetch: FetchAdapter
+  readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
   readonly registry: ComponentRegistry<RegistryComponent>
   readonly url: string
@@ -50,11 +60,29 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   )
   const state = new DocumentStateStore()
   const scopes = new DocumentStateScopes(session)
+  const visitLifecycle = new DocumentVisitLifecycle()
+  const snapshots = new DocumentSnapshotCache()
+  const history = options.history
+    ? new DocumentHistory({ next: () => `expo-turbo-history-${++requestId}` }, options.history)
+    : undefined
+  history?.initialize({ kind: "unmanaged", url: options.url })
   const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
     capabilityHash: options.registry.capabilities.hash,
   })
-  const controller = new DocumentVisitController(loader, clock)
+  const controller = new DocumentVisitController(loader, clock, {
+    ...(history ? { history } : {}),
+    snapshotCache: snapshots,
+    visitLifecycle,
+  })
   const refresh = new DocumentRefreshController(session, controller, clock)
+  const frameHistory = history
+    ? new FrameHistoryCoordinator(session, {
+        history,
+        ...(options.navigation ? { navigation: options.navigation } : {}),
+        snapshotCache: snapshots,
+        visitLifecycle,
+      })
+    : undefined
   const frames = new FrameControllerRegistry(
     session,
     new FrameRequestLoader(session, options.fetch, requestIds, {
@@ -64,11 +92,15 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     undefined,
     options.navigation,
     controller,
+    frameHistory ? { frameHistory } : undefined,
   )
   const submission = new FormSubmissionController(session, options.fetch, {
     frameControllers: frames,
+    ...(history ? { history } : {}),
     ...(options.navigation ? { navigation: options.navigation } : {}),
     refresh,
+    snapshotCache: snapshots,
+    visitLifecycle,
   })
   const forms = new DocumentFormControls(session, {
     formSemantics: options.registry,

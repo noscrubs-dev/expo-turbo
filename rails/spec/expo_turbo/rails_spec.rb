@@ -4,7 +4,7 @@ require "spec_helper"
 
 RSpec.describe ExpoTurbo::Rails do
   it "exposes the scaffold version" do
-    expect(described_class::VERSION).to eq("0.1.1")
+    expect(described_class::VERSION).to eq("0.1.2")
   end
 
   it "pins the cross-language compatibility baselines" do

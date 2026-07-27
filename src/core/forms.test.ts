@@ -2247,7 +2247,7 @@ describe("native form control registry", () => {
           Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
           "X-Expo-Turbo-Capabilities": "capability-hash",
           "X-Expo-Turbo-Protocol": "0.1",
-          "X-Expo-Turbo-Runtime": "0.1.1",
+          "X-Expo-Turbo-Runtime": "0.1.2",
           "X-Turbo-Request-Id": "request-1",
         },
         method: "POST",

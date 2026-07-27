@@ -61,4 +61,29 @@ describe("Expo Turbo runtime", () => {
     expect(runtime.state.isDisposed).toBe(true)
     expect(runtime.scopes.isDisposed).toBe(true)
   })
+
+  test("coordinates document history when a host adapter is provided", async () => {
+    const writes: Array<Readonly<{ method: string; url: string }>> = []
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) => response("<TestDocument />", request.url),
+      },
+      history: {
+        write(method, entry) {
+          writes.push({ method, url: entry.url })
+        },
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    await runtime.controller.visit("https://example.test/next")
+
+    expect(writes.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: "replace", url: "https://example.test/document" },
+      { method: "replace", url: "https://example.test/document" },
+      { method: "push", url: "https://example.test/next" },
+    ])
+  })
 })

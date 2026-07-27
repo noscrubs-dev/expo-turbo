@@ -4,6 +4,14 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.2 - 2026-07-28
+
+- Let the high-level `ExpoTurbo` component and `createExpoTurboRuntime` factory
+  own host-backed document history, snapshots, visit lifecycle, and Frame/form
+  history coordination. Changing the component URL now performs a replace
+  visit on the existing runtime, so Expo Router integrations no longer need a
+  custom low-level runtime.
+
 ## 0.1.1 - 2026-07-28
 
 - Add the high-level `ExpoTurbo` React component and

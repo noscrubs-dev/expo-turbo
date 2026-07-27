@@ -25,6 +25,7 @@ export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
  */
 export function ExpoTurbo({
   fetch,
+  history,
   loading = null,
   navigation,
   onError,
@@ -42,12 +43,21 @@ export function ExpoTurbo({
     | Readonly<{ runtime: ExpoTurboRuntime; state: "ready" }>
   >({ state: "loading" })
 
-  // `attempt` is an intentional trigger-only dependency for retrying the same URL.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: retry must replace the runtime
+  const fail = useCallback((reason: unknown) => {
+    const error =
+      reason instanceof Error ? reason : new Error("Expo Turbo document could not be loaded")
+    onErrorRef.current?.(error)
+    setStatus({ error, state: "error" })
+  }, [])
+
+  // URL changes are visits on the current runtime. The remaining inputs define
+  // the runtime itself and replace it when their identities change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: url is handled by the visit effect
   useEffect(() => {
     let active = true
     const runtime = createExpoTurboRuntime({
       fetch,
+      ...(history ? { history } : {}),
       ...(navigation ? { navigation } : {}),
       registry,
       url,
@@ -58,18 +68,25 @@ export function ExpoTurbo({
         if (active) setStatus({ runtime, state: "ready" })
       },
       (reason: unknown) => {
-        if (!active) return
-        const error =
-          reason instanceof Error ? reason : new Error("Expo Turbo document could not be loaded")
-        onErrorRef.current?.(error)
-        setStatus({ error, state: "error" })
+        if (active) fail(reason)
       },
     )
     return () => {
       active = false
       runtime.dispose()
     }
-  }, [attempt, fetch, navigation, registry, url])
+  }, [attempt, fail, fetch, history, navigation, registry])
+
+  useEffect(() => {
+    if (status.state !== "ready" || status.runtime.session.tree.document.url === url) return
+    let active = true
+    void status.runtime.controller.visit(url, { action: "replace" }).catch((reason: unknown) => {
+      if (active) fail(reason)
+    })
+    return () => {
+      active = false
+    }
+  }, [fail, status, url])
 
   if (status.state === "loading") return loading
   if (status.state === "error") return renderError?.(status.error, retry) ?? null

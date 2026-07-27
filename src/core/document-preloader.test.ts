@@ -165,7 +165,7 @@ describe("document preloader", () => {
         Accept: EXPO_TURBO_MIME_TYPE,
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
         "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.1.1",
+        "X-Expo-Turbo-Runtime": "0.1.2",
         "X-Sec-Purpose": "prefetch",
         "X-Turbo-Request-Id": "preload-1",
       },
