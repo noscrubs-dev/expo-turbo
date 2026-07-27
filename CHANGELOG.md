@@ -4,6 +4,13 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add the high-level `ExpoTurbo` React component and
+  `createExpoTurboRuntime` factory. Standard hosts now provide only their
+  document URL, component registry, fetch adapter, and optional navigation
+  adapter while the package owns session, visit, Frame, form, refresh, state,
+  retry, and disposal wiring. Existing primitives remain available through
+  `expo-turbo/core` for custom runtimes.
+
 ## 0.1.0 - 2026-07-27
 
 - Publish the first stable `expo-turbo` npm package and `expo_turbo-rails` gem
