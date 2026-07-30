@@ -262,7 +262,7 @@ else
   first_status=$?
 fi
 
-if ! grep -Eiq 'device offline|host:transport:[^)]*offline' "$artifacts/maestro-attempt-1.log" ||
+if ! grep -Eiq "device offline|host:transport:[^)]*offline|device '[^']+' not found" "$artifacts/maestro-attempt-1.log" ||
   ! grep -Eq '\[Failed\].*\(0s\)' "$artifacts/maestro-attempt-1.log"; then
   exit "$first_status"
 fi

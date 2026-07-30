@@ -67,8 +67,8 @@ first-run screen. This changes only disposable emulator state.
 ## Recovery
 
 The lane builds dependencies and the release APK once. If Maestro then reports
-an explicit offline ADB transport together with zero-second cascade failures,
-the runner preserves the first attempt's logs and JUnit, restarts and
+an explicit offline or missing ADB device together with zero-second cascade
+failures, the runner preserves the first attempt's logs and JUnit, restarts and
 reprovisions a clean emulator, and reruns the complete suite once against the
 same APK. Assertion-only failures, app crashes, and a failed second attempt
 remain failures.
@@ -82,11 +82,21 @@ suite before accepting the change.
 
 If the runner is unavailable, public PR checks remain unaffected. A device-lane
 failure is classified as recoverable infrastructure only when the retained
-Maestro output contains an explicit offline ADB transport and the remaining
-flows collapse into zero-second failures. Assertion failures and app crashes
-are product failures and are never hidden by an automatic retry.
+Maestro output contains an explicit offline or missing ADB device and the
+remaining flows collapse into zero-second failures. Assertion failures and app
+crashes are product failures and are never hidden by an automatic retry.
 
 ## Changelog
+
+**2026-07-31**:
+
+- Changed: The Android retry guard now recognizes Maestro's `device not found`
+  transport error in addition to an explicit offline transport.
+- Why: Run `30590112926` lost its Maestro device session after 13 flows, but the
+  existing guard did not retry because the driver reported the device as
+  missing instead of offline.
+- Impact: Both equivalent lost-device error forms can trigger one clean
+  emulator retry when they also cause zero-second cascade failures.
 
 **2026-07-27**:
 
