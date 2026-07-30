@@ -50,7 +50,7 @@ describe("form request construction", () => {
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
         "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.1.3",
+        "X-Expo-Turbo-Runtime": "0.1.4",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",
@@ -90,7 +90,7 @@ describe("form request construction", () => {
       "Turbo-Frame": "form-frame",
       "X-Expo-Turbo-Capabilities": "sha256:capabilities",
       "X-Expo-Turbo-Protocol": "0.1",
-      "X-Expo-Turbo-Runtime": "0.1.3",
+      "X-Expo-Turbo-Runtime": "0.1.4",
       "X-Turbo-Request-Id": "request-stream",
     })
     expect(plan({ submitter: { streamAttributePresent: true } }).request.headers.Accept).toBe(
@@ -194,7 +194,7 @@ describe("form request construction", () => {
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
         "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.1.3",
+        "X-Expo-Turbo-Runtime": "0.1.4",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "POST",

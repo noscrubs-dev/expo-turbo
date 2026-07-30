@@ -221,7 +221,7 @@ The complete Rails API and examples are in the
 | `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.3` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.4` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 

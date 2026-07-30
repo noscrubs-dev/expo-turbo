@@ -4,6 +4,38 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.4 - 2026-07-30
+
+- Add `uncheckedValue` to checkable form controls so an unchecked control can
+  submit an explicit value while the existing omit-when-unchecked behavior
+  stays compatible ([#379](https://github.com/noscrubs-dev/expo-turbo/issues/379)).
+- Export a versioned client registry capability manifest and let Rails load it
+  as the template component allowlist and style-token capability source, which
+  can replace a separate hand-written server registry
+  ([#380](https://github.com/noscrubs-dev/expo-turbo/issues/380)).
+- Add core and React document reload APIs that revisit the active URL without
+  requiring capability components to receive a duplicate reload URL
+  ([#381](https://github.com/noscrubs-dev/expo-turbo/issues/381)).
+- Ship a credentialed default fetch adapter with bounded fetch and body-read
+  timeouts, multipart conversion, and request customization, plus an optional
+  `expo-turbo/expo-router` adapter entrypoint
+  ([#382](https://github.com/noscrubs-dev/expo-turbo/issues/382)).
+- Add the Rails `expo_turbo_attribute` helper to preserve tabs and line breaks
+  in escaped XML attribute values instead of allowing parser normalization to
+  change user-authored text
+  ([#383](https://github.com/noscrubs-dev/expo-turbo/issues/383)).
+- Add `ExpoTurbo::Rails::RouteConstraint` for exact, quality-aware Expo Turbo
+  Accept-header route matching
+  ([#384](https://github.com/noscrubs-dev/expo-turbo/issues/384)).
+- Add attribute declarations that derive their Zod schema and decoded prop
+  names from codecs, while retaining the explicit schema form for computed
+  component props
+  ([#385](https://github.com/noscrubs-dev/expo-turbo/issues/385)).
+- Add `submit({ afterCommit: true })` so React form controls can update state
+  and submit the committed descriptor without a timer; unmounts and exact-form
+  owner changes reject before transport
+  ([#386](https://github.com/noscrubs-dev/expo-turbo/issues/386)).
+
 ## 0.1.3 - 2026-07-28
 
 - Keep the high-level `ExpoTurbo` component in its loading state until the
