@@ -30,6 +30,26 @@ RSpec.describe ExpoTurbo::Rails::RouteConstraint do
     )).to be(false)
   end
 
+  it "matches media ranges and quality parameter names without case sensitivity" do
+    {
+      ExpoTurbo::Rails::MIME_TYPE.upcase => true,
+      "#{ExpoTurbo::Rails::MIME_TYPE};Q=0" => false,
+      "APPLICATION/*;Q=0.2" => true
+    }.each do |accept, expected|
+      request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => accept)
+
+      expect(described_class.new.matches?(request)).to be(expected), accept
+    end
+  end
+
+  it "rejects malformed media ranges without raising" do
+    ["application", "application/[", "!!!", "a/", "/b"].each do |accept|
+      request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => accept)
+
+      expect(described_class.new.matches?(request)).to be(false), accept
+    end
+  end
+
   it "matches positive wildcards and rejects a zero-quality most-specific range" do
     {
       "application/*" => true,
