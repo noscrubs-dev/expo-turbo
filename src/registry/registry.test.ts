@@ -17,7 +17,14 @@ import {
   stringCodec,
   tokenListCodec,
 } from "./codecs"
-import { createRegistry, defineComponent, defineComponentModule } from "./registry"
+import {
+  type ComponentRegistry,
+  createRegistry,
+  defineComponent,
+  defineComponentModule,
+  type RegistryCapabilityManifest,
+  type RegistryComponent,
+} from "./registry"
 
 const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
 
@@ -211,6 +218,31 @@ describe("typed component registry", () => {
 
     expect(lengthCodec.decode('"four"')).toBe(4)
     expect(registry.decode(element('<TransformedJson value="&quot;four&quot;" />')).props).toEqual({
+      value: 4,
+    })
+  })
+
+  test("infers a custom attribute schema's transformed output", () => {
+    const transformed = defineComponent({
+      attributes: {
+        value: attr(
+          trimmedStringCodec,
+          z.string().transform((value) => value.length),
+        ),
+      },
+      children: "none",
+      component: (props) => props.value satisfies number,
+      tag: "TransformedCustom",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [transformed],
+        name: "transformed-custom",
+        version: "1.0.0",
+      }),
+    )
+
+    expect(registry.decode(element('<TransformedCustom value=" four " />')).props).toEqual({
       value: 4,
     })
   })
@@ -522,10 +554,72 @@ describe("typed component registry", () => {
     expect(first.capabilityManifestJSON()).toEndWith("\n")
     expect(first.capabilityManifestJSON()).toBe(second.capabilityManifestJSON())
   })
+
+  test("uses locale-independent manifest ordering", () => {
+    const composed = defineComponent({
+      attributes: {},
+      children: "none",
+      component: () => null,
+      schema: z.object({}),
+      tag: "Orderé",
+    })
+    const decomposed = defineComponent({
+      attributes: {},
+      children: "none",
+      component: () => null,
+      schema: z.object({}),
+      tag: "Ordere\u0301",
+    })
+    const composedModule = defineComponentModule({
+      components: [composed],
+      name: "Moduleé",
+      version: "1.0.0",
+    })
+    const decomposedModule = defineComponentModule({
+      components: [decomposed],
+      name: "Modulee\u0301",
+      version: "1.0.0",
+    })
+
+    const first = createRegistry(composedModule, decomposedModule)
+    const second = createRegistry(decomposedModule, composedModule)
+
+    expect(first.capabilityManifestJSON()).toBe(second.capabilityManifestJSON())
+    expect(first.capabilities.hash).toBe(second.capabilities.hash)
+  })
 })
 
+function acceptLegacyRegistryShapes(): void {
+  const capabilities: RegistryCapabilityManifest = {
+    components: [],
+    hash: "fnv1a32:00000000",
+    modules: [],
+    protocolVersion: "1.0",
+  }
+  const registry: ComponentRegistry<RegistryComponent> = {
+    capabilities,
+    decode() {
+      throw new Error("not used")
+    },
+    formContainerRole() {
+      return undefined
+    },
+    get() {
+      return undefined
+    },
+    resolve() {
+      return undefined
+    },
+    use() {
+      throw new Error("not used")
+    },
+  }
+  void registry
+}
+void acceptLegacyRegistryShapes
+
 function rejectMismatchedAttributeSchema(): void {
-  // @ts-expect-error Attribute schema output must match the codec decode value.
+  // @ts-expect-error Attribute schema input must accept the codec decode value.
   attr(stringCodec, z.number())
   attr(
     stringCodec,

@@ -353,9 +353,18 @@ export interface ComponentCapability {
 export interface RegistryCapabilityManifest {
   readonly components: readonly ComponentCapability[]
   readonly hash: string
-  readonly manifestVersion: typeof REGISTRY_CAPABILITY_MANIFEST_VERSION
   readonly modules: readonly Readonly<{ name: string; version: string }>[]
   readonly protocolVersion: string
+}
+
+export interface VersionedRegistryCapabilityManifest extends RegistryCapabilityManifest {
+  readonly manifestVersion: typeof REGISTRY_CAPABILITY_MANIFEST_VERSION
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
 }
 
 function capabilityHash(value: string): string {
@@ -449,7 +458,6 @@ function decodeChildren(
 
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
   readonly capabilities: RegistryCapabilityManifest
-  capabilityManifestJSON(): string
   decode(element: ProtocolElement): DecodedComponent<Component>
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
   get<Tag extends Component["tag"]>(tag: Tag): Extract<Component, { readonly tag: Tag }> | undefined
@@ -459,8 +467,19 @@ export interface ComponentRegistry<Component extends RegistryComponent = never> 
   ): ComponentRegistry<Component | Next[number]>
 }
 
-class Registry<Component extends RegistryComponent> implements ComponentRegistry<Component> {
-  readonly capabilities: RegistryCapabilityManifest
+export interface ManifestComponentRegistry<Component extends RegistryComponent = never>
+  extends ComponentRegistry<Component> {
+  readonly capabilities: VersionedRegistryCapabilityManifest
+  capabilityManifestJSON(): string
+  use<Next extends readonly RegistryComponent[]>(
+    module: ComponentModule<string, Next>,
+  ): ManifestComponentRegistry<Component | Next[number]>
+}
+
+class Registry<Component extends RegistryComponent>
+  implements ManifestComponentRegistry<Component>
+{
+  readonly capabilities: VersionedRegistryCapabilityManifest
   private readonly components = new Map<string, RegistryComponent>()
 
   constructor(private readonly modules: readonly ComponentModule[]) {
@@ -497,9 +516,9 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
               prop: binding.prop,
             }),
           )
-          .sort((left, right) => left.name.localeCompare(right.name))
+          .sort((left, right) => compareCodeUnits(left.name, right.name))
         return Object.freeze({
-          aliases: Object.freeze([...component.aliases].sort()),
+          aliases: Object.freeze([...component.aliases].sort(compareCodeUnits)),
           attributes: Object.freeze(attributes),
           children: component.children,
           ...(component.formContainer !== undefined
@@ -510,10 +529,10 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
           tag: component.tag,
         })
       })
-      .sort((left, right) => left.tag.localeCompare(right.tag))
+      .sort((left, right) => compareCodeUnits(left.tag, right.tag))
     const moduleCapabilities = modules
       .map((module) => Object.freeze({ name: module.name, version: module.version }))
-      .sort((left, right) => left.name.localeCompare(right.name))
+      .sort((left, right) => compareCodeUnits(left.name, right.name))
     const serializable = {
       components: componentCapabilities,
       modules: moduleCapabilities,
@@ -602,7 +621,7 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
 
   use<Next extends readonly RegistryComponent[]>(
     module: ComponentModule<string, Next>,
-  ): ComponentRegistry<Component | Next[number]> {
+  ): ManifestComponentRegistry<Component | Next[number]> {
     return new Registry<Component | Next[number]>([...this.modules, module])
   }
 }
@@ -612,6 +631,6 @@ type ComponentsFromModules<Modules extends readonly ComponentModule[]> =
 
 export function createRegistry<const Modules extends readonly ComponentModule[]>(
   ...modules: Modules
-): ComponentRegistry<ComponentsFromModules<Modules>> {
+): ManifestComponentRegistry<ComponentsFromModules<Modules>> {
   return new Registry<ComponentsFromModules<Modules>>(modules)
 }

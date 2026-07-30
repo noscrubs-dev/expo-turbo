@@ -30,12 +30,8 @@ interface AttributeDefinitionParts {
   readonly schema: z.ZodType
 }
 
-type SchemaMatchesCodec<Value, Schema extends z.ZodType> = [Value] extends [z.input<Schema>]
-  ? [z.output<Schema>] extends [Value]
-    ? [Value] extends [z.output<Schema>]
-      ? unknown
-      : never
-    : never
+type SchemaAcceptsCodec<Value, Schema extends z.ZodType> = [Value] extends [z.input<Schema>]
+  ? unknown
   : never
 
 function createAttributeDefinition<
@@ -90,7 +86,7 @@ export function attr<Schema extends z.ZodType>(
 ): AttributeDefinition<Schema>
 export function attr<Codec extends AttributeCodec<unknown>, Schema extends z.ZodType>(
   codec: Codec,
-  schema: Schema & SchemaMatchesCodec<ReturnType<Codec["decode"]>, Schema>,
+  schema: Schema & SchemaAcceptsCodec<ReturnType<Codec["decode"]>, Schema>,
 ): AttributeDefinition<Schema>
 export function attr<Value, Schema extends z.ZodType>(
   codec: AttributeCodec<Value>,
