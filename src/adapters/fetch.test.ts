@@ -121,6 +121,39 @@ describe("createDefaultFetchAdapter", () => {
     expect(result.status).toBe(500)
   })
 
+  test("awaits onResponse with frozen metadata before returning the response", async () => {
+    const events: string[] = []
+    globalThis.fetch = (async (_input, _init) =>
+      response(201, "<Page />", "https://example.test/final")) as typeof fetch
+    const adapter = createDefaultFetchAdapter({
+      async onResponse(metadata) {
+        events.push("hook-start")
+        expect(metadata).toEqual({
+          headers: { "content-type": EXPO_TURBO_MIME_TYPE },
+          redirected: true,
+          status: 201,
+          url: "https://example.test/final",
+        })
+        expect(Object.isFrozen(metadata)).toBe(true)
+        expect(Object.isFrozen(metadata.headers)).toBe(true)
+        expect("text" in metadata).toBe(false)
+        await Promise.resolve()
+        events.push("hook-end")
+      },
+    })
+
+    const result = await adapter.fetch({
+      headers: {},
+      method: "POST",
+      url: "https://example.test/request",
+    })
+    events.push("returned")
+
+    expect(events).toEqual(["hook-start", "hook-end", "returned"])
+    expect(result.status).toBe(201)
+    expect(await result.text()).toBe("<Page />")
+  })
+
   test("infers redirects when React Native omits response redirect metadata", async () => {
     globalThis.fetch = (async (_input, _init) => {
       const { redirected: _redirected, ...nativeResponse } = response(
@@ -347,20 +380,42 @@ describe("createDefaultFetchAdapter", () => {
     expect(signal?.aborted).toBe(true)
   })
 
-  test("validates setup and redacts request-hook failures", async () => {
+  test("times out a hung response hook", async () => {
+    globalThis.fetch = (async (_input, _init) =>
+      response(200, "<Page />", "https://example.test/request")) as typeof fetch
+    const adapter = createDefaultFetchAdapter({
+      onResponse: () => new Promise<void>(() => {}),
+      timeoutMs: 5,
+    })
+
+    const pending = adapter.fetch({
+      headers: {},
+      method: "GET",
+      url: "https://example.test/request",
+    })
+
+    await expect(pending).rejects.toEqual(
+      new RequestError("Default fetch request timed out", { method: "GET" }),
+    )
+  })
+
+  test("validates setup and redacts hook failures", async () => {
     expect(() => createDefaultFetchAdapter({ timeoutMs: 0 })).toThrow(RequestError)
     expect(() => createDefaultFetchAdapter({ timeoutMs: Number.POSITIVE_INFINITY })).toThrow(
       RequestError,
     )
+    expect(() => createDefaultFetchAdapter({ onResponse: null as never })).toThrow(
+      new RequestError("Default fetch onResponse must be a function"),
+    )
 
-    const adapter = createDefaultFetchAdapter({
+    const requestAdapter = createDefaultFetchAdapter({
       onRequest() {
         throw new Error("private auth token")
       },
     })
     let error: unknown
     try {
-      await adapter.fetch({
+      await requestAdapter.fetch({
         headers: {},
         method: "GET",
         url: "https://example.test/private?token=secret",
@@ -370,6 +425,28 @@ describe("createDefaultFetchAdapter", () => {
     }
     expect(error).toEqual(
       new RequestError("Default fetch request preparation failed", { method: "GET" }),
+    )
+    expect(String(error)).not.toContain("secret")
+
+    globalThis.fetch = (async (_input, _init) =>
+      response(200, "<Page />", "https://example.test/private?token=secret")) as typeof fetch
+    const responseAdapter = createDefaultFetchAdapter({
+      onResponse() {
+        throw new Error("private response token")
+      },
+    })
+    error = undefined
+    try {
+      await responseAdapter.fetch({
+        headers: {},
+        method: "POST",
+        url: "https://example.test/private?token=secret",
+      })
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toEqual(
+      new RequestError("Default fetch response handling failed", { method: "POST" }),
     )
     expect(String(error)).not.toContain("secret")
   })

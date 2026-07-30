@@ -22,6 +22,11 @@ export interface DefaultFetchAdapterOptions {
     | Promise<Readonly<Record<string, string>> | undefined>
     | Readonly<Record<string, string>>
     | undefined
+  /**
+   * Observes immutable response metadata before the adapter returns it.
+   * Failures reject the request with a redacted RequestError.
+   */
+  readonly onResponse?: (response: DefaultFetchAdapterResponse) => Promise<void> | void
   /** Timeout for fetch and response-body reads, in milliseconds. */
   readonly timeoutMs?: number
 }
@@ -29,6 +34,13 @@ export interface DefaultFetchAdapterOptions {
 export interface DefaultFetchAdapterRequest {
   readonly headers: Readonly<Record<string, string>>
   readonly method: string
+  readonly url: string
+}
+
+export interface DefaultFetchAdapterResponse {
+  readonly headers: Readonly<Record<string, string>>
+  readonly redirected: boolean
+  readonly status: number
   readonly url: string
 }
 
@@ -53,6 +65,7 @@ type RequestPreparationFailure = Readonly<{
 function adapterOptions(options: DefaultFetchAdapterOptions): Readonly<{
   headers: Readonly<Record<string, string>>
   onRequest: DefaultFetchAdapterOptions["onRequest"]
+  onResponse: DefaultFetchAdapterOptions["onResponse"]
   timeoutMs: number
 }> {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
@@ -61,10 +74,12 @@ function adapterOptions(options: DefaultFetchAdapterOptions): Readonly<{
 
   let configuredHeaders: Headers
   let onRequest: DefaultFetchAdapterOptions["onRequest"]
+  let onResponse: DefaultFetchAdapterOptions["onResponse"]
   let timeoutMs: number
   try {
     configuredHeaders = new Headers(options.headers)
     onRequest = options.onRequest
+    onResponse = options.onResponse
     timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
   } catch {
     throw new RequestError("Default fetch adapter options could not be read")
@@ -72,6 +87,9 @@ function adapterOptions(options: DefaultFetchAdapterOptions): Readonly<{
 
   if (onRequest !== undefined && typeof onRequest !== "function") {
     throw new RequestError("Default fetch onRequest must be a function")
+  }
+  if (onResponse !== undefined && typeof onResponse !== "function") {
+    throw new RequestError("Default fetch onResponse must be a function")
   }
   if (
     typeof timeoutMs !== "number" ||
@@ -85,6 +103,7 @@ function adapterOptions(options: DefaultFetchAdapterOptions): Readonly<{
   return Object.freeze({
     headers: headerSnapshot(configuredHeaders),
     onRequest,
+    onResponse,
     timeoutMs,
   })
 }
@@ -387,10 +406,14 @@ export function createDefaultFetchAdapter(options: DefaultFetchAdapterOptions = 
       }
       const headersSnapshot = responseHeaders(response, request.method)
 
-      return Object.freeze({
+      const responseMetadata: DefaultFetchAdapterResponse = Object.freeze({
         headers: headersSnapshot,
         redirected,
         status,
+        url,
+      })
+      const turboResponse: TurboResponse = Object.freeze({
+        ...responseMetadata,
         text: () =>
           settleWithTimeout(
             () => response.text(),
@@ -400,8 +423,20 @@ export function createDefaultFetchAdapter(options: DefaultFetchAdapterOptions = 
             request.method,
             "Default fetch response body could not be read",
           ),
-        url,
       })
+
+      if (configured.onResponse) {
+        await settleWithTimeout(
+          async () => configured.onResponse?.(responseMetadata),
+          controller,
+          request.signal,
+          configured.timeoutMs,
+          request.method,
+          "Default fetch response handling failed",
+        )
+      }
+
+      return turboResponse
     },
   })
 }
