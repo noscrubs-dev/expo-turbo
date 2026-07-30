@@ -8,6 +8,7 @@ module ExpoTurbo
       MANIFEST_VERSION = 1
       PROTOCOL_ELEMENTS = %w[turbo-cable-stream-source turbo-frame turbo-stream template].freeze
       RESERVED_COMPONENT_NAMES = [*PROTOCOL_ELEMENTS, "expo-turbo-fragment"].freeze
+      FORM_OWNER_ATTRIBUTE_NAMES = %w[action enctype method novalidate target].freeze
       SHARED_ATTRIBUTE_NAMES = %w[autofocus class dir dirname form id xml:space xmlns].freeze
       TOKEN_PATTERN = /\A[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*\z/
       MAX_TOKEN_LENGTH = 64
@@ -124,6 +125,9 @@ module ExpoTurbo
           unless component["aliases"].all? { |alias_name| alias_name.is_a?(String) }
             raise ConfigurationError, "Expo Turbo capability manifest aliases must be strings"
           end
+          if component.key?("formOwner") && ![true, false].include?(component["formOwner"])
+            raise ConfigurationError, "Expo Turbo capability manifest form ownership must be boolean"
+          end
 
           attributes = component["attributes"]
           valid_attributes = attributes.is_a?(Array) && attributes.all? do |attribute|
@@ -145,6 +149,7 @@ module ExpoTurbo
           components[component["tag"]] = {
             aliases: component["aliases"],
             attributes: attribute_names,
+            form_owner: component["formOwner"] == true,
             required_attributes: attributes.filter_map { |attribute| attribute["name"] if attribute["required"] },
             style_tokens: attribute_names.include?("style-tokens")
           }
@@ -164,6 +169,7 @@ module ExpoTurbo
           if manifest_backed
             component_attributes[tag] = {
               allowed: configuration[:attributes].to_h { |name| [name, true] }.freeze,
+              form_owner: configuration[:form_owner],
               required: configuration[:required_attributes].to_h { |name| [name, true] }.freeze
             }.freeze
           end
@@ -176,7 +182,7 @@ module ExpoTurbo
       def normalize_component_configuration(tag, configuration, manifest_backed:)
         configuration = {} if configuration.nil?
         allowed_keys = %i[aliases style_tokens]
-        allowed_keys.concat(%i[attributes required_attributes]) if manifest_backed
+        allowed_keys.concat(%i[attributes form_owner required_attributes]) if manifest_backed
         unless configuration.is_a?(Hash) && (configuration.keys - allowed_keys).empty?
           raise ConfigurationError, "Expo Turbo component #{tag.inspect} accepts only aliases and style_tokens"
         end
@@ -197,10 +203,12 @@ module ExpoTurbo
         end
 
         attributes = manifest_backed ? configuration.fetch(:attributes) : []
+        form_owner = manifest_backed ? configuration.fetch(:form_owner) : false
         required_attributes = manifest_backed ? configuration.fetch(:required_attributes) : []
         {
           aliases: aliases.freeze,
           attributes: attributes.freeze,
+          form_owner:,
           required_attributes: required_attributes.freeze,
           style_tokens:
         }.freeze
@@ -336,7 +344,9 @@ module ExpoTurbo
         element.attribute_nodes.each do |attribute|
           name = qualified_attribute_name(attribute)
           present[name] = true
-          next if shared_attribute_name?(name) || capabilities[:allowed].key?(name)
+          next if shared_attribute_name?(name) ||
+            (capabilities[:form_owner] && FORM_OWNER_ATTRIBUTE_NAMES.include?(name)) ||
+            capabilities[:allowed].key?(name)
 
           raise ValidationError, "Expo Turbo template contains an undeclared component attribute"
         end

@@ -4,6 +4,11 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Let manifest-backed Rails validation use each component's `formOwner`
+  capability to admit the native form protocol attributes `action`, `enctype`,
+  `method`, `novalidate`, and `target` without declaring them as component props
+  ([#391](https://github.com/noscrubs-dev/expo-turbo/issues/391)).
+
 ## 0.1.6 - 2026-07-31
 
 - Add component-free registry definitions and capability modules so plain Node

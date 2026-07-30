@@ -66,7 +66,14 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
             {
               tag: "DemoText",
               aliases: [],
-              attributes: [{name: "value"}]
+              attributes: [{name: "value"}],
+              formOwner: false
+            },
+            {
+              tag: "DemoForm",
+              aliases: ["Form"],
+              attributes: [],
+              formOwner: true
             }
           ]
         }
@@ -84,10 +91,19 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
       '<Card title="Status" surprise="value"/>'
     )
     missing_required_attribute = ExpoTurbo::Rails::XmlFragments.parse_document("<Card/>")
+    valid_form = ExpoTurbo::Rails::XmlFragments.parse_document(
+      '<Form action="/plans" enctype="multipart/form-data" method="post" novalidate="" target="_top"/>'
+    )
+    non_form_owner = ExpoTurbo::Rails::XmlFragments.parse_document(
+      '<DemoText action="/plans"/>'
+    )
     unknown = ExpoTurbo::Rails::XmlFragments.parse_document("<PrivateComponent/>")
 
     expect(from_manifest.validate_document!(valid)).to equal(valid)
+    expect(from_manifest.validate_document!(valid_form)).to equal(valid_form)
     expect { from_manifest.validate_document!(undeclared_attribute) }
+      .to raise_error(described_class::ValidationError, /undeclared component attribute/)
+    expect { from_manifest.validate_document!(non_form_owner) }
       .to raise_error(described_class::ValidationError, /undeclared component attribute/)
     expect { from_manifest.validate_document!(missing_required_attribute) }
       .to raise_error(described_class::ValidationError, /required component attribute/)
@@ -130,9 +146,29 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
 
     expect { described_class.new(manifest: invalid_required.path) }
       .to raise_error(ExpoTurbo::Rails::ConfigurationError, /attribute names/)
+
+    invalid_form_owner = Tempfile.new(["expo-turbo-capabilities", ".json"])
+    invalid_form_owner.write(
+      JSON.generate(
+        {
+          manifestVersion: 1,
+          protocolVersion: ExpoTurbo::Rails::PROTOCOL_VERSION,
+          hash: "fnv1a32:1234abcd",
+          modules: [],
+          components: [
+            {tag: "DemoForm", aliases: [], attributes: [], formOwner: "yes"}
+          ]
+        }
+      )
+    )
+    invalid_form_owner.close
+
+    expect { described_class.new(manifest: invalid_form_owner.path) }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /form ownership must be boolean/)
   ensure
     manifest&.unlink
     invalid_required&.unlink
+    invalid_form_owner&.unlink
   end
 
   it "admits declared aliases, qualified component names, and literal protocol wrappers" do
