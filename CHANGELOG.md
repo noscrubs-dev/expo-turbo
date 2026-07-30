@@ -2,7 +2,7 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
-## Unreleased
+## 0.1.7 - 2026-07-31
 
 - Let manifest-backed Rails validation use each component's `formOwner`
   capability to admit the native form protocol attributes `action`, `enctype`,
