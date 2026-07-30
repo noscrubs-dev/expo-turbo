@@ -113,6 +113,23 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
+  it "escapes and preserves whitespace in XML attribute values" do
+    controller = controller_with_request
+    value = "first\r\nsecond\t<&\"'"
+    body = controller.render_to_string(
+      inline: '<Text value="<%= expo_turbo_attribute(value) %>"/>',
+      type: :erb,
+      formats: [:xml],
+      layout: false,
+      locals: {value:}
+    )
+    document = ExpoTurbo::Rails::Testing.parse_document(body)
+
+    expect(body).to eq('<Text value="first&#13;&#10;second&#9;&lt;&amp;&quot;&#39;"/>')
+    expect(document.root["value"]).to eq(value)
+    expect(controller.view_context.expo_turbo_attribute(value)).to be_html_safe
+  end
+
   it "rejects malformed host XML documents without exposing template source" do
     invalid_templates = [
       "<Demo:Screen><Demo:Text></Demo:Screen>",

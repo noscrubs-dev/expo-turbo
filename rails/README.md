@@ -46,6 +46,14 @@ end
 
 The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content. Before it renders, the exact output must be a strict UTF-8 XML document: one root, valid namespaces and attributes, no DTD or processing instruction, and an optional leading UTF-8 XML declaration only. Every literal `id` must also be nonblank and unique across the complete rendered document, including nested Frames. The capability declaration then admits only its exact components (and explicit aliases), exact unprefixed `turbo-frame`, `turbo-stream`, `template`, and `turbo-cable-stream-source` wrappers (including default-namespace elements), and declared `style-tokens`. Style-token lists use the same JavaScript whitespace split, count, duplicate, component, and group-conflict rules as the native adapter. A component must opt into the `style-tokens` attribute, and style-token component lists are canonicalized through aliases. The host declaration must mirror its installed registry and style adapter; it deliberately does not attempt to derive or validate arbitrary Zod props/codecs. Validation never serializes the output, so it does not alter preserved XML text.
 
+Do not put multiline values in XML attributes with ordinary ERB interpolation. The client XML parser changes raw tabs and line breaks in an attribute to spaces before component decoding. A later form submission can then save the changed value. Use `expo_turbo_attribute` for each value that can contain this whitespace:
+
+```erb
+<CustomerNotes value="<%= expo_turbo_attribute(@order.notes) %>" />
+```
+
+The helper first HTML-escapes the value. It then writes tabs, carriage returns, and line feeds as `&#9;`, `&#13;`, and `&#10;`. The character references preserve the original value through XML parsing. Use `xml:space="preserve"` instead for multiline element text.
+
 The client registry can replace the hand-written component map. Write `registry.capabilityManifestJSON()` to a checked-in or generated file, then configure the controller with `manifest:` instead of `components:`:
 
 ```ruby
