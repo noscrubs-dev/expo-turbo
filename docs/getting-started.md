@@ -105,6 +105,11 @@ presentation separately. It accepts the same `history` adapter. Import the
 individual primitives from `expo-turbo/core` only when custom runtime
 composition is required.
 
+Capability components that change server state outside a Turbo form can call
+`useDocumentReload()` from `expo-turbo/react`. The returned async function
+reloads the active document, so the component does not need a duplicated
+`reload-href` attribute.
+
 Use
 [`example/expo/src/demo-registry.tsx`](../example/expo/src/demo-registry.tsx)
 for registry and component patterns and

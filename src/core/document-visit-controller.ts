@@ -131,6 +131,11 @@ export interface DocumentVisitOptions {
   readonly restorationData?: DocumentRestorationData
 }
 
+export interface DocumentReloadOptions {
+  readonly renderMethod?: DocumentRenderMethod
+  readonly scroll?: "preserve" | "reset"
+}
+
 export type DocumentVisitDelegation =
   | Readonly<{
       kind: "external"
@@ -447,6 +452,25 @@ export class DocumentVisitController {
       samePathRefresh?.scroll,
       presentation.direction,
     )
+  }
+
+  reload(options: DocumentReloadOptions = {}): Promise<DocumentVisitResult | undefined> {
+    let renderMethod: DocumentRenderMethod | undefined
+    let scroll: "preserve" | "reset" | undefined
+    try {
+      if (!options || typeof options !== "object" || Array.isArray(options)) {
+        throw new TypeError("invalid options")
+      }
+      renderMethod = options.renderMethod
+      scroll = options.scroll
+    } catch {
+      return Promise.reject(new PropsError("Document reload options could not be read"))
+    }
+    const currentUrl = this.loader.currentUrl
+    if (!currentUrl) {
+      return Promise.reject(new StateError("Document reload requires an active document URL"))
+    }
+    return this.refreshCurrent(currentUrl, renderMethod ?? "replace", scroll)
   }
 
   /**

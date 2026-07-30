@@ -5093,6 +5093,28 @@ describe("Document visit controller", () => {
     expect(history.history.current).toBe(history.writes[0]?.entry)
   })
 
+  test("reloads the active document without a caller-supplied URL or history", async () => {
+    const { controller, pending, session } = harness()
+
+    const reloading = controller.reload()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.request.url).toBe("https://example.test/current")
+    expect(await controller.reload()).toBeUndefined()
+
+    pending[0]?.resolve(
+      response('<Gallery><Fresh id="fresh" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+
+    expect(await reloading).toMatchObject({ status: "committed" })
+    expect(session.tree.getElementById("fresh")).toBeDefined()
+    await expect(
+      controller.reload({ renderMethod: "unsupported" as never }),
+    ).rejects.toBeInstanceOf(RequestError)
+    await expect(controller.reload(null as never)).rejects.toBeInstanceOf(PropsError)
+  })
+
   test("binds a successful reset refresh to one live document-render acknowledgement", async () => {
     const lifecycle = new DocumentVisitLifecycle()
     const current = harness({ visitLifecycle: lifecycle })

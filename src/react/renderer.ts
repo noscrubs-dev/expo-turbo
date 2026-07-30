@@ -59,6 +59,7 @@ import {
   subscribeDocumentRenderLifecycle,
 } from "../core/document-render-lifecycle-internal.js"
 import type {
+  DocumentReloadOptions,
   DocumentVisitController,
   DocumentVisitDelegation,
   DocumentVisitResult,
@@ -1263,6 +1264,21 @@ export function useDocumentVisitControllerState(
 
 export function useExpoTurboDocument(): ExpoTurboDocumentBinding | undefined {
   return useContext(DocumentContext)
+}
+
+export type ExpoTurboDocumentReload = (options?: DocumentReloadOptions) => Promise<void>
+
+export function useDocumentReload(): ExpoTurboDocumentReload {
+  const controller = useContext(DocumentContext)?.controller
+  const reload = useCallback(
+    async (options?: DocumentReloadOptions) => {
+      if (!controller) throw new RegistryError("Expo Turbo document reload requires a document")
+      await controller.reload(options)
+    },
+    [controller],
+  )
+  if (!controller) throw new RegistryError("Expo Turbo document reload requires a document")
+  return reload
 }
 
 export type ExpoTurboDirection = ProtocolDirection

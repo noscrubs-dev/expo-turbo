@@ -103,6 +103,7 @@ import {
   ExpoTurboRoot,
   ExpoTurboStateScope,
   useComponentAction,
+  useDocumentReload,
   useDocumentState,
   useExpoTurboDocument,
   useExpoTurboDirection,
@@ -6037,6 +6038,7 @@ describe("React protocol renderer", () => {
     }
     function DocumentProbe(): ReactNode {
       const document = useExpoTurboDocument()
+      const reload = useDocumentReload()
       const [instance] = useState(() => ++nextProbe)
       useEffect(
         () => () => {
@@ -6048,6 +6050,7 @@ describe("React protocol renderer", () => {
         busy: document?.state.busy,
         instance,
         progressVisible: document?.state.progressVisible,
+        reload,
         status: document?.state.status,
       })
     }
@@ -6125,6 +6128,8 @@ describe("React protocol renderer", () => {
     expect(boundary().accessibilityState).toEqual({ busy: false })
     expect(Object.isFrozen(boundary().accessibilityState)).toBe(true)
     expect(renderedProbe()).toMatchObject({ busy: false, instance: 1, status: "initialized" })
+    const reload = renderedProbe().reload
+    expect(typeof reload).toBe("function")
     expect(stableRenders).toBe(1)
     expect(announcements).toEqual([])
 
@@ -6135,6 +6140,7 @@ describe("React protocol renderer", () => {
     expect(boundary()).toMatchObject({ busy: true, instance: 1, status: "started" })
     expect(boundary().accessibilityState).toEqual({ busy: true })
     expect(renderedProbe()).toMatchObject({ busy: true, instance: 1, status: "started" })
+    expect(renderedProbe().reload).toBe(reload)
     expect(stableRenders).toBe(1)
     expect(announcements.map(({ status }) => status)).toEqual(["started"])
     expect(Object.isFrozen(announcements[0])).toBe(true)
