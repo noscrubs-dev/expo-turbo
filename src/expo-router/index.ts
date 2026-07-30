@@ -19,9 +19,14 @@ export {
 export function useExpoRouterAdapters(options: ExpoRouterAdapterOptions = {}): ExpoRouterAdapters {
   const router = useRouter()
   const mapper = options.hrefForDocument ?? defaultExpoRouterHrefForDocument
+  const openExternal = options.openExternal
 
   return useMemo(
-    () => createExpoRouterAdapters(router, { hrefForDocument: mapper }),
-    [mapper, router],
+    () =>
+      createExpoRouterAdapters(router, {
+        hrefForDocument: mapper,
+        ...(openExternal ? { openExternal } : {}),
+      }),
+    [mapper, openExternal, router],
   )
 }

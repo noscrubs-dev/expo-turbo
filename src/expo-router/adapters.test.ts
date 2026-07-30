@@ -88,6 +88,32 @@ describe("Expo Router adapters", () => {
     ])
   })
 
+  test("delegates external URLs to the host without an Expo Router write", async () => {
+    const router = new Router()
+    const opened: string[] = []
+    const adapters = createExpoRouterAdapters(router, {
+      async openExternal(url) {
+        await Promise.resolve()
+        opened.push(url)
+        return true as const
+      },
+    })
+
+    await adapters.navigation.openExternal("https://outside.test/help")
+
+    expect(opened).toEqual(["https://outside.test/help"])
+    expect(router.calls).toEqual([])
+
+    const failing = createExpoRouterAdapters(router, {
+      async openExternal() {
+        throw new Error("private host failure")
+      },
+    })
+    await expect(failing.navigation.openExternal("https://outside.test/private")).rejects.toEqual(
+      new StateError("Expo Router external navigation failed"),
+    )
+  })
+
   test("validates default document URLs and mapper results before router writes", () => {
     expect(defaultExpoRouterHrefForDocument("https://example.test/")).toBe("/")
     expect(() => defaultExpoRouterHrefForDocument("/relative")).toThrow(StateError)
@@ -100,6 +126,11 @@ describe("Expo Router adapters", () => {
         hrefForDocument: () => "",
       }).navigation.visit("https://example.test/", "advance"),
     ).toThrow(StateError)
+    expect(() =>
+      createExpoRouterAdapters(new Router(), {
+        openExternal: null as never,
+      }),
+    ).toThrow(new StateError("Expo Router openExternal must be a function"))
   })
 
   test("fails closed when back is unavailable or a router write is not synchronous", () => {

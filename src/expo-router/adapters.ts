@@ -23,6 +23,11 @@ export interface ExpoRouterAdapterHost {
 export interface ExpoRouterAdapterOptions {
   /** Maps an absolute document URL to the host application's Expo Router href. */
   readonly hrefForDocument?: (url: string) => ExpoRouterHref
+  /**
+   * Opens a URL outside the app. When omitted, external URLs retain the
+   * compatibility behavior of an Expo Router push.
+   */
+  readonly openExternal?: (url: string) => unknown
 }
 
 export interface ExpoRouterAdapters {
@@ -97,6 +102,17 @@ function routerBack(router: ExpoRouterAdapterHost): void {
   }
 }
 
+async function openExternal(
+  handler: NonNullable<ExpoRouterAdapterOptions["openExternal"]>,
+  url: string,
+): Promise<void> {
+  try {
+    await handler(url)
+  } catch {
+    throw new StateError("Expo Router external navigation failed")
+  }
+}
+
 function visitMethod(action: VisitAction): DocumentHistoryWriteMethod | undefined {
   if (action === "advance") return "push"
   if (action === "replace") return "replace"
@@ -123,15 +139,20 @@ export function createExpoRouterAdapters(
     throw new StateError("Expo Router adapter options must be an object")
   }
   const mapper = options.hrefForDocument ?? defaultExpoRouterHrefForDocument
+  const externalHandler = options.openExternal
   if (typeof mapper !== "function") {
     throw new StateError("Expo Router hrefForDocument must be a function")
+  }
+  if (externalHandler !== undefined && typeof externalHandler !== "function") {
+    throw new StateError("Expo Router openExternal must be a function")
   }
 
   const navigation: NavigationAdapter = Object.freeze({
     back(): void {
       routerBack(router)
     },
-    openExternal(url: string): void {
+    openExternal(url: string): Promise<void> | void {
+      if (externalHandler) return openExternal(externalHandler, url)
       routerWrite(router, "push", url)
     },
     visit(url: string, action: VisitAction): void {
