@@ -18,6 +18,16 @@ gem "expo_turbo-rails"
 require "expo_turbo/rails"
 ```
 
+Use the Accept-header route constraint when Expo Turbo and another format share a route family:
+
+```ruby
+constraints ExpoTurbo::Rails::RouteConstraint.new do
+  get "screens/:step", to: "turbo/documents#show"
+end
+```
+
+The constraint matches the registered Expo Turbo MIME type and positive `application/*` or `*/*` wildcards. A `q=0` value on the most-specific matching media range rejects the request, even when a less-specific wildcard has a positive quality. Missing, blank, unrelated, and substring-only Accept values do not match.
+
 Opt a controller into XML rendering and confine it to one host-owned view root:
 
 ```ruby
