@@ -275,6 +275,36 @@ describe("native form control registry", () => {
     expect(registry.checkValidity()).toEqual({ invalidControls: [], valid: true })
   })
 
+  test("emits an explicit unchecked checkable value without changing the default omission", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    const checkable = registry.register("id:unchecked", {
+      checked: false,
+      kind: "checkable",
+      name: "notifications",
+      uncheckedValue: "disabled",
+      value: "enabled",
+    })
+    registry.register("id:checked", {
+      checked: false,
+      kind: "checkable",
+      name: "legacy",
+      value: "ignored",
+    })
+
+    expect(registry.successfulEntries()).toEqual([{ name: "notifications", value: "disabled" }])
+
+    checkable.update({
+      checked: true,
+      kind: "checkable",
+      name: "notifications",
+      uncheckedValue: "disabled",
+      value: "enabled",
+    })
+
+    expect(registry.successfulEntries()).toEqual([{ name: "notifications", value: "enabled" }])
+  })
+
   test("collects frozen bounded multi-name string entries at the control's document position", () => {
     const session = formFixture()
     const registry = registryFor(session)
@@ -3189,6 +3219,15 @@ const invalidHidden: FormControlDescriptor = {
   value: 7,
 }
 void invalidHidden
+
+const invalidCheckableUncheckedValue: FormControlDescriptor = {
+  checked: false,
+  kind: "checkable",
+  name: "notifications",
+  // @ts-expect-error Checkable unchecked values must be strings when present.
+  uncheckedValue: false,
+}
+void invalidCheckableUncheckedValue
 
 const invalidSubmitterDirectionality: FormControlDescriptor = {
   // @ts-expect-error Turbo manually appends only the submitter name and value.

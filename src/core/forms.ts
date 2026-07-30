@@ -89,6 +89,7 @@ export type FormControlDescriptor =
   | (ValidatableFormControlBase & {
       readonly kind: "checkable"
       readonly checked: boolean
+      readonly uncheckedValue?: string
       readonly value?: string
     })
   | (ValidatableFormEntryListBase & {
@@ -597,12 +598,23 @@ function normalizeDescriptor(
           target: nodeKey,
         })
       }
+      if (
+        descriptor.uncheckedValue !== undefined &&
+        typeof descriptor.uncheckedValue !== "string"
+      ) {
+        throw new PropsError("Checkable form control unchecked value must be a string", {
+          target: nodeKey,
+        })
+      }
       const checkableValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
         checked: descriptor.checked,
         kind: "checkable",
         ...(checkableValidity ? { validity: checkableValidity } : {}),
+        ...(descriptor.uncheckedValue !== undefined
+          ? { uncheckedValue: descriptor.uncheckedValue }
+          : {}),
         ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
       })
     }
@@ -1298,6 +1310,8 @@ export class FormControlRegistry {
         case "checkable":
           if (descriptor.checked) {
             entries.push(Object.freeze({ name: descriptor.name, value: descriptor.value ?? "on" }))
+          } else if (descriptor.uncheckedValue !== undefined) {
+            entries.push(Object.freeze({ name: descriptor.name, value: descriptor.uncheckedValue }))
           }
           return
         case "hidden":

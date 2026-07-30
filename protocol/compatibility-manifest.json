@@ -315,7 +315,7 @@
       "id": "forms.successful-controls",
       "area": "forms",
       "disposition": "native-equivalent",
-      "rationale": "Explicit registered native controls reproduce successful-control ordering, disabledness, submitter precedence, repeated names, select, checkable, and multi-entry behavior.",
+      "rationale": "Explicit registered native controls reproduce successful-control ordering, disabledness, submitter precedence, repeated names, select, checkable, explicit unchecked-value, and multi-entry behavior.",
       "evidence": [
         "src/core/browser-stream-differential.test.ts",
         "src/core/forms.test.ts"
