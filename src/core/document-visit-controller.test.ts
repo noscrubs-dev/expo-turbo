@@ -5112,6 +5112,9 @@ describe("Document visit controller", () => {
     await expect(
       controller.reload({ renderMethod: "unsupported" as never }),
     ).rejects.toBeInstanceOf(RequestError)
+    await expect(controller.reload({ renderMethod: null as never })).rejects.toBeInstanceOf(
+      RequestError,
+    )
     await expect(controller.reload(null as never)).rejects.toBeInstanceOf(PropsError)
   })
 

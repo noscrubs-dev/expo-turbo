@@ -470,7 +470,11 @@ export class DocumentVisitController {
     if (!currentUrl) {
       return Promise.reject(new StateError("Document reload requires an active document URL"))
     }
-    return this.refreshCurrent(currentUrl, renderMethod ?? "replace", scroll)
+    return this.refreshCurrent(
+      currentUrl,
+      renderMethod === undefined ? "replace" : renderMethod,
+      scroll,
+    )
   }
 
   /**
