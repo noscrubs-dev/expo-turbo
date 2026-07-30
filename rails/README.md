@@ -5,10 +5,10 @@ The Rails package for Expo Turbo. It registers the distinct `application/vnd.exp
 The package validates rendered Expo Turbo documents structurally and rejects blank or duplicate literal IDs across the complete response, including Frame IDs. A controller must declare the components and style tokens it is allowed to render documents; when it does, the same policy also applies to its Frame, Stream, and raw controller-broadcast output. Its optional protected Cable boundary delegates all credentials and resource policy to the host.
 
 > [!IMPORTANT]
-> Version [`0.1.4`](https://rubygems.org/gems/expo_turbo-rails) is the stable
-> release published on 2026-07-30. Manual VoiceOver, TalkBack, and browser
+> Version [`0.1.5`](https://rubygems.org/gems/expo_turbo-rails) is the stable
+> release published on 2026-07-31. Manual VoiceOver, TalkBack, and browser
 > screen-reader evidence remains an explicit follow-up and is not claimed by
-> the `0.1.4` compatibility surface.
+> the `0.1.5` compatibility surface.
 
 ```ruby
 gem "expo_turbo-rails"
@@ -54,7 +54,7 @@ class ExpoTurboController < ActionController::API
 end
 ```
 
-The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content. Before it renders, the exact output must be a strict UTF-8 XML document: one root, valid namespaces and attributes, no DTD or processing instruction, and an optional leading UTF-8 XML declaration only. Every literal `id` must also be nonblank and unique across the complete rendered document, including nested Frames. The capability declaration then admits only its exact components (and explicit aliases), exact unprefixed `turbo-frame`, `turbo-stream`, `template`, and `turbo-cable-stream-source` wrappers (including default-namespace elements), and declared `style-tokens`. Style-token lists use the same JavaScript whitespace split, count, duplicate, component, and group-conflict rules as the native adapter. A component must opt into the `style-tokens` attribute, and style-token component lists are canonicalized through aliases. The host declaration must mirror its installed registry and style adapter; it deliberately does not attempt to derive or validate arbitrary Zod props/codecs. Validation never serializes the output, so it does not alter preserved XML text.
+The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content. Before it renders, the exact output must be a strict UTF-8 XML document: one root, valid namespaces and attributes, no DTD or processing instruction, and an optional leading UTF-8 XML declaration only. Every literal `id` must also be nonblank and unique across the complete rendered document, including nested Frames. The capability declaration then admits only its exact components (and explicit aliases), exact unprefixed `turbo-frame`, `turbo-stream`, `template`, and `turbo-cable-stream-source` wrappers (including default-namespace elements), and declared `style-tokens`. Style-token lists use the same JavaScript whitespace split, count, duplicate, component, and group-conflict rules as the native adapter. A component must opt into the `style-tokens` attribute, and style-token component lists are canonicalized through aliases. A generated registry manifest also rejects undeclared component attributes and missing required attributes. Shared protocol attributes such as `id`, `class`, `data-*`, and `xml:space` stay available. The host declaration must mirror its installed registry and style adapter. Attribute values still receive their full codec and Zod validation on the client. Validation never serializes the output, so it does not alter preserved XML text.
 
 Do not put multiline values in XML attributes with ordinary ERB interpolation. The client XML parser changes raw tabs and line breaks in an attribute to spaces before component decoding. A later form submission can then save the changed value. Use `expo_turbo_attribute` for each value that can contain this whitespace:
 
@@ -77,7 +77,7 @@ expo_turbo_template_capabilities(
 )
 ```
 
-The versioned manifest contains the registry modules, component tags and aliases, and each component's attribute names. Rails loads it when the controller is configured, rejects a malformed or protocol-incompatible file, derives `style-tokens` support from the declared attribute, and applies the same component validation in every environment. Generate the file in CI and fail on a diff to detect a stale manifest before deployment.
+The versioned manifest contains the registry modules, component tags and aliases, and each component attribute's name and requiredness. Rails loads it when the controller is configured, rejects a malformed or protocol-incompatible file, derives `style-tokens` support from the declared attribute, and applies the same component and attribute validation in every environment. Name-only attributes from a 0.1.4 manifest remain readable and are treated as optional. Generate the file in CI and fail on a diff to detect a stale manifest before deployment.
 
 For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts a nonblank UTF-8 literal ID without control characters, or a model class that it normalizes with Rails' `dom_id`, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior. Before returning, it parses the exact Frame output under a private synthetic root and applies the same configured component/style admission: markup must be valid UTF-8 XML without declarations, DTDs, or processing instructions, and any XML prefix must be declared by the Frame fragment itself. Validation does not serialize or alter the returned `SafeBuffer`, so inline `xml:space="preserve"` text keeps its authored bytes for the native parser.
 

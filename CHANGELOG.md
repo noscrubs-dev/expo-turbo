@@ -4,6 +4,23 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.5 - 2026-07-31
+
+- Add an awaited, timeout-bound `onResponse` hook to the default fetch adapter.
+  It receives frozen response metadata without body access, so hosts can apply
+  cache invalidation, telemetry, or auth-token rotation before the runtime
+  receives the response. Hook failures reject with a redacted request error
+  ([#387](https://github.com/noscrubs-dev/expo-turbo/issues/387)).
+- Add requiredness to generated registry manifest attributes and let
+  manifest-backed Rails template validation reject undeclared or missing
+  component attributes before the XML reaches the client. Shared protocol
+  attributes and name-only 0.1.4 manifests remain compatible
+  ([#388](https://github.com/noscrubs-dev/expo-turbo/issues/388)).
+- Add an Expo Router `openExternal` option for host-owned browser or native-link
+  hand-off without rebuilding the provided navigation adapter. The existing
+  router-push fallback stays compatible when the option is absent
+  ([#389](https://github.com/noscrubs-dev/expo-turbo/issues/389)).
+
 ## 0.1.4 - 2026-07-30
 
 - Add `uncheckedValue` to checkable form controls so an unchecked control can

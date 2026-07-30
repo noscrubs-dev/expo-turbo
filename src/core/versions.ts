@@ -14,4 +14,4 @@ export const RAILS_BASELINE_VERSION = "8.1.3" as const
 export const EXPO_TURBO_PROTOCOL_VERSION = "0.1" as const
 
 /** Package runtime version. Kept explicit until release metadata generation exists. */
-export const EXPO_TURBO_RUNTIME_VERSION = "0.1.4" as const
+export const EXPO_TURBO_RUNTIME_VERSION = "0.1.5" as const

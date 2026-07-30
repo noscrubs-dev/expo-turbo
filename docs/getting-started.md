@@ -83,8 +83,11 @@ An adopting Expo application should:
 
 The package provides a credentialed default transport. It keeps protocol
 headers from the request, returns XML `4xx` and `5xx` responses for normal
-protocol handling, and applies the timeout to both the fetch and response-body
-read:
+protocol handling, and applies the timeout to request hooks, the fetch,
+response hooks, and response-body reads. Request hooks receive a frozen header
+record and can return more headers. Response hooks receive frozen metadata
+without access to the response body. A hook failure rejects the request with a
+redacted `RequestError`.
 
 ```ts
 import { createDefaultFetchAdapter } from "expo-turbo/adapters"
@@ -94,6 +97,9 @@ const fetchAdapter = createDefaultFetchAdapter({
     const token = await authToken()
     return token ? { Authorization: `Bearer ${token}` } : undefined
   },
+  onResponse: async ({ headers }) => {
+    await invalidateQueriesFromHeaders(headers)
+  },
   timeoutMs: 30_000,
 })
 ```
@@ -101,10 +107,13 @@ const fetchAdapter = createDefaultFetchAdapter({
 Expo Router applications can use the optional bridge:
 
 ```tsx
+import * as Linking from "expo-linking"
 import { useExpoRouterAdapters } from "expo-turbo/expo-router"
 
 function DocumentScreen() {
-  const { history, navigation } = useExpoRouterAdapters()
+  const { history, navigation } = useExpoRouterAdapters({
+    openExternal: (url) => Linking.openURL(url),
+  })
 
   return (
     <ExpoTurbo
@@ -120,9 +129,11 @@ function DocumentScreen() {
 
 By default, an absolute document URL maps to its path, query, and fragment.
 Supply `hrefForDocument(url)` when the app uses a catch-all or another route
-space. This bridge supplies synchronous history writes and basic navigation.
-Managed native traversal metadata, restoration event delivery, and app-specific
-external-link policy remain host work.
+space. Supply `openExternal(url)` for the host's real browser or native-link
+hand-off. When it is absent, the compatibility fallback pushes the absolute URL
+through Expo Router. This bridge supplies synchronous history writes and basic
+navigation. Managed native traversal metadata, restoration event delivery, and
+app-specific external-link policy remain host work.
 
 Define registry attributes next to their wire codecs:
 
@@ -221,7 +232,7 @@ The complete Rails API and examples are in the
 | `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.4` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.5` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 
