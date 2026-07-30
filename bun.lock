@@ -21,8 +21,12 @@
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
+        "expo-router": ">=6.0.0",
         "react": ">=19.1.0",
       },
+      "optionalPeers": [
+        "expo-router",
+      ],
     },
   },
   "packages": {

@@ -13,6 +13,7 @@ and product routes.
 - Node.js 20.12 or newer
 - Bun 1.3.14 or newer for source development
 - React 19.1 or newer
+- Expo Router 6 or newer when using `expo-turbo/expo-router`
 - Ruby 3.2 or newer for the Rails gem
 - Rails/Action Cable 7.2 through 8.1
 - `turbo-rails` 2.0.10 through 2.x
@@ -80,6 +81,49 @@ An adopting Expo application should:
 5. Keep credentials, origin selection, identity rotation, retry policy, and
    product state in the host.
 
+The package provides a credentialed default transport. It keeps protocol
+headers from the request, returns XML `4xx` and `5xx` responses for normal
+protocol handling, and applies the timeout to both the fetch and response-body
+read:
+
+```ts
+import { createDefaultFetchAdapter } from "expo-turbo/adapters"
+
+const fetchAdapter = createDefaultFetchAdapter({
+  onRequest: async () => {
+    const token = await authToken()
+    return token ? { Authorization: `Bearer ${token}` } : undefined
+  },
+  timeoutMs: 30_000,
+})
+```
+
+Expo Router applications can use the optional bridge:
+
+```tsx
+import { useExpoRouterAdapters } from "expo-turbo/expo-router"
+
+function DocumentScreen() {
+  const { history, navigation } = useExpoRouterAdapters()
+
+  return (
+    <ExpoTurbo
+      url={documentUrl}
+      registry={registry}
+      fetch={fetchAdapter}
+      history={history}
+      navigation={navigation}
+    />
+  )
+}
+```
+
+By default, an absolute document URL maps to its path, query, and fragment.
+Supply `hrefForDocument(url)` when the app uses a catch-all or another route
+space. This bridge supplies synchronous history writes and basic navigation.
+Managed native traversal metadata, restoration event delivery, and app-specific
+external-link policy remain host work.
+
 The standard host path owns session, visit, Frame, form, refresh, state, and
 disposal wiring:
 
@@ -140,6 +184,7 @@ The complete Rails API and examples are in the
 | `expo-turbo` | Version/status constants and the combined public surface |
 | `expo-turbo/core` | Parser, tree/session, visits, Frames, forms, Streams, lifecycle, and errors |
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
+| `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
 | `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.3` |

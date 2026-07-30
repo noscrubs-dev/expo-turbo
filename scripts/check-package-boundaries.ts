@@ -100,6 +100,13 @@ async function scanManifest(packageRoot: string): Promise<BoundaryViolation[]> {
     const names = dependencyNames(manifest, section)
     for (const name of names) {
       if (section === "devDependencies" && name === "@hotwired/turbo") continue
+      if (
+        section === "peerDependencies" &&
+        name === "expo-router" &&
+        isOptionalPeerDependency(manifest, name)
+      ) {
+        continue
+      }
       const reason = forbiddenDependencyReason(name)
       if (reason) {
         violations.push({
@@ -112,6 +119,13 @@ async function scanManifest(packageRoot: string): Promise<BoundaryViolation[]> {
   }
 
   return violations
+}
+
+function isOptionalPeerDependency(manifest: PackageManifest, name: string): boolean {
+  const metadata = manifest.peerDependenciesMeta
+  if (!isRecord(metadata)) return false
+  const dependency = metadata[name]
+  return isRecord(dependency) && dependency.optional === true
 }
 
 function dependencyNames(
@@ -332,6 +346,9 @@ function boundaryReason(
   ) {
     return undefined
   }
+  if (specifier === "expo-router" && isExpoRouterBridgeImporter(importer, allowedRoot)) {
+    return undefined
+  }
   const forbiddenReason = forbiddenDependencyReason(specifier)
   if (forbiddenReason) return forbiddenReason
   if (specifier.startsWith("@/") || specifier.startsWith("~/"))
@@ -345,6 +362,11 @@ function boundaryReason(
   if (pathFromRoot === ".." || pathFromRoot.startsWith("../") || isAbsolute(pathFromRoot)) {
     return "relative import resolves outside the package source root"
   }
+}
+
+function isExpoRouterBridgeImporter(importer: string, allowedRoot: string): boolean {
+  const path = relative(allowedRoot, importer)
+  return path === "expo-router" || path.startsWith("expo-router/")
 }
 
 function forbiddenDependencyReason(specifier: string): string | undefined {

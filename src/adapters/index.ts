@@ -13,6 +13,7 @@ export * from "./action-cable-endpoint.js"
 export * from "./action-cable-lifecycle.js"
 export * from "./action-cable-websocket.js"
 export * from "./action-cable-wire.js"
+export * from "./fetch.js"
 export * from "./styles.js"
 
 export type Unsubscribe = () => void

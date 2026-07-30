@@ -101,7 +101,7 @@ are the canonical integration examples.
 
 | Area | Current status |
 | --- | --- |
-| TypeScript package | [`expo-turbo@0.1.3`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all six public entrypoints |
+| TypeScript package | [`expo-turbo@0.1.3`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all public entrypoints |
 | Rails gem | [`expo_turbo-rails` 0.1.3](https://rubygems.org/gems/expo_turbo-rails); clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
 | Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android and iOS each pass 71/71 shared contracts |
@@ -147,6 +147,8 @@ behavior.
 - [x] Small-slice external-store subscriptions and deterministic disposal
 - [x] Semantic style-token and direction adapters
 - [x] Host-owned focus, scroll, visibility, storage, navigation, and observability adapters
+- [x] Default credentialed fetch adapter with request and response-body timeouts
+- [x] Optional Expo Router navigation and history-write bridge
 - [x] Accessible busy, pending, disabled, validation, retry, and announcement surfaces
 
 ### Visits, links, history, and Frames
@@ -233,9 +235,10 @@ sense on native platforms. It is not a browser DOM port of
 
 - Browser DOM targets, bubbling/composed paths, `<head>`/script/CSS behavior,
   selection ranges, shadow DOM, hover, and physical repaint timing are N/A.
-- Components, component actions, native styles, navigation/history mapping,
-  focus/scroll/visibility handles, credentials, identity, origin policy, retry
-  values, and product state belong to the Expo host.
+- Components, component actions, native styles, advanced navigation/history
+  mapping, focus/scroll/visibility handles, credentials, identity, origin
+  policy, retry values, and product state belong to the Expo host. The package
+  supplies optional baseline fetch and Expo Router adapters.
 - Routes, controllers, views, authorization, cache inputs, tenant policy,
   grants, and product broadcasts belong to the Rails host.
 - Action Cable provides online delivery; missed-message correctness uses
@@ -253,6 +256,7 @@ sense on native platforms. It is not a browser DOM port of
 | `expo-turbo` | Version/status constants and combined public surface |
 | `expo-turbo/core` | Parser, tree/session, visits, Frames, forms, Streams, lifecycle, and errors |
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
+| `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | High-level runtime, provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
 | `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.3` |
@@ -268,6 +272,7 @@ Deep source imports are unsupported.
 | Node.js | `>= 20.12` |
 | Bun source toolchain | `>= 1.3.14` |
 | React peer | `>= 19.1` |
+| Optional Expo Router peer | `>= 6` |
 | Primary Expo example | Expo SDK 57, React Native 0.86, Hermes |
 | Ruby | `>= 3.2` |
 | Rails / Action Cable | `>= 7.2`, `< 8.2` |

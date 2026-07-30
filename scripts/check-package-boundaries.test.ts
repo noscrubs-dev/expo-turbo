@@ -42,6 +42,19 @@ describe("package boundary checks", () => {
     expect(await scanSourceBoundaries(root)).toEqual([])
   })
 
+  test("allows Expo Router only in its optional bridge entrypoint", async () => {
+    const root = await fixture({
+      "package.json": JSON.stringify({
+        peerDependencies: { "expo-router": ">=6.0.0" },
+        peerDependenciesMeta: { "expo-router": { optional: true } },
+      }),
+      "src/expo-router/index.ts": 'import { useRouter } from "expo-router"; void useRouter',
+      "src/index.ts": "export {}",
+    })
+
+    expect(await scanSourceBoundaries(root)).toEqual([])
+  })
+
   test("rejects official Turbo from runtime and unrelated test sources", async () => {
     const root = await fixture({
       "package.json": JSON.stringify({
@@ -233,6 +246,30 @@ describe("package boundary checks", () => {
     ])
   })
 
+  test("rejects Expo Router when it is not an optional peer", async () => {
+    const requiredPeer = await fixture({
+      "package.json": JSON.stringify({
+        peerDependencies: { "expo-router": ">=6.0.0" },
+      }),
+      "src/index.ts": "export {}",
+    })
+    const runtimeDependency = await fixture({
+      "package.json": JSON.stringify({
+        dependencies: { "expo-router": ">=6.0.0" },
+        peerDependencies: { "expo-router": ">=6.0.0" },
+        peerDependenciesMeta: { "expo-router": { optional: true } },
+      }),
+      "src/index.ts": "export {}",
+    })
+
+    expect(await scanSourceBoundaries(requiredPeer)).toMatchObject([
+      { file: "package.json", specifier: "expo-router" },
+    ])
+    expect(await scanSourceBoundaries(runtimeDependency)).toMatchObject([
+      { file: "package.json", specifier: "expo-router" },
+    ])
+  })
+
   test("checks compiled imports, declarations, and source-map contents", async () => {
     const root = await fixture({
       "package.json": "{}",
@@ -250,6 +287,23 @@ describe("package boundary checks", () => {
       "@hotwired/turbo",
       "expo-router",
     ])
+  })
+
+  test("allows compiled Expo Router bridge imports", async () => {
+    const root = await fixture({
+      "package.json": JSON.stringify({
+        peerDependencies: { "expo-router": ">=6.0.0" },
+        peerDependenciesMeta: { "expo-router": { optional: true } },
+      }),
+      "dist/expo-router/index.js": 'import { useRouter } from "expo-router"; void useRouter',
+      "dist/expo-router/index.js.map": JSON.stringify({
+        sources: ["../../src/expo-router/index.ts"],
+        sourcesContent: ['import { useRouter } from "expo-router"; void useRouter'],
+      }),
+      "src/expo-router/index.ts": 'import { useRouter } from "expo-router"; void useRouter',
+    })
+
+    expect(await scanArtifactBoundaries(root)).toEqual([])
   })
 
   test("requires built artifacts for artifact inspection", async () => {
