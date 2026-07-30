@@ -120,7 +120,16 @@ appId: dev.noscrubs.expoturbo.example
 - extendedWaitUntil:
     visible: Example Domain
     timeout: 30000
-- pressKey: BACK
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: BACK
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn: Return to Expo Turbo Compatibility
 - extendedWaitUntil:
     visible: Disabled native link
     timeout: 30000

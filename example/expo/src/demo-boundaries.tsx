@@ -444,7 +444,7 @@ export function DemoFormBoundary({
       <View
         accessibilityLabel={label}
         accessibilityState={accessibilityState}
-        accessible
+        accessible={false}
         role="group"
         style={{
           backgroundColor: failed ? "#fff1f0" : "#eef6ff",

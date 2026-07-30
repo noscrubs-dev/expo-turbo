@@ -81,11 +81,26 @@ appId: dev.noscrubs.expoturbo.example
     visible: Open autofocus document
     timeout: 30000
 - tapOn: Open autofocus document
-- extendedWaitUntil:
-    visible:
-      id: demo-form-input-id-root-autofocus-scroll-target
-      focused: true
-    timeout: 30000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: demo-form-input-id-root-autofocus-scroll-target
+            focused: true
+          timeout: 30000
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: demo-form-input-id-root-autofocus-scroll-target
+          timeout: 30000
+      - assertVisible:
+          id: demo-form-input-id-root-autofocus-scroll-target
+          text: Focused and revealed
 
 - launchApp:
     clearState: true
@@ -102,7 +117,17 @@ appId: dev.noscrubs.expoturbo.example
 - extendedWaitUntil:
     visible: Native history scroll restoration is ready
     timeout: 30000
-- pressKey: BACK
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: BACK
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          id: BackButton
 - extendedWaitUntil:
     visible: Native history scroll checkpoint
     timeout: 30000

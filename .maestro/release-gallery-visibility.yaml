@@ -23,27 +23,27 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=visibility-flatlist"
 - extendedWaitUntil:
-    visible: Frame flatlist-lazy-frame-one
+    visible: Frame flatlist-lazy-frame-one.*
     timeout: 30000
 - extendedWaitUntil:
     visible: Virtualized lazy Frame loaded
     timeout: 30000
 - swipe:
-    start: 80%, 60%
-    end: 20%, 60%
-    duration: 800
+    from:
+      text: Frame flatlist-lazy-frame-one.*
+    direction: LEFT
 - extendedWaitUntil:
-    visible: Frame flatlist-lazy-frame-two
+    visible: Frame flatlist-lazy-frame-two.*
     timeout: 30000
 - extendedWaitUntil:
     visible: Virtualized lazy Frame loaded
     timeout: 30000
 - swipe:
-    start: 80%, 60%
-    end: 20%, 60%
-    duration: 800
+    from:
+      text: Frame flatlist-lazy-frame-two.*
+    direction: LEFT
 - extendedWaitUntil:
-    visible: Frame flatlist-lazy-frame-three
+    visible: Frame flatlist-lazy-frame-three.*
     timeout: 30000
 - extendedWaitUntil:
     visible: Virtualized lazy Frame loaded

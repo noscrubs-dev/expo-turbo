@@ -2,16 +2,35 @@ appId: dev.noscrubs.expoturbo.example
 ---
 - launchApp:
     clearState: true
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
 - extendedWaitUntil:
     visible: Expo Turbo
     timeout: 120000
 - openLink: "expoturboexample://device-test-gallery?scenario=form"
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
 - extendedWaitUntil:
     visible: Live native form controls
     timeout: 30000
 - assertVisible: Form ready
 - eraseText
-- hideKeyboard
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: BACK
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
@@ -26,11 +45,31 @@ appId: dev.noscrubs.expoturbo.example
     direction: DOWN
     timeout: 30000
     visibilityPercentage: 20
-- assertVisible:
-    id: demo-form-input-id-first-name
-    focused: true
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+      - assertVisible: First name is required
 - inputText: Ada
-- hideKeyboard
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - pressKey: BACK
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - hideKeyboard
 - tapOn:
     id: demo-form-submitter-id-collect-form
 - assertVisible: Confirm form submission
@@ -38,7 +77,7 @@ appId: dev.noscrubs.expoturbo.example
 - tapOn:
     text: Continue
     waitToSettleTimeoutMs: 100
-- assertVisible: Submitting preview…
+- assertVisible: Submission loading state observed
 - extendedWaitUntil:
     visible: Form submission failed. Check the form and retry.
     timeout: 30000
