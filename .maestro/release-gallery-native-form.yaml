@@ -34,7 +34,7 @@ appId: dev.noscrubs.expoturbo.example
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
-    direction: DOWN
+    direction: UP
     timeout: 30000
     visibilityPercentage: 20
 - tapOn:
@@ -73,7 +73,7 @@ appId: dev.noscrubs.expoturbo.example
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
-    direction: DOWN
+    direction: UP
     timeout: 30000
     visibilityPercentage: 20
 - tapOn:
