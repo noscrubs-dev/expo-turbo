@@ -70,6 +70,12 @@ appId: dev.noscrubs.expoturbo.example
       platform: iOS
     commands:
       - hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 30000
+    visibilityPercentage: 20
 - tapOn:
     id: demo-form-submitter-id-collect-form
 - assertVisible: Confirm form submission
