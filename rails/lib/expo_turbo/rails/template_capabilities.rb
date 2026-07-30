@@ -8,6 +8,7 @@ module ExpoTurbo
       MANIFEST_VERSION = 1
       PROTOCOL_ELEMENTS = %w[turbo-cable-stream-source turbo-frame turbo-stream template].freeze
       RESERVED_COMPONENT_NAMES = [*PROTOCOL_ELEMENTS, "expo-turbo-fragment"].freeze
+      SHARED_ATTRIBUTE_NAMES = %w[autofocus class dir dirname form id xml:space xmlns].freeze
       TOKEN_PATTERN = /\A[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*\z/
       MAX_TOKEN_LENGTH = 64
       JAVASCRIPT_WHITESPACE = /[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+/u
@@ -22,8 +23,12 @@ module ExpoTurbo
           raise ConfigurationError, "Expo Turbo template capabilities require exactly one of components or manifest"
         end
 
-        components = load_manifest_components(manifest) unless manifest.nil?
-        @components, @style_token_components = normalize_components(components)
+        manifest_backed = !manifest.nil?
+        components = load_manifest_components(manifest) if manifest_backed
+        @components, @style_token_components, @component_attributes = normalize_components(
+          components,
+          manifest_backed:
+        )
         @style_tokens = normalize_style_tokens(style_tokens)
         @max_style_tokens = validate_max_style_tokens!(max_style_tokens)
         freeze
@@ -121,10 +126,14 @@ module ExpoTurbo
           end
 
           attributes = component["attributes"]
-          unless attributes.is_a?(Array) &&
-              attributes.all? { |attribute| attribute.is_a?(Hash) && attribute["name"].is_a?(String) && !attribute["name"].empty? }
-            raise ConfigurationError, "Expo Turbo capability manifest components require attribute names"
+          valid_attributes = attributes.is_a?(Array) && attributes.all? do |attribute|
+            attribute.is_a?(Hash) &&
+              attribute["name"].is_a?(String) &&
+              !attribute["name"].empty? &&
+              (!attribute.key?("required") || [true, false].include?(attribute["required"]))
           end
+          raise ConfigurationError, "Expo Turbo capability manifest components require attribute names" unless valid_attributes
+
           attribute_names = attributes.map { |attribute| attribute["name"] }
           if attribute_names.uniq.length != attribute_names.length
             raise ConfigurationError, "Expo Turbo capability manifest contains duplicate attributes"
@@ -135,29 +144,40 @@ module ExpoTurbo
 
           components[component["tag"]] = {
             aliases: component["aliases"],
+            attributes: attribute_names,
+            required_attributes: attributes.filter_map { |attribute| attribute["name"] if attribute["required"] },
             style_tokens: attribute_names.include?("style-tokens")
           }
         end
       end
 
-      def normalize_components(components)
+      def normalize_components(components, manifest_backed:)
         raise ConfigurationError, "Expo Turbo template capabilities require a component map" unless components.is_a?(Hash)
 
+        component_attributes = {}
         names = {}
         style_token_components = {}
         components.each do |tag, configuration|
           tag = validate_component_name!(tag)
-          configuration = normalize_component_configuration(tag, configuration)
+          configuration = normalize_component_configuration(tag, configuration, manifest_backed:)
           declare_component_name!(names, tag, tag)
+          if manifest_backed
+            component_attributes[tag] = {
+              allowed: configuration[:attributes].to_h { |name| [name, true] }.freeze,
+              required: configuration[:required_attributes].to_h { |name| [name, true] }.freeze
+            }.freeze
+          end
           style_token_components[tag] = true if configuration[:style_tokens]
           configuration[:aliases].each { |alias_name| declare_component_name!(names, alias_name, tag) }
         end
-        [names.freeze, style_token_components.freeze]
+        [names.freeze, style_token_components.freeze, component_attributes.freeze]
       end
 
-      def normalize_component_configuration(tag, configuration)
+      def normalize_component_configuration(tag, configuration, manifest_backed:)
         configuration = {} if configuration.nil?
-        unless configuration.is_a?(Hash) && (configuration.keys - %i[aliases style_tokens]).empty?
+        allowed_keys = %i[aliases style_tokens]
+        allowed_keys.concat(%i[attributes required_attributes]) if manifest_backed
+        unless configuration.is_a?(Hash) && (configuration.keys - allowed_keys).empty?
           raise ConfigurationError, "Expo Turbo component #{tag.inspect} accepts only aliases and style_tokens"
         end
 
@@ -176,7 +196,14 @@ module ExpoTurbo
           raise ConfigurationError, "Expo Turbo component #{tag.inspect} style_tokens must be true or false"
         end
 
-        {aliases: aliases.freeze, style_tokens:}.freeze
+        attributes = manifest_backed ? configuration.fetch(:attributes) : []
+        required_attributes = manifest_backed ? configuration.fetch(:required_attributes) : []
+        {
+          aliases: aliases.freeze,
+          attributes: attributes.freeze,
+          required_attributes: required_attributes.freeze,
+          style_tokens:
+        }.freeze
       end
 
       def declare_component_name!(names, name, canonical)
@@ -277,6 +304,7 @@ module ExpoTurbo
         component = @components[qualified_element_name(element)]
         raise ValidationError, "Expo Turbo template contains an undeclared component" unless component
 
+        validate_component_attributes!(element, component)
         style_tokens = literal_attribute(element, "style-tokens")&.value
         if style_tokens
           unless @style_token_components.key?(component)
@@ -298,6 +326,32 @@ module ExpoTurbo
 
       def literal_attribute(element, name)
         element.attribute_nodes.find { |attribute| attribute.name == name && attribute.namespace.nil? }
+      end
+
+      def validate_component_attributes!(element, component)
+        capabilities = @component_attributes[component]
+        return unless capabilities
+
+        present = {}
+        element.attribute_nodes.each do |attribute|
+          name = qualified_attribute_name(attribute)
+          present[name] = true
+          next if shared_attribute_name?(name) || capabilities[:allowed].key?(name)
+
+          raise ValidationError, "Expo Turbo template contains an undeclared component attribute"
+        end
+        return if capabilities[:required].keys.all? { |name| present.key?(name) }
+
+        raise ValidationError, "Expo Turbo template omits a required component attribute"
+      end
+
+      def qualified_attribute_name(attribute)
+        prefix = attribute.namespace&.prefix
+        (prefix && !prefix.empty?) ? "#{prefix}:#{attribute.name}" : attribute.name
+      end
+
+      def shared_attribute_name?(name)
+        SHARED_ATTRIBUTE_NAMES.include?(name) || name.start_with?("data-", "xmlns:")
       end
 
       def validate_style_tokens!(value, component)

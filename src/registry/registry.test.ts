@@ -194,6 +194,40 @@ describe("typed component registry", () => {
     )
   })
 
+  test("publishes attribute requiredness from explicit and derived schemas", () => {
+    const explicitAttributes = createRegistry(primitives).capabilities.components.find(
+      (component) => component.tag === "DemoCard",
+    )?.attributes
+    const derivedAttributes = createRegistry(derivedPrimitives).capabilities.components.find(
+      (component) => component.tag === "DerivedCard",
+    )?.attributes
+
+    expect(
+      Object.fromEntries(
+        (explicitAttributes ?? []).map((attribute) => [attribute.name, attribute.required]),
+      ),
+    ).toEqual({
+      count: true,
+      disabled: false,
+      enabled: false,
+      form: false,
+      heading: true,
+      "style-tokens": false,
+      tone: false,
+    })
+    expect(
+      Object.fromEntries(
+        (derivedAttributes ?? []).map((attribute) => [attribute.name, attribute.required]),
+      ),
+    ).toEqual({
+      "accessibility-label": false,
+      disabled: false,
+      heading: true,
+      "original-price": true,
+      tone: false,
+    })
+  })
+
   test("runs a JSON attribute schema once in a derived declaration", () => {
     const lengthCodec = jsonCodec(
       "derived-length",
@@ -590,6 +624,18 @@ describe("typed component registry", () => {
 })
 
 function acceptLegacyRegistryShapes(): void {
+  const component: RegistryComponent = {
+    aliases: [],
+    attributeBindings: {
+      title: { codec: stringCodec, prop: "title" },
+    },
+    children: "none",
+    component: () => null,
+    decodeProps: (attributes) => attributes,
+    formOwner: false,
+    morphState: "preserve",
+    tag: "LegacyComponent",
+  }
   const capabilities: RegistryCapabilityManifest = {
     components: [],
     hash: "fnv1a32:00000000",
@@ -614,6 +660,7 @@ function acceptLegacyRegistryShapes(): void {
       throw new Error("not used")
     },
   }
+  void component
   void registry
 }
 void acceptLegacyRegistryShapes

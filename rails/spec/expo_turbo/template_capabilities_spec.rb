@@ -58,12 +58,15 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
             {
               tag: "DemoCard",
               aliases: ["Card"],
-              attributes: [{name: "title"}, {name: "style-tokens"}]
+              attributes: [
+                {name: "title", required: true},
+                {name: "style-tokens", required: false}
+              ]
             },
             {
               tag: "DemoText",
               aliases: [],
-              attributes: []
+              attributes: [{name: "value"}]
             }
           ]
         }
@@ -75,11 +78,19 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
       style_tokens: {"tone:info" => {components: ["Card"]}}
     )
     valid = ExpoTurbo::Rails::XmlFragments.parse_document(
-      '<Card style-tokens="tone:info"><DemoText/></Card>'
+      '<Card title="Status" style-tokens="tone:info" id="status" data-state="ready" xml:space="preserve"><DemoText/></Card>'
     )
+    undeclared_attribute = ExpoTurbo::Rails::XmlFragments.parse_document(
+      '<Card title="Status" surprise="value"/>'
+    )
+    missing_required_attribute = ExpoTurbo::Rails::XmlFragments.parse_document("<Card/>")
     unknown = ExpoTurbo::Rails::XmlFragments.parse_document("<PrivateComponent/>")
 
     expect(from_manifest.validate_document!(valid)).to equal(valid)
+    expect { from_manifest.validate_document!(undeclared_attribute) }
+      .to raise_error(described_class::ValidationError, /undeclared component attribute/)
+    expect { from_manifest.validate_document!(missing_required_attribute) }
+      .to raise_error(described_class::ValidationError, /required component attribute/)
     expect { from_manifest.validate_document!(unknown) }
       .to raise_error(described_class::ValidationError, /undeclared component/)
   ensure
@@ -100,8 +111,28 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
 
     expect { described_class.new(manifest: manifest.path) }
       .to raise_error(ExpoTurbo::Rails::ConfigurationError, /valid JSON/)
+
+    invalid_required = Tempfile.new(["expo-turbo-capabilities", ".json"])
+    invalid_required.write(
+      JSON.generate(
+        {
+          manifestVersion: 1,
+          protocolVersion: ExpoTurbo::Rails::PROTOCOL_VERSION,
+          hash: "fnv1a32:1234abcd",
+          modules: [],
+          components: [
+            {tag: "DemoCard", aliases: [], attributes: [{name: "title", required: "yes"}]}
+          ]
+        }
+      )
+    )
+    invalid_required.close
+
+    expect { described_class.new(manifest: invalid_required.path) }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /attribute names/)
   ensure
     manifest&.unlink
+    invalid_required&.unlink
   end
 
   it "admits declared aliases, qualified component names, and literal protocol wrappers" do

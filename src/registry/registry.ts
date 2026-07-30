@@ -107,6 +107,7 @@ interface ErasedAttributeBinding {
   readonly decode?: (value: string) => unknown
   readonly deprecated?: string
   readonly prop: string
+  readonly required?: boolean
 }
 
 export interface RegistryComponent {
@@ -151,6 +152,16 @@ function camelCaseAttributeName(name: string): string {
   return name.replace(/-(.)/g, (_match, character: string) => character.toUpperCase())
 }
 
+function attributeIsRequired(schema: z.ZodType, name: string, tag: string): boolean {
+  try {
+    return !schema.isOptional()
+  } catch {
+    throw new RegistryError(`Attribute ${JSON.stringify(name)} requiredness could not be derived`, {
+      target: tag,
+    })
+  }
+}
+
 function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig): Readonly<{
   attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   schema: z.ZodObject
@@ -173,7 +184,14 @@ function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig):
           },
         )
       }
-      bindingEntries.push([name, Object.freeze({ ...binding })])
+      const propSchema = config.schema.shape[binding.prop]
+      bindingEntries.push([
+        name,
+        Object.freeze({
+          ...binding,
+          required: propSchema ? attributeIsRequired(propSchema, name, config.tag) : false,
+        }),
+      ])
     }
     return Object.freeze({
       attributeBindings: Object.freeze(Object.fromEntries(bindingEntries)),
@@ -225,6 +243,7 @@ function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig):
           ? { deprecated: definition.deprecatedMessage }
           : {}),
         prop,
+        required: attributeIsRequired(definition.schema, name, config.tag),
       }),
     ])
   }
@@ -342,6 +361,7 @@ export interface ComponentCapability {
     deprecated?: string
     name: string
     prop: string
+    required?: boolean
   }>[]
   readonly children: ComponentChildren
   readonly formContainer?: FormContainerRole
@@ -514,6 +534,7 @@ class Registry<Component extends RegistryComponent>
               ...(binding.deprecated ? { deprecated: binding.deprecated } : {}),
               name,
               prop: binding.prop,
+              required: binding.required === true,
             }),
           )
           .sort((left, right) => compareCodeUnits(left.name, right.name))
