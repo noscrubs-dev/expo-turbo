@@ -588,20 +588,20 @@ function normalizeDescriptor(
   }
   switch (descriptor.kind) {
     case "checkable": {
-      if (typeof descriptor.checked !== "boolean") {
+      const checked = descriptor.checked
+      const uncheckedValue = descriptor.uncheckedValue
+      const value = descriptor.value
+      if (typeof checked !== "boolean") {
         throw new PropsError("Checkable form control checked must be a boolean", {
           target: nodeKey,
         })
       }
-      if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
+      if (value !== undefined && typeof value !== "string") {
         throw new PropsError("Checkable form control value must be a string", {
           target: nodeKey,
         })
       }
-      if (
-        descriptor.uncheckedValue !== undefined &&
-        typeof descriptor.uncheckedValue !== "string"
-      ) {
+      if (uncheckedValue !== undefined && typeof uncheckedValue !== "string") {
         throw new PropsError("Checkable form control unchecked value must be a string", {
           target: nodeKey,
         })
@@ -609,13 +609,11 @@ function normalizeDescriptor(
       const checkableValidity = normalizeValidity(descriptor.validity, nodeKey)
       return Object.freeze({
         ...base,
-        checked: descriptor.checked,
+        checked,
         kind: "checkable",
         ...(checkableValidity ? { validity: checkableValidity } : {}),
-        ...(descriptor.uncheckedValue !== undefined
-          ? { uncheckedValue: descriptor.uncheckedValue }
-          : {}),
-        ...(descriptor.value !== undefined ? { value: descriptor.value } : {}),
+        ...(uncheckedValue !== undefined ? { uncheckedValue } : {}),
+        ...(value !== undefined ? { value } : {}),
       })
     }
     case "entries": {

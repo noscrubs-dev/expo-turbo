@@ -305,6 +305,39 @@ describe("native form control registry", () => {
     expect(registry.successfulEntries()).toEqual([{ name: "notifications", value: "enabled" }])
   })
 
+  test("reads each checkable value once before freezing the snapshot", () => {
+    const session = formFixture()
+    const registry = registryFor(session)
+    let checkedReads = 0
+    let uncheckedValueReads = 0
+    let valueReads = 0
+    const descriptor = {
+      get checked(): unknown {
+        checkedReads += 1
+        return checkedReads === 1 ? false : "not-boolean"
+      },
+      kind: "checkable",
+      name: "notifications",
+      get uncheckedValue(): unknown {
+        uncheckedValueReads += 1
+        return uncheckedValueReads === 1 ? "disabled" : { secret: "not-string" }
+      },
+      get value(): unknown {
+        valueReads += 1
+        return valueReads === 1 ? "enabled" : { secret: "not-string" }
+      },
+    }
+
+    registry.register("id:unchecked", descriptor as unknown as FormControlDescriptor)
+
+    expect(registry.successfulEntries()).toEqual([{ name: "notifications", value: "disabled" }])
+    expect({ checkedReads, uncheckedValueReads, valueReads }).toEqual({
+      checkedReads: 1,
+      uncheckedValueReads: 1,
+      valueReads: 1,
+    })
+  })
+
   test("collects frozen bounded multi-name string entries at the control's document position", () => {
     const session = formFixture()
     const registry = registryFor(session)
@@ -2277,7 +2310,7 @@ describe("native form control registry", () => {
           Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
           "X-Expo-Turbo-Capabilities": "capability-hash",
           "X-Expo-Turbo-Protocol": "0.1",
-          "X-Expo-Turbo-Runtime": "0.1.3",
+          "X-Expo-Turbo-Runtime": "0.1.4",
           "X-Turbo-Request-Id": "request-1",
         },
         method: "POST",
