@@ -33,10 +33,22 @@ export interface DefaultFetchAdapterRequest {
 }
 
 type FetchBody = FormData | string | Uint8Array
+type ReactNativeFormData = FormData & Readonly<{ getParts(): unknown }>
+type ReactNativeFormDataFile = Readonly<{
+  name: string
+  type: string
+  uri: string
+}>
 
 const maximumTimeoutMs = 2_147_483_647
 const ownerAbort = Symbol("expo-turbo.fetch.owner-abort")
+const requestPreparationFailure = Symbol("expo-turbo.fetch.request-preparation-failure")
 const timeoutAbort = Symbol("expo-turbo.fetch.timeout-abort")
+
+type RequestPreparationFailure = Readonly<{
+  error: RequestError
+  kind: typeof requestPreparationFailure
+}>
 
 function adapterOptions(options: DefaultFetchAdapterOptions): Readonly<{
   headers: Readonly<Record<string, string>>
@@ -89,15 +101,101 @@ function headerSnapshot(headers: Headers): Readonly<Record<string, string>> {
   return Object.freeze(snapshot)
 }
 
-function requestBody(request: TurboRequest): FetchBody | undefined {
+function base64(bytes: Uint8Array): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  const chunks: string[] = []
+  let chunk = ""
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index] ?? 0
+    const second = bytes[index + 1] ?? 0
+    const third = bytes[index + 2] ?? 0
+    chunk += alphabet[first >> 2]
+    chunk += alphabet[((first & 0x03) << 4) | (second >> 4)]
+    chunk += index + 1 < bytes.length ? alphabet[((second & 0x0f) << 2) | (third >> 6)] : "="
+    chunk += index + 2 < bytes.length ? alphabet[third & 0x3f] : "="
+    if (chunk.length >= 16_384) {
+      chunks.push(chunk)
+      chunk = ""
+    }
+  }
+  if (chunk) chunks.push(chunk)
+  return chunks.join("")
+}
+
+async function blobDataUri(blob: Blob, type: string): Promise<string> {
+  const contentType = type || "application/octet-stream"
+  if (typeof FileReader === "function") {
+    try {
+      const encoded = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onabort = () => reject(new Error("aborted"))
+        reader.onerror = () => reject(new Error("failed"))
+        reader.onload = () => {
+          try {
+            if (typeof reader.result !== "string") throw new Error("invalid")
+            const marker = reader.result.indexOf(";base64,")
+            if (marker < 0) throw new Error("invalid")
+            resolve(`data:${contentType};base64,${reader.result.slice(marker + 8)}`)
+          } catch {
+            reject(new Error("invalid"))
+          }
+        }
+        reader.readAsDataURL(blob)
+      })
+      return encoded
+    } catch {
+      throw new RequestError("Default fetch multipart file could not be read")
+    }
+  }
+
+  try {
+    const buffer = await blob.arrayBuffer()
+    return `data:${contentType};base64,${base64(new Uint8Array(buffer))}`
+  } catch {
+    throw new RequestError("Default fetch multipart file could not be read")
+  }
+}
+
+async function requestBody(request: TurboRequest): Promise<FetchBody | undefined> {
   const body = request.body
   if (!body) return undefined
   if (!isTurboMultipartBody(body.value)) return body.value
 
   const formData = new FormData()
+  let reactNative: boolean
+  try {
+    reactNative = typeof (formData as Partial<ReactNativeFormData>).getParts === "function"
+  } catch {
+    throw new RequestError("Default fetch multipart support could not be detected")
+  }
   for (const entry of body.value.entries) {
     if (typeof entry.value === "string") {
       formData.append(entry.name, entry.value)
+    } else if (reactNative) {
+      let blob: Blob & Readonly<{ uri?: unknown }>
+      let filename: unknown
+      let type: unknown
+      let uri: unknown
+      try {
+        blob = entry.value.blob as Blob & Readonly<{ uri?: unknown }>
+        filename = entry.value.filename
+        type = blob.type
+        uri = blob.uri
+      } catch {
+        throw new RequestError("Default fetch multipart file metadata could not be read")
+      }
+      if (typeof filename !== "string" || typeof type !== "string") {
+        throw new RequestError("Default fetch multipart file metadata is invalid")
+      }
+      const file: ReactNativeFormDataFile = {
+        name: filename,
+        type: type || "application/octet-stream",
+        uri: typeof uri === "string" && uri.trim() !== "" ? uri : await blobDataUri(blob, type),
+      }
+      const nativeFormData = formData as unknown as {
+        append(name: string, value: ReactNativeFormDataFile | string): void
+      }
+      nativeFormData.append(entry.name, file)
     } else {
       formData.append(entry.name, entry.value.blob, entry.value.filename)
     }
@@ -162,11 +260,14 @@ async function settleWithTimeout<T>(
   method: string,
   failureMessage: string,
 ): Promise<T> {
+  let abortReason: typeof ownerAbort | typeof timeoutAbort | undefined
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   let abortOwner: (() => void) | undefined
 
   const timedOut = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => {
+      if (abortReason) return
+      abortReason = timeoutAbort
       controller.abort()
       reject(timeoutAbort)
     }, timeoutMs)
@@ -174,6 +275,8 @@ async function settleWithTimeout<T>(
   const aborted = new Promise<never>((_resolve, reject) => {
     if (!ownerSignal) return
     abortOwner = () => {
+      if (abortReason) return
+      abortReason = ownerAbort
       controller.abort()
       reject(ownerAbort)
     }
@@ -184,11 +287,18 @@ async function settleWithTimeout<T>(
   try {
     return await Promise.race([operation(), timedOut, aborted])
   } catch (error) {
-    if (error === timeoutAbort) {
+    if (abortReason === timeoutAbort || error === timeoutAbort) {
       throw new RequestError("Default fetch request timed out", { method })
     }
-    if (error === ownerAbort) {
+    if (abortReason === ownerAbort || error === ownerAbort) {
       throw new RequestError("Default fetch request was aborted", { method })
+    }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      (error as Partial<RequestPreparationFailure>).kind === requestPreparationFailure
+    ) {
+      throw (error as RequestPreparationFailure).error
     }
     throw new RequestError(failureMessage, { method })
   } finally {
@@ -222,19 +332,40 @@ export function createDefaultFetchAdapter(options: DefaultFetchAdapterOptions = 
         throw new RequestError("The Fetch API is unavailable", { method: request.method })
       }
 
-      const body = requestBody(request)
-      const headers = await requestHeaders(request, configured.headers, configured.onRequest)
       const controller = new AbortController()
       const response = await settleWithTimeout(
-        () =>
-          globalThis.fetch(request.url, {
+        async () => {
+          if (controller.signal.aborted) throw ownerAbort
+
+          let body: FetchBody | undefined
+          let headers: Headers
+          try {
+            ;[body, headers] = await Promise.all([
+              requestBody(request),
+              requestHeaders(request, configured.headers, configured.onRequest),
+            ])
+          } catch (error) {
+            throw Object.freeze({
+              error:
+                error instanceof RequestError
+                  ? error
+                  : new RequestError("Default fetch request preparation failed", {
+                      method: request.method,
+                    }),
+              kind: requestPreparationFailure,
+            }) satisfies RequestPreparationFailure
+          }
+
+          if (controller.signal.aborted) throw ownerAbort
+          return globalThis.fetch(request.url, {
             ...(body === undefined ? {} : { body: body as BodyInit }),
             credentials: "include",
             headers,
             method: request.method,
             redirect: "follow",
             signal: controller.signal,
-          }),
+          })
+        },
         controller,
         request.signal,
         configured.timeoutMs,
@@ -246,9 +377,9 @@ export function createDefaultFetchAdapter(options: DefaultFetchAdapterOptions = 
       let status: number
       let url: string
       try {
-        redirected = response.redirected
         status = response.status
         url = response.url
+        redirected = response.redirected === true || url !== request.url
       } catch {
         throw new RequestError("Default fetch response metadata could not be read", {
           method: request.method,

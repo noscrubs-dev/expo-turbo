@@ -44,6 +44,9 @@ export function defaultExpoRouterHrefForDocument(url: string): string {
   ) {
     throw new StateError("Expo Router document URL must be credential-free HTTP(S)")
   }
+  if (documentUrl.pathname.startsWith("//")) {
+    throw new StateError("Expo Router document URL must map to an internal path")
+  }
   return `${documentUrl.pathname}${documentUrl.search}${documentUrl.hash}`
 }
 

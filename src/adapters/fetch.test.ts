@@ -6,9 +6,11 @@ import { createDefaultFetchAdapter } from "./fetch"
 import type { TurboRequest } from "./index"
 
 const nativeFetch = globalThis.fetch
+const nativeFormData = globalThis.FormData
 
 afterEach(() => {
   globalThis.fetch = nativeFetch
+  globalThis.FormData = nativeFormData
 })
 
 function response(status: number, body: string, url = "https://example.test/result"): Response {
@@ -119,11 +121,98 @@ describe("createDefaultFetchAdapter", () => {
     expect(result.status).toBe(500)
   })
 
+  test("infers redirects when React Native omits response redirect metadata", async () => {
+    globalThis.fetch = (async (_input, _init) => {
+      const { redirected: _redirected, ...nativeResponse } = response(
+        200,
+        "<Page />",
+        "https://example.test/final",
+      )
+      return nativeResponse as Response
+    }) as typeof fetch
+
+    const result = await createDefaultFetchAdapter().fetch({
+      headers: {},
+      method: "GET",
+      url: "https://example.test/request",
+    })
+
+    expect(result.redirected).toBe(true)
+  })
+
+  test("maps URI-backed and in-memory files to React Native FormData", async () => {
+    class ReactNativeFormData {
+      readonly parts: [string, unknown][] = []
+
+      append(name: string, value: unknown): void {
+        this.parts.push([name, value])
+      }
+
+      getParts(): readonly [string, unknown][] {
+        return this.parts
+      }
+    }
+    globalThis.FormData = ReactNativeFormData as unknown as typeof FormData
+    let body: unknown
+    globalThis.fetch = (async (_input, init) => {
+      body = init?.body
+      return response(200, "<Page />", "https://example.test/request")
+    }) as typeof fetch
+    const adapter = createDefaultFetchAdapter()
+    const request = (blob: Blob): TurboRequest => ({
+      body: {
+        value: {
+          byteLength: blob.size,
+          entries: [
+            { name: "title", value: "Report" },
+            { name: "attachment", value: { blob, filename: "report.txt" } },
+          ],
+          kind: "multipart",
+        },
+      },
+      headers: {},
+      method: "POST",
+      url: "https://example.test/request",
+    })
+    const file = {
+      size: 6,
+      type: "text/plain",
+      uri: "file:///cache/report.txt",
+    } as Blob & Readonly<{ uri: string }>
+
+    await adapter.fetch(request(file))
+
+    expect(body).toBeInstanceOf(ReactNativeFormData)
+    expect((body as ReactNativeFormData).parts).toEqual([
+      ["title", "Report"],
+      [
+        "attachment",
+        {
+          name: "report.txt",
+          type: "text/plain",
+          uri: "file:///cache/report.txt",
+        },
+      ],
+    ])
+    const memoryBlob = new Blob(["repo"], { type: "text/plain" })
+    await adapter.fetch(request(memoryBlob))
+    expect((body as ReactNativeFormData).parts[1]).toEqual([
+      "attachment",
+      {
+        name: "report.txt",
+        type: memoryBlob.type,
+        uri: `data:${memoryBlob.type};base64,cmVwbw==`,
+      },
+    ])
+  })
+
   test("aborts a hung fetch at the configured timeout", async () => {
     let signal: AbortSignal | undefined
     globalThis.fetch = (async (_input, init) => {
       signal = init?.signal ?? undefined
-      return await new Promise<Response>(() => undefined)
+      return await new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("native abort")), { once: true })
+      })
     }) as typeof fetch
 
     const pending = createDefaultFetchAdapter({ timeoutMs: 5 }).fetch({
@@ -140,9 +229,16 @@ describe("createDefaultFetchAdapter", () => {
 
   test("forwards owner aborts even when the native fetch does not settle", async () => {
     let signal: AbortSignal | undefined
+    let notifyFetchStarted: (() => void) | undefined
+    const fetchStarted = new Promise<void>((resolve) => {
+      notifyFetchStarted = resolve
+    })
     globalThis.fetch = (async (_input, init) => {
       signal = init?.signal ?? undefined
-      return await new Promise<Response>(() => undefined)
+      notifyFetchStarted?.()
+      return await new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("native abort")), { once: true })
+      })
     }) as typeof fetch
     const owner = new AbortController()
     const request: TurboRequest = {
@@ -153,6 +249,7 @@ describe("createDefaultFetchAdapter", () => {
     }
 
     const pending = createDefaultFetchAdapter().fetch(request)
+    await fetchStarted
     owner.abort()
 
     await expect(pending).rejects.toEqual(
@@ -161,13 +258,80 @@ describe("createDefaultFetchAdapter", () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  test("times out request preparation and prevents a late fetch", async () => {
+    let fetchCalls = 0
+    let releasePreparation: (() => void) | undefined
+    globalThis.fetch = (async (_input, _init) => {
+      fetchCalls += 1
+      return response(200, "<Page />", "https://example.test/request")
+    }) as typeof fetch
+    const adapter = createDefaultFetchAdapter({
+      onRequest: () =>
+        new Promise((resolve) => {
+          releasePreparation = () => resolve(undefined)
+        }),
+      timeoutMs: 5,
+    })
+
+    const pending = adapter.fetch({
+      headers: {},
+      method: "GET",
+      url: "https://example.test/request",
+    })
+
+    await expect(pending).rejects.toEqual(
+      new RequestError("Default fetch request timed out", { method: "GET" }),
+    )
+    releasePreparation?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(fetchCalls).toBe(0)
+  })
+
+  test("aborts request preparation and prevents a late fetch", async () => {
+    let fetchCalls = 0
+    let releasePreparation: (() => void) | undefined
+    globalThis.fetch = (async (_input, _init) => {
+      fetchCalls += 1
+      return response(200, "<Page />", "https://example.test/request")
+    }) as typeof fetch
+    const adapter = createDefaultFetchAdapter({
+      onRequest: () =>
+        new Promise((resolve) => {
+          releasePreparation = () => resolve(undefined)
+        }),
+    })
+    const owner = new AbortController()
+
+    const pending = adapter.fetch({
+      headers: {},
+      method: "GET",
+      signal: owner.signal,
+      url: "https://example.test/request",
+    })
+    owner.abort()
+
+    await expect(pending).rejects.toEqual(
+      new RequestError("Default fetch request was aborted", { method: "GET" }),
+    )
+    releasePreparation?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(fetchCalls).toBe(0)
+  })
+
   test("times out a hung response body read", async () => {
     let signal: AbortSignal | undefined
     globalThis.fetch = (async (_input, init) => {
       signal = init?.signal ?? undefined
       return {
         ...response(200, ""),
-        text: () => new Promise<string>(() => undefined),
+        text: () =>
+          new Promise<string>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("native abort")), {
+              once: true,
+            })
+          }),
       } as Response
     }) as typeof fetch
 

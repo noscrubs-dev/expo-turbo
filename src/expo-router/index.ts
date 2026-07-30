@@ -1,11 +1,10 @@
 import { useRouter } from "expo-router"
-import { useMemo, useRef } from "react"
+import { useMemo } from "react"
 import {
   createExpoRouterAdapters,
   defaultExpoRouterHrefForDocument,
   type ExpoRouterAdapterOptions,
   type ExpoRouterAdapters,
-  type ExpoRouterHref,
 } from "./adapters.js"
 
 export {
@@ -19,17 +18,10 @@ export {
 
 export function useExpoRouterAdapters(options: ExpoRouterAdapterOptions = {}): ExpoRouterAdapters {
   const router = useRouter()
-  const mapper = options.hrefForDocument
-  const mapperRef = useRef<typeof mapper>(mapper)
-  mapperRef.current = mapper
+  const mapper = options.hrefForDocument ?? defaultExpoRouterHrefForDocument
 
   return useMemo(
-    () =>
-      createExpoRouterAdapters(router, {
-        hrefForDocument(url): ExpoRouterHref {
-          return (mapperRef.current ?? defaultExpoRouterHrefForDocument)(url)
-        },
-      }),
-    [router],
+    () => createExpoRouterAdapters(router, { hrefForDocument: mapper }),
+    [mapper, router],
   )
 }

@@ -93,6 +93,9 @@ describe("Expo Router adapters", () => {
     expect(() => defaultExpoRouterHrefForDocument("/relative")).toThrow(StateError)
     expect(() => defaultExpoRouterHrefForDocument("mailto:test@example.test")).toThrow(StateError)
     expect(() =>
+      defaultExpoRouterHrefForDocument("https://example.test//outside.test/path"),
+    ).toThrow(new StateError("Expo Router document URL must map to an internal path"))
+    expect(() =>
       createExpoRouterAdapters(new Router(), {
         hrefForDocument: () => "",
       }).navigation.visit("https://example.test/", "advance"),
