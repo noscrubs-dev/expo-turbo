@@ -69,8 +69,8 @@ Redis, reset, readiness, and test commands.
 
 An adopting Expo application should:
 
-1. Define application components with explicit Zod schemas and attribute
-   codecs through `expo-turbo/registry`.
+1. Define application components with `attr()` declarations through
+   `expo-turbo/registry`.
 2. Render the high-level `ExpoTurbo` component from `expo-turbo/react` with
    the document URL, registry, fetch adapter, and optional navigation adapter.
 3. Supply only the adapters the host needs: fetch, navigation/history,
@@ -123,6 +123,40 @@ Supply `hrefForDocument(url)` when the app uses a catch-all or another route
 space. This bridge supplies synchronous history writes and basic navigation.
 Managed native traversal metadata, restoration event delivery, and app-specific
 external-link policy remain host work.
+
+Define registry attributes next to their wire codecs:
+
+```tsx
+import {
+  attr,
+  defineComponent,
+  numberCodec,
+  presenceCodec,
+  stringCodec,
+} from "expo-turbo/registry"
+import { z } from "zod"
+
+const price = defineComponent({
+  attributes: {
+    disabled: attr(presenceCodec).default(false),
+    heading: attr(stringCodec, z.string().min(1)).prop("title"),
+    "original-price": attr(numberCodec),
+    subtitle: attr(stringCodec).optional(),
+  },
+  children: "none",
+  component: Price,
+  tag: "Price",
+})
+```
+
+`attr()` uses the codec schema and derives the component Zod object. It changes
+hyphenated XML names to camel-case prop names, such as `original-price` to
+`originalPrice`. Use `.prop()` for a different prop name, `.optional()` for an
+optional prop, `.default()` for a default value, and `.deprecated()` for a
+deprecation warning and capability metadata. A custom codec must supply a
+matching schema as the second `attr()` argument. The explicit component
+`schema` form remains available when one object schema must validate
+relationships between multiple props.
 
 The standard host path owns session, visit, Frame, form, refresh, state, and
 disposal wiring:

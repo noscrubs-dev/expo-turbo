@@ -1,42 +1,59 @@
-import type { z } from "zod"
+import { z } from "zod"
 
 export interface AttributeCodec<Value> {
   readonly name: string
   decode(value: string): Value
 }
 
-function codec<Value>(name: string, decode: (value: string) => Value): AttributeCodec<Value> {
-  return Object.freeze({ name, decode })
+export interface SchemaAttributeCodec<Schema extends z.ZodType = z.ZodType>
+  extends AttributeCodec<z.output<Schema>> {
+  readonly schema: Schema
+  decodeInput(value: string): z.input<Schema>
 }
 
-export const stringCodec = codec("string", (value) => value)
+function codec<Schema extends z.ZodType>(
+  name: string,
+  schema: Schema,
+  decodeInput: (value: string) => z.input<Schema>,
+): SchemaAttributeCodec<Schema> {
+  return Object.freeze({
+    decode(value: string) {
+      return schema.parse(decodeInput(value))
+    },
+    decodeInput,
+    name,
+    schema,
+  })
+}
 
-export const presenceCodec = codec("presence", () => true as const)
+export const stringCodec = codec("string", z.string(), (value) => value)
 
-export const booleanCodec = codec("boolean", (value) => {
+export const presenceCodec = codec("presence", z.boolean(), () => true as const)
+
+export const booleanCodec = codec("boolean", z.boolean(), (value) => {
   if (value === "true") return true
   if (value === "false") return false
   throw new Error("expected true or false")
 })
 
-export const numberCodec = codec("number", (value) => {
+export const numberCodec = codec("number", z.number(), (value) => {
   if (value.trim() === "") throw new Error("expected a number")
   const decoded = Number(value)
   if (!Number.isFinite(decoded)) throw new Error("expected a finite number")
   return decoded
 })
 
-export const integerCodec = codec("integer", (value) => {
-  const decoded = numberCodec.decode(value)
+export const integerCodec = codec("integer", z.number().int(), (value) => {
+  const decoded = numberCodec.decodeInput(value)
   if (!Number.isInteger(decoded)) throw new Error("expected an integer")
   return decoded
 })
 
 export function enumCodec<const Values extends readonly [string, ...string[]]>(
   values: Values,
-): AttributeCodec<Values[number]> {
+): SchemaAttributeCodec<z.ZodType<Values[number]>> {
   const admitted = new Set<string>(values)
-  return codec(`enum:${values.join("|")}`, (value) => {
+  return codec(`enum:${values.join("|")}`, z.enum(values), (value) => {
     if (!admitted.has(value)) throw new Error("expected an admitted enum value")
     return value as Values[number]
   })
@@ -46,7 +63,7 @@ export function tokenListCodec<const Values extends readonly string[]>(
   name: string,
   values: Values,
   options: Readonly<{ maxTokens: number }>,
-): AttributeCodec<Values[number][]> {
+): SchemaAttributeCodec<z.ZodType<Values[number][]>> {
   if (!name.trim()) throw new Error("Token-list codecs require a capability name")
   if (!Number.isInteger(options.maxTokens) || options.maxTokens < 1) {
     throw new Error("Token-list codecs require a positive integer token limit")
@@ -62,8 +79,11 @@ export function tokenListCodec<const Values extends readonly string[]>(
   const capabilityValues = [...admitted].sort()
 
   const capability = JSON.stringify([name, options.maxTokens, capabilityValues])
+  const schema = z
+    .array(z.enum(values))
+    .transform((tokens) => Object.freeze(tokens) as Values[number][])
 
-  return codec(`tokens:${capability}`, (value) => {
+  return codec(`tokens:${capability}`, schema, (value) => {
     const tokens = value.trim() ? value.trim().split(/\s+/) : []
     if (tokens.length > options.maxTokens) throw new Error("Token list exceeds its limit")
     const used = new Set<string>()
@@ -92,13 +112,13 @@ export function jsonCodec<Schema extends z.ZodType>(
   name: string,
   schema: Schema,
   options: Readonly<{ maxBytes: number }>,
-): AttributeCodec<z.output<Schema>> {
+): SchemaAttributeCodec<Schema> {
   if (!name.trim()) throw new Error("JSON codecs require a capability name")
   if (!Number.isInteger(options.maxBytes) || options.maxBytes <= 0) {
     throw new Error("JSON codecs require a positive integer byte limit")
   }
 
-  return codec(`json:${name}`, (value) => {
+  return codec(`json:${name}`, schema, (value) => {
     if (utf8ByteLength(value) > options.maxBytes)
       throw new Error("JSON attribute exceeds its limit")
     let parsed: unknown
@@ -107,6 +127,6 @@ export function jsonCodec<Schema extends z.ZodType>(
     } catch {
       throw new Error("expected valid JSON")
     }
-    return schema.parse(parsed)
+    return parsed as z.input<Schema>
   })
 }

@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from "react"
-import type { z } from "zod"
+import { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors.js"
 import type { FormContainerRole } from "../core/forms.js"
@@ -13,6 +13,7 @@ import {
   renderedTextValue,
 } from "../core/tree.js"
 import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions.js"
+import { type AttributeDefinition, attributeDefinitionParts } from "./attributes.js"
 import type { AttributeCodec } from "./codecs.js"
 
 const RESERVED_TAGS = new Set([
@@ -39,6 +40,41 @@ export type ComponentChildren = "nodes" | "none" | "text"
 export type ComponentMorphState = "preserve" | "reset"
 export type ComponentRenderer<Props> = ComponentType<Props & Readonly<{ children?: ReactNode }>>
 
+type CamelCaseAttribute<Name extends string> = Name extends `${infer Head}-${infer Tail}`
+  ? Tail extends `${infer Next}${infer Rest}`
+    ? `${Head}${Uppercase<Next>}${CamelCaseAttribute<Rest>}`
+    : `${Head}-`
+  : Name
+
+type AttributeDefinitionMap = Readonly<
+  Record<string, AttributeDefinition<z.ZodType, string | undefined>>
+>
+
+type AttributeDefinitionSchema<Definition> = Definition extends {
+  readonly schema: infer Schema extends z.ZodType
+}
+  ? Schema
+  : never
+
+type AttributeDefinitionProp<Name extends string, Definition> = Definition extends {
+  readonly propName: infer Prop
+}
+  ? Prop extends string
+    ? Prop
+    : CamelCaseAttribute<Name>
+  : never
+
+type DerivedComponentShape<Attributes extends AttributeDefinitionMap> = {
+  [Name in keyof Attributes & string as AttributeDefinitionProp<
+    Name,
+    Attributes[Name]
+  >]: AttributeDefinitionSchema<Attributes[Name]>
+}
+
+export type DerivedComponentSchema<Attributes extends AttributeDefinitionMap> = z.ZodObject<
+  DerivedComponentShape<Attributes>
+>
+
 export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodObject> {
   readonly aliases?: readonly string[]
   readonly attributes: Readonly<Record<string, AttributeBinding<z.input<Schema>>>>
@@ -51,8 +87,24 @@ export interface DefineComponentConfig<Tag extends string, Schema extends z.ZodO
   readonly tag: Tag
 }
 
+export interface DefineDerivedComponentConfig<
+  Tag extends string,
+  Attributes extends AttributeDefinitionMap,
+> {
+  readonly aliases?: readonly string[]
+  readonly attributes: Attributes
+  readonly children: ComponentChildren
+  readonly component: ComponentRenderer<z.output<DerivedComponentSchema<Attributes>>>
+  readonly formContainer?: FormContainerRole
+  readonly formOwner?: boolean
+  readonly morphState?: ComponentMorphState
+  readonly schema?: never
+  readonly tag: Tag
+}
+
 interface ErasedAttributeBinding {
   readonly codec: AttributeCodec<unknown>
+  readonly decode?: (value: string) => unknown
   readonly deprecated?: string
   readonly prop: string
 }
@@ -83,9 +135,118 @@ function validateTag(tag: string): void {
   }
 }
 
+interface RuntimeDefineComponentConfig {
+  readonly aliases?: readonly string[]
+  readonly attributes: Readonly<Record<string, unknown>>
+  readonly children: ComponentChildren
+  readonly component: unknown
+  readonly formContainer?: FormContainerRole
+  readonly formOwner?: boolean
+  readonly morphState?: ComponentMorphState
+  readonly schema?: z.ZodObject
+  readonly tag: string
+}
+
+function camelCaseAttributeName(name: string): string {
+  return name.replace(/-(.)/g, (_match, character: string) => character.toUpperCase())
+}
+
+function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig): Readonly<{
+  attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
+  schema: z.ZodObject
+}> {
+  const bindingEntries: [string, ErasedAttributeBinding][] = []
+
+  if (config.schema !== undefined) {
+    for (const [name, value] of Object.entries(config.attributes)) {
+      const binding = value as ErasedAttributeBinding
+      if (!binding.codec.name.trim()) {
+        throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
+          target: config.tag,
+        })
+      }
+      if (binding.prop === "__proto__") {
+        throw new RegistryError(
+          `Attribute ${JSON.stringify(name)} uses reserved prop "__proto__"`,
+          {
+            target: config.tag,
+          },
+        )
+      }
+      bindingEntries.push([name, Object.freeze({ ...binding })])
+    }
+    return Object.freeze({
+      attributeBindings: Object.freeze(Object.fromEntries(bindingEntries)),
+      schema: config.schema,
+    })
+  }
+
+  const shapeEntries: [string, z.ZodType][] = []
+  const claimedProps = new Set<string>()
+  for (const [name, value] of Object.entries(config.attributes)) {
+    const definition = attributeDefinitionParts(value)
+    if (!definition) {
+      throw new RegistryError(
+        `Attribute ${JSON.stringify(name)} must use attr() when the component schema is omitted`,
+        { target: config.tag },
+      )
+    }
+    if (!definition.codec.name.trim()) {
+      throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
+        target: config.tag,
+      })
+    }
+
+    const prop = definition.propName ?? camelCaseAttributeName(name)
+    if (!prop.trim()) {
+      throw new RegistryError(`Attribute ${JSON.stringify(name)} resolves to a blank prop`, {
+        target: config.tag,
+      })
+    }
+    if (prop === "__proto__") {
+      throw new RegistryError(`Attribute ${JSON.stringify(name)} uses reserved prop "__proto__"`, {
+        target: config.tag,
+      })
+    }
+    if (claimedProps.has(prop)) {
+      throw new RegistryError(
+        `Component ${JSON.stringify(config.tag)} maps multiple attributes to prop ${JSON.stringify(prop)}`,
+        { target: config.tag },
+      )
+    }
+    claimedProps.add(prop)
+    shapeEntries.push([prop, definition.schema])
+    bindingEntries.push([
+      name,
+      Object.freeze({
+        codec: definition.codec,
+        decode: definition.decode,
+        ...(definition.deprecatedMessage !== undefined
+          ? { deprecated: definition.deprecatedMessage }
+          : {}),
+        prop,
+      }),
+    ])
+  }
+
+  return Object.freeze({
+    attributeBindings: Object.freeze(Object.fromEntries(bindingEntries)),
+    schema: z.object(Object.fromEntries(shapeEntries)),
+  })
+}
+
+export function defineComponent<
+  const Tag extends string,
+  const Attributes extends AttributeDefinitionMap,
+>(
+  config: DefineDerivedComponentConfig<Tag, Attributes>,
+): DefinedComponent<Tag, DerivedComponentSchema<Attributes>>
 export function defineComponent<const Tag extends string, Schema extends z.ZodObject>(
   config: DefineComponentConfig<Tag, Schema>,
-): DefinedComponent<Tag, Schema> {
+): DefinedComponent<Tag, Schema>
+export function defineComponent(
+  config: RuntimeDefineComponentConfig,
+): DefinedComponent<string, z.ZodObject> {
   validateTag(config.tag)
   if (
     config.formContainer !== undefined &&
@@ -114,18 +275,7 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     })
   }
 
-  const attributeBindings = Object.freeze(
-    Object.fromEntries(
-      Object.entries(config.attributes).map(([name, binding]) => {
-        if (!binding.codec.name.trim()) {
-          throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
-            target: config.tag,
-          })
-        }
-        return [name, Object.freeze({ ...binding })]
-      }),
-    ),
-  ) as Readonly<Record<string, ErasedAttributeBinding>>
+  const { attributeBindings, schema } = deriveComponentSchemaAndBindings(config)
 
   return Object.freeze({
     aliases: Object.freeze(aliases),
@@ -133,14 +283,14 @@ export function defineComponent<const Tag extends string, Schema extends z.ZodOb
     children: config.children,
     component: config.component,
     decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
-      return config.schema.parse(attributes)
+      return schema.parse(attributes)
     },
     ...(config.formContainer !== undefined ? { formContainer: config.formContainer } : {}),
     formOwner: config.formOwner === true,
     morphState: config.morphState ?? "preserve",
-    schema: config.schema,
+    schema,
     tag: config.tag,
-  })
+  }) as DefinedComponent<string, z.ZodObject>
 }
 
 export interface ComponentModule<
@@ -402,7 +552,9 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
         )
       }
       try {
-        attributes[binding.prop] = binding.codec.decode(attribute.value)
+        attributes[binding.prop] = binding.decode
+          ? binding.decode(attribute.value)
+          : binding.codec.decode(attribute.value)
       } catch {
         throw new PropsError(
           `Invalid attribute ${JSON.stringify(attribute.name)} on ${JSON.stringify(element.tagName)}`,

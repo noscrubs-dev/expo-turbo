@@ -1,4 +1,5 @@
 import {
+  attr,
   createRegistry,
   defineComponent,
   defineComponentModule,
@@ -85,25 +86,16 @@ function DemoCardComponent({
 
 const card = defineComponent({
   attributes: {
-    "style-tokens": {
-      codec: tokenListCodec("demo-style", DEMO_STYLE_TOKENS, {
+    "style-tokens": attr(
+      tokenListCodec("demo-style", DEMO_STYLE_TOKENS, {
         maxTokens: 5,
       }),
-      prop: "styleTokens",
-    },
-    title: { codec: stringCodec, prop: "title" },
-    tone: {
-      codec: enumCodec(["positive", "warning"]),
-      prop: "tone",
-    },
+    ).default([]),
+    title: attr(stringCodec),
+    tone: attr(enumCodec(["positive", "warning"])).optional(),
   },
   children: "nodes",
   component: DemoCardComponent,
-  schema: z.object({
-    styleTokens: z.array(z.enum(DEMO_STYLE_TOKENS)).readonly().default([]),
-    title: z.string(),
-    tone: z.enum(["positive", "warning"]).optional(),
-  }),
   tag: "DemoCard",
 });
 

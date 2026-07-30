@@ -5,11 +5,14 @@ import { z } from "zod"
 import { PropsError, RegistryError } from "../core/errors"
 import { parseExpoTurboDocument } from "../core/parser"
 import { isElement } from "../core/tree"
+import { attr } from "./attributes"
 import {
+  type AttributeCodec,
   booleanCodec,
   enumCodec,
   integerCodec,
   jsonCodec,
+  numberCodec,
   presenceCodec,
   stringCodec,
   tokenListCodec,
@@ -54,9 +57,33 @@ const text = defineComponent({
   tag: "DemoText",
 })
 
+const trimmedStringCodec: AttributeCodec<string> = {
+  decode: (value) => value.trim(),
+  name: "trimmed-string",
+}
+
+const derivedCard = defineComponent({
+  attributes: {
+    "accessibility-label": attr(stringCodec, z.string().trim().min(1)).optional(),
+    disabled: attr(presenceCodec).default(false),
+    heading: attr(trimmedStringCodec, z.string().min(1)).prop("title").deprecated("Use title"),
+    "original-price": attr(numberCodec),
+    tone: attr(enumCodec(["neutral", "positive"])).default("neutral"),
+  },
+  children: "none",
+  component: (props) => `${props.title}:${props.originalPrice}`,
+  tag: "DerivedCard",
+})
+
 const primitives = defineComponentModule({
   components: [card, text],
   name: "primitives",
+  version: "0.1.0",
+})
+
+const derivedPrimitives = defineComponentModule({
+  components: [derivedCard],
+  name: "derived-primitives",
   version: "0.1.0",
 })
 
@@ -67,6 +94,161 @@ function element(xml: string) {
 }
 
 describe("typed component registry", () => {
+  test("derives component props from attribute definitions", () => {
+    const typedProps: ComponentProps<typeof derivedCard.component> = {
+      disabled: false,
+      originalPrice: 12,
+      title: "Typed",
+      tone: "positive",
+    }
+    expect(typedProps.originalPrice).toBe(12)
+
+    const registry = createRegistry(derivedPrimitives)
+    const decoded = registry.decode(
+      element(
+        '<DerivedCard accessibility-label=" Price " disabled="" heading="  Sale  " original-price="19.5" tone="positive" />',
+      ),
+    )
+
+    expect(decoded.props).toEqual({
+      accessibilityLabel: "Price",
+      disabled: true,
+      originalPrice: 19.5,
+      title: "Sale",
+      tone: "positive",
+    })
+    expect(decoded.warnings).toEqual(["Use title"])
+    expect(
+      registry.decode(element('<DerivedCard heading="Default" original-price="10" />')).props,
+    ).toEqual({
+      disabled: false,
+      originalPrice: 10,
+      title: "Default",
+      tone: "neutral",
+    })
+    expect(() =>
+      registry.decode(element('<DerivedCard heading="   " original-price="10" />')),
+    ).toThrow(PropsError)
+  })
+
+  test("rejects derived attribute prop collisions", () => {
+    expect(() =>
+      defineComponent({
+        attributes: {
+          "data-id": attr(stringCodec),
+          dataId: attr(stringCodec),
+        },
+        children: "none",
+        component: () => null,
+        tag: "PropCollision",
+      }),
+    ).toThrow(/multiple attributes to prop "dataId"/)
+  })
+
+  test("keeps capability hashes stable for equivalent explicit and derived declarations", () => {
+    const explicit = defineComponent({
+      attributes: {
+        disabled: { codec: presenceCodec, prop: "disabled" },
+        heading: {
+          codec: trimmedStringCodec,
+          deprecated: "Use title",
+          prop: "title",
+        },
+        "original-price": { codec: numberCodec, prop: "originalPrice" },
+      },
+      children: "none",
+      component: () => null,
+      schema: z.object({
+        disabled: z.boolean().default(false),
+        originalPrice: z.number(),
+        title: z.string().min(1),
+      }),
+      tag: "EquivalentCard",
+    })
+    const derived = defineComponent({
+      attributes: {
+        disabled: attr(presenceCodec).default(false),
+        heading: attr(trimmedStringCodec, z.string().min(1)).prop("title").deprecated("Use title"),
+        "original-price": attr(numberCodec),
+      },
+      children: "none",
+      component: () => null,
+      tag: "EquivalentCard",
+    })
+    const module = (component: typeof explicit | typeof derived) =>
+      defineComponentModule({
+        components: [component],
+        name: "equivalent",
+        version: "1.0.0",
+      })
+
+    expect(createRegistry(module(derived)).capabilities.hash).toBe(
+      createRegistry(module(explicit)).capabilities.hash,
+    )
+  })
+
+  test("runs a JSON attribute schema once in a derived declaration", () => {
+    const lengthCodec = jsonCodec(
+      "derived-length",
+      z.string().transform((value) => value.length),
+      { maxBytes: 32 },
+    )
+    const transformed = defineComponent({
+      attributes: {
+        value: attr(lengthCodec),
+      },
+      children: "none",
+      component: (props) => props.value,
+      tag: "TransformedJson",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [transformed],
+        name: "transformed-json",
+        version: "1.0.0",
+      }),
+    )
+
+    expect(lengthCodec.decode('"four"')).toBe(4)
+    expect(registry.decode(element('<TransformedJson value="&quot;four&quot;" />')).props).toEqual({
+      value: 4,
+    })
+  })
+
+  test("preserves prototype-named wire attributes and rejects the reserved prop", () => {
+    const prototypeAttribute = defineComponent({
+      attributes: Object.fromEntries([
+        ["__proto__", { codec: stringCodec, prop: "value" as const }],
+      ]),
+      children: "none",
+      component: () => null,
+      schema: z.object({ value: z.string() }),
+      tag: "PrototypeAttribute",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [prototypeAttribute],
+        name: "prototype-attribute",
+        version: "1.0.0",
+      }),
+    )
+
+    expect(Object.hasOwn(prototypeAttribute.attributeBindings, "__proto__")).toBe(true)
+    expect(registry.decode(element('<PrototypeAttribute __proto__="safe" />')).props).toEqual({
+      value: "safe",
+    })
+    expect(() =>
+      defineComponent({
+        attributes: {
+          value: attr(stringCodec).prop("__proto__"),
+        },
+        children: "none",
+        component: () => null,
+        tag: "ReservedPrototypeProp",
+      }),
+    ).toThrow(/reserved prop "__proto__"/)
+  })
+
   test("preserves inferred component props and decodes explicit attributes", () => {
     const typedProps: ComponentProps<typeof card.component> = {
       count: 1,
@@ -341,3 +523,14 @@ describe("typed component registry", () => {
     expect(first.capabilityManifestJSON()).toBe(second.capabilityManifestJSON())
   })
 })
+
+function rejectMismatchedAttributeSchema(): void {
+  // @ts-expect-error Attribute schema output must match the codec decode value.
+  attr(stringCodec, z.number())
+  attr(
+    stringCodec,
+    // @ts-expect-error Attribute schema input must accept the codec decode value.
+    z.number().transform((value) => String(value)),
+  )
+}
+void rejectMismatchedAttributeSchema
