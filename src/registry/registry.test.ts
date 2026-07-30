@@ -305,6 +305,7 @@ describe("typed component registry", () => {
     const first = createRegistry(primitives, stateModule)
     const second = createRegistry(stateModule, primitives)
     expect(first.capabilities.hash).toBe(second.capabilities.hash)
+    expect(first.capabilities.manifestVersion).toBe(1)
     expect(Object.isFrozen(first.capabilities.components[0])).toBe(true)
     expect(Object.isFrozen(first.capabilities.components[0]?.attributes)).toBe(true)
     expect(first.capabilities.components.map((component) => component.tag)).toEqual([
@@ -335,5 +336,8 @@ describe("typed component registry", () => {
     expect(tokenListCodec("card-style:tone", ["featured"], { maxTokens: 2 }).name).not.toBe(
       tokenListCodec("card-style", ["tone:featured"], { maxTokens: 2 }).name,
     )
+    expect(JSON.parse(first.capabilityManifestJSON())).toEqual(first.capabilities)
+    expect(first.capabilityManifestJSON()).toEndWith("\n")
+    expect(first.capabilityManifestJSON()).toBe(second.capabilityManifestJSON())
   })
 })

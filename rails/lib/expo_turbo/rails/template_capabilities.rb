@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require "json"
+
 module ExpoTurbo
   module Rails
     class TemplateCapabilities
+      MANIFEST_VERSION = 1
       PROTOCOL_ELEMENTS = %w[turbo-cable-stream-source turbo-frame turbo-stream template].freeze
       RESERVED_COMPONENT_NAMES = [*PROTOCOL_ELEMENTS, "expo-turbo-fragment"].freeze
       TOKEN_PATTERN = /\A[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*\z/
@@ -14,7 +17,12 @@ module ExpoTurbo
       class ValidationError < StandardError
       end
 
-      def initialize(components:, style_tokens: {}, max_style_tokens: 5)
+      def initialize(components: nil, manifest: nil, style_tokens: {}, max_style_tokens: 5)
+        if components.nil? == manifest.nil?
+          raise ConfigurationError, "Expo Turbo template capabilities require exactly one of components or manifest"
+        end
+
+        components = load_manifest_components(manifest) unless manifest.nil?
         @components, @style_token_components = normalize_components(components)
         @style_tokens = normalize_style_tokens(style_tokens)
         @max_style_tokens = validate_max_style_tokens!(max_style_tokens)
@@ -35,6 +43,102 @@ module ExpoTurbo
       end
 
       private
+
+      def load_manifest_components(path)
+        manifest = parse_manifest(read_manifest(path))
+        unless manifest["manifestVersion"] == MANIFEST_VERSION
+          raise ConfigurationError, "Expo Turbo capability manifest version is unsupported"
+        end
+        unless manifest["protocolVersion"] == PROTOCOL_VERSION
+          raise ConfigurationError, "Expo Turbo capability manifest protocol version does not match"
+        end
+        unless manifest["hash"].is_a?(String) && /\Afnv1a32:[0-9a-f]{8}\z/.match?(manifest["hash"])
+          raise ConfigurationError, "Expo Turbo capability manifest hash is invalid"
+        end
+
+        validate_manifest_modules!(manifest["modules"])
+        normalize_manifest_components(manifest["components"])
+      end
+
+      def read_manifest(path)
+        path = path.to_path if path.respond_to?(:to_path)
+        unless path.is_a?(String) && !path.empty?
+          raise ConfigurationError, "Expo Turbo capability manifest path must be a nonblank path"
+        end
+
+        File.binread(path).force_encoding(Encoding::UTF_8).tap do |body|
+          unless body.valid_encoding?
+            raise ConfigurationError, "Expo Turbo capability manifest must be valid UTF-8"
+          end
+        end
+      rescue SystemCallError, ArgumentError
+        raise ConfigurationError, "Expo Turbo capability manifest could not be read"
+      end
+
+      def parse_manifest(body)
+        JSON.parse(body).tap do |manifest|
+          unless manifest.is_a?(Hash)
+            raise ConfigurationError, "Expo Turbo capability manifest must be a JSON object"
+          end
+        end
+      rescue JSON::ParserError
+        raise ConfigurationError, "Expo Turbo capability manifest must be valid JSON"
+      end
+
+      def validate_manifest_modules!(modules)
+        unless modules.is_a?(Array)
+          raise ConfigurationError, "Expo Turbo capability manifest requires a module list"
+        end
+
+        names = {}
+        modules.each do |component_module|
+          unless component_module.is_a?(Hash) &&
+              component_module["name"].is_a?(String) &&
+              !component_module["name"].strip.empty? &&
+              component_module["version"].is_a?(String) &&
+              !component_module["version"].strip.empty?
+            raise ConfigurationError, "Expo Turbo capability manifest modules require names and versions"
+          end
+          if names.key?(component_module["name"])
+            raise ConfigurationError, "Expo Turbo capability manifest contains a duplicate module"
+          end
+
+          names[component_module["name"]] = true
+        end
+      end
+
+      def normalize_manifest_components(component_entries)
+        unless component_entries.is_a?(Array)
+          raise ConfigurationError, "Expo Turbo capability manifest requires a component list"
+        end
+
+        component_entries.each_with_object({}) do |component, components|
+          unless component.is_a?(Hash) && component["tag"].is_a?(String) && component["aliases"].is_a?(Array)
+            raise ConfigurationError, "Expo Turbo capability manifest components require tags and aliases"
+          end
+          unless component["aliases"].all? { |alias_name| alias_name.is_a?(String) }
+            raise ConfigurationError, "Expo Turbo capability manifest aliases must be strings"
+          end
+
+          attributes = component["attributes"]
+          unless attributes.is_a?(Array) &&
+              attributes.all? { |attribute| attribute.is_a?(Hash) && attribute["name"].is_a?(String) && !attribute["name"].empty? }
+            raise ConfigurationError, "Expo Turbo capability manifest components require attribute names"
+          end
+          attribute_names = attributes.map { |attribute| attribute["name"] }
+          if attribute_names.uniq.length != attribute_names.length
+            raise ConfigurationError, "Expo Turbo capability manifest contains duplicate attributes"
+          end
+          if components.key?(component["tag"])
+            raise ConfigurationError, "Expo Turbo capability manifest contains a duplicate component"
+          end
+
+          components[component["tag"]] = {
+            aliases: component["aliases"],
+            style_tokens: attribute_names.include?("style-tokens")
+          }
+        end
+      end
 
       def normalize_components(components)
         raise ConfigurationError, "Expo Turbo template capabilities require a component map" unless components.is_a?(Hash)

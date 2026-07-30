@@ -27,9 +27,10 @@ module ExpoTurbo
           self.expo_turbo_views_path = Pathname(path).expand_path
         end
 
-        def expo_turbo_template_capabilities(components:, style_tokens: {}, max_style_tokens: 5)
+        def expo_turbo_template_capabilities(components: nil, manifest: nil, style_tokens: {}, max_style_tokens: 5)
           self.expo_turbo_template_capabilities_config = TemplateCapabilities.new(
             components:,
+            manifest:,
             style_tokens:,
             max_style_tokens:
           )

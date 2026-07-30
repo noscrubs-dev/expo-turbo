@@ -46,6 +46,21 @@ end
 
 The template argument is relative to the configured root; absolute paths, traversal, missing files, and symlink escapes are rejected. The resolved `.xml.erb` source is evaluated as ERB with layouts disabled, rather than served as raw file content. Before it renders, the exact output must be a strict UTF-8 XML document: one root, valid namespaces and attributes, no DTD or processing instruction, and an optional leading UTF-8 XML declaration only. Every literal `id` must also be nonblank and unique across the complete rendered document, including nested Frames. The capability declaration then admits only its exact components (and explicit aliases), exact unprefixed `turbo-frame`, `turbo-stream`, `template`, and `turbo-cable-stream-source` wrappers (including default-namespace elements), and declared `style-tokens`. Style-token lists use the same JavaScript whitespace split, count, duplicate, component, and group-conflict rules as the native adapter. A component must opt into the `style-tokens` attribute, and style-token component lists are canonicalized through aliases. The host declaration must mirror its installed registry and style adapter; it deliberately does not attempt to derive or validate arbitrary Zod props/codecs. Validation never serializes the output, so it does not alter preserved XML text.
 
+The client registry can replace the hand-written component map. Write `registry.capabilityManifestJSON()` to a checked-in or generated file, then configure the controller with `manifest:` instead of `components:`:
+
+```ruby
+expo_turbo_template_capabilities(
+  manifest: Rails.root.join("config/expo_turbo_manifest.json"),
+  max_style_tokens: 5,
+  style_tokens: {
+    "space:compact" => {components: ["DemoCard"], group: "space"},
+    "tone:info" => {components: ["DemoCard"], group: "tone"}
+  }
+)
+```
+
+The versioned manifest contains the registry modules, component tags and aliases, and each component's attribute names. Rails loads it when the controller is configured, rejects a malformed or protocol-incompatible file, derives `style-tokens` support from the declared attribute, and applies the same component validation in every environment. Generate the file in CI and fail on a diff to detect a stale manifest before deployment.
+
 For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts a nonblank UTF-8 literal ID without control characters, or a model class that it normalizes with Rails' `dom_id`, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior. Before returning, it parses the exact Frame output under a private synthetic root and applies the same configured component/style admission: markup must be valid UTF-8 XML without declarations, DTDs, or processing instructions, and any XML prefix must be declared by the Frame fragment itself. Validation does not serialize or alter the returned `SafeBuffer`, so inline `xml:space="preserve"` text keeps its authored bytes for the native parser.
 
 ```ruby

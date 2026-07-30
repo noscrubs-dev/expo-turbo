@@ -117,7 +117,9 @@ An adopting Rails application should:
 2. Include `ExpoTurbo::Rails::Controller` only in controllers that emit Expo
    Turbo XML.
 3. Configure a host-owned XML view root plus exact component and style-token
-   capabilities.
+   capabilities. Prefer a generated registry manifest by writing
+   `registry.capabilityManifestJSON()` and passing its path as `manifest:` to
+   `expo_turbo_template_capabilities`.
 4. Own every route, authorization rule, cache input, credential, and product
    view in the host.
 5. Use the gem's Frame, Stream, structural test, and optional protected Cable

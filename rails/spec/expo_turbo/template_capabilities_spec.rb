@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "tempfile"
 
 RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
   let(:capabilities) do
@@ -42,6 +43,65 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
     expect {
       described_class.new(components: {}, max_style_tokens: 0)
     }.to raise_error(ExpoTurbo::Rails::ConfigurationError, /positive style token limit/)
+  end
+
+  it "loads the client registry capability manifest as the component source of truth" do
+    manifest = Tempfile.new(["expo-turbo-capabilities", ".json"])
+    manifest.write(
+      JSON.generate(
+        {
+          manifestVersion: 1,
+          protocolVersion: ExpoTurbo::Rails::PROTOCOL_VERSION,
+          hash: "fnv1a32:1234abcd",
+          modules: [{name: "demo", version: "1.2.3"}],
+          components: [
+            {
+              tag: "DemoCard",
+              aliases: ["Card"],
+              attributes: [{name: "title"}, {name: "style-tokens"}]
+            },
+            {
+              tag: "DemoText",
+              aliases: [],
+              attributes: []
+            }
+          ]
+        }
+      )
+    )
+    manifest.close
+    from_manifest = described_class.new(
+      manifest: Pathname(manifest.path),
+      style_tokens: {"tone:info" => {components: ["Card"]}}
+    )
+    valid = ExpoTurbo::Rails::XmlFragments.parse_document(
+      '<Card style-tokens="tone:info"><DemoText/></Card>'
+    )
+    unknown = ExpoTurbo::Rails::XmlFragments.parse_document("<PrivateComponent/>")
+
+    expect(from_manifest.validate_document!(valid)).to equal(valid)
+    expect { from_manifest.validate_document!(unknown) }
+      .to raise_error(described_class::ValidationError, /undeclared component/)
+  ensure
+    manifest&.unlink
+  end
+
+  it "rejects absent, conflicting, unreadable, and malformed capability manifests" do
+    expect { described_class.new }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /exactly one/)
+    expect { described_class.new(components: {}, manifest: "capabilities.json") }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /exactly one/)
+    expect { described_class.new(manifest: "missing-capabilities.json") }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /could not be read/)
+
+    manifest = Tempfile.new(["expo-turbo-capabilities", ".json"])
+    manifest.write('{"manifestVersion":1')
+    manifest.close
+
+    expect { described_class.new(manifest: manifest.path) }
+      .to raise_error(ExpoTurbo::Rails::ConfigurationError, /valid JSON/)
+  ensure
+    manifest&.unlink
   end
 
   it "admits declared aliases, qualified component names, and literal protocol wrappers" do

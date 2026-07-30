@@ -23,6 +23,8 @@ const RESERVED_TAGS = new Set([
   "turbo-stream",
 ])
 
+export const REGISTRY_CAPABILITY_MANIFEST_VERSION = 1 as const
+
 type StringKey<Value> = Extract<keyof Value, string>
 
 export type AttributeBinding<Props> = {
@@ -201,6 +203,7 @@ export interface ComponentCapability {
 export interface RegistryCapabilityManifest {
   readonly components: readonly ComponentCapability[]
   readonly hash: string
+  readonly manifestVersion: typeof REGISTRY_CAPABILITY_MANIFEST_VERSION
   readonly modules: readonly Readonly<{ name: string; version: string }>[]
   readonly protocolVersion: string
 }
@@ -296,6 +299,7 @@ function decodeChildren(
 
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
   readonly capabilities: RegistryCapabilityManifest
+  capabilityManifestJSON(): string
   decode(element: ProtocolElement): DecodedComponent<Component>
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
   get<Tag extends Component["tag"]>(tag: Tag): Extract<Component, { readonly tag: Tag }> | undefined
@@ -366,11 +370,16 @@ class Registry<Component extends RegistryComponent> implements ComponentRegistry
       protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
     }
     this.capabilities = Object.freeze({
-      ...serializable,
       components: Object.freeze(componentCapabilities),
       hash: capabilityHash(JSON.stringify(serializable)),
+      manifestVersion: REGISTRY_CAPABILITY_MANIFEST_VERSION,
       modules: Object.freeze(moduleCapabilities),
+      protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
     })
+  }
+
+  capabilityManifestJSON(): string {
+    return `${JSON.stringify(this.capabilities, null, 2)}\n`
   }
 
   decode(element: ProtocolElement): DecodedComponent<Component> {
