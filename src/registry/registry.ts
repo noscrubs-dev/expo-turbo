@@ -102,6 +102,16 @@ export interface DefineDerivedComponentConfig<
   readonly tag: Tag
 }
 
+export type DefineComponentDefinitionConfig<Tag extends string, Schema extends z.ZodObject> = Omit<
+  DefineComponentConfig<Tag, Schema>,
+  "component"
+>
+
+export type DefineDerivedComponentDefinitionConfig<
+  Tag extends string,
+  Attributes extends AttributeDefinitionMap,
+> = Omit<DefineDerivedComponentConfig<Tag, Attributes>, "component">
+
 interface ErasedAttributeBinding {
   readonly codec: AttributeCodec<unknown>
   readonly decode?: (value: string) => unknown
@@ -110,11 +120,10 @@ interface ErasedAttributeBinding {
   readonly required?: boolean
 }
 
-export interface RegistryComponent {
+export interface RegistryComponentDefinition {
   readonly aliases: readonly string[]
   readonly attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   readonly children: ComponentChildren
-  readonly component: unknown
   readonly formContainer?: FormContainerRole
   readonly formOwner: boolean
   readonly morphState: ComponentMorphState
@@ -122,11 +131,19 @@ export interface RegistryComponent {
   decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
 }
 
-export interface DefinedComponent<Tag extends string, Schema extends z.ZodObject>
-  extends RegistryComponent {
-  readonly component: ComponentRenderer<z.output<Schema>>
+export interface RegistryComponent extends RegistryComponentDefinition {
+  readonly component: unknown
+}
+
+export interface DefinedComponentDefinition<Tag extends string, Schema extends z.ZodObject>
+  extends RegistryComponentDefinition {
   readonly schema: Schema
   readonly tag: Tag
+}
+
+export interface DefinedComponent<Tag extends string, Schema extends z.ZodObject>
+  extends DefinedComponentDefinition<Tag, Schema> {
+  readonly component: ComponentRenderer<z.output<Schema>>
 }
 
 function validateTag(tag: string): void {
@@ -136,16 +153,19 @@ function validateTag(tag: string): void {
   }
 }
 
-interface RuntimeDefineComponentConfig {
+interface RuntimeDefineComponentDefinitionConfig {
   readonly aliases?: readonly string[]
   readonly attributes: Readonly<Record<string, unknown>>
   readonly children: ComponentChildren
-  readonly component: unknown
   readonly formContainer?: FormContainerRole
   readonly formOwner?: boolean
   readonly morphState?: ComponentMorphState
   readonly schema?: z.ZodObject
   readonly tag: string
+}
+
+interface RuntimeDefineComponentConfig extends RuntimeDefineComponentDefinitionConfig {
+  readonly component: unknown
 }
 
 function camelCaseAttributeName(name: string): string {
@@ -162,7 +182,9 @@ function attributeIsRequired(schema: z.ZodType, name: string, tag: string): bool
   }
 }
 
-function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig): Readonly<{
+function deriveComponentSchemaAndBindings(
+  config: RuntimeDefineComponentDefinitionConfig,
+): Readonly<{
   attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
   schema: z.ZodObject
 }> {
@@ -254,18 +276,9 @@ function deriveComponentSchemaAndBindings(config: RuntimeDefineComponentConfig):
   })
 }
 
-export function defineComponent<
-  const Tag extends string,
-  const Attributes extends AttributeDefinitionMap,
->(
-  config: DefineDerivedComponentConfig<Tag, Attributes>,
-): DefinedComponent<Tag, DerivedComponentSchema<Attributes>>
-export function defineComponent<const Tag extends string, Schema extends z.ZodObject>(
-  config: DefineComponentConfig<Tag, Schema>,
-): DefinedComponent<Tag, Schema>
-export function defineComponent(
-  config: RuntimeDefineComponentConfig,
-): DefinedComponent<string, z.ZodObject> {
+function createComponentDefinition(
+  config: RuntimeDefineComponentDefinitionConfig,
+): DefinedComponentDefinition<string, z.ZodObject> {
   validateTag(config.tag)
   if (
     config.formContainer !== undefined &&
@@ -300,7 +313,6 @@ export function defineComponent(
     aliases: Object.freeze(aliases),
     attributeBindings,
     children: config.children,
-    component: config.component,
     decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
       return schema.parse(attributes)
     },
@@ -309,29 +321,93 @@ export function defineComponent(
     morphState: config.morphState ?? "preserve",
     schema,
     tag: config.tag,
+  }) as DefinedComponentDefinition<string, z.ZodObject>
+}
+
+export function defineComponentDefinition<
+  const Tag extends string,
+  const Attributes extends AttributeDefinitionMap,
+>(
+  config: DefineDerivedComponentDefinitionConfig<Tag, Attributes>,
+): DefinedComponentDefinition<Tag, DerivedComponentSchema<Attributes>>
+export function defineComponentDefinition<const Tag extends string, Schema extends z.ZodObject>(
+  config: DefineComponentDefinitionConfig<Tag, Schema>,
+): DefinedComponentDefinition<Tag, Schema>
+export function defineComponentDefinition(
+  config: RuntimeDefineComponentDefinitionConfig,
+): DefinedComponentDefinition<string, z.ZodObject> {
+  return createComponentDefinition(config)
+}
+
+export function bindComponent<const Tag extends string, Schema extends z.ZodObject>(
+  definition: DefinedComponentDefinition<Tag, Schema>,
+  component: ComponentRenderer<z.output<Schema>>,
+): DefinedComponent<Tag, Schema> {
+  return Object.freeze({
+    ...definition,
+    component,
+  })
+}
+
+export function defineComponent<
+  const Tag extends string,
+  const Attributes extends AttributeDefinitionMap,
+>(
+  config: DefineDerivedComponentConfig<Tag, Attributes>,
+): DefinedComponent<Tag, DerivedComponentSchema<Attributes>>
+export function defineComponent<const Tag extends string, Schema extends z.ZodObject>(
+  config: DefineComponentConfig<Tag, Schema>,
+): DefinedComponent<Tag, Schema>
+export function defineComponent(
+  config: RuntimeDefineComponentConfig,
+): DefinedComponent<string, z.ZodObject> {
+  const definition = createComponentDefinition(config)
+  return Object.freeze({
+    ...definition,
+    component: config.component,
   }) as DefinedComponent<string, z.ZodObject>
+}
+
+export interface CapabilityModule<
+  Name extends string = string,
+  Definitions extends
+    readonly RegistryComponentDefinition[] = readonly RegistryComponentDefinition[],
+> {
+  readonly components: Definitions
+  readonly name: Name
+  readonly version: string
 }
 
 export interface ComponentModule<
   Name extends string = string,
   Components extends readonly RegistryComponent[] = readonly RegistryComponent[],
-> {
-  readonly components: Components
-  readonly name: Name
-  readonly version: string
+> extends CapabilityModule<Name, Components> {}
+
+function freezeCapabilityModule<
+  const Name extends string,
+  const Definitions extends readonly RegistryComponentDefinition[],
+>(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
+  if (!config.name.trim()) throw new RegistryError("Component modules require a name")
+  if (!config.version.trim()) throw new RegistryError("Component modules require a version")
+  return Object.freeze({
+    components: Object.freeze([...config.components]) as unknown as Definitions,
+    name: config.name,
+    version: config.version,
+  })
+}
+
+export function defineCapabilityModule<
+  const Name extends string,
+  const Definitions extends readonly RegistryComponentDefinition[],
+>(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
+  return freezeCapabilityModule(config)
 }
 
 export function defineComponentModule<
   const Name extends string,
   const Components extends readonly RegistryComponent[],
 >(config: ComponentModule<Name, Components>): ComponentModule<Name, Components> {
-  if (!config.name.trim()) throw new RegistryError("Component modules require a name")
-  if (!config.version.trim()) throw new RegistryError("Component modules require a version")
-  return Object.freeze({
-    components: Object.freeze([...config.components]) as unknown as Components,
-    name: config.name,
-    version: config.version,
-  })
+  return freezeCapabilityModule(config)
 }
 
 export interface ProtocolAttributes {
@@ -476,6 +552,85 @@ function decodeChildren(
   return { children: element.children, text: renderedNodeTextContent(element) }
 }
 
+export function createCapabilityManifest(
+  ...modules: readonly CapabilityModule[]
+): VersionedRegistryCapabilityManifest {
+  const moduleNames = new Set<string>()
+  const owners = new Map<string, string>()
+  const definitions: RegistryComponentDefinition[] = []
+
+  for (const module of modules) {
+    if (moduleNames.has(module.name)) {
+      throw new RegistryError(`Duplicate component module ${JSON.stringify(module.name)}`)
+    }
+    moduleNames.add(module.name)
+    for (const definition of module.components) {
+      for (const name of [definition.tag, ...definition.aliases]) {
+        const owner = owners.get(name)
+        if (owner) {
+          throw new RegistryError(
+            `Component name ${JSON.stringify(name)} is owned by both ${JSON.stringify(owner)} and ${JSON.stringify(module.name)}`,
+            { target: name },
+          )
+        }
+        owners.set(name, module.name)
+      }
+      definitions.push(definition)
+    }
+  }
+
+  const componentCapabilities = definitions
+    .map((definition): ComponentCapability => {
+      const attributes = Object.entries(definition.attributeBindings)
+        .map(([name, binding]) =>
+          Object.freeze({
+            codec: binding.codec.name,
+            ...(binding.deprecated ? { deprecated: binding.deprecated } : {}),
+            name,
+            prop: binding.prop,
+            required: binding.required === true,
+          }),
+        )
+        .sort((left, right) => compareCodeUnits(left.name, right.name))
+      return Object.freeze({
+        aliases: Object.freeze([...definition.aliases].sort(compareCodeUnits)),
+        attributes: Object.freeze(attributes),
+        children: definition.children,
+        ...(definition.formContainer !== undefined
+          ? { formContainer: definition.formContainer }
+          : {}),
+        formOwner: definition.formOwner,
+        morphState: definition.morphState,
+        tag: definition.tag,
+      })
+    })
+    .sort((left, right) => compareCodeUnits(left.tag, right.tag))
+  const moduleCapabilities = modules
+    .map((module) => Object.freeze({ name: module.name, version: module.version }))
+    .sort((left, right) => compareCodeUnits(left.name, right.name))
+  const serializable = {
+    components: componentCapabilities,
+    modules: moduleCapabilities,
+    protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
+  }
+
+  return Object.freeze({
+    components: Object.freeze(componentCapabilities),
+    hash: capabilityHash(JSON.stringify(serializable)),
+    manifestVersion: REGISTRY_CAPABILITY_MANIFEST_VERSION,
+    modules: Object.freeze(moduleCapabilities),
+    protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
+  })
+}
+
+function serializeCapabilityManifest(manifest: VersionedRegistryCapabilityManifest): string {
+  return `${JSON.stringify(manifest, null, 2)}\n`
+}
+
+export function capabilityManifestJSON(...modules: readonly CapabilityModule[]): string {
+  return serializeCapabilityManifest(createCapabilityManifest(...modules))
+}
+
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
   readonly capabilities: RegistryCapabilityManifest
   decode(element: ProtocolElement): DecodedComponent<Component>
@@ -503,73 +658,18 @@ class Registry<Component extends RegistryComponent>
   private readonly components = new Map<string, RegistryComponent>()
 
   constructor(private readonly modules: readonly ComponentModule[]) {
-    const moduleNames = new Set<string>()
-    const owners = new Map<string, string>()
+    this.capabilities = createCapabilityManifest(...modules)
     for (const module of modules) {
-      if (moduleNames.has(module.name)) {
-        throw new RegistryError(`Duplicate component module ${JSON.stringify(module.name)}`)
-      }
-      moduleNames.add(module.name)
       for (const component of module.components) {
         for (const name of [component.tag, ...component.aliases]) {
-          const owner = owners.get(name)
-          if (owner) {
-            throw new RegistryError(
-              `Component name ${JSON.stringify(name)} is owned by both ${JSON.stringify(owner)} and ${JSON.stringify(module.name)}`,
-              { target: name },
-            )
-          }
-          owners.set(name, module.name)
           this.components.set(name, component)
         }
       }
     }
-
-    const componentCapabilities = [...new Set(this.components.values())]
-      .map((component): ComponentCapability => {
-        const attributes = Object.entries(component.attributeBindings)
-          .map(([name, binding]) =>
-            Object.freeze({
-              codec: binding.codec.name,
-              ...(binding.deprecated ? { deprecated: binding.deprecated } : {}),
-              name,
-              prop: binding.prop,
-              required: binding.required === true,
-            }),
-          )
-          .sort((left, right) => compareCodeUnits(left.name, right.name))
-        return Object.freeze({
-          aliases: Object.freeze([...component.aliases].sort(compareCodeUnits)),
-          attributes: Object.freeze(attributes),
-          children: component.children,
-          ...(component.formContainer !== undefined
-            ? { formContainer: component.formContainer }
-            : {}),
-          formOwner: component.formOwner,
-          morphState: component.morphState,
-          tag: component.tag,
-        })
-      })
-      .sort((left, right) => compareCodeUnits(left.tag, right.tag))
-    const moduleCapabilities = modules
-      .map((module) => Object.freeze({ name: module.name, version: module.version }))
-      .sort((left, right) => compareCodeUnits(left.name, right.name))
-    const serializable = {
-      components: componentCapabilities,
-      modules: moduleCapabilities,
-      protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
-    }
-    this.capabilities = Object.freeze({
-      components: Object.freeze(componentCapabilities),
-      hash: capabilityHash(JSON.stringify(serializable)),
-      manifestVersion: REGISTRY_CAPABILITY_MANIFEST_VERSION,
-      modules: Object.freeze(moduleCapabilities),
-      protocolVersion: EXPO_TURBO_PROTOCOL_VERSION,
-    })
   }
 
   capabilityManifestJSON(): string {
-    return `${JSON.stringify(this.capabilities, null, 2)}\n`
+    return serializeCapabilityManifest(this.capabilities)
   }
 
   decode(element: ProtocolElement): DecodedComponent<Component> {

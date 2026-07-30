@@ -135,19 +135,21 @@ through Expo Router. This bridge supplies synchronous history writes and basic
 navigation. Managed native traversal metadata, restoration event delivery, and
 app-specific external-link policy remain host work.
 
-Define registry attributes next to their wire codecs:
+Define registry attributes next to their wire codecs in a file that does not
+import React Native components:
 
-```tsx
+```ts
 import {
   attr,
-  defineComponent,
+  defineCapabilityModule,
+  defineComponentDefinition,
   numberCodec,
   presenceCodec,
   stringCodec,
 } from "expo-turbo/registry"
 import { z } from "zod"
 
-const price = defineComponent({
+export const priceDefinition = defineComponentDefinition({
   attributes: {
     disabled: attr(presenceCodec).default(false),
     heading: attr(stringCodec, z.string().min(1)).prop("title"),
@@ -155,9 +157,48 @@ const price = defineComponent({
     subtitle: attr(stringCodec).optional(),
   },
   children: "none",
-  component: Price,
   tag: "Price",
 })
+
+export const storeCapabilities = defineCapabilityModule({
+  components: [priceDefinition],
+  name: "store",
+  version: "1.0.0",
+})
+```
+
+Bind the native renderer only in the runtime file:
+
+```tsx
+import {
+  bindComponent,
+  createRegistry,
+  defineComponentModule,
+} from "expo-turbo/registry"
+
+import { priceDefinition, storeCapabilities } from "./component-definitions"
+
+const price = bindComponent(priceDefinition, Price)
+const registry = createRegistry(
+  defineComponentModule({
+    ...storeCapabilities,
+    components: [price],
+  }),
+)
+```
+
+The component-free file can generate the Rails manifest in plain Node or Bun:
+
+```ts
+import { writeFile } from "node:fs/promises"
+import { capabilityManifestJSON } from "expo-turbo/registry"
+
+import { storeCapabilities } from "./component-definitions"
+
+await writeFile(
+  "config/expo_turbo_manifest.json",
+  capabilityManifestJSON(storeCapabilities),
+)
 ```
 
 `attr()` uses the codec schema and derives the component Zod object. It changes
@@ -212,8 +253,8 @@ An adopting Rails application should:
    Turbo XML.
 3. Configure a host-owned XML view root plus exact component and style-token
    capabilities. Prefer a generated registry manifest by writing
-   `registry.capabilityManifestJSON()` and passing its path as `manifest:` to
-   `expo_turbo_template_capabilities`.
+   `capabilityManifestJSON()` from component-free capability modules and
+   passing its path as `manifest:` to `expo_turbo_template_capabilities`.
 4. Own every route, authorization rule, cache input, credential, and product
    view in the host.
 5. Use the gem's Frame, Stream, structural test, and optional protected Cable

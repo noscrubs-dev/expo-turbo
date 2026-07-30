@@ -64,7 +64,13 @@ Do not put multiline values in XML attributes with ordinary ERB interpolation. T
 
 The helper first HTML-escapes the value. It then writes tabs, carriage returns, and line feeds as `&#9;`, `&#13;`, and `&#10;`. The character references preserve the original value through XML parsing. Use `xml:space="preserve"` instead for multiline element text.
 
-The client registry can replace the hand-written component map. Write `registry.capabilityManifestJSON()` to a checked-in or generated file, then configure the controller with `manifest:` instead of `components:`:
+The client registry can replace the hand-written component map. Keep
+`defineComponentDefinition` and `defineCapabilityModule` declarations in a
+module that does not import native renderers, then write
+`capabilityManifestJSON(capabilityModule)` to a checked-in or generated file
+from plain Node or Bun. Bind each definition to its React Native renderer with
+`bindComponent` only in the runtime module. Configure the controller with
+`manifest:` instead of `components:`:
 
 ```ruby
 expo_turbo_template_capabilities(
@@ -77,7 +83,7 @@ expo_turbo_template_capabilities(
 )
 ```
 
-The versioned manifest contains the registry modules, component tags and aliases, and each component attribute's name and requiredness. Rails loads it when the controller is configured, rejects a malformed or protocol-incompatible file, derives `style-tokens` support from the declared attribute, and applies the same component and attribute validation in every environment. Name-only attributes from a 0.1.4 manifest remain readable and are treated as optional. Generate the file in CI and fail on a diff to detect a stale manifest before deployment.
+The versioned manifest contains the registry modules, component tags and aliases, and each component attribute's name and requiredness. Component-free generation produces the same canonical JSON and hash as `registry.capabilityManifestJSON()` without loading the host component tree. Rails loads it when the controller is configured, rejects a malformed or protocol-incompatible file, derives `style-tokens` support from the declared attribute, and applies the same component and attribute validation in every environment. Name-only attributes from a 0.1.4 manifest remain readable and are treated as optional. Generate the file in CI and fail on a diff to detect a stale manifest before deployment.
 
 For a native Frame GET, read the validated request header and emit an exact matching Frame from the host-owned XML template. `expo_turbo_frame_tag` accepts a nonblank UTF-8 literal ID without control characters, or a model class that it normalizes with Rails' `dom_id`, then delegates tag generation to `turbo-rails`. It deliberately does not install `Turbo::Frames::FrameRequest`, so it does not alter HTML layouts or adopt its raw-header behavior. Before returning, it parses the exact Frame output under a private synthetic root and applies the same configured component/style admission: markup must be valid UTF-8 XML without declarations, DTDs, or processing instructions, and any XML prefix must be declared by the Frame fragment itself. Validation does not serialize or alter the returned `SafeBuffer`, so inline `xml:space="preserve"` text keeps its authored bytes for the native parser.
 

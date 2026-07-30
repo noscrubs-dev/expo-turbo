@@ -4,6 +4,12 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add component-free registry definitions and capability modules so plain Node
+  or Bun can generate the canonical Rails manifest without loading the host's
+  React Native component tree. Runtime registries can bind the same definitions
+  to native renderers without duplicating attribute metadata
+  ([#390](https://github.com/noscrubs-dev/expo-turbo/issues/390)).
+
 ## 0.1.5 - 2026-07-31
 
 - Add an awaited, timeout-bound `onResponse` hook to the default fetch adapter.

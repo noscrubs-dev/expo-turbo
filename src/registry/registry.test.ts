@@ -18,9 +18,14 @@ import {
   tokenListCodec,
 } from "./codecs"
 import {
+  bindComponent,
   type ComponentRegistry,
+  capabilityManifestJSON,
+  createCapabilityManifest,
   createRegistry,
+  defineCapabilityModule,
   defineComponent,
+  defineComponentDefinition,
   defineComponentModule,
   type RegistryCapabilityManifest,
   type RegistryComponent,
@@ -69,7 +74,7 @@ const trimmedStringCodec: AttributeCodec<string> = {
   name: "trimmed-string",
 }
 
-const derivedCard = defineComponent({
+const derivedCardDefinition = defineComponentDefinition({
   attributes: {
     "accessibility-label": attr(stringCodec, z.string().trim().min(1)).optional(),
     disabled: attr(presenceCodec).default(false),
@@ -78,13 +83,23 @@ const derivedCard = defineComponent({
     tone: attr(enumCodec(["neutral", "positive"])).default("neutral"),
   },
   children: "none",
-  component: (props) => `${props.title}:${props.originalPrice}`,
   tag: "DerivedCard",
 })
+
+const derivedCard = bindComponent(
+  derivedCardDefinition,
+  (props) => `${props.title}:${props.originalPrice}`,
+)
 
 const primitives = defineComponentModule({
   components: [card, text],
   name: "primitives",
+  version: "0.1.0",
+})
+
+const derivedCapabilities = defineCapabilityModule({
+  components: [derivedCardDefinition],
+  name: "derived-primitives",
   version: "0.1.0",
 })
 
@@ -528,6 +543,17 @@ describe("typed component registry", () => {
     })
     expect(() => createRegistry(primitives, duplicate)).toThrow(/primitives.*commerce/)
     expect(() => createRegistry(primitives, primitives)).toThrow(/Duplicate component module/)
+  })
+
+  test("generates the runtime manifest from component-free definitions", () => {
+    const runtime = createRegistry(derivedPrimitives)
+    const manifest = createCapabilityManifest(derivedCapabilities)
+
+    expect("component" in derivedCardDefinition).toBe(false)
+    expect(Object.isFrozen(derivedCardDefinition)).toBe(true)
+    expect(Object.isFrozen(derivedCapabilities.components)).toBe(true)
+    expect(manifest).toEqual(runtime.capabilities)
+    expect(capabilityManifestJSON(derivedCapabilities)).toBe(runtime.capabilityManifestJSON())
   })
 
   test("builds deterministic capability hashes independent of composition order", () => {
