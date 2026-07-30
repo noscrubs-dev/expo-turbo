@@ -6,6 +6,7 @@ import {
   createElement,
   Fragment,
   type ReactNode,
+  startTransition,
   useCallback,
   useContext,
   useEffect,
@@ -13,6 +14,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react"
 
@@ -202,6 +204,14 @@ export interface ExpoTurboFormAccessibilityState {
   readonly busy: boolean
 }
 
+export type ExpoTurboFormSubmitOptions = ActiveFormSubmitOptions & {
+  /**
+   * Defers submission until React has committed pending control descriptors.
+   * Use this when one event updates control state and submits the form.
+   */
+  readonly afterCommit?: boolean
+}
+
 export interface ExpoTurboFormBinding {
   readonly accessibilityState: ExpoTurboFormAccessibilityState
   cancelSubmission(): void
@@ -224,7 +234,7 @@ export interface ExpoTurboFormBinding {
   ): Promise<ActiveFormSubmissionReport>
   reportValidity(): FormConstraintValidationReport
   submit(
-    options: ActiveFormSubmitOptions,
+    options: ExpoTurboFormSubmitOptions,
     controllerOptions?: FormSubmissionControllerSubmitOptions,
   ): Promise<ActiveFormSubmissionReport>
 }
@@ -880,7 +890,48 @@ export interface ExpoTurboFormScopeProps {
   readonly children?: ReactNode
 }
 
+interface DeferredFormSubmission {
+  readonly commitRevision: number
+  readonly controllerOptions?: FormSubmissionControllerSubmitOptions
+  readonly options: ActiveFormSubmitOptions
+  readonly registry: FormControlRegistry
+  reject(error: unknown): void
+  resolve(report: ActiveFormSubmissionReport): void
+}
+
+function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
+  if (!options || typeof options !== "object") return false
+  let array: boolean
+  try {
+    array = Array.isArray(options)
+  } catch {
+    throw new RequestError("Active form submit options could not be read")
+  }
+  if (array) return false
+  let afterCommit: unknown
+  let hasAfterCommit: boolean
+  try {
+    hasAfterCommit = "afterCommit" in options
+    afterCommit = hasAfterCommit
+      ? (options as Readonly<{ afterCommit?: unknown }>).afterCommit
+      : undefined
+  } catch {
+    throw new RequestError("Active form submit options could not be read")
+  }
+  if (!hasAfterCommit) return false
+  if (afterCommit !== undefined && typeof afterCommit !== "boolean") {
+    throw new RequestError("Form submission afterCommit must be boolean")
+  }
+  return afterCommit === true
+}
+
 function useFormBinding(registry: FormControlRegistry, formNodeKey: string): ExpoTurboFormBinding {
+  const committedRegistry = useRef(registry)
+  const deferredSubmissions = useRef<DeferredFormSubmission[]>([])
+  const mounted = useRef(false)
+  const requestedCommitRevision = useRef(0)
+  const pendingSubmissions = useRef(new Set<DeferredFormSubmission>())
+  const [commitRevision, scheduleCommit] = useState(0)
   const subscribe = useCallback(
     (listener: () => void) => registry.subscribeSubmission(listener),
     [registry],
@@ -893,6 +944,79 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
   )
   const terminalSnapshot = useCallback(() => registry.submissionTerminalState, [registry])
   const terminalState = useSyncExternalStore(subscribeTerminal, terminalSnapshot, terminalSnapshot)
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      const error = new StateError("Deferred form submission lost its React binding")
+      for (const submission of pendingSubmissions.current) submission.reject(error)
+      pendingSubmissions.current.clear()
+      deferredSubmissions.current = []
+    }
+  }, [])
+  useLayoutEffect(() => {
+    committedRegistry.current = registry
+  })
+  useLayoutEffect(() => {
+    const submissions: DeferredFormSubmission[] = []
+    const waiting: DeferredFormSubmission[] = []
+    for (const submission of deferredSubmissions.current) {
+      if (submission.commitRevision <= commitRevision) submissions.push(submission)
+      else waiting.push(submission)
+    }
+    if (submissions.length === 0) return
+    deferredSubmissions.current = waiting
+    queueMicrotask(() => {
+      for (const submission of submissions) {
+        if (!pendingSubmissions.current.delete(submission)) continue
+        if (!mounted.current) {
+          submission.reject(new StateError("Deferred form submission lost its React binding"))
+          continue
+        }
+        if (submission.registry !== committedRegistry.current) {
+          submission.reject(new StateError("Deferred form submission changed its React binding"))
+          continue
+        }
+        try {
+          void submission.registry
+            .submit(submission.options, submission.controllerOptions)
+            .then(submission.resolve, submission.reject)
+        } catch (error) {
+          submission.reject(error)
+        }
+      }
+    })
+  }, [commitRevision])
+  const submit = useCallback(
+    (
+      options: ExpoTurboFormSubmitOptions,
+      controllerOptions?: FormSubmissionControllerSubmitOptions,
+    ): Promise<ActiveFormSubmissionReport> => {
+      if (!formSubmitAfterCommit(options)) return registry.submit(options, controllerOptions)
+      if (!mounted.current) {
+        return Promise.reject(new StateError("Deferred form submission lost its React binding"))
+      }
+
+      return new Promise<ActiveFormSubmissionReport>((resolve, reject) => {
+        const nextCommitRevision = requestedCommitRevision.current + 1
+        requestedCommitRevision.current = nextCommitRevision
+        const submission: DeferredFormSubmission = {
+          commitRevision: nextCommitRevision,
+          ...(controllerOptions !== undefined ? { controllerOptions } : {}),
+          options,
+          registry,
+          reject,
+          resolve,
+        }
+        pendingSubmissions.current.add(submission)
+        deferredSubmissions.current.push(submission)
+        startTransition(() => {
+          scheduleCommit((revision) => Math.max(revision, nextCommitRevision))
+        })
+      })
+    },
+    [registry],
+  )
   return useMemo<ExpoTurboFormBinding>(
     () =>
       Object.freeze({
@@ -910,17 +1034,14 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
         state,
         shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
           registry.shouldInterceptSubmission(options),
-        submit: (
-          options: ActiveFormSubmitOptions,
-          controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => registry.submit(options, controllerOptions),
+        submit,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
           registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, registry, state, terminalState],
+    [formNodeKey, registry, state, submit, terminalState],
   )
 }
 

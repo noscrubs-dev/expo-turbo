@@ -5,6 +5,7 @@ import {
   createElement,
   Fragment,
   type ReactNode,
+  startTransition,
   StrictMode,
   useEffect,
   useLayoutEffect,
@@ -1710,6 +1711,152 @@ describe("React protocol renderer", () => {
     expect(replacementScope.state.isDisposed).toBe(true)
     expect(frameScope.state.isDisposed).toBe(true)
     expect(documentState.isDisposed).toBe(true)
+  })
+
+  test("submits updated control descriptors after the React commit", async () => {
+    const requests: TurboRequest[] = []
+    function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function AutoSubmitValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      const form = useExpoTurboForm()
+      const [value, setValue] = useState(props.value)
+      useExpoTurboFormControl({ kind: "value", name: props.name, value })
+      const submit = (nextValue: string, afterCommit: boolean) => {
+        setValue(nextValue)
+        return form.submit({
+          ...(afterCommit ? { afterCommit: true } : {}),
+          protocol: { requestId: afterCommit ? "after-commit" : "immediate" },
+        })
+      }
+      return createElement("auto-submit-value", {
+        submitAfterCommit: (nextValue: string) => submit(nextValue, true),
+        submitAfterTransition: (nextValue: string) => {
+          startTransition(() => setValue(nextValue))
+          return form.submit({
+            afterCommit: true,
+            protocol: { requestId: "after-transition" },
+          })
+        },
+        submitImmediately: (nextValue: string) => submit(nextValue, false),
+        submitOptions: (options: unknown) =>
+          form.submit(options as Parameters<ExpoTurboFormBinding["submit"]>[0]),
+        value,
+      })
+    }
+    const form = defineComponent({
+      attributes: {
+        action: { codec: stringCodec, prop: "action" },
+        method: { codec: stringCodec, prop: "method" },
+      },
+      children: "nodes",
+      component: NativeForm,
+      formOwner: true,
+      schema: z.object({ action: z.string(), method: z.string() }),
+      tag: "AfterCommitForm",
+    })
+    const value = defineComponent({
+      attributes: {
+        name: { codec: stringCodec, prop: "name" },
+        value: { codec: stringCodec, prop: "value" },
+      },
+      children: "none",
+      component: AutoSubmitValue,
+      schema: z.object({ name: z.string(), value: z.string() }),
+      tag: "AfterCommitValue",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, value],
+        name: "after-commit-form",
+        version: "0.1.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><AfterCommitForm id="first" action="/first" method="post" /><AfterCommitForm id="second" action="/second" method="post" /><AfterCommitValue id="choice" form="first" name="choice" value="old" /></Gallery>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const submissionController = new FormSubmissionController(session, {
+      fetch: async (request) => {
+        requests.push(request)
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const forms = new DocumentFormControls(session, { submissionController })
+    const activeRenderer = render(session, registry, { forms, strict: true })
+    const control = activeRenderer.root.find(
+      (node) => String(node.type) === "auto-submit-value",
+    )
+
+    let immediateSubmission: Promise<unknown> | undefined
+    act(() => {
+      immediateSubmission = control.props.submitImmediately("middle")
+    })
+    await act(async () => {
+      await immediateSubmission
+    })
+    expect(requests[0]?.body?.value).toBe("choice=old")
+
+    let deferredSubmission: Promise<unknown> | undefined
+    act(() => {
+      deferredSubmission = control.props.submitAfterCommit("new")
+    })
+    await act(async () => {
+      await deferredSubmission
+    })
+    expect(requests[1]?.body?.value).toBe("choice=new")
+
+    let transitionSubmission: Promise<unknown> | undefined
+    act(() => {
+      transitionSubmission = control.props.submitAfterTransition("transition")
+    })
+    await act(async () => {
+      await transitionSubmission
+    })
+    expect(requests[2]?.body?.value).toBe("choice=transition")
+
+    let reboundSubmission: Promise<unknown> | undefined
+    const submitWithFirstForm = control.props.submitAfterCommit
+    act(() => {
+      session.setAttribute("id:choice", "form", "second")
+      reboundSubmission = submitWithFirstForm("rebound")
+    })
+    await act(async () => {
+      await expect(reboundSubmission).rejects.toBeInstanceOf(StateError)
+    })
+    expect(requests).toHaveLength(3)
+
+    const revoked = Proxy.revocable(
+      { protocol: { requestId: "revoked" } },
+      {},
+    )
+    revoked.revoke()
+    expect(() => control.props.submitOptions(revoked.proxy)).toThrow(
+      new RequestError("Active form submit options could not be read"),
+    )
+    expect(() =>
+      control.props.submitOptions(
+        new Proxy(
+          { protocol: { requestId: "trapped" } },
+          {
+            has() {
+              throw new Error("private option trap")
+            },
+          },
+        ),
+      ),
+    ).toThrow(new RequestError("Active form submit options could not be read"))
+
+    act(() => activeRenderer.unmount())
+    forms.dispose()
   })
 
   test("binds live native controls to the nearest exact form through StrictMode replay", async () => {
