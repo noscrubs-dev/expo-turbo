@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+## 0.1.6 - 2026-07-31
+
 - Add component-free registry definitions and capability modules so plain Node
   or Bun can generate the canonical Rails manifest without loading the host's
   React Native component tree. Runtime registries can bind the same definitions

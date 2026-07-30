@@ -1,7 +1,7 @@
 PATH
   remote: ..
   specs:
-    expo_turbo-rails (0.1.5)
+    expo_turbo-rails (0.1.6)
       actioncable (>= 7.2, < 8.2)
       activejob (>= 7.2, < 8.2)
       nokogiri (>= 1.15.7, < 2)

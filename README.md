@@ -70,7 +70,7 @@ The implementation targets the supported native equivalents of Turbo `8.0.23`
 semantics. It does not try to copy browser-only DOM behavior.
 
 > [!IMPORTANT]
-> `0.1.5` is the stable release published on 2026-07-31. The package, gem,
+> `0.1.6` is the stable release published on 2026-07-31. The package, gem,
 > standalone examples, automated conformance suite, and installed iOS and
 > Android simulator Release audits are complete for the supported surface. The
 > physical Android and iOS union suites also pass all 71 contracts and 115
@@ -101,11 +101,11 @@ are the canonical integration examples.
 
 | Area | Current status |
 | --- | --- |
-| TypeScript package | [`expo-turbo@0.1.5`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all public entrypoints |
-| Rails gem | [`expo_turbo-rails` 0.1.5](https://rubygems.org/gems/expo_turbo-rails); clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
+| TypeScript package | [`expo-turbo@0.1.6`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all public entrypoints |
+| Rails gem | [`expo_turbo-rails` 0.1.6](https://rubygems.org/gems/expo_turbo-rails); clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
 | Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android and iOS each pass 71/71 shared contracts |
-| Stable publication | [`v0.1.5`](https://github.com/noscrubs-dev/expo-turbo/releases/tag/v0.1.5), published 2026-07-31 from one verified frozen npm/gem candidate |
+| Stable publication | [`v0.1.6`](https://github.com/noscrubs-dev/expo-turbo/releases/tag/v0.1.6), published 2026-07-31 from one verified frozen npm/gem candidate |
 
 See the
 [machine-readable compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
@@ -259,7 +259,7 @@ sense on native platforms. It is not a browser DOM port of
 | `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | High-level runtime, provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.5` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.1.6` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 
