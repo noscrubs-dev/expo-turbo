@@ -60,6 +60,23 @@ wait_for_stable_device() {
   return 1
 }
 
+prepare_rails_reverse() {
+  for _ in 1 2; do
+    adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
+    if adb -s "$adb_serial" reverse tcp:3001 tcp:3001 &&
+      printf 'GET /up HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' |
+        timeout 10 adb -s "$adb_serial" shell 'toybox nc -w 5 127.0.0.1 3001' |
+        tr -d '\r' |
+        grep -Eq '^HTTP/[0-9.]+ 200 '; then
+      return
+    fi
+    sleep 2
+  done
+
+  echo "Android could not reach Rails through the ADB reverse tunnel." >&2
+  return 1
+}
+
 mkdir -p "$artifacts"
 : >"$rails_log"
 : >"$emulator_log"
@@ -188,7 +205,6 @@ start_and_prepare_emulator() {
   done
   test "$(adb -s "$adb_serial" shell getprop sys.boot_completed | tr -d '\r')" = "1"
 
-  adb -s "$adb_serial" reverse tcp:3001 tcp:3001
   adb -s "$adb_serial" logcat -c
   adb -s "$adb_serial" install -r "$apk"
   adb -s "$adb_serial" push "$picker_fixture" /sdcard/Download/expo-turbo-android-picked.txt
@@ -203,6 +219,9 @@ start_and_prepare_emulator() {
     wait_for_stable_device
     maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
   fi
+
+  wait_for_stable_device
+  prepare_rails_reverse
 }
 
 stop_emulator_for_retry() {

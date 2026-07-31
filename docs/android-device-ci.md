@@ -62,7 +62,9 @@ or interactive developer workloads.
 
 The runner bootstraps the emulator's bundled Chrome profile before the shared
 suite so external-link assertions exercise the destination rather than Chrome's
-first-run screen. This changes only disposable emulator state.
+first-run screen. After bootstrap, it restores the ADB reverse mapping and
+requires a successful device-side request to the Rails `/up` endpoint before
+starting Maestro. This changes only disposable emulator state.
 
 ## Recovery
 
@@ -90,6 +92,12 @@ crashes are product failures and are never hidden by an automatic retry.
 
 **2026-07-31**:
 
+- Changed: The Android lane now restores its Rails reverse tunnel after Chrome
+  bootstrap and proves device-side `/up` access before the shared Maestro suite.
+- Why: Run `30591581753` kept the emulator and Rails healthy but sent no app
+  requests to Rails, so ten server-dependent flows failed over 21 minutes.
+- Impact: A missing reverse tunnel is repaired before testing or fails early
+  with a direct infrastructure error.
 - Changed: The Android retry guard now recognizes Maestro's `device not found`
   transport error in addition to an explicit offline transport.
 - Why: Run `30590112926` lost its Maestro device session after 13 flows, but the
