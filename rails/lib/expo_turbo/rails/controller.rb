@@ -78,7 +78,10 @@ module ExpoTurbo
         raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
         raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
 
-        parsed_requirement = Gem::Requirement.new(requirement)
+        requirement_parts = requirement.split(",", -1).map(&:strip)
+        raise ArgumentError, "requirement must not contain empty clauses" if requirement_parts.any?(&:empty?)
+
+        parsed_requirement = Gem::Requirement.new(*requirement_parts)
         negotiation = expo_turbo_module_negotiation
         return true if negotiation.fetch(:latest)
 
@@ -124,14 +127,14 @@ module ExpoTurbo
         return cached.fetch(:value) if cached && cached.fetch(:header).equal?(header)
 
         value = if header.nil?
-          {latest: true, modules: {}.freeze}.freeze
+          {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
         else
           parsed = expo_turbo_parse_module_header(header)
           if parsed
             {latest: false, modules: parsed.fetch(:modules), cache_variant: parsed.fetch(:cache_variant)}.freeze
           else
             expo_turbo_report_malformed_module_header
-            {latest: true, modules: {}.freeze}.freeze
+            {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
           end
         end
         @expo_turbo_module_negotiation = {header: header, value: value}.freeze

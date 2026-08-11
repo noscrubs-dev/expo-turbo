@@ -2,7 +2,6 @@
 
 require "action_controller/api"
 require "fileutils"
-require "json"
 require "tmpdir"
 require "spec_helper"
 require "expo_turbo/rails/testing"
@@ -334,22 +333,6 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
-  it "uses the shared RubyGems module version grammar" do
-    grammar_path = File.expand_path("../../../module-version-grammar.json", __dir__)
-    grammar = JSON.parse(File.read(grammar_path))
-
-    grammar.fetch("accepted").each do |version|
-      controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=#{version}")
-      expect(controller.expo_turbo_client_modules).to eq("cart" => version)
-    end
-    grammar.fetch("rejected").each do |version|
-      controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=#{version}")
-      allow(controller).to receive(:logger).and_return(double(warn: nil))
-      expect(controller.expo_turbo_client_modules).to eq({})
-      expect(controller.expo_turbo_client_supports?("cart", ">= 0")).to be(false)
-    end
-  end
-
   it "assumes latest capabilities only when the module header is absent or its envelope is malformed" do
     absent_document = controller_with_request("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
     absent_frame = controller_with_request("HTTP_TURBO_FRAME" => "details")
@@ -384,6 +367,25 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
     empty_registry = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;")
     expect(empty_registry.expo_turbo_client_supports?("future-module", ">= 1")).to be(false)
+
+    ["v1;cart", "v1;cart=%ZZ", "v1;=1", "v1;cart=not-a-version"].each do |header|
+      malformed = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => header)
+      allow(malformed).to receive(:logger).and_return(double(warn: nil))
+
+      expect { malformed.expo_turbo_client_modules }.not_to raise_error
+      expect(malformed.expo_turbo_client_modules).to eq({})
+      expect(malformed.expo_turbo_client_supports?("cart", ">= 0")).to be(false)
+    end
+  end
+
+  it "supports comma-separated requirement clauses" do
+    native = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+    web = controller_with_request
+
+    expect(native.expo_turbo_client_supports?("cart", ">= 1, < 3")).to be(true)
+    expect(native.expo_turbo_client_supports?("cart", ">= 1, < 2")).to be(false)
+    expect(web.expo_turbo_client_supports?("cart", ">= 1, < 3")).to be(true)
+    expect { native.expo_turbo_client_supports?("cart", ">= 1,") }.to raise_error(ArgumentError)
   end
 
   it "raises for invalid requirement queries before applying web fail-open behavior" do

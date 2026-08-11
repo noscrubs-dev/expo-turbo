@@ -251,6 +251,10 @@ vocabulary where the Rails template uses it:
 <% end %>
 ```
 
+Requirements use RubyGems syntax and can contain comma-separated clauses, such
+as `">= 2, < 4"`. Invalid helper arguments raise so a server-authored gate does
+not silently hide a feature from native clients.
+
 `expo_turbo_client_modules` returns the reported name and version pairs. A
 missing header is a web client signal and assumes the latest vocabulary. A
 malformed header envelope also fails open and does not cause a server error.

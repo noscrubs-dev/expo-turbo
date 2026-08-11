@@ -32,13 +32,6 @@ import {
 } from "./registry"
 
 const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
-const MODULE_VERSION_GRAMMAR = (await Bun.file(
-  new URL("../../module-version-grammar.json", import.meta.url),
-).json()) as Readonly<{
-  accepted: readonly string[]
-  rejected: readonly string[]
-}>
-
 const card = defineComponent({
   aliases: ["LegacyCard"],
   attributes: {
@@ -122,17 +115,16 @@ function element(xml: string) {
 }
 
 describe("typed component registry", () => {
-  test("uses the shared RubyGems module version grammar", () => {
-    for (const version of MODULE_VERSION_GRAMMAR.accepted) {
-      expect(() =>
-        defineComponentModule({ components: [], name: "version-probe", version }),
-      ).not.toThrow()
-    }
-    for (const version of MODULE_VERSION_GRAMMAR.rejected) {
-      expect(() =>
-        defineComponentModule({ components: [], name: "version-probe", version }),
-      ).toThrow(RegistryError)
-    }
+  test("enforces the request protocol grammar for module names and versions", () => {
+    expect(() => defineComponentModule({ components: [], name: " cart ", version: "1" })).toThrow(
+      RegistryError,
+    )
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart\uFFFF", version: "1" }),
+    ).toThrow(RegistryError)
+    expect(() => defineCapabilityModule({ components: [], name: "cart", version: "v2" })).toThrow(
+      RegistryError,
+    )
   })
 
   test("derives component props from attribute definitions", () => {

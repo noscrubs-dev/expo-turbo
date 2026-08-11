@@ -40,6 +40,27 @@ ordered application children; it is an envelope contract rather than evidence
 for every Frame loading or native-device lifecycle path. Fixture readers are
 test-only; neither package ships protocol sources as runtime assets.
 
+## Module version request header
+
+Native requests send the optional `X-Expo-Turbo-Modules` header on document,
+Frame, form, and preload paths. Its versioned wire format is
+`v1;name=version,name=version`. Names and versions use `encodeURIComponent`
+percent encoding before they are joined. A module name must be nonblank, must
+not have leading or trailing whitespace, and must not contain C0 controls,
+DEL, U+FFFE, or U+FFFF. A version must match this RubyGems-compatible grammar:
+
+```text
+[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?
+```
+
+`protocol/module-version-grammar.json` supplies the shared TypeScript and Ruby
+conformance cases. The client rejects invalid module metadata when the module
+is defined and again before it serializes a request. The server decodes valid
+entries, normalizes surrounding whitespace, and ignores only malformed
+entries. A missing header or malformed versioned envelope selects the latest
+vocabulary for web compatibility. An exact `v1;` header reports zero modules.
+The existing `X-Expo-Turbo-Capabilities` hash remains a separate header.
+
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral
 conformance slice. A separate development-only browser differential executes

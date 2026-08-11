@@ -4,9 +4,14 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
-- Send decodable live registry module versions on document, Frame, form, and
-  preload requests, and add Rails helpers for version-requirement negotiation
-  while retaining the existing capability hash ([#393](https://github.com/noscrubs-dev/expo-turbo/issues/393)).
+- **Breaking:** Send decodable live registry module versions on document,
+  Frame, form, and preload requests, and add Rails helpers for version
+  negotiation while retaining the existing capability hash. Module versions
+  must now use RubyGems syntax; migrate values such as `v2` to `2`,
+  `1.0.0+build` to `1.0.0.build`, `2024w03` to `2024.3`, and `1_0` to `1.0`.
+  Module names must also be trimmed and free of protocol control characters
+  before upgrading
+  ([#393](https://github.com/noscrubs-dev/expo-turbo/issues/393)).
 
 ## 0.1.7 - 2026-07-31
 
