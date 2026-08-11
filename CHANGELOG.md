@@ -21,7 +21,10 @@ All notable public package, gem, and protocol changes will be recorded here.
   from an uninterpretable tag into a request. A refusal raised while rendering
   drops that node and reports instead of raising the document error surface, and
   a dropped node counts as no output, so a refusal that empties a document root
-  still reaches the blank-root error rather than a silent blank screen.
+  still reaches the blank-root error rather than a silent blank screen. That
+  accounting follows the dropped node's and its owner's identity in the current
+  tree, so an unrelated mutation elsewhere in the document cannot retire a drop
+  that is still in force.
   Unknown attributes on a form owner report even when the document never renders
   that owner, and an owner rejected as undeclared reports them before it fails.
   Native form-owner protocol attributes no longer require duplicate component

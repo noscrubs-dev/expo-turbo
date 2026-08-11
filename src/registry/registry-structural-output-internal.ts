@@ -23,7 +23,7 @@ function analyzeNodes(
   registry: StructuralRegistry,
   nodes: readonly ProtocolNode[],
   diagnostics: RegistryStructuralOutputDiagnostic[],
-  droppedKeys: ReadonlySet<string> | undefined,
+  droppedNodes: ReadonlySet<ProtocolNode> | undefined,
 ): boolean {
   // Diagnostics are only consumed when nothing renders, so the first renderable
   // node ends the walk.
@@ -34,7 +34,7 @@ function analyzeNodes(
       continue
     }
     if (node.kind === "document") {
-      if (analyzeNodes(registry, node.children, diagnostics, droppedKeys)) return true
+      if (analyzeNodes(registry, node.children, diagnostics, droppedNodes)) return true
       continue
     }
     // A Frame is a runtime-managed content region and a Cable source is a live
@@ -46,8 +46,9 @@ function analyzeNodes(
     if (!isElement(node)) continue
     // A node the render path dropped produces no output and renders none of its
     // children, so counting it would make this accounting disagree with the
-    // document that was actually committed.
-    if (droppedKeys?.has(node.key)) continue
+    // document that was actually committed. Membership is by node identity, so
+    // a replacement node is never mistaken for the one that was dropped.
+    if (droppedNodes?.has(node)) continue
 
     try {
       const result = registry.decodeForRender(node)
@@ -55,7 +56,7 @@ function analyzeNodes(
       if (result.issues.length > 0) {
         diagnostics.push(Object.freeze({ issues: result.issues, node }))
       }
-      if (analyzeNodes(registry, result.children, diagnostics, droppedKeys)) return true
+      if (analyzeNodes(registry, result.children, diagnostics, droppedNodes)) return true
     } catch {
       // A non-vocabulary decode failure belongs to the render path, which
       // reports it through the normal error surface.
@@ -68,10 +69,10 @@ function analyzeNodes(
 export function analyzeRegistryStructuralOutput(
   registry: StructuralRegistry,
   nodes: readonly ProtocolNode[],
-  droppedKeys?: ReadonlySet<string>,
+  droppedNodes?: ReadonlySet<ProtocolNode>,
 ): RegistryStructuralOutputAnalysis {
   const diagnostics: RegistryStructuralOutputDiagnostic[] = []
-  const hasOutput = analyzeNodes(registry, nodes, diagnostics, droppedKeys)
+  const hasOutput = analyzeNodes(registry, nodes, diagnostics, droppedNodes)
   return Object.freeze({
     diagnostics: Object.freeze(diagnostics),
     hasOutput,

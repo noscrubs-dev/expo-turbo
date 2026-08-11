@@ -999,7 +999,6 @@ interface FormOwnerVocabularyMetadata {
   readonly issues: readonly RegistryVocabularyIssue[]
   readonly node: ProtocolElement
   readonly registry: unknown
-  readonly revision: number
   readonly session: DocumentSession
 }
 
@@ -1254,7 +1253,6 @@ function useResolvedFormRegistry(): Readonly<{
             // this failure surfaces on is what makes the two correlatable.
             node,
             registry: componentRegistry,
-            revision: session.revision,
             session,
           })
         : new RegistryError(MISSING_FORM_SCOPE_MESSAGE)
@@ -1275,7 +1273,6 @@ function useResolvedFormRegistry(): Readonly<{
         issues: owner?.issues ?? NO_VOCABULARY_ISSUES,
         node: form,
         registry: componentRegistry,
-        revision: session.revision,
         session,
       })
     : undefined
@@ -2605,12 +2602,12 @@ class AttributedFormOwnerError extends RegistryError {
 
 interface InertRenderDrop {
   readonly generation: number
+  readonly owner: ProtocolElement
   readonly registry: unknown
-  readonly revision: number
 }
 
 interface InertRenderDropLedger {
-  readonly drops: Map<string, InertRenderDrop>
+  readonly drops: Map<ProtocolNode, InertRenderDrop>
   readonly listeners: Set<() => void>
   version: number
 }
@@ -2632,36 +2629,55 @@ function inertRenderDropLedger(session: DocumentSession): InertRenderDropLedger 
  * ledger the blank-root guard would read its own accounting as satisfied while
  * the document rendered nothing at all.
  */
-function recordInertRenderDrop(metadata: VocabularyRenderMetadata, nodeKey: string): void {
+function recordInertRenderDrop(metadata: VocabularyRenderMetadata, node: ProtocolNode): void {
   const ledger = inertRenderDropLedger(metadata.session)
-  const existing = ledger.drops.get(nodeKey)
+  const existing = ledger.drops.get(node)
   const drop: InertRenderDrop = {
     generation: metadata.generation,
+    owner: metadata.node,
     registry: metadata.registry,
-    revision: metadata.revision,
   }
   if (
     existing &&
     existing.generation === drop.generation &&
-    existing.registry === drop.registry &&
-    existing.revision === drop.revision
+    existing.owner === drop.owner &&
+    existing.registry === drop.registry
   ) {
     return
   }
-  ledger.drops.set(nodeKey, drop)
+  ledger.drops.set(node, drop)
   ledger.version += 1
   for (const listener of [...ledger.listeners]) listener()
 }
 
 /**
- * Drops are recorded against the tree revision and registry that produced them,
- * so a tree mutation or a registry swap retires them without any explicit
- * clearing. A stale drop can never hold the document in the error state.
+ * A drop stays in force for exactly as long as the two nodes that produced it
+ * are still the ones in the tree: the dropped node itself, and the form owner
+ * whose unknown tag refused it.
+ *
+ * A document-wide revision counter cannot express that. Any unrelated mutation
+ * would retire a drop that is still dropping, and the guard would read its own
+ * accounting as satisfied while that node still rendered nothing. Node identity
+ * is the right axis, and it also breaks the deadlock that plain clearing hits:
+ * once the guard replaces the subtree the dropping boundary unmounts and can
+ * never clear its own entry, but a replacement owner changes the owner node, so
+ * the drop retires on its own and the document recovers.
  */
+function isInertRenderDropLive(
+  session: DocumentSession,
+  registry: RenderRegistry,
+  node: ProtocolNode,
+  drop: InertRenderDrop,
+): boolean {
+  if (drop.generation !== session.treeGeneration || drop.registry !== registry) return false
+  if (session.getNodeSnapshot(node.key)?.node !== node) return false
+  return session.getNodeSnapshot(drop.owner.key)?.node === drop.owner
+}
+
 function useInertRenderDrops(
   session: DocumentSession,
   registry: RenderRegistry,
-): ReadonlySet<string> {
+): ReadonlySet<ProtocolNode> {
   const ledger = inertRenderDropLedger(session)
   const subscribe = useCallback(
     (listener: () => void) => {
@@ -2674,12 +2690,17 @@ function useInertRenderDrops(
   )
   const version = useCallback(() => ledger.version, [ledger])
   useSyncExternalStore(subscribe, version, version)
-  const active = new Set<string>()
-  for (const [nodeKey, drop] of ledger.drops) {
-    if (drop.generation !== session.treeGeneration) continue
-    if (drop.registry !== registry || drop.revision !== session.revision) continue
-    active.add(nodeKey)
+  const active = new Set<ProtocolNode>()
+  for (const [node, drop] of ledger.drops) {
+    if (isInertRenderDropLive(session, registry, node, drop)) active.add(node)
   }
+  // Retired entries are evicted after the commit rather than here, so reading
+  // the ledger stays pure and eviction can never decide a live drop's fate.
+  useEffect(() => {
+    for (const [node, drop] of ledger.drops) {
+      if (!isInertRenderDropLive(session, registry, node, drop)) ledger.drops.delete(node)
+    }
+  })
   return active
 }
 
@@ -2768,7 +2789,10 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
       // document error: the node degrades to nothing, and the blank-root guard
       // is told so its accounting matches what actually rendered.
       if (vocabulary.tolerated) {
-        recordInertRenderDrop(vocabulary, this.props.nodeKey)
+        // Without a live node there is nothing left to account for: the guard
+        // only asks whether nodes in the current tree produced output.
+        const dropped = vocabulary.session.getNodeSnapshot(this.props.nodeKey)?.node
+        if (dropped) recordInertRenderDrop(vocabulary, dropped)
         return
       }
     }

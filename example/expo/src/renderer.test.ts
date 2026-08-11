@@ -14685,6 +14685,109 @@ describe("React protocol renderer", () => {
     expect(vocabulary.map(({ tag }) => tag).sort()).toEqual(["FutureForm", "FutureRoot"])
   })
 
+  function blankingRefusalFixture() {
+    function PlanPreview(): ReactNode {
+      const binding = useExpoTurboForm()
+      const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
+      return createElement("blanking-preview", { url: plan.request.url })
+    }
+    return registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: PlanPreview,
+            schema: z.object({}),
+            tag: "BlankingPreview",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: (props: Readonly<{ children?: ReactNode }>) =>
+              createElement(ExpoTurboFormScope, null, props.children),
+            formOwner: true,
+            schema: z.object({}),
+            tag: "BlankingOwner",
+          }),
+        ],
+        name: "blanking-refusal",
+        version: "1.0.0",
+      }),
+    )
+  }
+
+  test("keeps a drop in force when an unrelated node is removed", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><DemoText id="sibling">Visible</DemoText></FutureRoot>',
+        { url: "https://example.test/unrelated-removal" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, blankingRefusalFixture(), {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The sibling is real output, so the guard must stay quiet here. Without
+    // this half the test could pass on a guard that fires unconditionally.
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Visible")
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="sibling"></turbo-stream>',
+      )
+    })
+
+    // Removing an unrelated node bumps every document-wide counter while the
+    // preview is still dropped. Drop validity has to follow that node, not the
+    // document, or the guard reads its own accounting as satisfied.
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+    ])
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+  })
+
+  test("clears a blank-root refusal when a known owner replaces the unknown one", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/refusal-recovery" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, blankingRefusalFixture(), {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><BlankingOwner id="form" action="/known" method="get" /></template></turbo-stream>',
+      )
+    })
+
+    // The guard replaced the subtree, so the dropping boundary is gone and can
+    // never clear its own entry. Retirement has to come from the owner node
+    // being replaced, or the document stays in the error state forever.
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(
+      renderer.root.find((node) => String(node.type) === "blanking-preview").props,
+    ).toMatchObject({ url: "https://example.test/known" })
+    expect(errors).toHaveLength(1)
+  })
+
   test("drops a node that refuses an unknown owner while rendering", async () => {
     function PlanPreview(): ReactNode {
       const binding = useExpoTurboForm()
