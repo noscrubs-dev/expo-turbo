@@ -260,7 +260,10 @@ tag with no children does, and the gap reports through `onUnknownVocabulary`.
 The node renders again once a known form owner occupies the node key. A dropped
 node counts as no output for the blank-root guard above, so a refusal that
 empties a document root still reaches the error surface rather than showing a
-silent blank screen.
+silent blank screen. That case is detected from what the commit produced rather
+than predicted from the tree, so its error surface appears one commit after the
+refusal; a root that cannot render anything at all is still decided while
+rendering and never shows an empty frame.
 
 A `form` value that points at a known component which is not a declared form
 owner remains an error, because that is a document defect rather than a

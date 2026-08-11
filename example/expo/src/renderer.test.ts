@@ -7,6 +7,7 @@ import {
   type ReactNode,
   startTransition,
   StrictMode,
+  Suspense,
   useEffect,
   useLayoutEffect,
   useState,
@@ -14685,36 +14686,38 @@ describe("React protocol renderer", () => {
     expect(vocabulary.map(({ tag }) => tag).sort()).toEqual(["FutureForm", "FutureRoot"])
   })
 
-  function blankingRefusalFixture() {
+  function blankingRefusalModule() {
     function PlanPreview(): ReactNode {
       const binding = useExpoTurboForm()
       const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
       return createElement("blanking-preview", { url: plan.request.url })
     }
-    return registryWithCounters().use(
-      defineComponentModule({
-        components: [
-          defineComponent({
-            attributes: {},
-            children: "none",
-            component: PlanPreview,
-            schema: z.object({}),
-            tag: "BlankingPreview",
-          }),
-          defineComponent({
-            attributes: {},
-            children: "nodes",
-            component: (props: Readonly<{ children?: ReactNode }>) =>
-              createElement(ExpoTurboFormScope, null, props.children),
-            formOwner: true,
-            schema: z.object({}),
-            tag: "BlankingOwner",
-          }),
-        ],
-        name: "blanking-refusal",
-        version: "1.0.0",
-      }),
-    )
+    return defineComponentModule({
+      components: [
+        defineComponent({
+          attributes: {},
+          children: "none",
+          component: PlanPreview,
+          schema: z.object({}),
+          tag: "BlankingPreview",
+        }),
+        defineComponent({
+          attributes: {},
+          children: "nodes",
+          component: (props: Readonly<{ children?: ReactNode }>) =>
+            createElement(ExpoTurboFormScope, null, props.children),
+          formOwner: true,
+          schema: z.object({}),
+          tag: "BlankingOwner",
+        }),
+      ],
+      name: "blanking-refusal",
+      version: "1.0.0",
+    })
+  }
+
+  function blankingRefusalFixture() {
+    return registryWithCounters().use(blankingRefusalModule())
   }
 
   test("keeps a drop in force when an unrelated node is removed", async () => {
@@ -14852,6 +14855,297 @@ describe("React protocol renderer", () => {
     // Without the owner half of the check the retired drop would still be in
     // force here and the guard would call this rendered document blank.
     expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  function suspenseRefusalFixture() {
+    let settle: (() => void) | undefined
+    let settled = false
+    const gate = new Promise<void>((resolve) => {
+      settle = () => {
+        settled = true
+        resolve()
+      }
+    })
+    function Suspending(): ReactNode {
+      if (!settled) throw gate
+      return createElement("suspense-resolved")
+    }
+    function InnerSuspense(): ReactNode {
+      return createElement(
+        Suspense,
+        { fallback: createElement("inner-fallback") },
+        createElement(Suspending),
+      )
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: Suspending,
+            schema: z.object({}),
+            tag: "SuspendingLeaf",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: InnerSuspense,
+            schema: z.object({}),
+            tag: "SuspenseHost",
+          }),
+        ],
+        name: "suspense-refusal",
+        version: "1.0.0",
+      }),
+    )
+    return { gate, registry, settle: () => settle?.() }
+  }
+
+  test("treats a subtree suspended above the document as pending, not blank", async () => {
+    const { gate, registry, settle } = suspenseRefusalFixture()
+    // The Suspense boundary is above the whole document, so nothing commits
+    // while it is pending: the refusal cannot register either.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><SuspendingLeaf /></FutureRoot>',
+        { url: "https://example.test/suspense-outer" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(
+        createElement(
+          Suspense,
+          { fallback: createElement("outer-fallback") },
+          createElement(
+            ExpoTurboProvider,
+            {
+              forms: new DocumentFormControls(session),
+              onError: (event: ExpoTurboRenderError) => errors.push(event),
+              registry: registry.use(blankingRefusalModule()),
+              renderError: (event: ExpoTurboRenderError) =>
+                createElement("protocol-error", null, event.error.message),
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+        ),
+      )
+    })
+    if (!renderer) throw new Error("suspense fixture was not created")
+
+    expect(renderer.root.findAll((node) => String(node.type) === "outer-fallback")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+
+    await act(async () => {
+      settle()
+      await gate
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "suspense-resolved")).toHaveLength(
+      1,
+    )
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  test("treats a subtree suspended inside the document as pending, not blank", async () => {
+    const { gate, registry, settle } = suspenseRefusalFixture()
+    // Here the boundary is inside a registered component, so the document does
+    // commit while the leaf is pending -- including the refusal. The component
+    // that owns the boundary is itself output, which is what keeps a pending
+    // subtree from reading as an empty one.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><SuspenseHost /></FutureRoot>',
+        { url: "https://example.test/suspense-inner" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry.use(blankingRefusalModule()), {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "inner-fallback")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+
+    await act(async () => {
+      settle()
+      await gate
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "suspense-resolved")).toHaveLength(
+      1,
+    )
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  test("raises the blank-root surface before any passive effect of the mount", async () => {
+    // react-test-renderer has no paint, so "no flash" is verified as the
+    // property that produces it: the verdict is applied from a layout effect,
+    // whose state update React flushes synchronously, before passive effects.
+    const order: string[] = []
+    function PassiveProbe(): ReactNode {
+      useEffect(() => {
+        order.push("passive")
+      }, [])
+      return null
+    }
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/blank-first-paint" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    act(() => {
+      create(
+        createElement(
+          Fragment,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              forms: new DocumentFormControls(session),
+              onError: (event: ExpoTurboRenderError) => errors.push(event),
+              registry: blankingRefusalFixture(),
+              renderError: () => {
+                order.push("error-surface")
+                return createElement("protocol-error")
+              },
+              session,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+          createElement(PassiveProbe),
+        ),
+      )
+    })
+
+    // A refusal can only be seen after the commit it happened in, so this
+    // surface arrives one commit later: the document renders nothing for that
+    // commit. That is the cost of observing instead of predicting, and it is
+    // locked here so a change to it is deliberate rather than incidental.
+    expect(errors).toHaveLength(1)
+    expect(order.indexOf("error-surface")).toBeGreaterThan(order.indexOf("passive"))
+    order.length = 0
+
+    const treeSession = new DocumentSession(
+      parseExpoTurboDocument("<FutureRoot>  <!-- nothing --></FutureRoot>", {
+        url: "https://example.test/blank-tree",
+      }),
+    )
+    act(() => {
+      create(
+        createElement(
+          Fragment,
+          null,
+          createElement(
+            ExpoTurboProvider,
+            {
+              forms: new DocumentFormControls(treeSession),
+              onError: () => undefined,
+              registry: blankingRefusalFixture(),
+              renderError: () => {
+                order.push("error-surface")
+                return createElement("protocol-error")
+              },
+              session: treeSession,
+            },
+            createElement(ExpoTurboRoot),
+          ),
+          createElement(PassiveProbe),
+        ),
+      )
+    })
+    // A tree that cannot render anything is still decided during render, so
+    // this surface is in the mount commit and never shows an empty frame.
+    expect(order.indexOf("error-surface")).toBeLessThan(order.indexOf("passive"))
+    expect(order[0]).toBe("error-surface")
+  })
+
+  test("survives a renderer remount while the refusal resolves", async () => {
+    // The refusal is decided by host state, so nothing in the protocol tree
+    // changes when it stops. Any verdict derived from tree data alone cannot
+    // see this, which is why the verdict is observed instead.
+    let hostWantsPlan = true
+    function HostPreview(): ReactNode {
+      const binding = useExpoTurboForm()
+      if (!hostWantsPlan) return createElement("host-preview")
+      const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
+      return createElement("blanking-preview", { url: plan.request.url })
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: HostPreview,
+            schema: z.object({}),
+            tag: "HostPreview",
+          }),
+        ],
+        name: "remount-refusal",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><HostPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><DemoText id="sibling">Visible</DemoText></FutureRoot>',
+        { url: "https://example.test/remount-refusal" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const provider = createElement(
+      ExpoTurboProvider,
+      {
+        forms: new DocumentFormControls(session),
+        onError: (event: ExpoTurboRenderError) => errors.push(event),
+        registry,
+        renderError: (event: ExpoTurboRenderError) =>
+          createElement("protocol-error", null, event.error.message),
+        session,
+      },
+      createElement(ExpoTurboRoot),
+    )
+    const HostShellA = (props: Readonly<{ children?: ReactNode }>) =>
+      createElement("host-shell-a", null, props.children)
+    const HostShellB = (props: Readonly<{ children?: ReactNode }>) =>
+      createElement("host-shell-b", null, props.children)
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(createElement(HostShellA, null, provider))
+    })
+    if (!renderer) throw new Error("remount fixture was not created")
+    expect(errors).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "host-preview")).toHaveLength(0)
+
+    // Changing the shell's type remounts provider, root and every boundary
+    // below them while the session, registry, generation and every node stay
+    // exactly as they were.
+    hostWantsPlan = false
+    act(() => renderer?.update(createElement(HostShellB, null, provider)))
+    expect(renderer.root.findAll((node) => String(node.type) === "host-preview")).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="sibling"></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "host-preview")).toHaveLength(1)
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
     expect(errors).toHaveLength(0)
   })

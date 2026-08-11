@@ -726,7 +726,11 @@ function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefin
   }, [resource])
 }
 
+const EMPTY_DOCUMENT_OUTPUT_LEDGER: DocumentOutputLedger = createDocumentOutputLedger()
+
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
+  const outputLedger = useRef<DocumentOutputLedger | undefined>(undefined)
+  outputLedger.current ??= createDocumentOutputLedger()
   useProviderDisposable(props.scopes)
   useProviderDisposable(props.state)
   useInsertionEffect(
@@ -819,12 +823,16 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     ],
   )
   return createElement(
-    RendererContext.Provider,
-    { value },
+    DocumentOutputContext.Provider,
+    { value: outputLedger.current },
     createElement(
-      DirectionFallbackContext.Provider,
-      { value: props.defaultDirection ?? "ltr" },
-      createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+      RendererContext.Provider,
+      { value },
+      createElement(
+        DirectionFallbackContext.Provider,
+        { value: props.defaultDirection ?? "ltr" },
+        createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+      ),
     ),
   )
 }
@@ -2632,103 +2640,76 @@ class AttributedFormOwnerError extends RegistryError {
   }
 }
 
-interface InertRenderDrop {
-  readonly generation: number
-  readonly identity: string
-  readonly ownerIdentity: string
-  readonly ownerKey: string
-  readonly registry: unknown
-  readonly revision: number
-}
+/**
+ * What a node actually rendered, observed rather than predicted.
+ *
+ * The blank-root guard has to know whether a document produced output. Deriving
+ * that from the protocol tree means predicting what components will do, and a
+ * prediction has to be reconciled with the boundary lifecycles it models --
+ * which is an open-ended set, not expressible in tree state. Counting what
+ * mounted has nothing to keep in sync: registration follows mount and unmount,
+ * so it cannot drift from what it describes.
+ *
+ * Output has exactly five kinds, all of them rendered by this file: a text node
+ * with content, a Frame, a Cable stream source, a decoded component, and an
+ * error surface. Drops are counted separately, because "nothing rendered here
+ * because of vocabulary" and "nothing has rendered here yet" must not look
+ * alike -- a suspended subtree registers neither.
+ */
+type DocumentOutputKind = "drop" | "output"
 
-interface InertRenderDropLedger {
-  readonly drops: Map<ProtocolNode, InertRenderDrop>
+interface DocumentOutputLedger {
+  drops: number
   readonly listeners: Set<() => void>
+  output: number
   version: number
 }
 
-const inertRenderDropLedgers = new WeakMap<DocumentSession, InertRenderDropLedger>()
+const DocumentOutputContext = createContext<DocumentOutputLedger | undefined>(undefined)
 
-function inertRenderDropLedger(session: DocumentSession): InertRenderDropLedger {
-  let ledger = inertRenderDropLedgers.get(session)
-  if (!ledger) {
-    ledger = { drops: new Map(), listeners: new Set(), version: 0 }
-    inertRenderDropLedgers.set(session, ledger)
-  }
-  return ledger
+function createDocumentOutputLedger(): DocumentOutputLedger {
+  return { drops: 0, listeners: new Set(), output: 0, version: 0 }
+}
+
+function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
+  return ledger.output === 0 && ledger.drops > 0
 }
 
 /**
- * A node dropped by a tolerated refusal renders nothing, but the structural
- * output analysis counts every registered component as output. Without this
- * ledger the blank-root guard would read its own accounting as satisfied while
- * the document rendered nothing at all.
+ * Only a change in the blank verdict is worth a notification. Registering the
+ * second component in a healthy document cannot change it, and waking the root
+ * for that would re-render every node on every mount.
  */
-function recordInertRenderDrop(metadata: VocabularyRenderMetadata, node: ProtocolNode): void {
-  const ledger = inertRenderDropLedger(metadata.session)
-  const snapshot = metadata.session.getNodeSnapshot(node.key)
-  const ownerIdentity = metadata.session.getNodeSnapshot(metadata.node.key)?.identity
-  if (!snapshot || ownerIdentity === undefined) return
-  const existing = ledger.drops.get(node)
-  const drop: InertRenderDrop = {
-    generation: metadata.generation,
-    identity: snapshot.identity,
-    ownerIdentity,
-    ownerKey: metadata.node.key,
-    registry: metadata.registry,
-    revision: snapshot.revision,
-  }
-  if (
-    existing &&
-    existing.generation === drop.generation &&
-    existing.identity === drop.identity &&
-    existing.ownerIdentity === drop.ownerIdentity &&
-    existing.registry === drop.registry &&
-    existing.revision === drop.revision
-  ) {
-    return
-  }
-  ledger.drops.set(node, drop)
+function updateDocumentOutput(ledger: DocumentOutputLedger, apply: () => void): void {
+  const before = documentOutputIsBlank(ledger)
+  apply()
+  if (documentOutputIsBlank(ledger) === before) return
   ledger.version += 1
   for (const listener of [...ledger.listeners]) listener()
 }
 
-/**
- * A drop is live for exactly as long as the boundary that recorded it cannot
- * have reset, so this compares precisely what that boundary's reset key does:
- * the dropped node's identity and revision, the owner's identity, and the
- * registry, within one tree generation.
- *
- * Both halves matter, and they fail in opposite directions. A document-wide
- * counter retires a drop that is still dropping, and the guard then reads its
- * own accounting as satisfied while the document renders nothing. Node identity
- * alone holds a drop past an in-place update, which resets the boundary without
- * replacing the node, and the guard then reports a document that did render as
- * blank. Matching the reset key exactly is what rules out both.
- *
- * It also breaks the deadlock plain clearing hits: once the guard replaces the
- * subtree the dropping boundary unmounts and can never clear its own entry, but
- * a replacement owner changes the owner's identity, so the drop retires on its
- * own and the document recovers.
- */
-function isInertRenderDropLive(
-  session: DocumentSession,
-  registry: RenderRegistry,
-  node: ProtocolNode,
-  drop: InertRenderDrop,
-): boolean {
-  if (drop.generation !== session.treeGeneration || drop.registry !== registry) return false
-  const snapshot = session.getNodeSnapshot(node.key)
-  if (!snapshot || snapshot.node !== node) return false
-  if (snapshot.identity !== drop.identity || snapshot.revision !== drop.revision) return false
-  return session.getNodeSnapshot(drop.ownerKey)?.identity === drop.ownerIdentity
+function DocumentOutputMarker(
+  props: Readonly<{ children?: ReactNode; kind: DocumentOutputKind }>,
+): ReactNode {
+  const ledger = useContext(DocumentOutputContext)
+  const kind = props.kind
+  useLayoutEffect(() => {
+    if (!ledger) return
+    updateDocumentOutput(ledger, () => {
+      if (kind === "output") ledger.output += 1
+      else ledger.drops += 1
+    })
+    return () => {
+      updateDocumentOutput(ledger, () => {
+        if (kind === "output") ledger.output -= 1
+        else ledger.drops -= 1
+      })
+    }
+  }, [kind, ledger])
+  return props.children ?? null
 }
 
-function useInertRenderDrops(
-  session: DocumentSession,
-  registry: RenderRegistry,
-): ReadonlySet<ProtocolNode> {
-  const ledger = inertRenderDropLedger(session)
+function useDocumentOutputVersion(ledger: DocumentOutputLedger): number {
   const subscribe = useCallback(
     (listener: () => void) => {
       ledger.listeners.add(listener)
@@ -2739,19 +2720,7 @@ function useInertRenderDrops(
     [ledger],
   )
   const version = useCallback(() => ledger.version, [ledger])
-  useSyncExternalStore(subscribe, version, version)
-  const active = new Set<ProtocolNode>()
-  for (const [node, drop] of ledger.drops) {
-    if (isInertRenderDropLive(session, registry, node, drop)) active.add(node)
-  }
-  // Retired entries are evicted after the commit rather than here, so reading
-  // the ledger stays pure and eviction can never decide a live drop's fate.
-  useEffect(() => {
-    for (const [node, drop] of ledger.drops) {
-      if (!isInertRenderDropLive(session, registry, node, drop)) ledger.drops.delete(node)
-    }
-  })
-  return active
+  return useSyncExternalStore(subscribe, version, version)
 }
 
 interface UnknownVocabularyStructuralMetadata {
@@ -2839,13 +2808,10 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
       // A refusal raised while rendering is a tolerated vocabulary gap, not a
       // document error: the node degrades to nothing, and the blank-root guard
       // is told so its accounting matches what actually rendered.
-      if (vocabulary.tolerated) {
-        // Without a live node there is nothing left to account for: the guard
-        // only asks whether nodes in the current tree produced output.
-        const dropped = vocabulary.session.getNodeSnapshot(this.props.nodeKey)?.node
-        if (dropped) recordInertRenderDrop(vocabulary, dropped)
-        return
-      }
+      // The node this boundary now renders nothing for reports that through
+      // the output ledger while it stays in this state, so the guard never has
+      // to infer this boundary's lifetime from anywhere else.
+      if (vocabulary.tolerated) return
     }
     const structuralMetadata =
       error instanceof UnknownVocabularyStructuralError
@@ -2882,7 +2848,13 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     if (!this.state.error) return this.props.children
     // A tolerated inert-owner refusal drops the node the way an unknown tag
     // with no children does, instead of raising the error surface.
-    if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) return null
+    if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) {
+      return createElement(DocumentOutputMarker, { kind: "drop" })
+    }
+    // An error surface is not counted as output. The tree branch of the verdict
+    // already treats a node that fails to decode as rendering something, and
+    // counting the guard's own error surface would make the guard observe
+    // itself.
     return (
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
     )
@@ -3163,7 +3135,7 @@ function DecodedRegisteredElement(
           node: props.node,
         })
       : null,
-    contents,
+    createElement(DocumentOutputMarker, { kind: "output" }, contents),
   )
 }
 
@@ -4035,10 +4007,14 @@ function ProtocolElementView(
             resetIdentity: context.streamSources,
             revision: props.revision,
           },
-          createElement(ConnectedCableStreamSource, {
-            node: props.node,
-            streamSources: context.streamSources,
-          }),
+          createElement(
+            DocumentOutputMarker,
+            { kind: "output" },
+            createElement(ConnectedCableStreamSource, {
+              node: props.node,
+              streamSources: context.streamSources,
+            }),
+          ),
         )
       : null
   }
@@ -4080,7 +4056,9 @@ function ProtocolElementView(
             kind: "frame",
             nodeKey: props.node.key,
           },
-          rendered,
+          // A Frame is a runtime-managed region that can produce output after
+          // this commit, so it counts as output the moment it mounts.
+          createElement(DocumentOutputMarker, { kind: "output" }, rendered),
         ),
       ),
     )
@@ -4105,7 +4083,10 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   if (!snapshot) return null
   const node = snapshot.node
   if (node.kind === "comment") return null
-  if (node.kind === "text") return renderedTextValue(node) || null
+  if (node.kind === "text") {
+    const text = renderedTextValue(node)
+    return text ? createElement(DocumentOutputMarker, { kind: "output" }, text) : null
+  }
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
   return createElement(ProtocolElementView, {
     key: snapshot.identity,
@@ -4118,6 +4099,7 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
 function DocumentStructuralOutputGuard(
   props: Readonly<{
     analysis: RegistryStructuralOutputAnalysis
+    blank: boolean
     children?: ReactNode
     generation: number
     handler: ExpoTurboUnknownVocabularyHandler | undefined
@@ -4125,7 +4107,7 @@ function DocumentStructuralOutputGuard(
     session: DocumentSession
   }>,
 ): ReactNode {
-  if (!props.analysis.hasOutput) {
+  if (props.blank) {
     throw new UnknownVocabularyStructuralError(
       Object.freeze({
         diagnostics: props.analysis.diagnostics,
@@ -4139,14 +4121,49 @@ function DocumentStructuralOutputGuard(
   return props.children
 }
 
+interface DocumentBlankVerdict {
+  readonly blank: boolean
+  readonly generation: number
+  readonly registry: unknown
+  readonly revision: number
+}
+
 export function ExpoTurboRoot(): ReactNode {
   const context = useRenderer()
   const { session } = context
-  const inertRenderDrops = useInertRenderDrops(session, context.registry)
+  const outputLedger = useContext(DocumentOutputContext) ?? EMPTY_DOCUMENT_OUTPUT_LEDGER
+  useDocumentOutputVersion(outputLedger)
+  const [verdict, setVerdict] = useState<DocumentBlankVerdict | undefined>(undefined)
   const root = useProtocolNode(session.tree.document.key)
   const rootElement =
     root?.node.kind === "document" ? root.node.children.find(isElement) : undefined
   const rootElementSnapshot = useProtocolNode(rootElement?.key ?? session.tree.document.key)
+  const generation = session.treeGeneration
+  // Any tree mutation retries the verdict. The token can be broader than the
+  // cause without harm: a retry that changes nothing costs one render, and the
+  // commit it retries into is observed rather than predicted.
+  const revision = session.revision
+  const settled =
+    verdict &&
+    verdict.generation === generation &&
+    verdict.registry === context.registry &&
+    verdict.revision === revision
+      ? verdict
+      : undefined
+  // Runs after every descendant effect in the commit, so it reads what this
+  // commit produced rather than predicting it. The verdict is sticky for its
+  // token: once the guard is up the subtree is gone and would observe as empty
+  // forever, so only a new tree revision, generation or registry retries it. A
+  // stale retry costs one render and cannot produce a wrong verdict, because
+  // the commit it retries into is observed too.
+  useLayoutEffect(() => {
+    // Sticky for its token: once the guard is up the subtree is unmounted and
+    // would observe as empty forever, so only a new revision, generation or
+    // registry retries it. Nothing is stored for a healthy document, so the
+    // common case never schedules a render from here.
+    if (settled || !documentOutputIsBlank(outputLedger)) return
+    setVerdict({ blank: true, generation, registry: context.registry, revision })
+  })
   if (root?.node.kind !== "document" || !rootElement) return null
   const rootDirectionElement =
     rootElementSnapshot && isElement(rootElementSnapshot.node)
@@ -4166,26 +4183,26 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
-  const structuralOutput = analyzeRegistryStructuralOutput(
-    context.registry,
-    root.node.children,
-    inertRenderDrops,
-  )
-  const guardedRendered =
-    structuralOutput.hasOutput ||
-    (!structuralOutput.hasVocabularyIssues && inertRenderDrops.size === 0)
-      ? rendered
-      : createElement(
-          DocumentStructuralOutputGuard,
-          {
-            analysis: structuralOutput,
-            generation: session.treeGeneration,
-            handler: context.onUnknownVocabulary,
-            root: rootDirectionElement,
-            session,
-          },
-          rendered,
-        )
+  const structuralOutput = analyzeRegistryStructuralOutput(context.registry, root.node.children)
+  // A tree that cannot render anything is decided from the tree, which involves
+  // no component lifetime at all. Everything else is decided from what the last
+  // commit actually produced.
+  const blankByTree = !structuralOutput.hasOutput && structuralOutput.hasVocabularyIssues
+  const blank = blankByTree || settled !== undefined
+  const guardedRendered = !blank
+    ? rendered
+    : createElement(
+        DocumentStructuralOutputGuard,
+        {
+          analysis: structuralOutput,
+          blank,
+          generation: session.treeGeneration,
+          handler: context.onUnknownVocabulary,
+          root: rootDirectionElement,
+          session,
+        },
+        rendered,
+      )
   return createElement(
     NodeErrorBoundary,
     {
@@ -4211,9 +4228,12 @@ export function ExpoTurboRoot(): ReactNode {
             onError: context.onError,
             renderError: context.renderError,
             resetIdentity: context.registry,
-            // The structural verdict participates in the reset key so a Stream
-            // that restores renderable content clears the blank-output error.
-            revision: `${root.revision}:${structuralOutput.hasOutput}`,
+            // The blank verdict participates in the reset key so restoring
+            // renderable content clears the blank-output error. It has to be
+            // the verdict rather than the tree analysis: the analysis cannot
+            // see that a node rendered nothing, which is the whole reason the
+            // verdict is observed.
+            revision: `${root.revision}:${blank}`,
           },
           guardedRendered,
         ),
