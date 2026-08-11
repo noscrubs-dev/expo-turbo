@@ -252,7 +252,7 @@ describe("Frame request loader", () => {
         },
       },
       { next: () => "request-1" },
-      { capabilityHash: "sha256:capabilities" },
+      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
     )
 
     const report = await loader.load("details", "/frame")
@@ -264,6 +264,7 @@ describe("Frame request loader", () => {
         Accept: EXPO_TURBO_MIME_TYPE,
         "Turbo-Frame": "details",
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
+        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",

@@ -182,6 +182,7 @@ export interface FrameRequestLoaderOptions extends StreamActionDispatchOptions {
   readonly capabilityHash?: string
   readonly frameLifecycle?: FrameLifecycle
   readonly maxRecurseDepth?: number
+  readonly moduleVersions?: string
   readonly preloadCache?: FramePreloadCache
   readonly preloadBehavior?: "consume" | "preview"
   readonly requestLifecycle?: RequestLifecycle
@@ -310,6 +311,7 @@ export class FrameRequestLoader {
   private readonly capabilityHash: string | undefined
   private readonly frameLifecycle: FrameLifecycle | undefined
   private readonly maxRecurseDepth: number
+  private readonly moduleVersions: string | undefined
   private readonly ownership: ReturnType<typeof destinationRequestOwnership>
   private readonly preloadCache: FramePreloadCache | undefined
   readonly preloadBehavior: "consume" | "preview"
@@ -327,6 +329,7 @@ export class FrameRequestLoader {
     const streamLifecycle = streamLifecycleOption(options, "Frame request loader")
     const streamRenderScheduler = streamRenderSchedulerOption(options, "Frame request loader")
     this.capabilityHash = options.capabilityHash
+    this.moduleVersions = options.moduleVersions
     this.maxRecurseDepth = options.maxRecurseDepth ?? 5
     this.preloadBehavior = options.preloadBehavior ?? "consume"
     if (
@@ -454,6 +457,7 @@ export class FrameRequestLoader {
       firstHeaders = protocolRequestHeaders({
         ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
         frameId,
+        ...(this.moduleVersions ? { moduleVersions: this.moduleVersions } : {}),
         requestId: firstRequestId,
       })
     } catch (error) {
@@ -512,6 +516,7 @@ export class FrameRequestLoader {
           protocolRequestHeaders({
             ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
             frameId: requestFrameId,
+            ...(this.moduleVersions ? { moduleVersions: this.moduleVersions } : {}),
             requestId,
           })
         preparedRequest = undefined

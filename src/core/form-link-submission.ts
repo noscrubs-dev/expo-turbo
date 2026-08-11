@@ -20,6 +20,7 @@ import { classifyTopLevelLocation } from "./visitability.js"
 export interface FormLinkSubmissionControllerOptions {
   readonly capabilityHash?: string
   readonly formMode?: FormMode
+  readonly moduleVersions?: string
 }
 
 export interface FormLinkSubmissionProposalOptions {
@@ -121,6 +122,7 @@ function generatedEntries(
 export class FormLinkSubmissionController {
   private readonly capabilityHash: string | undefined
   private readonly formMode: FormMode
+  private readonly moduleVersions: string | undefined
 
   constructor(
     private readonly session: DocumentSession,
@@ -144,8 +146,12 @@ export class FormLinkSubmissionController {
     if (options.capabilityHash !== undefined && typeof options.capabilityHash !== "string") {
       throw new PropsError("Generated form-link capability hash must be a string")
     }
+    if (options.moduleVersions !== undefined && typeof options.moduleVersions !== "string") {
+      throw new PropsError("Generated form-link module versions must be a string")
+    }
     this.capabilityHash = options.capabilityHash
     this.formMode = normalizeFormMode(options.formMode)
+    this.moduleVersions = options.moduleVersions
   }
 
   shouldInterceptSubmission(linkNodeKey: string): boolean {
@@ -352,6 +358,7 @@ export class FormLinkSubmissionController {
       protocol: {
         ...(this.capabilityHash !== undefined ? { capabilityHash: this.capabilityHash } : {}),
         ...(metadata.destination.kind === "frame" ? { frameId: metadata.destination.frameId } : {}),
+        ...(this.moduleVersions !== undefined ? { moduleVersions: this.moduleVersions } : {}),
         requestId,
       },
       ...(signal !== undefined ? { signal } : {}),

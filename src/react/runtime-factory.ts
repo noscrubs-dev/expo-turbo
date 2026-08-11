@@ -22,6 +22,7 @@ import {
   FrameRequestLoader,
   parseExpoTurboDocument,
 } from "../core/index.js"
+import { serializeModuleVersionsHeader } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
 
 const clock: ClockAdapter = {
@@ -68,8 +69,10 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     ? new DocumentHistory({ next: () => `expo-turbo-history-${++requestId}` }, options.history)
     : undefined
   history?.initialize({ kind: "unmanaged", url: options.url })
+  const moduleVersions = serializeModuleVersionsHeader(options.registry.capabilities.modules)
   const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
     capabilityHash: options.registry.capabilities.hash,
+    moduleVersions,
   })
   const controller = new DocumentVisitController(loader, clock, {
     ...(history ? { history } : {}),
@@ -89,6 +92,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     session,
     new FrameRequestLoader(session, options.fetch, requestIds, {
       capabilityHash: options.registry.capabilities.hash,
+      moduleVersions,
       refresh,
     }),
     undefined,
@@ -106,6 +110,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   })
   const forms = new DocumentFormControls(session, {
     formSemantics: options.registry,
+    moduleVersions,
     submissionController: submission,
   })
   let disposed = false

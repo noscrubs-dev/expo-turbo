@@ -9,7 +9,13 @@ export interface ProtocolRequestHeaderOptions {
   readonly acceptsTurboStream?: boolean
   readonly capabilityHash?: string
   readonly frameId?: string
+  readonly moduleVersions?: string
   readonly requestId: string
+}
+
+export interface ExpoTurboModuleVersion {
+  readonly name: string
+  readonly version: string
 }
 
 export interface ProtocolUrlResolution {
@@ -54,6 +60,28 @@ function requestHeaderValue(value: unknown): string {
   return value
 }
 
+export function serializeModuleVersionsHeader(modules: readonly ExpoTurboModuleVersion[]): string {
+  if (!Array.isArray(modules)) {
+    throw new RequestError("Module versions must be an array")
+  }
+  const names = new Set<string>()
+  const entries = modules.map((module) => {
+    if (!module || typeof module !== "object" || Array.isArray(module)) {
+      throw new RequestError("Module version entries must be objects")
+    }
+    const name = requestHeaderValue(module.name)
+    const version = requestHeaderValue(module.version)
+    if (names.has(name)) throw new RequestError("Module version names must be unique")
+    names.add(name)
+    try {
+      return `${encodeURIComponent(name)}=${encodeURIComponent(version)}`
+    } catch {
+      throw new RequestError("Module version metadata is invalid")
+    }
+  })
+  return `v1;${entries.join(",")}`
+}
+
 export function protocolRequestHeaders(
   options: ProtocolRequestHeaderOptions,
 ): Readonly<Record<string, string>> {
@@ -67,6 +95,8 @@ export function protocolRequestHeaders(
   const capabilityHash =
     options.capabilityHash === undefined ? undefined : requestHeaderValue(options.capabilityHash)
   const frameId = options.frameId === undefined ? undefined : requestHeaderValue(options.frameId)
+  const moduleVersions =
+    options.moduleVersions === undefined ? undefined : requestHeaderValue(options.moduleVersions)
   return Object.freeze({
     Accept: options.acceptsTurboStream
       ? `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`
@@ -75,6 +105,7 @@ export function protocolRequestHeaders(
     "X-Expo-Turbo-Runtime": EXPO_TURBO_RUNTIME_VERSION,
     "X-Turbo-Request-Id": requestId,
     ...(capabilityHash ? { "X-Expo-Turbo-Capabilities": capabilityHash } : {}),
+    ...(moduleVersions ? { "X-Expo-Turbo-Modules": moduleVersions } : {}),
     ...(frameId ? { "Turbo-Frame": frameId } : {}),
   })
 }

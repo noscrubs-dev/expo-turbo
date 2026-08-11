@@ -188,7 +188,7 @@ describe("Document request loader", () => {
         },
       },
       { next: () => "request-1" },
-      { capabilityHash: "sha256:capabilities" },
+      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
     )
 
     const report = await loader.load("../next")
@@ -198,6 +198,7 @@ describe("Document request loader", () => {
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
+        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Expo-Turbo-Protocol": "0.1",
         "X-Expo-Turbo-Runtime": "0.1.7",
         "X-Turbo-Request-Id": "request-1",

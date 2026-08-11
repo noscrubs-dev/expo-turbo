@@ -48,6 +48,7 @@ export interface ActivatedFormSubmitter extends FormRequestAttributes {
 export interface FormRequestProtocolOptions {
   readonly capabilityHash?: string
   readonly frameId?: string
+  readonly moduleVersions?: string
   readonly requestId: string
 }
 
@@ -574,10 +575,12 @@ function protocolOptions(value: unknown): FormRequestProtocolOptions {
   }
   let capabilityHash: unknown
   let frameId: unknown
+  let moduleVersions: unknown
   let requestId: unknown
   try {
     capabilityHash = (value as FormRequestProtocolOptions).capabilityHash
     frameId = (value as FormRequestProtocolOptions).frameId
+    moduleVersions = (value as FormRequestProtocolOptions).moduleVersions
     requestId = (value as FormRequestProtocolOptions).requestId
   } catch {
     throw new RequestError("Form request protocol metadata could not be read")
@@ -585,13 +588,15 @@ function protocolOptions(value: unknown): FormRequestProtocolOptions {
   if (
     typeof requestId !== "string" ||
     (capabilityHash !== undefined && typeof capabilityHash !== "string") ||
-    (frameId !== undefined && typeof frameId !== "string")
+    (frameId !== undefined && typeof frameId !== "string") ||
+    (moduleVersions !== undefined && typeof moduleVersions !== "string")
   ) {
     throw new RequestError("Form request protocol metadata is invalid")
   }
   return Object.freeze({
     ...(typeof capabilityHash === "string" ? { capabilityHash } : {}),
     ...(typeof frameId === "string" ? { frameId } : {}),
+    ...(typeof moduleVersions === "string" ? { moduleVersions } : {}),
     requestId,
   })
 }
@@ -664,6 +669,7 @@ export function buildFormRequest(options: BuildFormRequestOptions): FormRequestP
       submitter?.streamAttributePresent === true,
     ...(protocol.capabilityHash !== undefined ? { capabilityHash: protocol.capabilityHash } : {}),
     ...(protocol.frameId !== undefined ? { frameId: protocol.frameId } : {}),
+    ...(protocol.moduleVersions !== undefined ? { moduleVersions: protocol.moduleVersions } : {}),
     requestId: protocol.requestId,
   })
 

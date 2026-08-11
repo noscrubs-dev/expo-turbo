@@ -119,6 +119,10 @@ export {
   type MorphLifecycleOptions,
 } from "./morph-lifecycle.js"
 export * from "./parser.js"
+export {
+  type ExpoTurboModuleVersion,
+  serializeModuleVersionsHeader,
+} from "./protocol-request.js"
 export * from "./recent-request-ids.js"
 export {
   BeforeFetchRequestEvent,

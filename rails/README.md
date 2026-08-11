@@ -125,7 +125,7 @@ def show
 end
 ```
 
-The helper preserves existing `Vary` dimensions and adds `Turbo-Frame`. Its returned key distinguishes a document from each valid Frame ID, so Rails generates separate validators for representations whose bodies differ. Because Expo Turbo renders its configured XML source as inline ERB, the host-supplied key must also include a representation version or digest that changes with every template, partial, layout, or other rendered-byte change. `expo_turbo_vary_by_frame!` and `expo_turbo_cache_variant` are available when a host needs to compose another cache API directly. The gem does not make a response public, set a TTL, or infer tenant/user variation; the host must add every other representation input.
+The helper preserves existing `Vary` dimensions and adds `Turbo-Frame` and `X-Expo-Turbo-Modules`. Its returned key distinguishes a document from each valid Frame ID and each reported module-version set, so Rails generates separate validators for representations whose bodies differ. Because Expo Turbo renders its configured XML source as inline ERB, the host-supplied key must also include a representation version or digest that changes with every template, partial, layout, or other rendered-byte change. `expo_turbo_vary_by_frame!` and `expo_turbo_cache_variant` are available when a host needs to compose another cache API directly. The gem does not make a response public, set a TTL, or infer tenant/user variation; the host must add every other representation input.
 
 Use the same opt-in concern to emit one or more standard Stream siblings. The builder supports `append`, `prepend`, `before`, `after`, `replace`, `update`, `remove`, `refresh`, and their `*_all` selector variants:
 

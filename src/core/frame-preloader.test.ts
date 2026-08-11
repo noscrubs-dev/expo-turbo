@@ -159,7 +159,7 @@ describe("Frame preloader", () => {
       },
       { next: () => "frame-preload-1" },
       cache,
-      { capabilityHash: "sha256:capabilities" },
+      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
     )
 
     expect(await preloader.preload("details", "/frame")).toEqual({
@@ -180,6 +180,7 @@ describe("Frame preloader", () => {
         Accept: EXPO_TURBO_MIME_TYPE,
         "Turbo-Frame": "details",
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
+        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Sec-Purpose": "prefetch",
         "X-Turbo-Request-Id": "frame-preload-1",
       },

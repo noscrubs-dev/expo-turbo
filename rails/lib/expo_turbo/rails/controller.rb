@@ -5,6 +5,8 @@ require "active_support/core_ext/module/attr_internal"
 require "action_controller/metal/helpers"
 require "action_view/rendering"
 require "pathname"
+require "rubygems/requirement"
+require "uri"
 
 module ExpoTurbo
   module Rails
@@ -20,7 +22,7 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
-        helper_method :expo_turbo_frame_request?, :expo_turbo_frame_request_id
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?, :expo_turbo_frame_request_id
       end
 
       class_methods do
@@ -69,8 +71,27 @@ module ExpoTurbo
         Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
+      def expo_turbo_client_modules
+        expo_turbo_module_negotiation.fetch(:modules)
+      end
+
+      def expo_turbo_client_supports?(module_name, requirement)
+        negotiation = expo_turbo_module_negotiation
+        return true if negotiation.fetch(:latest)
+        return false unless module_name.is_a?(String) && requirement.is_a?(String)
+
+        version = negotiation.fetch(:modules)[module_name]
+        return false unless version
+
+        Gem::Requirement.new(requirement).satisfied_by?(Gem::Version.new(version))
+      rescue ArgumentError
+        false
+      end
+
       def expo_turbo_cache_variant
-        Frames.cache_variant(expo_turbo_frame_request_id)
+        negotiation = expo_turbo_module_negotiation
+        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:modules).sort
+        [*Frames.cache_variant(expo_turbo_frame_request_id), :modules, module_variant]
       end
 
       def expo_turbo_vary_by_frame!
@@ -79,6 +100,7 @@ module ExpoTurbo
 
         values << "Accept" if request.should_apply_vary_header? && values.none? { |value| value.casecmp?("Accept") }
         values << "Turbo-Frame" if values.none? { |value| value.casecmp?("Turbo-Frame") }
+        values << "X-Expo-Turbo-Modules" if values.none? { |value| value.casecmp?("X-Expo-Turbo-Modules") }
         response.set_header "Vary", values.join(", ")
       end
 
@@ -90,6 +112,77 @@ module ExpoTurbo
       def expo_turbo_stream
         view_context.expo_turbo_stream
       end
+
+      private
+
+      MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
+
+      def expo_turbo_module_negotiation
+        header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
+        cached = defined?(@expo_turbo_module_negotiation) && @expo_turbo_module_negotiation
+        return cached.fetch(:value) if cached && cached.fetch(:header).equal?(header)
+
+        value = if header.nil?
+          {latest: true, modules: {}.freeze}.freeze
+        else
+          modules = expo_turbo_parse_module_header(header)
+          if modules
+            {latest: false, modules: modules}.freeze
+          else
+            expo_turbo_report_malformed_module_header
+            {latest: true, modules: {}.freeze}.freeze
+          end
+        end
+        @expo_turbo_module_negotiation = {header: header, value: value}.freeze
+        value
+      end
+
+      def expo_turbo_parse_module_header(header)
+        return unless header.is_a?(String)
+
+        header = header.dup.force_encoding(Encoding::UTF_8)
+        return unless header.valid_encoding? && header.ascii_only? && header.start_with?("v1;")
+
+        payload = header.delete_prefix("v1;")
+        return {}.freeze if payload.empty?
+
+        pairs = payload.split(",", -1).map { |entry| expo_turbo_parse_module_entry(entry) }
+        return if pairs.any?(&:nil?)
+        return unless pairs.map(&:first).uniq.length == pairs.length
+
+        modules = pairs.to_h { |name, version| [name.freeze, version.freeze] }
+        modules.freeze
+      rescue ArgumentError
+        nil
+      end
+
+      def expo_turbo_parse_module_entry(entry)
+        return unless entry.count("=") == 1
+
+        encoded_name, encoded_version = entry.split("=", 2)
+        return unless MODULE_HEADER_PART.match?(encoded_name) && MODULE_HEADER_PART.match?(encoded_version)
+
+        name = URI::DEFAULT_PARSER.unescape(encoded_name).force_encoding(Encoding::UTF_8)
+        version = URI::DEFAULT_PARSER.unescape(encoded_version).force_encoding(Encoding::UTF_8)
+        return unless name.valid_encoding? && version.valid_encoding?
+        return if name.strip.empty? || version.strip.empty?
+        Gem::Version.new(version)
+
+        [name, version]
+      rescue ArgumentError
+        nil
+      end
+
+      def expo_turbo_report_malformed_module_header
+        return unless defined?(::Rails) && ::Rails.respond_to?(:env) && ::Rails.env.development?
+        return unless respond_to?(:logger) && logger
+
+        logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Modules header")
+      rescue
+        nil
+      end
+
+      public
 
       def render_expo_turbo_stream(*streams, status: :ok)
         streams << yield(expo_turbo_stream) if block_given?

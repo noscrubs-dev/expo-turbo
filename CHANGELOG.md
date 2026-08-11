@@ -4,6 +4,9 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.1.7 - 2026-07-31
 
+- Send decodable live registry module versions on document, Frame, form, and
+  preload requests, and add Rails helpers for version-requirement negotiation
+  while retaining the existing capability hash ([#393](https://github.com/noscrubs-dev/expo-turbo/issues/393)).
 - Let manifest-backed Rails validation use each component's `formOwner`
   capability to admit the native form protocol attributes `action`, `enctype`,
   `method`, `novalidate`, and `target` without declaring them as component props

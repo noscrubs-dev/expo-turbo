@@ -235,6 +235,30 @@ presentation separately. It accepts the same `history` adapter. Import the
 individual primitives from `expo-turbo/core` only when custom runtime
 composition is required.
 
+### Module version negotiation
+
+The runtime sends the live registry module names and versions in
+`X-Expo-Turbo-Modules` for document, Frame, form, and preload requests. Bump a
+module version when its XML vocabulary grows, such as when you add a tag or an
+attribute. Gate the new vocabulary where the Rails template uses it:
+
+```erb
+<% if expo_turbo_client_supports?("noscrubs-cart", ">= 3") %>
+  <NewCartTag />
+<% end %>
+```
+
+`expo_turbo_client_modules` returns the reported name and version pairs. A
+missing header is a web client signal and assumes the latest vocabulary. A
+malformed header also fails open and does not cause a server error. For a valid
+header, a missing module or an unmet version requirement returns `false`.
+
+Version gating is the primary compatibility control. The tolerant decoder is a
+safety net for a missed gate. The header comes from the JavaScript registry, so
+an over-the-air update reports its new vocabulary without a binary release.
+Cacheable endpoints that gate output must vary on `Accept`, `Turbo-Frame`, and
+`X-Expo-Turbo-Modules`; `expo_turbo_cache_key` adds these dimensions.
+
 Capability components that change server state outside a Turbo form can call
 `useDocumentReload()` from `expo-turbo/react`. The returned async function
 reloads the active document, so the component does not need a duplicated
