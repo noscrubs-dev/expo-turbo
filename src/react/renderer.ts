@@ -1006,9 +1006,19 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
  * operation that would build or dispatch a request, the way a browser gives a
  * control no form owner when `form` points at a non-form element.
  */
+/**
+ * The node whose form association failed, when that is not the node the issues
+ * were found on. The key is what the payload carries; the identity is what
+ * deduplication compares, because a replacement node reuses its predecessor's
+ * key and a second failure on the same key is still a second failure.
+ */
+interface VocabularyFailureSource {
+  readonly identity: string
+  readonly nodeKey: string
+}
+
 interface FormOwnerVocabularyMetadata {
-  /** The node whose form association failed, when that is not `node`. */
-  readonly failureNodeKey?: string
+  readonly failure?: VocabularyFailureSource
   readonly generation: number
   readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
   readonly issues: readonly RegistryVocabularyIssue[]
@@ -1269,7 +1279,7 @@ function useResolvedFormRegistry(): Readonly<{
             // ancestor the issues belong to. The control this failed on travels
             // separately, so a host can correlate without the pair ever
             // describing two different elements.
-            failureNodeKey: nodeKey,
+            ...(nodeSnapshot ? { failure: { identity: nodeSnapshot.identity, nodeKey } } : {}),
             generation: session.treeGeneration,
             handler: onUnknownVocabulary,
             issues: unwrapped.issues,
@@ -2823,7 +2833,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
           vocabulary.generation,
           vocabulary.issues,
           vocabulary.handler,
-          vocabulary.failureNodeKey,
+          vocabulary.failure,
         )
       }
       // A refusal raised while rendering is a tolerated vocabulary gap, not a
@@ -2901,14 +2911,16 @@ function developmentVocabularyWarningsEnabled(): boolean {
 
 function unknownVocabularyFingerprint(
   issue: RegistryVocabularyIssue,
-  failureNodeKey: string | undefined,
+  failure: VocabularyFailureSource | undefined,
 ): string {
-  // The failure key participates so an element's own report and a report of the
-  // same issue as the cause of a failed association stay separate deliveries.
+  // The failing node participates so an element's own report and a report of
+  // the same issue as the cause of a failed association stay separate
+  // deliveries. It participates by identity rather than key: a replaced control
+  // carries its predecessor's key, and its failure is a new one.
   return JSON.stringify([
     issue.kind,
     "attribute" in issue ? issue.attribute : "",
-    failureNodeKey ?? "",
+    failure?.identity ?? "",
   ])
 }
 
@@ -2941,16 +2953,16 @@ function deliverUnknownVocabularyIssues(
   generation: number,
   issues: readonly RegistryVocabularyIssue[],
   handler: ExpoTurboUnknownVocabularyHandler | undefined,
-  failureNodeKey?: string,
+  failure?: VocabularyFailureSource,
 ): void {
   const warn = developmentVocabularyWarningsEnabled()
   if (!handler && !warn) return
   for (const issue of issues) {
-    const fingerprint = unknownVocabularyFingerprint(issue, failureNodeKey)
+    const fingerprint = unknownVocabularyFingerprint(issue, failure)
     const event = Object.freeze({
       ...("attribute" in issue ? { attribute: issue.attribute } : {}),
       documentUrl: session.tree.document.url ?? "about:blank",
-      ...(failureNodeKey !== undefined ? { failureNodeKey } : {}),
+      ...(failure ? { failureNodeKey: failure.nodeKey } : {}),
       kind: issue.kind,
       nodeKey: node.key,
       tag: issue.tag,

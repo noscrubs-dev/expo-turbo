@@ -289,9 +289,11 @@ Read the event as exactly this and no more:
 It is **not** a claim that the unwrapped element was the control's form owner.
 An installed client does not have the tag, so a new layout wrapper and a new
 form owner are indistinguishable to it; a document with a genuine orphan under
-a new wrapper reports the same event. `kind` still separates the two causes —
-`component` for a tag this build does not have, `attribute-decode` for a value
-it could not read.
+a new wrapper reports the same event. `kind` still separates the causes.
+`component` means this build could not construct the element at all: either it
+does not have the tag, or the props and children it received did not match the
+component it does have. `attribute-decode` means a required attribute value it
+could not read.
 
 What the signal does guarantee is silence when there is no vocabulary involved.
 A control orphaned in a fully known document reports nothing, and neither does

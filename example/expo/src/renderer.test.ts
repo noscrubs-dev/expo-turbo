@@ -15211,6 +15211,48 @@ describe("React protocol renderer", () => {
     ])
   })
 
+  test("attributes each failure when the orphaned control is replaced", async () => {
+    const { registry } = orphanAttributionFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureWrapper id="wrapper"><AttributedControl id="control" /></FutureWrapper></Gallery>',
+        { url: "https://example.test/replaced-control" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    const attributed = () => vocabulary.filter((event) => event.failureNodeKey !== undefined)
+    expect(errors).toHaveLength(1)
+    expect(attributed()).toHaveLength(1)
+    const wrapper = session.getNodeSnapshot("id:wrapper")?.node
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="control"><template><AttributedControl id="control" /></template></turbo-stream>',
+      )
+    })
+
+    // The replacement reuses the key while the wrapper stays the same node, so
+    // a claim keyed on the key string alone would swallow the second failure.
+    expect(session.getNodeSnapshot("id:wrapper")?.node).toBe(wrapper)
+    expect(errors).toHaveLength(2)
+    expect(attributed()).toHaveLength(2)
+    expect(attributed().map((event) => event.failureNodeKey)).toEqual(["id:control", "id:control"])
+    // The wrapper's own report stays a single delivery throughout, so neither
+    // attributed event can be that one arriving twice.
+    expect(vocabulary.filter((event) => event.failureNodeKey === undefined)).toHaveLength(1)
+  })
+
   test("attributes an orphaned control to a known wrapper it could not decode", async () => {
     const { registry } = orphanAttributionFixture()
     // The tag is known; the value is not. That is still the server sending
