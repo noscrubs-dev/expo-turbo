@@ -14754,6 +14754,108 @@ describe("React protocol renderer", () => {
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
   })
 
+  test("retires a drop when an in-place update re-renders the node", async () => {
+    function ModalPreview(props: Readonly<{ mode: string }>): ReactNode {
+      const binding = useExpoTurboForm()
+      if (props.mode !== "plan") return createElement("settled-preview")
+      const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
+      return createElement("blanking-preview", { url: plan.request.url })
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: { mode: attr(stringCodec) },
+            children: "none",
+            component: ModalPreview,
+            tag: "ModalPreview",
+          }),
+        ],
+        name: "settling-refusal",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><ModalPreview id="preview" mode="plan" form="form" /><FutureForm id="form" action="/danger" method="post" /><DemoText id="sibling">Visible</DemoText></FutureRoot>',
+        { url: "https://example.test/settling-refusal" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "settled-preview")).toHaveLength(0)
+
+    // An in-place update keeps the same node object while bumping its revision,
+    // which is enough to reset the boundary and render real output.
+    act(() => session.setAttribute("id:preview", "mode", "safe"))
+    expect(renderer.root.findAll((node) => String(node.type) === "settled-preview")).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="sibling"></turbo-stream>',
+      )
+    })
+
+    // The preview is the document's only output now. A drop held past that
+    // update would report a document that plainly rendered as blank.
+    expect(renderer.root.findAll((node) => String(node.type) === "settled-preview")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  test("keeps a drop in force when only the owner is replaced inside a template", async () => {
+    // A template is not structural output and replacing the owner inside it
+    // leaves the preview's node object untouched, so this isolates the owner
+    // half of drop liveness from the dropped node's own half.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><template><FutureForm id="form" action="/danger" method="post" /></template><DemoText id="sibling">Visible</DemoText></FutureRoot>',
+        { url: "https://example.test/template-owner" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, blankingRefusalFixture(), {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><BlankingOwner id="form" action="/known" method="get" /></template></turbo-stream>',
+      )
+    })
+
+    // The owner is known now, so the preview renders and the drop must be gone.
+    expect(
+      renderer.root.find((node) => String(node.type) === "blanking-preview").props,
+    ).toMatchObject({ url: "https://example.test/known" })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="sibling"></turbo-stream>',
+      )
+    })
+
+    // Without the owner half of the check the retired drop would still be in
+    // force here and the guard would call this rendered document blank.
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
   test("clears a blank-root refusal when a known owner replaces the unknown one", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(

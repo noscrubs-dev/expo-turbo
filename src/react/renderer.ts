@@ -2624,8 +2624,11 @@ class AttributedFormOwnerError extends RegistryError {
 
 interface InertRenderDrop {
   readonly generation: number
-  readonly owner: ProtocolElement
+  readonly identity: string
+  readonly ownerIdentity: string
+  readonly ownerKey: string
   readonly registry: unknown
+  readonly revision: number
 }
 
 interface InertRenderDropLedger {
@@ -2653,17 +2656,25 @@ function inertRenderDropLedger(session: DocumentSession): InertRenderDropLedger 
  */
 function recordInertRenderDrop(metadata: VocabularyRenderMetadata, node: ProtocolNode): void {
   const ledger = inertRenderDropLedger(metadata.session)
+  const snapshot = metadata.session.getNodeSnapshot(node.key)
+  const ownerIdentity = metadata.session.getNodeSnapshot(metadata.node.key)?.identity
+  if (!snapshot || ownerIdentity === undefined) return
   const existing = ledger.drops.get(node)
   const drop: InertRenderDrop = {
     generation: metadata.generation,
-    owner: metadata.node,
+    identity: snapshot.identity,
+    ownerIdentity,
+    ownerKey: metadata.node.key,
     registry: metadata.registry,
+    revision: snapshot.revision,
   }
   if (
     existing &&
     existing.generation === drop.generation &&
-    existing.owner === drop.owner &&
-    existing.registry === drop.registry
+    existing.identity === drop.identity &&
+    existing.ownerIdentity === drop.ownerIdentity &&
+    existing.registry === drop.registry &&
+    existing.revision === drop.revision
   ) {
     return
   }
@@ -2673,17 +2684,22 @@ function recordInertRenderDrop(metadata: VocabularyRenderMetadata, node: Protoco
 }
 
 /**
- * A drop stays in force for exactly as long as the two nodes that produced it
- * are still the ones in the tree: the dropped node itself, and the form owner
- * whose unknown tag refused it.
+ * A drop is live for exactly as long as the boundary that recorded it cannot
+ * have reset, so this compares precisely what that boundary's reset key does:
+ * the dropped node's identity and revision, the owner's identity, and the
+ * registry, within one tree generation.
  *
- * A document-wide revision counter cannot express that. Any unrelated mutation
- * would retire a drop that is still dropping, and the guard would read its own
- * accounting as satisfied while that node still rendered nothing. Node identity
- * is the right axis, and it also breaks the deadlock that plain clearing hits:
- * once the guard replaces the subtree the dropping boundary unmounts and can
- * never clear its own entry, but a replacement owner changes the owner node, so
- * the drop retires on its own and the document recovers.
+ * Both halves matter, and they fail in opposite directions. A document-wide
+ * counter retires a drop that is still dropping, and the guard then reads its
+ * own accounting as satisfied while the document renders nothing. Node identity
+ * alone holds a drop past an in-place update, which resets the boundary without
+ * replacing the node, and the guard then reports a document that did render as
+ * blank. Matching the reset key exactly is what rules out both.
+ *
+ * It also breaks the deadlock plain clearing hits: once the guard replaces the
+ * subtree the dropping boundary unmounts and can never clear its own entry, but
+ * a replacement owner changes the owner's identity, so the drop retires on its
+ * own and the document recovers.
  */
 function isInertRenderDropLive(
   session: DocumentSession,
@@ -2692,8 +2708,10 @@ function isInertRenderDropLive(
   drop: InertRenderDrop,
 ): boolean {
   if (drop.generation !== session.treeGeneration || drop.registry !== registry) return false
-  if (session.getNodeSnapshot(node.key)?.node !== node) return false
-  return session.getNodeSnapshot(drop.owner.key)?.node === drop.owner
+  const snapshot = session.getNodeSnapshot(node.key)
+  if (!snapshot || snapshot.node !== node) return false
+  if (snapshot.identity !== drop.identity || snapshot.revision !== drop.revision) return false
+  return session.getNodeSnapshot(drop.ownerKey)?.identity === drop.ownerIdentity
 }
 
 function useInertRenderDrops(
