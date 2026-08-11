@@ -151,6 +151,7 @@ import {
   type ProtocolDocument,
   type ProtocolElement,
   type ProtocolNode,
+  type ProtocolParentNode,
   renderedTextValue,
 } from "../core/tree.js"
 import { classifyTopLevelLocation } from "../core/visitability.js"
@@ -1171,6 +1172,44 @@ function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): Fo
   })
 }
 
+const MISSING_FORM_SCOPE_MESSAGE =
+  "Expo Turbo form binding requires a form scope or explicit form association"
+
+/**
+ * Finds the nearest ancestor carrying a tag this client does not know.
+ *
+ * An unwrapped unknown element is the only evidence available here that a form
+ * scope is missing because of vocabulary rather than because the document never
+ * had one: a tag this build cannot read may declare form ownership in the build
+ * that served it. Unwrapping never breaks a real ownership chain — a control
+ * under a declared owner still resolves through an unknown wrapper — so this
+ * only runs once the association has already failed.
+ */
+function unwrappedAncestorVocabulary(
+  registry: RenderRegistry,
+  element: ProtocolElement,
+): Readonly<{ issues: readonly RegistryVocabularyIssue[]; node: ProtocolElement }> | undefined {
+  let ancestor: ProtocolParentNode | null = element.parent
+  while (ancestor) {
+    if (isElement(ancestor)) {
+      let result: RegistryRenderDecodeResult<RegistryComponent>
+      try {
+        result = registry.decodeForRender(ancestor)
+      } catch {
+        // A malformed ancestor is a fatal document problem that the render path
+        // raises on its own. It is not evidence of installed-client skew, so the
+        // walk stops rather than attributing this failure to vocabulary.
+        return undefined
+      }
+      if (result.status === "transparent" && !result.definition) {
+        return Object.freeze({ issues: result.issues, node: ancestor })
+      }
+    }
+    ancestor = ancestor.parent
+  }
+  return undefined
+}
+
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
   inert?: FormOwnerVocabularyMetadata
@@ -1201,9 +1240,24 @@ function useResolvedFormRegistry(): Readonly<{
   }
   if (formId === undefined) {
     if (!context) {
-      throw new RegistryError(
-        "Expo Turbo form binding requires a form scope or explicit form association",
-      )
+      // A control orphaned in a fully known document keeps the bare throw: the
+      // signal below must stay rare enough that it means skew, not noise on
+      // every ownerless control.
+      const unwrapped = unwrappedAncestorVocabulary(componentRegistry, node)
+      throw unwrapped
+        ? new AttributedFormOwnerError(MISSING_FORM_SCOPE_MESSAGE, {
+            generation: session.treeGeneration,
+            handler: onUnknownVocabulary,
+            issues: unwrapped.issues,
+            // Reported against the control rather than the unwrapped ancestor:
+            // the ancestor already reports itself, and matching the node key
+            // this failure surfaces on is what makes the two correlatable.
+            node,
+            registry: componentRegistry,
+            revision: session.revision,
+            session,
+          })
+        : new RegistryError(MISSING_FORM_SCOPE_MESSAGE)
     }
     return Object.freeze({
       formNodeKey: context.binding.formNodeKey,
@@ -1228,7 +1282,10 @@ function useResolvedFormRegistry(): Readonly<{
   if (owner?.status === "undeclared" && vocabulary) {
     // The throw preempts the reporting effect, so the owner's issues ride along
     // and the boundary delivers them once this render commits.
-    throw new UndeclaredFormOwnerError(vocabulary)
+    throw new AttributedFormOwnerError(
+      "Expo Turbo form association target is not a declared form owner",
+      vocabulary,
+    )
   }
   // An unknown owner tag keeps the control bound to the owner's node key so its
   // disabled and pending state stay coherent and the association becomes live
@@ -2532,16 +2589,16 @@ class InertFormOwnerError extends RegistryError {
 }
 
 /**
- * A `form` value naming a known component that is not a declared form owner.
- * The association still fails, because that is a document defect rather than a
- * vocabulary gap, but the owner's own issues travel with the error so the
- * boundary reports them from the commit phase instead of during render.
+ * An association failure that carries vocabulary to report. The failure itself
+ * is unchanged — form ownership stays declared, and missing, blank, and
+ * undeclared targets still fail closed — but the issues travel with the error
+ * so the boundary reports them once the render commits. That is what lets a
+ * host tell installed-client skew from a document that was simply written
+ * wrong; both used to arrive as a bare `onError`.
  */
-class UndeclaredFormOwnerError extends RegistryError {
-  constructor(metadata: FormOwnerVocabularyMetadata) {
-    super("Expo Turbo form association target is not a declared form owner", {
-      target: metadata.node.key,
-    })
+class AttributedFormOwnerError extends RegistryError {
+  constructor(message: string, metadata: FormOwnerVocabularyMetadata) {
+    super(message, { target: metadata.node.key })
     vocabularyRenderMetadata.set(this, Object.freeze({ ...metadata, tolerated: false }))
   }
 }

@@ -27,6 +27,13 @@ All notable public package, gem, and protocol changes will be recorded here.
   Native form-owner protocol attributes no longer require duplicate component
   props
   ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
+- Attribute a form association that fails because of installed-client skew. The
+  throws are unchanged and form ownership stays declared, but a control left
+  without a form scope by an unwrapped unknown ancestor now also reports through
+  `onUnknownVocabulary`, carrying the control's node key — the same key `onError`
+  receives — and the unwrapped tag's name. A control orphaned in a fully known
+  document, and a `form` value naming an id that never existed, stay silent
+  ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
 - **Breaking:** `ComponentRegistry` and `ExpoTurboProvider` registries now
   require `decodeForRender()`. Registries from `createRegistry()` already
   supply it. A custom `{ decode }` or `{ decode, resolve }` registry must add

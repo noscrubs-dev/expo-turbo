@@ -267,6 +267,23 @@ vocabulary gap. Unknown attributes on the owner are still reported first, and
 an unknown attribute on a form owner is reported even when the document never
 renders that owner.
 
+Form ownership stays declared, so an association failure is still a failure: a
+missing, blank, or undeclared target fails closed exactly as before. What
+changed is that a failure caused by vocabulary is now attributable. When a
+control has no form scope and an unknown tag was unwrapped somewhere above it,
+that tag could have declared ownership in the build that served the document,
+so the failure also reports through `onUnknownVocabulary` with the **control's**
+node key and the unwrapped tag's name. The node key matches the one `onError`
+receives, which is what lets a host correlate the two and tell installed-client
+skew from a document that was written wrong.
+
+The signal is deliberately narrow. A control orphaned in a fully known document
+reports nothing, and neither does a `form` value naming an id that does not
+exist — even when the document contains unknown vocabulary elsewhere, because
+the rule reads the association's own ancestry rather than the document at large.
+An unknown tag never breaks a real ownership chain: a control under a declared
+owner still resolves through an unknown wrapper and reports nothing.
+
 Tolerance must not silently show an empty screen. When a tolerated fallback
 leaves no structurally renderable content, Expo Turbo protects each root kind:
 

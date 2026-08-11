@@ -14905,6 +14905,174 @@ describe("React protocol renderer", () => {
     ])
   })
 
+  function orphanAttributionFixture() {
+    function AttributedControl(): ReactNode {
+      const binding = useExpoTurboForm()
+      useExpoTurboFormControl({ kind: "value", name: "field", value: "A" })
+      return createElement("attributed-control", { owner: binding.formNodeKey })
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: AttributedControl,
+            schema: z.object({}),
+            tag: "AttributedControl",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: (props: Readonly<{ children?: ReactNode }>) =>
+              createElement("known-wrapper", null, props.children),
+            schema: z.object({}),
+            tag: "KnownWrapper",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: (props: Readonly<{ children?: ReactNode }>) =>
+              createElement(ExpoTurboFormScope, null, props.children),
+            formOwner: true,
+            schema: z.object({}),
+            tag: "AttributedForm",
+          }),
+        ],
+        name: "orphan-attribution",
+        version: "1.0.0",
+      }),
+    )
+    return { registry }
+  }
+
+  test("attributes an orphaned control to the unknown tag that unwrapped above it", async () => {
+    const { registry } = orphanAttributionFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureWrapper><AttributedControl id="control" /></FutureWrapper></Gallery>',
+        { url: "https://example.test/attributed-orphan" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The throw is unchanged: ownership stays declared and this still fails.
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error.message).toContain("requires a form scope or explicit form association")
+    expect(errors[0]?.nodeKey).toBe("id:control")
+    expect(JSON.stringify(renderer.toJSON())).toContain("protocol-error")
+
+    // The unwrapped ancestor reports itself with its own node key whether or
+    // not this signal exists, so the added value is strictly the event carrying
+    // the key the failure surfaced on. Asserting only "some event fired" would
+    // pass on that pre-existing report alone.
+    const attributed = vocabulary.filter((event) => event.nodeKey === errors[0]?.nodeKey)
+    expect(attributed).toEqual([
+      {
+        documentUrl: "https://example.test/attributed-orphan",
+        kind: "component",
+        nodeKey: "id:control",
+        tag: "FutureWrapper",
+      },
+    ])
+  })
+
+  test("stays silent for an orphaned control in a fully known document", async () => {
+    const { registry } = orphanAttributionFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><KnownWrapper><AttributedControl id="control" /></KnownWrapper></Gallery>',
+        { url: "https://example.test/plain-orphan" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // A developer writing an ownerless control must keep the loud, unattributed
+    // failure. Reporting here would make the signal meaningless.
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error.message).toContain("requires a form scope or explicit form association")
+    expect(JSON.stringify(renderer.toJSON())).toContain("protocol-error")
+    expect(vocabulary).toEqual([])
+  })
+
+  test("stays silent for a form target that never existed", async () => {
+    const { registry } = orphanAttributionFixture()
+    // The document also carries unknown vocabulary elsewhere, so a rule keyed
+    // on "this document has skew" rather than on the association's own ancestry
+    // would report here.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureWrapper><DemoText>Elsewhere</DemoText></FutureWrapper><KnownWrapper><AttributedControl id="control" form="nowhere" /></KnownWrapper></Gallery>',
+        { url: "https://example.test/missing-target" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error.message).toContain("references a missing form owner")
+    expect(vocabulary.some((event) => event.nodeKey === "id:control")).toBe(false)
+    expect(vocabulary.map(({ nodeKey }) => nodeKey)).toEqual(["path.0.0"])
+  })
+
+  test("resolves a real form owner through an unknown wrapper without reporting", async () => {
+    const { registry } = orphanAttributionFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><AttributedForm id="real"><FutureWrapper><AttributedControl id="control" /></FutureWrapper></AttributedForm></Gallery>',
+        { url: "https://example.test/wrapped-owner" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // Unwrapping never breaks a real ownership chain, so nothing fails and the
+    // control resolves to the declared owner above the unknown wrapper.
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(
+      renderer.root.find((node) => String(node.type) === "attributed-control").props,
+    ).toMatchObject({ owner: "id:real" })
+    // Only the wrapper's own report, never one attributed to the control.
+    expect(vocabulary.map(({ nodeKey, tag }) => ({ nodeKey, tag }))).toEqual([
+      { nodeKey: "path.0.0.0", tag: "FutureWrapper" },
+    ])
+  })
+
   test("warns in development and stays console-silent in production", async () => {
     const development = globalThis as typeof globalThis & { __DEV__?: boolean }
     const hadDevelopmentFlag = Object.hasOwn(development, "__DEV__")
