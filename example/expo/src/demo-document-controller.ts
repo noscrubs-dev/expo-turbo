@@ -15,7 +15,7 @@ import {
   StateError,
 } from "expo-turbo/core";
 
-import { DEMO_DOCUMENT } from "./demo-registry";
+import { DEMO_DOCUMENT, DEMO_MODULE_VERSIONS } from "./demo-registry";
 
 let demoHistoryRuntime = 0;
 
@@ -373,12 +373,13 @@ export function createDemoDocumentRuntime(
     fetchAdapter,
     { next: () => `demo-document-preload-${++preloadRequestId}` },
     snapshotCache,
-    { prefetchCache },
+    { moduleVersions: DEMO_MODULE_VERSIONS, prefetchCache },
   );
   const loader = new DocumentRequestLoader(
     session,
     fetchAdapter,
     { next: () => `demo-document-${++requestId}` },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
   );
   const controller = new DocumentVisitController(loader, clock, {
     history,

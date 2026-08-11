@@ -240,7 +240,10 @@ composition is required.
 The runtime sends the live registry module names and versions in
 `X-Expo-Turbo-Modules` for document, Frame, form, and preload requests. Bump a
 module version when its XML vocabulary grows, such as when you add a tag or an
-attribute. Gate the new vocabulary where the Rails template uses it:
+attribute. Versions must use RubyGems syntax: start with a number, then use
+letters, numbers, dots, and an optional hyphenated suffix. Values such as `v2`,
+`1.0.0+build`, and `1_0` fail when the module is defined. Gate the new
+vocabulary where the Rails template uses it:
 
 ```erb
 <% if expo_turbo_client_supports?("noscrubs-cart", ">= 3") %>
@@ -250,8 +253,10 @@ attribute. Gate the new vocabulary where the Rails template uses it:
 
 `expo_turbo_client_modules` returns the reported name and version pairs. A
 missing header is a web client signal and assumes the latest vocabulary. A
-malformed header also fails open and does not cause a server error. For a valid
-header, a missing module or an unmet version requirement returns `false`.
+malformed header envelope also fails open and does not cause a server error.
+Malformed entries in a valid header are ignored without discarding valid
+entries. For a valid header, a missing module or an unmet version requirement
+returns `false`.
 
 Version gating is the primary compatibility control. The tolerant decoder is a
 safety net for a missed gate. The header comes from the JavaScript registry, so

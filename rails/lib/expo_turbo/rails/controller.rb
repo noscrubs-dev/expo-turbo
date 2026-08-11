@@ -6,7 +6,6 @@ require "action_controller/metal/helpers"
 require "action_view/rendering"
 require "pathname"
 require "rubygems/requirement"
-require "uri"
 
 module ExpoTurbo
   module Rails
@@ -76,21 +75,22 @@ module ExpoTurbo
       end
 
       def expo_turbo_client_supports?(module_name, requirement)
+        raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
+        raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
+
+        parsed_requirement = Gem::Requirement.new(requirement)
         negotiation = expo_turbo_module_negotiation
         return true if negotiation.fetch(:latest)
-        return false unless module_name.is_a?(String) && requirement.is_a?(String)
 
         version = negotiation.fetch(:modules)[module_name]
         return false unless version
 
-        Gem::Requirement.new(requirement).satisfied_by?(Gem::Version.new(version))
-      rescue ArgumentError
-        false
+        parsed_requirement.satisfied_by?(Gem::Version.new(version))
       end
 
       def expo_turbo_cache_variant
         negotiation = expo_turbo_module_negotiation
-        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:modules).sort
+        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:cache_variant)
         [*Frames.cache_variant(expo_turbo_frame_request_id), :modules, module_variant]
       end
 
@@ -116,6 +116,7 @@ module ExpoTurbo
       private
 
       MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
+      MODULE_VERSION_PATTERN = /\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z/
 
       def expo_turbo_module_negotiation
         header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
@@ -125,9 +126,9 @@ module ExpoTurbo
         value = if header.nil?
           {latest: true, modules: {}.freeze}.freeze
         else
-          modules = expo_turbo_parse_module_header(header)
-          if modules
-            {latest: false, modules: modules}.freeze
+          parsed = expo_turbo_parse_module_header(header)
+          if parsed
+            {latest: false, modules: parsed.fetch(:modules), cache_variant: parsed.fetch(:cache_variant)}.freeze
           else
             expo_turbo_report_malformed_module_header
             {latest: true, modules: {}.freeze}.freeze
@@ -144,14 +145,28 @@ module ExpoTurbo
         return unless header.valid_encoding? && header.ascii_only? && header.start_with?("v1;")
 
         payload = header.delete_prefix("v1;")
-        return {}.freeze if payload.empty?
+        return {modules: {}.freeze, cache_variant: "v1;"}.freeze if payload.empty?
 
-        pairs = payload.split(",", -1).map { |entry| expo_turbo_parse_module_entry(entry) }
-        return if pairs.any?(&:nil?)
-        return unless pairs.map(&:first).uniq.length == pairs.length
+        modules = {}
+        encoded_pairs = []
+        malformed_entries = 0
+        payload.split(",", -1).each do |entry|
+          pair = expo_turbo_parse_module_entry(entry)
+          if pair.nil? || modules.key?(pair.fetch(:name))
+            malformed_entries += 1
+            next
+          end
 
-        modules = pairs.to_h { |name, version| [name.freeze, version.freeze] }
+          name = pair.fetch(:name).freeze
+          version = pair.fetch(:version).freeze
+          modules[name] = version
+          encoded_pairs << pair.fetch(:encoded)
+        end
+        expo_turbo_report_malformed_module_entries(malformed_entries) if malformed_entries.positive?
+
         modules.freeze
+        encoded_pairs.sort!
+        {modules: modules, cache_variant: "v1;#{encoded_pairs.join(",")}".freeze}.freeze
       rescue ArgumentError
         nil
       end
@@ -162,19 +177,55 @@ module ExpoTurbo
         encoded_name, encoded_version = entry.split("=", 2)
         return unless MODULE_HEADER_PART.match?(encoded_name) && MODULE_HEADER_PART.match?(encoded_version)
 
-        name = URI::DEFAULT_PARSER.unescape(encoded_name).force_encoding(Encoding::UTF_8)
-        version = URI::DEFAULT_PARSER.unescape(encoded_version).force_encoding(Encoding::UTF_8)
+        name = expo_turbo_decode_module_part(encoded_name).force_encoding(Encoding::UTF_8)
+        version = expo_turbo_decode_module_part(encoded_version).force_encoding(Encoding::UTF_8)
         return unless name.valid_encoding? && version.valid_encoding?
-        return if name.strip.empty? || version.strip.empty?
+        return if expo_turbo_module_part_has_controls?(name) || expo_turbo_module_part_has_controls?(version)
+
+        name = name.strip
+        version = version.strip
+        return if name.empty? || version.empty?
+        return unless MODULE_VERSION_PATTERN.match?(version)
         Gem::Version.new(version)
 
-        [name, version]
+        {
+          name: name,
+          version: version,
+          encoded: "#{expo_turbo_encode_module_part(name)}=#{expo_turbo_encode_module_part(version)}".freeze
+        }.freeze
       rescue ArgumentError
         nil
       end
 
+      def expo_turbo_decode_module_part(encoded)
+        encoded.gsub(/%([0-9A-Fa-f]{2})/) { Regexp.last_match(1).hex.chr }
+      end
+
+      def expo_turbo_encode_module_part(value)
+        value.b.bytes.map do |byte|
+          case byte
+          when 48..57, 65..90, 97..122, 33, 39, 40, 41, 42, 45, 46, 95, 126
+            byte.chr
+          else
+            format("%%%02X", byte)
+          end
+        end.join
+      end
+
+      def expo_turbo_module_part_has_controls?(value)
+        value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
+      end
+
+      def expo_turbo_report_malformed_module_entries(count)
+        return unless respond_to?(:logger) && logger
+
+        label = (count == 1) ? "entry" : "entries"
+        logger.warn("Expo Turbo ignored #{count} malformed X-Expo-Turbo-Modules #{label}")
+      rescue
+        nil
+      end
+
       def expo_turbo_report_malformed_module_header
-        return unless defined?(::Rails) && ::Rails.respond_to?(:env) && ::Rails.env.development?
         return unless respond_to?(:logger) && logger
 
         logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Modules header")

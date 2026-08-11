@@ -2,6 +2,7 @@
 
 require "action_controller/api"
 require "fileutils"
+require "json"
 require "tmpdir"
 require "spec_helper"
 require "expo_turbo/rails/testing"
@@ -333,7 +334,23 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
-  it "assumes latest capabilities only when the module header is absent or malformed" do
+  it "uses the shared RubyGems module version grammar" do
+    grammar_path = File.expand_path("../../../module-version-grammar.json", __dir__)
+    grammar = JSON.parse(File.read(grammar_path))
+
+    grammar.fetch("accepted").each do |version|
+      controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=#{version}")
+      expect(controller.expo_turbo_client_modules).to eq("cart" => version)
+    end
+    grammar.fetch("rejected").each do |version|
+      controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=#{version}")
+      allow(controller).to receive(:logger).and_return(double(warn: nil))
+      expect(controller.expo_turbo_client_modules).to eq({})
+      expect(controller.expo_turbo_client_supports?("cart", ">= 0")).to be(false)
+    end
+  end
+
+  it "assumes latest capabilities only when the module header is absent or its envelope is malformed" do
     absent_document = controller_with_request("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
     absent_frame = controller_with_request("HTTP_TURBO_FRAME" => "details")
 
@@ -342,7 +359,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
       expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
     end
 
-    ["", "v2;cart=1", "v1;cart", "v1;cart=%ZZ", "v1;cart=1,cart=2", "v1;=1", "v1;cart=not-a-version"].each do |header|
+    ["", "v2;cart=1", "\xFF".b].each do |header|
       controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => header)
       allow(controller).to receive(:logger).and_return(double(warn: nil))
 
@@ -350,16 +367,33 @@ RSpec.describe ExpoTurbo::Rails::Controller do
       expect(controller.expo_turbo_client_modules).to eq({})
       expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
     end
+  end
+
+  it "drops malformed module entries without discarding valid negotiation" do
+    controller = controller_with_request(
+      "HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2,bad-version=v2,bad%00name=1,other=3%0A,cart=4"
+    )
+    logger = double
+    allow(logger).to receive(:warn)
+    allow(controller).to receive(:logger).and_return(logger)
+
+    expect(controller.expo_turbo_client_modules).to eq("cart" => "2")
+    expect(controller.expo_turbo_client_supports?("cart", ">= 2")).to be(true)
+    expect(controller.expo_turbo_client_supports?("bad-version", ">= 1")).to be(false)
+    expect(logger).to have_received(:warn).with("Expo Turbo ignored 4 malformed X-Expo-Turbo-Modules entries")
 
     empty_registry = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;")
     expect(empty_registry.expo_turbo_client_supports?("future-module", ">= 1")).to be(false)
   end
 
-  it "fails closed for invalid requirement queries on a valid module header" do
-    controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+  it "raises for invalid requirement queries before applying web fail-open behavior" do
+    native = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+    web = controller_with_request
 
-    expect(controller.expo_turbo_client_supports?("cart", "not a requirement")).to be(false)
-    expect(controller.expo_turbo_client_supports?(:cart, ">= 1")).to be(false)
+    [native, web].each do |controller|
+      expect { controller.expo_turbo_client_supports?("cart", "not a requirement") }.to raise_error(ArgumentError)
+      expect { controller.expo_turbo_client_supports?(:cart, ">= 1") }.to raise_error(ArgumentError)
+    end
   end
 
   it "builds distinct conditional cache keys for documents and each valid Frame" do
@@ -408,6 +442,25 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     next_version = conditional_etag(controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2"))
 
     expect(first).not_to eq(next_version)
+  end
+
+  it "keeps encoded module names unambiguous in Rails cache keys" do
+    legitimate = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;a=1,b=2")
+    slash_name = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;a%2F1%2Fb=2")
+
+    legitimate_key = ActiveSupport::Cache.expand_cache_key(legitimate.expo_turbo_cache_variant)
+    slash_name_key = ActiveSupport::Cache.expand_cache_key(slash_name.expo_turbo_cache_variant)
+
+    expect(legitimate_key).not_to eq(slash_name_key)
+    expect(conditional_etag(legitimate)).not_to eq(conditional_etag(slash_name))
+  end
+
+  it "canonicalizes module whitespace before it reaches cache keys" do
+    canonical = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=1")
+    padded = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;%20cart%20=%20%201%20")
+
+    expect(padded.expo_turbo_client_modules).to eq("cart" => "1")
+    expect(padded.expo_turbo_cache_variant).to eq(canonical.expo_turbo_cache_variant)
   end
 
   it "merges the Frame cache variation without replacing existing Vary values" do

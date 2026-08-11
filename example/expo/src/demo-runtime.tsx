@@ -52,7 +52,7 @@ import { createDemoFrameControllers } from "./demo-frame-controllers";
 import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
 import { DEMO_FORM_ANNOUNCEMENTS } from "./demo-form-announcement-runtime";
 import { createDemoFormController } from "./demo-form-controller";
-import { DEMO_DOCUMENT, DEMO_REGISTRY } from "./demo-registry";
+import { DEMO_DOCUMENT, DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DemoRouterHistoryBridge } from "./demo-router-history";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import { DemoVisibilityRegistry } from "./demo-visibility";
@@ -168,12 +168,18 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
   const forms = new DocumentFormControls(session, {
     focus,
     formSemantics: DEMO_REGISTRY,
+    moduleVersions: DEMO_MODULE_VERSIONS,
     submissionController: formController,
   });
   let formLinkRequestId = 0;
-  const formLinks = new FormLinkSubmissionController(session, formController, {
-    next: () => `demo-generated-form-link-${++formLinkRequestId}`,
-  });
+  const formLinks = new FormLinkSubmissionController(
+    session,
+    formController,
+    {
+      next: () => `demo-generated-form-link-${++formLinkRequestId}`,
+    },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
+  );
   const unsubscribeTraversal = subscribeDocumentHistoryTraversal(
     navigation,
     documentRuntime.controller,

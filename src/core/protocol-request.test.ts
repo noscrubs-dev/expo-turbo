@@ -13,10 +13,10 @@ describe("module version request header", () => {
   test("encodes exact module name and version pairs without removing the capability hash", () => {
     const moduleVersions = serializeModuleVersionsHeader([
       { name: "Moduleé", version: "2.1.0" },
-      { name: "cart,offers", version: "3=beta+1" },
+      { name: "cart,offers", version: "3.0-beta.1" },
     ])
 
-    expect(moduleVersions).toBe("v1;Module%C3%A9=2.1.0,cart%2Coffers=3%3Dbeta%2B1")
+    expect(moduleVersions).toBe("v1;Module%C3%A9=2.1.0,cart%2Coffers=3.0-beta.1")
     expect(
       protocolRequestHeaders({
         capabilityHash: "fnv1a32:12345678",

@@ -1,3 +1,4 @@
+import { serializeModuleVersionsHeader } from "expo-turbo/core";
 import {
   attr,
   createRegistry,
@@ -914,6 +915,10 @@ export const DEMO_REGISTRY = createRegistry(
     name: "demo-primitives",
     version: "0.1.0",
   }),
+);
+
+export const DEMO_MODULE_VERSIONS = serializeModuleVersionsHeader(
+  DEMO_REGISTRY.capabilities.modules,
 );
 
 export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">

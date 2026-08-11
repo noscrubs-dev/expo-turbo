@@ -383,12 +383,18 @@ export interface ComponentModule<
   Components extends readonly RegistryComponent[] = readonly RegistryComponent[],
 > extends CapabilityModule<Name, Components> {}
 
+const RUBYGEMS_VERSION_PATTERN =
+  /^[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
 function freezeCapabilityModule<
   const Name extends string,
   const Definitions extends readonly RegistryComponentDefinition[],
 >(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
   if (!config.name.trim()) throw new RegistryError("Component modules require a name")
   if (!config.version.trim()) throw new RegistryError("Component modules require a version")
+  if (!RUBYGEMS_VERSION_PATTERN.test(config.version)) {
+    throw new RegistryError("Component module versions must use RubyGems version syntax")
+  }
   return Object.freeze({
     components: Object.freeze([...config.components]) as unknown as Definitions,
     name: config.name,

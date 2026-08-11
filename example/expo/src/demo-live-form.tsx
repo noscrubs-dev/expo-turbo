@@ -29,7 +29,7 @@ import * as ReactNative from "react-native";
 import { Text, View } from "react-native";
 
 import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
-import { DEMO_REGISTRY } from "./demo-registry";
+import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import {
   createDemoLiveFetchAdapter,
@@ -127,9 +127,12 @@ export function createDemoLiveFormRuntime(
   let frameRequestId = 0;
   const frames = new FrameControllerRegistry(
     session,
-    new FrameRequestLoader(session, transport, {
-      next: () => `demo-live-form-frame-${++frameRequestId}`,
-    }),
+    new FrameRequestLoader(
+      session,
+      transport,
+      { next: () => `demo-live-form-frame-${++frameRequestId}` },
+      { moduleVersions: DEMO_MODULE_VERSIONS },
+    ),
     options.visibility,
   );
   const focus = new DemoFocusRegistry();
@@ -139,6 +142,7 @@ export function createDemoLiveFormRuntime(
     focus,
     ...(frameComponent ? { frameComponent } : {}),
     formSemantics: DEMO_REGISTRY,
+    moduleVersions: DEMO_MODULE_VERSIONS,
     submissionController: new FormSubmissionController(session, transport, {
       frameControllers: frames,
       submissionLifecycle,

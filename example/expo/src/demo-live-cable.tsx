@@ -35,7 +35,7 @@ import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
-import { DEMO_REGISTRY } from "./demo-registry";
+import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import {
   createDemoLiveFetchAdapter,
@@ -354,9 +354,14 @@ async function createDemoLiveCableRuntimeFor(
     parseExpoTurboDocument(LOADING_DOCUMENT, { url: endpoints.documentUrl }),
   );
   let documentRequestId = 0;
-  const loader = new DocumentRequestLoader(session, documentFetch, {
-    next: () => `demo-live-document-${++documentRequestId}`,
-  });
+  const loader = new DocumentRequestLoader(
+    session,
+    documentFetch,
+    {
+      next: () => `demo-live-document-${++documentRequestId}`,
+    },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
+  );
   const result = await loader.load(endpoints.documentUrl);
   if (result.status !== "committed") {
     throw new RequestError("The standalone Rails document did not commit");
@@ -374,9 +379,12 @@ async function createDemoLiveCableRuntimeFor(
   let frameRequestId = 0;
   const frames = new FrameControllerRegistry(
     session,
-    new FrameRequestLoader(session, documentFetch, {
-      next: () => `demo-live-frame-${++frameRequestId}`,
-    }),
+    new FrameRequestLoader(
+      session,
+      documentFetch,
+      { next: () => `demo-live-frame-${++frameRequestId}` },
+      { moduleVersions: DEMO_MODULE_VERSIONS },
+    ),
   );
   const formSubmissionLifecycle = new FormSubmissionLifecycle();
   const activeFormSubmissions = new Set<FormSubmissionHandle>();
@@ -395,9 +403,14 @@ async function createDemoLiveCableRuntimeFor(
     submissionLifecycle: formSubmissionLifecycle,
   });
   let formLinkRequestId = 0;
-  const formLinks = new FormLinkSubmissionController(session, formController, {
-    next: () => `demo-live-http-stream-${++formLinkRequestId}`,
-  });
+  const formLinks = new FormLinkSubmissionController(
+    session,
+    formController,
+    {
+      next: () => `demo-live-http-stream-${++formLinkRequestId}`,
+    },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
+  );
   let sources: CableStreamSourceRegistry | undefined;
   const sourceConnections = Object.freeze({
     get connectionSnapshot() {
