@@ -26,6 +26,7 @@ import {
   type StreamRenderResult,
   streamLifecycleOption,
 } from "./stream-lifecycle.js"
+import { admitStructuralOutput } from "./structural-output-admission-internal.js"
 import { resolveThenableResult } from "./thenable-result.js"
 import {
   attributeValue,
@@ -532,11 +533,28 @@ async function renderAction(
   }
   const targets = resolveTargets(session.tree, stream, action)
   const payload = action === "remove" ? [] : templatePayload(stream, action)
+  progress.matchedTargets = targets.length
   const autofocusCandidate = standaloneStreamAutofocusCandidate(stream, action)
   const autofocusCandidates = autofocusCandidate ? [autofocusCandidate.key] : []
-  progress.matchedTargets = targets.length
   if (targets.length > 1 && allIds(payload).length > 0) {
     throw actionError("Multi-target Turbo Stream payloads must not declare ids", action)
+  }
+
+  // A payload whose tolerated fallback renders nothing would blank its targets,
+  // so the action becomes a no-op. Protocol validation above still applies.
+  if (targets.length > 0 && STRUCTURAL_STREAM_AUTOFOCUS_ACTIONS.has(action)) {
+    if (control && !control.shouldContinue()) {
+      progress.ownershipInterrupted = true
+      return Object.freeze({ appliedTargets: 0, matchedTargets: targets.length, status: "noop" })
+    }
+    const admission = admitStructuralOutput(
+      session,
+      Object.freeze({ kind: "stream", nodes: payload }),
+    )
+    if (admission && !admission.hasOutput && admission.hasVocabularyIssues) {
+      admission.report()
+      return Object.freeze({ appliedTargets: 0, matchedTargets: targets.length, status: "noop" })
+    }
   }
 
   for (const target of targets) {

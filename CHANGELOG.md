@@ -2,6 +2,32 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## Unreleased
+
+- Let the React renderer tolerate installed-client vocabulary skew. Unknown
+  components now unwrap to their children, unknown attributes are ignored,
+  optional attribute decode failures use their schema fallback, and required
+  failures unwrap the component. Add commit-safe `onUnknownVocabulary`
+  diagnostics with development warnings, and protect blank output: document
+  roots and Frame responses raise their error surface, while a Stream action
+  becomes a no-op that leaves the rendered screen intact. `data-*` attributes
+  stay shared protocol metadata and never report as unknown vocabulary. Native
+  form-owner protocol attributes no longer require duplicate component props
+  ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
+- **Breaking:** `ComponentRegistry` and `ExpoTurboProvider` registries now
+  require `decodeForRender()`. Registries from `createRegistry()` already
+  supply it. A custom `{ decode }` or `{ decode, resolve }` registry must add
+  `decodeForRender()`; `decode()` remains the strict entry point and
+  `resolve()` remains optional for provider rendering.
+- Strict `decode()` now attributes a prop-schema rejection to its source
+  attribute, so the message reads `Invalid attribute "heading" on "Card"`
+  instead of `Props failed validation for "Card"`. It also skips undeclared
+  native form protocol attributes on `formOwner` components, matching the
+  Rails validator. The error class is unchanged.
+- Render-time form scopes read the decoded component definition instead of
+  decoding the form node again, and render error boundaries now also reset when
+  the provider registry identity changes.
+
 ## 0.1.7 - 2026-07-31
 
 - Let manifest-backed Rails validation use each component's `formOwner`

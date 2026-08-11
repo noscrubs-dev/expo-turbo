@@ -221,9 +221,43 @@ disposal wiring:
   history={historyAdapter}
   navigation={navigationAdapter}
   loading={<Loading />}
+  onUnknownVocabulary={(event) => telemetry.capture("expo_turbo_vocabulary", event)}
   renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
 />
 ```
+
+Installed clients can have an older component vocabulary than the server. An
+unknown component becomes a transparent wrapper, so its children still render.
+An unknown attribute is ignored while known attributes continue to decode. If
+an optional attribute value cannot decode, its default or optional value is
+used. If a required value cannot decode, the component also becomes a
+transparent wrapper.
+
+Each tolerated case calls `onUnknownVocabulary` after the fallback commits. The
+frozen event identifies the tag, optional attribute, node key, document URL,
+and failure kind. Development builds also write one warning. Production builds
+stay silent apart from the callback. Callback failures do not change document
+state.
+
+`data-*` attributes are shared protocol metadata, not component vocabulary.
+They stay available through `protocol.data` and never report as unknown.
+
+Tolerance must not silently show an empty screen. When a tolerated fallback
+leaves no structurally renderable content, Expo Turbo protects each root kind:
+
+| Root | Behavior |
+| --- | --- |
+| Document | The document error surface receives a `StateError` |
+| Frame | The response is rejected, and the mounted Frame keeps its content |
+| Stream | The action becomes a no-op, and later actions still apply |
+
+A registered component always counts as renderable output, even when its own
+component returns `null`. An empty response that carries no vocabulary
+diagnostic keeps its existing native behavior.
+
+`createRegistry()` supplies this behavior. A custom registry passed to
+`ExpoTurboProvider` must implement `decodeForRender()`; `resolve()` stays
+optional, and direct `decode()` calls stay strict.
 
 Changing `url` performs a visit on the existing runtime. Without `history`, it
 uses an ordinary visit; with `history`, it uses a replace visit so the host
@@ -286,6 +320,8 @@ The complete Rails API and examples are in the
   presentation explicitly.
 - Exercise the host's exact release build and real Rails origin on both
   platforms.
-- Treat missing targets as ordinary no-ops, but surface malformed XML, unknown
-  components/actions, missing Frames, and rejected required subscriptions.
+- Treat missing targets as ordinary no-ops. Report tolerated unknown components
+  and attributes through `onUnknownVocabulary`. Surface malformed XML, unknown
+  actions, invalid shared protocol values, missing Frames, and rejected required
+  subscriptions through the normal error path.
 - Keep legacy runtimes separate; Expo Turbo does not define a JSON fallback.

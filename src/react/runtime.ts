@@ -1,6 +1,10 @@
 import { createElement, type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 
-import { ExpoTurboProvider, ExpoTurboRoot } from "./renderer.js"
+import {
+  ExpoTurboProvider,
+  ExpoTurboRoot,
+  type ExpoTurboUnknownVocabularyHandler,
+} from "./renderer.js"
 import {
   type CreateExpoTurboRuntimeOptions,
   createExpoTurboRuntime,
@@ -16,6 +20,7 @@ export {
 export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
   readonly loading?: ReactNode
   readonly onError?: (error: Error) => void
+  readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   readonly renderError?: (error: Error, retry: () => void) => ReactNode
 }
 
@@ -29,17 +34,26 @@ export function ExpoTurbo({
   loading = null,
   navigation,
   onError,
+  onUnknownVocabulary,
   registry,
   renderError,
   url,
 }: ExpoTurboProps): ReactNode {
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
+  const onUnknownVocabularyRef = useRef(onUnknownVocabulary)
+  onUnknownVocabularyRef.current = onUnknownVocabulary
   const currentRuntimeRef = useRef<ExpoTurboRuntime | undefined>(undefined)
   const latestUrlRef = useRef(url)
   latestUrlRef.current = url
   const [attempt, setAttempt] = useState(0)
   const retry = useCallback(() => setAttempt((current) => current + 1), [])
+  // A stable identity keeps the provider from re-registering its structural
+  // admission on every render.
+  const forwardUnknownVocabulary = useCallback<ExpoTurboUnknownVocabularyHandler>(
+    (event) => onUnknownVocabularyRef.current?.(event),
+    [],
+  )
   const [status, setStatus] = useState<
     | Readonly<{ state: "loading" }>
     | Readonly<{ error: Error; state: "error" }>
@@ -131,6 +145,7 @@ export function ExpoTurbo({
         onErrorRef.current?.(error)
         setStatus({ error, state: "error" })
       },
+      onUnknownVocabulary: forwardUnknownVocabulary,
       registry,
       scopes: runtime.scopes,
       session: runtime.session,

@@ -11,6 +11,7 @@ import {
 } from "expo-turbo/core";
 import { createElement, Fragment, forwardRef, StrictMode, useImperativeHandle, useRef } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import type { ExpoTurboUnknownVocabularyEvent } from "expo-turbo/react";
 
 import type {
   DemoRouterNavigation,
@@ -3111,6 +3112,61 @@ describe("demo app runtime ownership", () => {
     expect(runtime.session.tree.document.url).toBe(entry.url);
     expect(runtime.documentRuntime.history.current).toEqual(entry);
     expect(renderer?.root.findAll((node) => String(node.type) === "active-route")).toHaveLength(1);
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
+  test("keeps high-level unknown vocabulary out of the document error state", async () => {
+    const fetch = new ControlledFetch();
+    const errors: Error[] = [];
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = [];
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(ExpoTurbo, {
+          fetch,
+          loading: createElement("runtime-loading"),
+          onError: (error) => errors.push(error),
+          onUnknownVocabulary: (event) => {
+            vocabulary.push(event);
+            throw new Error("telemetry failed");
+          },
+          registry: DEMO_REGISTRY,
+          renderError: () => createElement("runtime-error"),
+          url: GALLERY_URL,
+        }),
+      );
+      await Promise.resolve();
+    });
+    const request = fetch.pending[0];
+    if (!request) throw new Error("missing high-level vocabulary request");
+
+    await act(async () => {
+      request.resolve(
+        response(request.request, {
+          xml: "<Gallery><FuturePanel><DemoText>Compatible fallback</DemoText></FuturePanel></Gallery>",
+        }),
+      );
+      await nextTurn();
+    });
+
+    expect(errors).toHaveLength(0);
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: GALLERY_URL,
+        kind: "component",
+        nodeKey: "path.0.0",
+        tag: "FuturePanel",
+      },
+    ]);
+    expect(renderer?.root.findAll((node) => String(node.type) === "runtime-error")).toHaveLength(0);
+    expect(
+      renderer?.root.findAll((node) => node.children.includes("Compatible fallback")),
+    ).toHaveLength(1);
 
     await act(async () => {
       renderer?.unmount();

@@ -143,6 +143,8 @@ import {
   streamAutofocusLifecycleRevision,
   subscribeStreamAutofocusLifecycle,
 } from "../core/stream-autofocus-internal.js"
+import { registerStructuralOutputAdmission } from "../core/structural-output-admission-internal.js"
+import { consumeThenableResult } from "../core/thenable-result.js"
 import {
   attributeValue,
   isElement,
@@ -163,9 +165,31 @@ import type {
   ComponentRegistry,
   DecodedComponent,
   RegistryComponent,
+  RegistryRenderDecodeResult,
+  RegistryVocabularyIssue,
 } from "../registry/registry.js"
+import {
+  analyzeRegistryStructuralOutput,
+  type RegistryStructuralOutputAnalysis,
+  type RegistryStructuralOutputDiagnostic,
+} from "../registry/registry-structural-output-internal.js"
 
-type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode">
+type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode" | "decodeForRender"> &
+  Partial<Pick<ComponentRegistry<RegistryComponent>, "resolve">>
+
+export type ExpoTurboUnknownVocabularyKind = RegistryVocabularyIssue["kind"]
+
+export interface ExpoTurboUnknownVocabularyEvent {
+  readonly attribute?: string
+  readonly documentUrl: string
+  readonly kind: ExpoTurboUnknownVocabularyKind
+  readonly nodeKey: string
+  readonly tag: string
+}
+
+export type ExpoTurboUnknownVocabularyHandler = (
+  event: ExpoTurboUnknownVocabularyEvent,
+) => void | Promise<void>
 
 export interface ExpoTurboRenderError {
   readonly error: Error
@@ -284,6 +308,7 @@ interface RendererContextValue {
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  readonly onUnknownVocabulary: ExpoTurboUnknownVocabularyHandler | undefined
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
   readonly session: DocumentSession
@@ -299,6 +324,7 @@ const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
 const FormContext = createContext<ExpoTurboFormContextValue | undefined>(undefined)
 const NavigationContext = createContext<NavigationAdapter | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
+const ComponentDefinitionContext = createContext<RegistryComponent | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 const DirectionContext = createContext<ProtocolDirection | undefined>(undefined)
@@ -321,6 +347,14 @@ const announcedFormTerminalRevisions = new WeakMap<
 const announcedDocumentVisitStates = new WeakMap<
   DocumentVisitController,
   Readonly<{ revision: number; status: DocumentVisitAnnouncementEvent["status"] }>
+>()
+interface UnknownVocabularyClaim {
+  readonly fingerprints: Set<string>
+  generation: number
+}
+const unknownVocabularyClaims = new WeakMap<
+  DocumentSession,
+  WeakMap<ProtocolElement, UnknownVocabularyClaim>
 >()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = ["action", "confirm", "method", "stream"] as const
 const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
@@ -652,6 +686,7 @@ export interface ExpoTurboProviderProps {
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
+  readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
   readonly scopes?: DocumentStateScopes
@@ -680,6 +715,29 @@ function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefin
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   useProviderDisposable(props.scopes)
   useProviderDisposable(props.state)
+  useInsertionEffect(
+    () =>
+      registerStructuralOutputAdmission(props.session, (request) => {
+        const analysis = analyzeRegistryStructuralOutput(props.registry, request.nodes)
+        const generation = props.session.treeGeneration
+        return Object.freeze({
+          hasOutput: analysis.hasOutput,
+          hasVocabularyIssues: analysis.hasVocabularyIssues,
+          report() {
+            for (const diagnostic of analysis.diagnostics) {
+              deliverUnknownVocabularyIssues(
+                props.session,
+                diagnostic.node,
+                generation,
+                diagnostic.issues,
+                props.onUnknownVocabulary,
+              )
+            }
+          },
+        })
+      }),
+    [props.onUnknownVocabulary, props.registry, props.session],
+  )
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
@@ -704,6 +762,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       frames: props.frames,
       forms: props.forms,
       onError: props.onError,
+      onUnknownVocabulary: props.onUnknownVocabulary,
       registry: props.registry,
       renderError: props.renderError,
       scopes: props.scopes,
@@ -735,6 +794,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.frames,
       props.forms,
       props.onError,
+      props.onUnknownVocabulary,
       props.registry,
       props.renderError,
       props.scopes,
@@ -1081,7 +1141,12 @@ function useResolvedFormRegistry(): Readonly<{
   if (!form || formSnapshot?.node !== form) {
     throw new RegistryError("Expo Turbo form association references a missing form owner")
   }
-  if (!componentRegistry.decode(form).definition.formOwner) {
+  let definition = componentRegistry.resolve?.(form.tagName)
+  if (!definition) {
+    const result = componentRegistry.decodeForRender(form)
+    definition = result.status === "decoded" ? result.decoded.definition : result.definition
+  }
+  if (!definition?.formOwner) {
     throw new RegistryError("Expo Turbo form association target is not a declared form owner")
   }
   return Object.freeze({ formNodeKey: form.key, registry: forms.controlsFor(form.key) })
@@ -1172,14 +1237,8 @@ function claimDocumentVisitAnnouncement(
  * effect replay; exact tree replacement remains its disposal boundary.
  */
 export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
-  const {
-    formAnnouncements,
-    formComponent: FormComponent,
-    forms,
-    onError,
-    registry: componentRegistry,
-    session,
-  } = useRenderer()
+  const { formAnnouncements, formComponent: FormComponent, forms, onError, session } = useRenderer()
+  const definition = useContext(ComponentDefinitionContext)
   const nodeKey = useContext(ProtocolNodeContext)
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
@@ -1187,7 +1246,7 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   if (!formNode || !isElement(formNode)) {
     throw new RegistryError("Expo Turbo forms require an active component element")
   }
-  if (!componentRegistry.decode(formNode).definition.formOwner) {
+  if (!definition?.formOwner) {
     throw new RegistryError("Expo Turbo form scope requires a declared form-owner component")
   }
   const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
@@ -2358,6 +2417,28 @@ export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
   return useContext(FrameContext)
 }
 
+interface UnknownVocabularyStructuralMetadata {
+  readonly diagnostics: readonly RegistryStructuralOutputDiagnostic[]
+  readonly generation: number
+  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly root: ProtocolElement
+  readonly session: DocumentSession
+}
+
+const unknownVocabularyStructuralMetadata = new WeakMap<
+  UnknownVocabularyStructuralError,
+  UnknownVocabularyStructuralMetadata
+>()
+
+class UnknownVocabularyStructuralError extends StateError {
+  constructor(metadata: UnknownVocabularyStructuralMetadata) {
+    super("Expo Turbo document root has no renderable fallback", {
+      target: metadata.root.key,
+    })
+    unknownVocabularyStructuralMetadata.set(this, metadata)
+  }
+}
+
 interface ErrorBoundaryProps {
   readonly children?: ReactNode
   readonly nodeKey: string
@@ -2401,6 +2482,34 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   componentDidCatch(error: Error): void {
     if (alreadyReportedRenderErrors.has(error)) return
+    const structuralMetadata =
+      error instanceof UnknownVocabularyStructuralError
+        ? unknownVocabularyStructuralMetadata.get(error)
+        : undefined
+    if (error instanceof UnknownVocabularyStructuralError) {
+      unknownVocabularyStructuralMetadata.delete(error)
+    }
+    if (
+      structuralMetadata &&
+      structuralMetadata.session.treeGeneration === structuralMetadata.generation &&
+      structuralMetadata.session.getNodeSnapshot(structuralMetadata.root.key)?.node ===
+        structuralMetadata.root
+    ) {
+      for (const diagnostic of structuralMetadata.diagnostics) {
+        if (
+          structuralMetadata.session.getNodeSnapshot(diagnostic.node.key)?.node !== diagnostic.node
+        ) {
+          continue
+        }
+        deliverUnknownVocabularyIssues(
+          structuralMetadata.session,
+          diagnostic.node,
+          structuralMetadata.generation,
+          diagnostic.issues,
+          structuralMetadata.handler,
+        )
+      }
+    }
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
   }
 
@@ -2419,6 +2528,112 @@ function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
       nodeKey: node.key,
     }),
   )
+}
+
+function developmentVocabularyWarningsEnabled(): boolean {
+  const globalDevelopment = (globalThis as Readonly<{ __DEV__?: unknown }>).__DEV__
+  if (typeof globalDevelopment === "boolean") return globalDevelopment
+  const nodeEnvironment = (
+    globalThis as Readonly<{
+      process?: Readonly<{ env?: Readonly<{ NODE_ENV?: string }> }>
+    }>
+  ).process?.env?.NODE_ENV
+  return nodeEnvironment !== "production"
+}
+
+function unknownVocabularyFingerprint(issue: RegistryVocabularyIssue): string {
+  return JSON.stringify([issue.kind, "attribute" in issue ? issue.attribute : ""])
+}
+
+function claimUnknownVocabularyDelivery(
+  session: DocumentSession,
+  node: ProtocolElement,
+  generation: number,
+  fingerprint: string,
+  sink: "callback" | "warning",
+): boolean {
+  let sessionClaims = unknownVocabularyClaims.get(session)
+  if (!sessionClaims) {
+    sessionClaims = new WeakMap()
+    unknownVocabularyClaims.set(session, sessionClaims)
+  }
+  let claim = sessionClaims.get(node)
+  if (!claim || claim.generation !== generation) {
+    claim = { fingerprints: new Set(), generation }
+    sessionClaims.set(node, claim)
+  }
+  const sinkFingerprint = `${sink}:${fingerprint}`
+  if (claim.fingerprints.has(sinkFingerprint)) return false
+  claim.fingerprints.add(sinkFingerprint)
+  return true
+}
+
+function deliverUnknownVocabularyIssues(
+  session: DocumentSession,
+  node: ProtocolElement,
+  generation: number,
+  issues: readonly RegistryVocabularyIssue[],
+  handler: ExpoTurboUnknownVocabularyHandler | undefined,
+): void {
+  const warn = developmentVocabularyWarningsEnabled()
+  if (!handler && !warn) return
+  for (const issue of issues) {
+    const fingerprint = unknownVocabularyFingerprint(issue)
+    const event = Object.freeze({
+      ...("attribute" in issue ? { attribute: issue.attribute } : {}),
+      documentUrl: session.tree.document.url ?? "about:blank",
+      kind: issue.kind,
+      nodeKey: node.key,
+      tag: issue.tag,
+    }) satisfies ExpoTurboUnknownVocabularyEvent
+    if (
+      handler &&
+      claimUnknownVocabularyDelivery(session, node, generation, fingerprint, "callback")
+    ) {
+      try {
+        const delivery = handler(event)
+        if (delivery !== undefined) consumeThenableResult(delivery)
+      } catch {
+        // Telemetry must not change rendered document state.
+      }
+    }
+    if (warn && claimUnknownVocabularyDelivery(session, node, generation, fingerprint, "warning")) {
+      try {
+        console.warn("Expo Turbo ignored unknown vocabulary", event)
+      } catch {
+        // Development warnings must not change rendered document state.
+      }
+    }
+  }
+}
+
+function decodeRegisteredElement(
+  registry: RenderRegistry,
+  node: ProtocolElement,
+): RegistryRenderDecodeResult<RegistryComponent> {
+  return registry.decodeForRender(node)
+}
+
+function UnknownVocabularyReporter(
+  props: Readonly<{
+    issues: readonly RegistryVocabularyIssue[]
+    node: ProtocolElement
+  }>,
+): ReactNode {
+  const { onUnknownVocabulary, session } = useRenderer()
+  const generation = session.treeGeneration
+  useEffect(() => {
+    if (session.treeGeneration !== generation) return
+    if (session.getNodeSnapshot(props.node.key)?.node !== props.node) return
+    deliverUnknownVocabularyIssues(
+      session,
+      props.node,
+      generation,
+      props.issues,
+      onUnknownVocabulary,
+    )
+  }, [generation, onUnknownVocabulary, props.issues, props.node, session])
+  return null
 }
 
 function readMorphFocusedId(adapter: AutofocusAdapter, nodeKey: string): string | undefined {
@@ -2498,36 +2713,42 @@ function useComponentMorphFocus(
   }, [adapter, enabled, morphRevision, nodeKey, scrollAdapter])
 }
 
-function RegisteredElement(
-  props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
+function DecodedRegisteredElement(
+  props: Readonly<{
+    decoded: DecodedComponent
+    issues: readonly RegistryVocabularyIssue[]
+    morphRevision: number
+    node: ProtocolElement
+  }>,
 ): ReactNode {
-  const { autofocus, autofocusScroll, registry } = useRenderer()
+  const { autofocus, autofocusScroll } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
   const inheritedFallback = useContext(DirectionFallbackContext)
-  const decoded: DecodedComponent = registry.decode(props.node)
-  const direction = decoded.protocol.direction ?? inheritedDirection
+  const direction = props.decoded.protocol.direction ?? inheritedDirection
   const directionFallback =
     direction === "ltr" || direction === "rtl" ? direction : inheritedFallback
   let children: ReactNode
-  if (decoded.definition.children === "text") children = decoded.text ?? ""
-  else if (decoded.definition.children === "nodes") children = renderChildren(decoded.children)
-  const component = decoded.definition.component as ComponentType<
+  if (props.decoded.definition.children === "text") children = props.decoded.text ?? ""
+  else if (props.decoded.definition.children === "nodes") {
+    children = renderChildren(props.decoded.children)
+  }
+  const component = props.decoded.definition.component as ComponentType<
     Readonly<Record<string, unknown> & { children?: ReactNode }>
   >
-  const componentProps = decoded.props as Readonly<Record<string, unknown>>
+  const componentProps = props.decoded.props as Readonly<Record<string, unknown>>
   useComponentMorphFocus(
     autofocus,
     autofocusScroll,
-    decoded.definition.morphState === "reset",
+    props.decoded.definition.morphState === "reset",
     props.morphRevision,
     props.node.key,
   )
-  const key = decoded.definition.morphState === "reset" ? props.morphRevision : undefined
+  const key = props.decoded.definition.morphState === "reset" ? props.morphRevision : undefined
   const rendered =
     children === undefined
       ? createElement(component, { ...componentProps, key })
       : createElement(component, { ...componentProps, key }, children)
-  return createElement(
+  const contents = createElement(
     DirectionFallbackContext.Provider,
     { value: directionFallback },
     createElement(
@@ -2536,10 +2757,86 @@ function RegisteredElement(
       createElement(
         ProtocolNodeContext.Provider,
         { value: props.node.key },
-        createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+        createElement(
+          ComponentDefinitionContext.Provider,
+          { value: props.decoded.definition },
+          createElement(
+            ComponentTagContext.Provider,
+            { value: props.decoded.definition.tag },
+            rendered,
+          ),
+        ),
       ),
     ),
   )
+  return createElement(
+    Fragment,
+    null,
+    props.issues.length > 0
+      ? createElement(UnknownVocabularyReporter, {
+          issues: props.issues,
+          node: props.node,
+        })
+      : null,
+    contents,
+  )
+}
+
+function TransparentRegisteredElement(
+  props: Readonly<{
+    definition?: RegistryComponent
+    issues: readonly RegistryVocabularyIssue[]
+    node: ProtocolElement
+  }>,
+): ReactNode {
+  const children = createElement(Fragment, null, renderChildren(props.node.children))
+  const fallback = props.definition?.formOwner
+    ? createElement(
+        ProtocolNodeContext.Provider,
+        { value: props.node.key },
+        createElement(
+          ComponentDefinitionContext.Provider,
+          { value: props.definition },
+          createElement(
+            ComponentTagContext.Provider,
+            { value: props.definition.tag },
+            createElement(ExpoTurboFormScope, null, children),
+          ),
+        ),
+      )
+    : children
+  return createElement(
+    ProtocolDirectionBoundary,
+    { node: props.node },
+    createElement(
+      Fragment,
+      null,
+      createElement(UnknownVocabularyReporter, {
+        issues: props.issues,
+        node: props.node,
+      }),
+      fallback,
+    ),
+  )
+}
+
+function RegisteredElement(
+  props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
+): ReactNode {
+  const { registry } = useRenderer()
+  const result = decodeRegisteredElement(registry, props.node)
+  return result.status === "transparent"
+    ? createElement(TransparentRegisteredElement, {
+        ...(result.definition ? { definition: result.definition } : {}),
+        issues: result.issues,
+        node: props.node,
+      })
+    : createElement(DecodedRegisteredElement, {
+        decoded: result.decoded,
+        issues: result.issues,
+        morphRevision: props.morphRevision,
+        node: props.node,
+      })
 }
 
 function ProtocolDirectionBoundary(
@@ -2568,6 +2865,7 @@ interface RegisteredElementBoundaryProps {
   readonly node: ProtocolElement
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+  readonly resetIdentity?: unknown
   readonly revision: number | string
 }
 
@@ -2578,6 +2876,7 @@ function RegisteredElementBoundary(props: RegisteredElementBoundaryProps): React
       nodeKey: props.node.key,
       onError: props.onError,
       renderError: props.renderError,
+      resetIdentity: props.resetIdentity,
       revision: props.revision,
     },
     createElement(RegisteredElement, {
@@ -3408,6 +3707,7 @@ function ProtocolElementView(
     node: props.node,
     onError: context.onError,
     renderError: context.renderError,
+    resetIdentity: context.registry,
     revision: props.revision,
   }
   return formId !== undefined && formId !== ""
@@ -3428,6 +3728,30 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
     node,
     revision: snapshot.revision,
   })
+}
+
+function DocumentStructuralOutputGuard(
+  props: Readonly<{
+    analysis: RegistryStructuralOutputAnalysis
+    children?: ReactNode
+    generation: number
+    handler: ExpoTurboUnknownVocabularyHandler | undefined
+    root: ProtocolElement
+    session: DocumentSession
+  }>,
+): ReactNode {
+  if (!props.analysis.hasOutput) {
+    throw new UnknownVocabularyStructuralError(
+      Object.freeze({
+        diagnostics: props.analysis.diagnostics,
+        generation: props.generation,
+        handler: props.handler,
+        root: props.root,
+        session: props.session,
+      }),
+    )
+  }
+  return props.children
 }
 
 export function ExpoTurboRoot(): ReactNode {
@@ -3456,12 +3780,28 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
+  const structuralOutput = analyzeRegistryStructuralOutput(context.registry, root.node.children)
+  const guardedRendered =
+    structuralOutput.hasOutput || !structuralOutput.hasVocabularyIssues
+      ? rendered
+      : createElement(
+          DocumentStructuralOutputGuard,
+          {
+            analysis: structuralOutput,
+            generation: session.treeGeneration,
+            handler: context.onUnknownVocabulary,
+            root: rootDirectionElement,
+            session,
+          },
+          rendered,
+        )
   return createElement(
     NodeErrorBoundary,
     {
       nodeKey: root.node.key,
       onError: context.onError,
       renderError: context.renderError,
+      resetIdentity: context.registry,
       revision: `${root.revision}:${rootElementSnapshot?.revision ?? "missing"}`,
     },
     createElement(
@@ -3479,9 +3819,12 @@ export function ExpoTurboRoot(): ReactNode {
             nodeKey: root.node.key,
             onError: context.onError,
             renderError: context.renderError,
-            revision: root.revision,
+            resetIdentity: context.registry,
+            // The structural verdict participates in the reset key so a Stream
+            // that restores renderable content clears the blank-output error.
+            revision: `${root.revision}:${structuralOutput.hasOutput}`,
           },
-          rendered,
+          guardedRendered,
         ),
       ),
     ),

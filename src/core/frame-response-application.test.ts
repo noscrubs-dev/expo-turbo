@@ -12,6 +12,7 @@ import {
 } from "./frame-response-application"
 import { parseExpoTurboDocument } from "./parser"
 import { DocumentSession } from "./session"
+import { registerStructuralOutputAdmission } from "./structural-output-admission-internal"
 import { attributeValue, isElement } from "./tree"
 
 function sessionFixture(): DocumentSession {
@@ -839,5 +840,75 @@ describe("prepared Frame mutations", () => {
     )
 
     expect(renderPreparedFrameMutation(prepared, renderer, "morph")).toBe("morph")
+  })
+
+  test("rejects a Frame candidate with no renderable output before it commits", () => {
+    const session = sessionFixture()
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse("details", '<turbo-frame id="details"></turbo-frame>')
+    let reports = 0
+    const release = registerStructuralOutputAdmission(session, ({ nodes }) => ({
+      hasOutput: nodes.some(isElement),
+      hasVocabularyIssues: true,
+      report: () => {
+        reports += 1
+      },
+    }))
+    const revision = session.revision
+
+    // Rejecting at prepare time keeps the caller from committing history or
+    // dispatching render lifecycle events for content that never renders.
+    expect(() => prepareFrameMutation(session, frame, prepared)).toThrow(StateError)
+    release()
+
+    expect(reports).toBe(1)
+    expect(session.revision).toBe(revision)
+    expect(session.tree.getElementById("old")).toBeDefined()
+  })
+
+  test("keeps an intentionally empty Frame response without vocabulary diagnostics", () => {
+    const session = sessionFixture()
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse("details", '<turbo-frame id="details"></turbo-frame>')
+    const mutation = prepareFrameMutation(session, frame, prepared)
+    const release = registerStructuralOutputAdmission(session, () => ({
+      hasOutput: false,
+      hasVocabularyIssues: false,
+      report: () => undefined,
+    }))
+
+    commitPreparedFrameMutation(session, mutation)
+    release()
+
+    expect(session.tree.getElementById("old")).toBeUndefined()
+    expect(session.tree.getElementById("details")).toBe(frame)
+  })
+
+  test("commits a Frame candidate whose retained content provides output", () => {
+    const session = sessionFixture()
+    const frame = session.tree.getElementById("details")
+    if (frame?.kind !== "frame") throw new Error("invalid fixture")
+    const prepared = prepareFrameResponse(
+      "details",
+      '<turbo-frame id="details"><Loaded id="loaded" /></turbo-frame>',
+    )
+    const mutation = prepareFrameMutation(session, frame, prepared)
+    let reports = 0
+    const release = registerStructuralOutputAdmission(session, ({ nodes }) => ({
+      hasOutput: nodes.some(isElement),
+      hasVocabularyIssues: false,
+      report: () => {
+        reports += 1
+      },
+    }))
+
+    commitPreparedFrameMutation(session, mutation)
+    release()
+
+    expect(reports).toBe(0)
+    expect(session.tree.getElementById("loaded")).toBeDefined()
+    expect(session.tree.getElementById("old")).toBeUndefined()
   })
 })

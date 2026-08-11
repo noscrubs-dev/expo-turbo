@@ -77,6 +77,7 @@ import {
   TargetError,
 } from "expo-turbo/core"
 import {
+  attr,
   createComponentActionRegistry,
   createComponentActionRunner,
   createRegistry,
@@ -86,6 +87,7 @@ import {
   defineComponent,
   defineComponentModule,
   enumCodec,
+  integerCodec,
   presenceCodec,
   stringCodec,
   tokenListCodec,
@@ -101,6 +103,7 @@ import {
   ExpoTurboProvider,
   type ExpoTurboProviderProps,
   type ExpoTurboRenderError,
+  type ExpoTurboUnknownVocabularyEvent,
   ExpoTurboRoot,
   ExpoTurboStateScope,
   useComponentAction,
@@ -214,6 +217,7 @@ function render(
     forms?: ExpoTurboProviderProps["forms"]
     navigation?: NavigationAdapter
     onError?: (event: ExpoTurboRenderError) => void
+    onUnknownVocabulary?: ExpoTurboProviderProps["onUnknownVocabulary"]
     renderError?: (event: ExpoTurboRenderError) => ReactNode
     strict?: boolean
     streamSources?: ExpoTurboProviderProps["streamSources"]
@@ -245,14 +249,7 @@ function formScopeUnmountFixture(
   }[] = []
   let automaticSubmission: Promise<unknown> | undefined
 
-  function NativeForm(
-    props: Readonly<{
-      action?: string
-      children?: ReactNode
-      method?: string
-      stream?: string
-    }>,
-  ): ReactNode {
+  function NativeForm(props: Readonly<{ children?: ReactNode }>): ReactNode {
     return createElement(ExpoTurboFormScope, null, props.children)
   }
   function CaptureForm(): ReactNode {
@@ -270,19 +267,11 @@ function formScopeUnmountFixture(
   }
 
   const form = defineComponent({
-    attributes: {
-      action: { codec: stringCodec, prop: "action" },
-      "data-turbo-stream": { codec: stringCodec, prop: "stream" },
-      method: { codec: stringCodec, prop: "method" },
-    },
+    attributes: {},
     children: "nodes",
     component: NativeForm,
     formOwner: true,
-    schema: z.object({
-      action: z.string().optional(),
-      method: z.string().optional(),
-      stream: z.string().optional(),
-    }),
+    schema: z.object({}),
     tag: "UnmountForm",
   })
   const capture = defineComponent({
@@ -555,6 +544,7 @@ function renderDocumentLinks(
     framePreloadCache?: FramePreloadCache
     framePreloader?: ExpoTurboProviderProps["framePreloader"]
     onError?: (event: ExpoTurboRenderError) => void
+    onUnknownVocabulary?: ExpoTurboProviderProps["onUnknownVocabulary"]
     renderError?: (event: ExpoTurboRenderError) => ReactNode
     strict?: boolean
   }>,
@@ -9446,6 +9436,7 @@ describe("React protocol renderer", () => {
     const lifecycle = new DocumentVisitLifecycle()
     const events: string[] = []
     const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
     let harness: ReturnType<typeof renderDocumentLinks> | undefined
     lifecycle.subscribe("render", (event) => {
       expect(harness?.controller.state.status).toBe("started")
@@ -9466,6 +9457,9 @@ describe("React protocol renderer", () => {
       { visitLifecycle: lifecycle },
       () => ({
         onError: (event) => errors.push(event),
+        onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
         renderError: () => createElement("document-fallback", null, "Document fallback"),
       }),
     )
@@ -9479,7 +9473,7 @@ describe("React protocol renderer", () => {
         headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
         redirected: false,
         status: 200,
-        text: async () => "<Gallery><Unknown /></Gallery>",
+        text: async () => "<Unknown />",
         url: "https://example.test/broken",
       })
       await visit
@@ -9487,6 +9481,15 @@ describe("React protocol renderer", () => {
 
     expect(events).toEqual(["render:1", "load:1"])
     expect(errors).toHaveLength(1)
+    expect(errors[0]?.error).toBeInstanceOf(StateError)
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: "https://example.test/broken",
+        kind: "component",
+        nodeKey: "path.0",
+        tag: "Unknown",
+      },
+    ])
     expect(JSON.stringify(harness.renderer.toJSON())).toContain("Document fallback")
     act(() => harness?.renderer.unmount())
   })
@@ -13864,19 +13867,417 @@ describe("React protocol renderer", () => {
     expect(await controller.loaded).toMatchObject({ status: "canceled" })
   })
 
-  test("contains unknown components behind an actionable retryable error surface", async () => {
+  test("ignores unknown attributes and applies optional decode defaults", async () => {
+    function Resilient(
+      props: Readonly<{ children?: ReactNode; count: number; required: number }>,
+    ): ReactNode {
+      return createElement("resilient", { count: props.count, required: props.required }, props.children)
+    }
+    const resilient = defineComponent({
+      attributes: {
+        count: { codec: integerCodec, prop: "count" },
+        required: { codec: integerCodec, prop: "required" },
+      },
+      children: "nodes",
+      component: Resilient,
+      schema: z.object({ count: z.number().int().default(7), required: z.number().int() }),
+      tag: "Resilient",
+    })
+    const componentRegistry = registryWithCounters().use(
+      defineComponentModule({
+        components: [resilient],
+        name: "resilient-component",
+        version: "0.1.0",
+      }),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Resilient id="resilient" future-tone="bright" count="bad" required="1"><DemoText>Fallback</DemoText></Resilient></Gallery>',
+        { url: "https://example.test/resilient" },
+      ),
+    )
+    const renderer = render(session, componentRegistry, {
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+    })
+
+    const rendered = renderer.root.findAll((node) => String(node.type) === "resilient")
+    expect(rendered).toHaveLength(1)
+    expect(rendered[0]?.props).toMatchObject({ count: 7, required: 1 })
+    expect(vocabulary.map(({ attribute, kind }) => ({ attribute, kind }))).toEqual([
+      { attribute: "future-tone", kind: "attribute" },
+      { attribute: "count", kind: "attribute-decode" },
+    ])
+
+    act(() => session.setAttribute("id:resilient", "required", "bad"))
+    expect(renderer.root.findAll((node) => String(node.type) === "resilient")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Fallback")
+    expect(vocabulary.at(-1)).toMatchObject({
+      attribute: "required",
+      kind: "attribute-decode",
+      nodeKey: "id:resilient",
+      tag: "Resilient",
+    })
+
+    act(() => session.setAttribute("id:resilient", "required", "2"))
+    expect(renderer.root.findAll((node) => String(node.type) === "resilient")).toHaveLength(1)
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(3)
+  })
+
+  test("unwraps unknown vocabulary in Frame and Stream content", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><turbo-frame id="frame"><DemoText>Before Frame</DemoText></turbo-frame><Gallery id="stream-target"><DemoText>Before Stream</DemoText></Gallery></Gallery>',
+        { url: "https://example.test/updates" },
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+    })
+
+    await act(async () => {
+      await applyFrameResponse(
+        session,
+        "frame",
+        '<turbo-frame id="frame"><Unknown id="frame-unknown"><DemoText>Frame fallback</DemoText></Unknown></turbo-frame>',
+      )
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="update" target="stream-target"><template><Unknown id="stream-unknown"><DemoText>Stream fallback</DemoText></Unknown></template></turbo-stream>',
+      )
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("Frame fallback")
+    expect(JSON.stringify(renderer.toJSON())).toContain("Stream fallback")
+    expect(vocabulary.map(({ kind, tag }) => ({ kind, tag }))).toEqual([
+      { kind: "component", tag: "Unknown" },
+      { kind: "component", tag: "Unknown" },
+    ])
+    expect(vocabulary.every((event) => event.documentUrl === "https://example.test/updates")).toBe(
+      true,
+    )
+  })
+
+  test("reports a same-key unknown replacement once for each node identity", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Unknown id="future"><DemoText>First fallback</DemoText></Unknown></Gallery>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+      strict: true,
+    })
+
+    expect(vocabulary).toHaveLength(1)
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="future"><template><Unknown id="future"><DemoText>Second fallback</DemoText></Unknown></template></turbo-stream>',
+      )
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain("Second fallback")
+    expect(vocabulary).toHaveLength(2)
+    expect(vocabulary[0]?.nodeKey).toBe("id:future")
+    expect(vocabulary[1]?.nodeKey).toBe("id:future")
+  })
+
+  test("tolerates vocabulary through a public structural registry", async () => {
+    const base = registryWithCounters()
+    const registry = {
+      decode: base.decode.bind(base),
+      decodeForRender: base.decodeForRender.bind(base),
+    }
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(
+      new DocumentSession(
+        parseExpoTurboDocument(
+          "<Unknown><DemoText>Structural fallback</DemoText></Unknown>",
+        ),
+      ),
+      registry,
+      {
+        onError: (event) => errors.push(event),
+        onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+      },
+    )
+
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Structural fallback")
+  })
+
+  test("recovers a structural root error when the registry changes", async () => {
+    const session = new DocumentSession(parseExpoTurboDocument("<FutureRoot />"))
+    const errors: ExpoTurboRenderError[] = []
+    const base = registryWithCounters()
+    const future = defineComponent({
+      attributes: {},
+      children: "none",
+      component: () => createElement("future-root"),
+      schema: z.object({}),
+      tag: "FutureRoot",
+    })
+    const installed = base.use(
+      defineComponentModule({
+        components: [future],
+        name: "future-root",
+        version: "1.0.0",
+      }),
+    )
+    const provider = (registry: ExpoTurboProviderProps["registry"]) =>
+      createElement(
+        ExpoTurboProvider,
+        {
+          onError: (event) => errors.push(event),
+          registry,
+          renderError: () => createElement("protocol-error"),
+          session,
+        },
+        createElement(ExpoTurboRoot),
+      )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(provider(base))
+    })
+    if (!renderer) throw new Error("renderer was not created")
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+
+    act(() => renderer?.update(provider(installed)))
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "future-root")).toHaveLength(1)
+    expect(errors).toHaveLength(1)
+  })
+
+  test("rejects an unknown root that leaves nothing renderable", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(
+      new DocumentSession(
+        parseExpoTurboDocument("<Unknown>  <!-- nothing --></Unknown>"),
+      ),
+      registryWithCounters(),
+      {
+        onError: (event) => errors.push(event),
+        renderError: () => createElement("protocol-error"),
+      },
+    )
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error).toBeInstanceOf(StateError)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+  })
+
+  test("keeps a content region mounted under an unknown wrapper", async () => {
+    // A Frame under an unknown wrapper must still issue its request; blanking
+    // the document would unmount the node that loads the content.
+    const requests: TurboRequest[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Unknown id="shell"><turbo-frame id="detail" src="/detail" /></Unknown>',
+        { url: "https://example.test/current" },
+      ),
+    )
+    const frames = new FrameControllerRegistry(
+      session,
+      new FrameRequestLoader(
+        session,
+        {
+          fetch: async (request) => {
+            requests.push(request)
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () =>
+                '<turbo-frame id="detail"><DemoText>Detail content</DemoText></turbo-frame>',
+              url: request.url,
+            }
+          },
+        },
+        { next: () => "request-detail" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registryWithCounters(), {
+      frames,
+      onError: (event) => errors.push(event),
+      renderError: () => createElement("protocol-error"),
+    })
+    await act(async () => {
+      await frames.get("detail").loaded
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(requests.map((request) => request.url)).toEqual(["https://example.test/detail"])
+    expect(JSON.stringify(renderer.toJSON())).toContain("Detail content")
+  })
+
+  test("clears the blank-root error once a Stream restores content", async () => {
     const errors: ExpoTurboRenderError[] = []
     const session = new DocumentSession(
-      parseExpoTurboDocument('<Gallery><Unknown id="unknown" /></Gallery>'),
+      parseExpoTurboDocument('<Unknown id="shell"><!-- empty --></Unknown>'),
     )
     const renderer = render(session, registryWithCounters(), {
       onError: (event) => errors.push(event),
-      renderError: (event) => createElement("protocol-error", null, event.error.name),
+      renderError: () => createElement("protocol-error"),
     })
 
     expect(errors).toHaveLength(1)
-    expect(errors[0]?.nodeKey).toBe("id:unknown")
-    expect(JSON.stringify(renderer.toJSON())).toContain("RegistryError")
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="shell"><template><DemoText>Recovered</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
+  })
+
+  test("keeps form scope active when a required form-owner attribute unwraps", async () => {
+    function CaptureFallbackForm(): ReactNode {
+      const binding = useExpoTurboForm()
+      return createElement("fallback-form", { nodeKey: binding.formNodeKey })
+    }
+    const form = defineComponent({
+      attributes: { required: attr(integerCodec) },
+      children: "nodes",
+      component: ({ children }: Readonly<{ children?: ReactNode; required: number }>) =>
+        createElement(ExpoTurboFormScope, null, children),
+      formOwner: true,
+      tag: "FallbackForm",
+    })
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureFallbackForm,
+      schema: z.object({}),
+      tag: "CaptureFallbackForm",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [form, capture],
+        name: "fallback-form",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FallbackForm id="form" required="bad"><CaptureFallbackForm /></FallbackForm></Gallery>',
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    expect(vocabulary[0]).toMatchObject({
+      attribute: "required",
+      kind: "attribute-decode",
+      tag: "FallbackForm",
+    })
+    expect(renderer.root.findAll((node) => String(node.type) === "fallback-form")).toHaveLength(1)
+  })
+
+  test("warns in development and stays console-silent in production", async () => {
+    const development = globalThis as typeof globalThis & { __DEV__?: boolean }
+    const hadDevelopmentFlag = Object.hasOwn(development, "__DEV__")
+    const previousDevelopmentFlag = development.__DEV__
+    const originalWarn = console.warn
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const warnings: unknown[][] = []
+    console.warn = (...values: unknown[]) => {
+      warnings.push(values)
+    }
+
+    try {
+      development.__DEV__ = true
+      const developmentRenderer = render(
+        new DocumentSession(parseExpoTurboDocument("<Unknown><DemoText>Dev</DemoText></Unknown>")),
+        registryWithCounters(),
+        {
+          onUnknownVocabulary: (event) => {
+            vocabulary.push(event)
+          },
+        },
+      )
+      expect(warnings).toHaveLength(1)
+      act(() => developmentRenderer.unmount())
+
+      development.__DEV__ = false
+      const productionRenderer = render(
+        new DocumentSession(
+          parseExpoTurboDocument("<Unknown><DemoText>Production</DemoText></Unknown>"),
+        ),
+        registryWithCounters(),
+        {
+          onUnknownVocabulary: (event) => {
+            vocabulary.push(event)
+          },
+        },
+      )
+      expect(warnings).toHaveLength(1)
+      expect(vocabulary).toHaveLength(2)
+      act(() => productionRenderer.unmount())
+    } finally {
+      console.warn = originalWarn
+      if (hadDevelopmentFlag) development.__DEV__ = previousDevelopmentFlag
+      else delete development.__DEV__
+    }
+  })
+
+  test("unwraps and reports unknown components without entering the error surface", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><Unknown id="unknown"><DemoText>Unknown fallback</DemoText></Unknown></Gallery>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+      renderError: (event) => createElement("protocol-error", null, event.error.name),
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: "about:blank",
+        kind: "component",
+        nodeKey: "id:unknown",
+        tag: "Unknown",
+      },
+    ])
+    expect(Object.isFrozen(vocabulary[0])).toBe(true)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Unknown fallback")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
   })
 })
 

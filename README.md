@@ -143,6 +143,8 @@ behavior.
 
 - [x] Zod-backed typed component, component-action, and custom Stream registries
 - [x] Explicit attribute codecs, child slots, aliases, and capability hashes
+- [x] Browser-style fallback for unknown wrappers, attributes, and attribute codecs
+- [x] Commit-safe `onUnknownVocabulary` diagnostics with development warnings
 - [x] `ExpoTurboProvider`, `ExpoTurboRoot`, boundaries, hooks, and scoped state
 - [x] Small-slice external-store subscriptions and deterministic disposal
 - [x] Semantic style-token and direction adapters
@@ -244,8 +246,9 @@ sense on native platforms. It is not a browser DOM port of
 - Action Cable provides online delivery; missed-message correctness uses
   canonical reconciliation rather than durable replay.
 - Offline mutation replay is outside the Turbo contract.
-- Server XML can select only installed names and validated values. It cannot
-  import or execute code.
+- Server XML cannot import or execute code. Installed components decode known
+  names and validated values. Unknown wrappers are transparent, and unknown
+  attributes are ignored and reported to the host.
 - Expo Turbo has no JSON fallback and does not require migration of an existing
   renderer.
 

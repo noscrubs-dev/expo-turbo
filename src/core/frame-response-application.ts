@@ -18,6 +18,7 @@ import {
   type StreamDispatchControl,
   type StreamDispatchReport,
 } from "./streams.js"
+import { admitStructuralOutput } from "./structural-output-admission-internal.js"
 import { consumeThenableResult } from "./thenable-result.js"
 import {
   attributeValue,
@@ -223,6 +224,19 @@ export function prepareFrameMutation(
   }
   if (options.finalUrl) preflight.setAttribute(responseFrame, "src", options.finalUrl)
   if (options.documentUrl !== undefined) preflight.retargetDocumentUrl(options.documentUrl)
+
+  // Reject before the caller commits history or dispatches render lifecycle
+  // events, so a rejected response cannot advance history past unchanged content.
+  const admission = admitStructuralOutput(
+    session,
+    Object.freeze({ kind: "frame", nodes: responseFrame.children }),
+  )
+  if (admission && !admission.hasOutput && admission.hasVocabularyIssues) {
+    admission.report()
+    throw new StateError("Expo Turbo Frame root has no renderable output", {
+      frameId: prepared.frameId,
+    })
+  }
 
   const mutation = Object.freeze({ frameId: prepared.frameId })
   preparedFrameMutations.set(mutation, {
