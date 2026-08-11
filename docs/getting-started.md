@@ -295,8 +295,8 @@ form owner are indistinguishable to it; a document with a genuine orphan under
 a new wrapper reports the same event. `kind` still separates the causes.
 `component` means this build could not construct the element at all: either it
 does not have the tag, or the props and children it received did not match the
-component it does have. `attribute-decode` means a required attribute value it
-could not read.
+component it does have. `attribute-decode` means an attribute value it could not
+read.
 
 What the signal does guarantee is silence when there is no vocabulary involved.
 A control orphaned in a fully known document reports nothing, and neither does

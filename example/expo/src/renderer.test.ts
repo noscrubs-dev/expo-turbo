@@ -14990,10 +14990,10 @@ describe("React protocol renderer", () => {
     expect(errors).toHaveLength(0)
   })
 
-  test("raises the blank-root surface before any passive effect of the mount", async () => {
-    // react-test-renderer has no paint, so "no flash" is verified as the
-    // property that produces it: the verdict is applied from a layout effect,
-    // whose state update React flushes synchronously, before passive effects.
+  test("raises a tree-decided blank surface in the mount commit and an observed one after", async () => {
+    // react-test-renderer has no paint, so the two orderings stand in for it:
+    // a tree-decided blank is raised while rendering, and an observed one can
+    // only be raised after the commit that revealed it.
     const order: string[] = []
     function PassiveProbe(): ReactNode {
       useEffect(() => {
@@ -15072,6 +15072,120 @@ describe("React protocol renderer", () => {
     // this surface is in the mount commit and never shows an empty frame.
     expect(order.indexOf("error-surface")).toBeLessThan(order.indexOf("passive"))
     expect(order[0]).toBe("error-surface")
+  })
+
+  test("counts host document chrome as output", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/document-chrome" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const DocumentShell = (props: ExpoTurboDocumentBoundaryProps) =>
+      createElement("document-shell", null, props.children)
+    const renderer = render(session, blankingRefusalFixture(), {
+      documentComponent: DocumentShell,
+      documentController: new DocumentVisitController(session, {
+        fetch: async () => {
+          throw new Error("unused")
+        },
+      }),
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The shell belongs to no protocol node, so nothing else reports it. The
+    // refusal is the document's only other content, so a document that plainly
+    // shows the host's chrome would otherwise be replaced by a blank-root error.
+    expect(renderer.root.findAll((node) => String(node.type) === "document-shell")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  test("counts a node error surface as output but never the blank-root one", async () => {
+    function Failing(): ReactNode {
+      throw new StateError("node level failure")
+    }
+    const registry = blankingRefusalFixture().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: Failing,
+            schema: z.object({}),
+            tag: "FailingNode",
+          }),
+        ],
+        name: "node-error-output",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><FailingNode /></FutureRoot>',
+        { url: "https://example.test/node-error-output" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("node-error", null, event.error.message),
+    })
+
+    // The node error is the document's visible content. Replacing it with the
+    // blank-root surface would hide the failure the host is already showing.
+    expect(errors.map((event) => event.error.message)).toEqual(["node level failure"])
+    expect(JSON.stringify(renderer.toJSON())).toContain("node level failure")
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("no renderable fallback")
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+  })
+
+  test("counts host form chrome above an unwrapped owner as output", async () => {
+    function ChromeForm(props: Readonly<{ children?: ReactNode; required: number }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    const registry = blankingRefusalFixture().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: { required: attr(integerCodec) },
+            children: "nodes",
+            component: ChromeForm,
+            formOwner: true,
+            tag: "ChromeForm",
+          }),
+        ],
+        name: "form-chrome-output",
+        version: "1.0.0",
+      }),
+    )
+    // The owner unwraps on its undecodable attribute, so the unwrapped node is
+    // never counted, but its form scope still mounts the host's chrome.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><ChromeForm id="chrome" required="bad"><!-- nothing --></ChromeForm></FutureRoot>',
+        { url: "https://example.test/form-chrome" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const FormShell = (props: ExpoTurboFormBoundaryProps) =>
+      createElement("form-shell", null, props.children)
+    const renderer = render(session, registry, {
+      formComponent: FormShell,
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "form-shell")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+    expect(errors).toHaveLength(0)
   })
 
   test("survives a renderer remount while the refusal resolves", async () => {

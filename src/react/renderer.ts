@@ -1474,8 +1474,15 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
     () => Object.freeze({ binding, registry }),
     [binding, registry],
   )
+  // Host form chrome is visible output. A declared owner that unwraps still
+  // mounts this scope, and the unwrapped node itself is never counted, so
+  // without this the chrome would be output that nothing reports.
   const contents = FormComponent
-    ? createElement(FormComponent, { ...binding }, props.children)
+    ? createElement(
+        DocumentOutputMarker,
+        { kind: "output" },
+        createElement(FormComponent, { ...binding }, props.children),
+      )
     : props.children
   return createElement(
     StateScopeBoundary,
@@ -2851,13 +2858,17 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) {
       return createElement(DocumentOutputMarker, { kind: "drop" })
     }
-    // An error surface is not counted as output. The tree branch of the verdict
-    // already treats a node that fails to decode as rendering something, and
-    // counting the guard's own error surface would make the guard observe
-    // itself.
-    return (
+    const rendered =
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
-    )
+    // A node-level error surface is real output: a document showing one is not
+    // blank, and replacing it with the blank-root surface would hide the error
+    // the host is already reporting. The blank-root surface is the one
+    // exception, because counting it would make the guard observe its own
+    // output. The two are distinguishable here by the error that produced them.
+    if (rendered === null || this.state.error instanceof UnknownVocabularyStructuralError) {
+      return rendered
+    }
+    return createElement(DocumentOutputMarker, { kind: "output" }, rendered)
   }
 }
 
@@ -3967,7 +3978,13 @@ function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
           renderError: props.renderError,
           revision: state.revision,
         },
-        createElement(props.documentComponent, binding, props.children),
+        // Host document chrome is visible output that belongs to no protocol
+        // node, so nothing else would count it.
+        createElement(
+          DocumentOutputMarker,
+          { kind: "output" },
+          createElement(props.documentComponent, binding, props.children),
+        ),
       )
     : props.children
   return createElement(DocumentContext.Provider, { value: binding }, rendered)
