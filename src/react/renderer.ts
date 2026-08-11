@@ -985,7 +985,22 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
   return afterCommit === true
 }
 
-function useFormBinding(registry: FormControlRegistry, formNodeKey: string): ExpoTurboFormBinding {
+/**
+ * A form association whose owner tag is unknown must never reach the network:
+ * `action`, `method`, and `enctype` on that element are vocabulary this client
+ * cannot interpret. The binding keeps its read-only surface and refuses every
+ * operation that would build or dispatch a request, the way a browser gives a
+ * control no form owner when `form` points at a non-form element.
+ */
+function refuseInertFormOwner(operation: string): never {
+  throw new RegistryError(`Expo Turbo form ${operation} requires a known form owner`)
+}
+
+function useFormBinding(
+  registry: FormControlRegistry,
+  formNodeKey: string,
+  inert = false,
+): ExpoTurboFormBinding {
   const committedRegistry = useRef(registry)
   const deferredSubmissions = useRef<DeferredFormSubmission[]>([])
   const mounted = useRef(false)
@@ -1052,6 +1067,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
       options: ExpoTurboFormSubmitOptions,
       controllerOptions?: FormSubmissionControllerSubmitOptions,
     ): Promise<ActiveFormSubmissionReport> => {
+      if (inert) refuseInertFormOwner("submission")
       if (!formSubmitAfterCommit(options)) return registry.submit(options, controllerOptions)
       if (!mounted.current) {
         return Promise.reject(new StateError("Deferred form submission lost its React binding"))
@@ -1075,7 +1091,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
         })
       })
     },
-    [registry],
+    [inert, registry],
   )
   return useMemo<ExpoTurboFormBinding>(
     () =>
@@ -1085,46 +1101,58 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
         checkValidity: () => registry.checkValidity(),
         dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey,
-        requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        requestPlan: (options: ActiveFormRequestPlanOptions) =>
+          inert ? refuseInertFormOwner("request planning") : registry.requestPlan(options),
         retryFailure: (
           options: ActiveFormRetryOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => registry.retryFailure(options, controllerOptions),
+        ) =>
+          inert ? refuseInertFormOwner("retry") : registry.retryFailure(options, controllerOptions),
         reportValidity: () => registry.reportValidity(),
         state,
+        // An unknown owner is never an Expo Turbo submission to intercept,
+        // matching how `data-turbo="false"` and an off form mode answer.
         shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
-          registry.shouldInterceptSubmission(options),
+          inert ? false : registry.shouldInterceptSubmission(options),
         submit,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
-          registry.submissionProposal(options),
+          inert
+            ? refuseInertFormOwner("submission proposal")
+            : registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, registry, state, submit, terminalState],
+    [formNodeKey, inert, registry, state, submit, terminalState],
   )
 }
 
-type FormOwnerLookup =
-  | Readonly<{ status: "declared" | "undeclared" }>
-  | Readonly<{ issues: readonly RegistryVocabularyIssue[]; status: "unknown" }>
+type FormOwnerLookup = Readonly<{
+  issues: readonly RegistryVocabularyIssue[]
+  status: "declared" | "undeclared" | "unknown"
+}>
 
 /**
  * Classifies a form-association target the same way the render decode path
  * classifies any element: a tag this client does not know is deployment skew
  * reported as unknown vocabulary, not a failed association.
+ *
+ * The decode runs even when `resolve` knows the tag, because an owner that the
+ * document never renders has no other reporter for its unknown attributes.
  */
 function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): FormOwnerLookup {
-  const resolved = registry.resolve?.(element.tagName)
-  if (resolved) return Object.freeze({ status: resolved.formOwner ? "declared" : "undeclared" })
   const result = registry.decodeForRender(element)
-  const definition = result.status === "decoded" ? result.decoded.definition : result.definition
-  if (!definition) return Object.freeze({ issues: result.issues, status: "unknown" })
-  return Object.freeze({ status: definition.formOwner ? "declared" : "undeclared" })
+  const decoded = result.status === "decoded" ? result.decoded.definition : result.definition
+  const definition = decoded ?? registry.resolve?.(element.tagName)
+  return Object.freeze({
+    issues: result.issues,
+    status: !definition ? "unknown" : definition.formOwner ? "declared" : "undeclared",
+  })
 }
 
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
+  inert: boolean
   registry: FormControlRegistry
 }> {
   const { forms, registry: componentRegistry, session } = useRenderer()
@@ -1141,10 +1169,7 @@ function useResolvedFormRegistry(): Readonly<{
   const form = formId ? session.tree.getElementById(formId) : undefined
   const owner =
     form && formSnapshot?.node === form ? lookupFormOwner(componentRegistry, form) : undefined
-  useUnknownVocabularyReport(
-    owner?.status === "unknown" ? form : undefined,
-    owner?.status === "unknown" ? owner.issues : NO_VOCABULARY_ISSUES,
-  )
+  useUnknownVocabularyReport(owner ? form : undefined, owner?.issues ?? NO_VOCABULARY_ISSUES)
 
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey || !node || !isElement(node)) {
@@ -1159,7 +1184,11 @@ function useResolvedFormRegistry(): Readonly<{
         "Expo Turbo form binding requires a form scope or explicit form association",
       )
     }
-    return Object.freeze({ formNodeKey: context.binding.formNodeKey, registry: context.registry })
+    return Object.freeze({
+      formNodeKey: context.binding.formNodeKey,
+      inert: false,
+      registry: context.registry,
+    })
   }
 
   if (!form || formSnapshot?.node !== form) {
@@ -1168,10 +1197,15 @@ function useResolvedFormRegistry(): Readonly<{
   if (owner?.status === "undeclared") {
     throw new RegistryError("Expo Turbo form association target is not a declared form owner")
   }
-  // An unknown owner tag keeps the control bound to the owner's node key: the
-  // association is inert while the wrapper unwraps, and it becomes live again
-  // as soon as a known form owner occupies that key.
-  return Object.freeze({ formNodeKey: form.key, registry: forms.controlsFor(form.key) })
+  // An unknown owner tag keeps the control bound to the owner's node key so its
+  // disabled and pending state stay coherent and the association becomes live
+  // as soon as a known form owner occupies that key. Until then the binding is
+  // inert: nothing it exposes can build or dispatch a request.
+  return Object.freeze({
+    formNodeKey: form.key,
+    inert: owner?.status === "unknown",
+    registry: forms.controlsFor(form.key),
+  })
 }
 
 function reportFormAnnouncementError(
@@ -1324,8 +1358,8 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
 }
 
 export function useExpoTurboForm(): ExpoTurboFormBinding {
-  const { formNodeKey, registry } = useResolvedFormRegistry()
-  return useFormBinding(registry, formNodeKey)
+  const { formNodeKey, inert, registry } = useResolvedFormRegistry()
+  return useFormBinding(registry, formNodeKey, inert)
 }
 
 export function useExpoTurboFormControl(

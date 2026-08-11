@@ -70,6 +70,7 @@ import {
   FrameRequestLoader,
   parseExpoTurboDocument,
   renderedNodeTextContent,
+  RegistryError,
   RequestError,
   RequestLifecycle,
   StateError,
@@ -14302,6 +14303,119 @@ describe("React protocol renderer", () => {
     expect(captured?.successfulEntries()).toEqual([{ name: "field", value: "A" }])
   })
 
+  test("refuses every request an unknown form owner could produce", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+    function CaptureInertOwner(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("inert-owner-form")
+    }
+    function InertOwnerValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("inert-owner-value")
+    }
+    function LiveOwner(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureInertOwner,
+      schema: z.object({}),
+      tag: "CaptureInertOwner",
+    })
+    const value = defineComponent({
+      attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+      children: "none",
+      component: InertOwnerValue,
+      tag: "InertOwnerValue",
+    })
+    const live = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: LiveOwner,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "LiveOwner",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [capture, live, value],
+        name: "inert-form-owner",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureForm id="form" action="/danger" method="post"><InertOwnerValue form="form" name="field" value="A" /><CaptureInertOwner form="form" /></FutureForm></Gallery>',
+        { url: "https://example.test/inert" },
+      ),
+    )
+    const requests: TurboRequest[] = []
+    const submissionController = new FormSubmissionController(session, {
+      fetch: async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+    })
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session, { submissionController }),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // `action` and `method` on an unknown tag are vocabulary this client cannot
+    // interpret, so nothing the binding exposes may turn them into a request.
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    for (const produce of [
+      () => captured?.requestPlan({ protocol: { requestId: "inert-plan" } }),
+      () => captured?.submissionProposal({ protocol: { requestId: "inert-proposal" } }),
+      () => captured?.retryFailure({ protocol: { requestId: "inert-retry" } }),
+      () => captured?.submit({ protocol: { requestId: "inert-submit" } }),
+    ]) {
+      expect(produce).toThrow(RegistryError)
+      expect(produce).toThrow("requires a known form owner")
+    }
+    expect(captured?.shouldInterceptSubmission()).toBe(false)
+    expect(captured?.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+    expect(requests).toHaveLength(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><LiveOwner id="form" action="/known" method="post"><InertOwnerValue form="form" name="field" value="A" /><CaptureInertOwner form="form" /></LiveOwner></template></turbo-stream>',
+      )
+    })
+
+    // A known form owner on the same key restores the live submission path.
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    expect(captured?.shouldInterceptSubmission()).toBe(true)
+    expect(captured?.requestPlan({ protocol: { requestId: "live-plan" } })).toMatchObject({
+      effectiveMethod: "POST",
+      entries: [{ name: "field", value: "A" }],
+      request: { method: "POST", url: "https://example.test/known" },
+    })
+    expect(requests).toHaveLength(0)
+  })
+
   test("reports an unknown form owner the document never renders", async () => {
     function HiddenOwner(): ReactNode {
       return createElement("hidden-owner")
@@ -14361,6 +14475,77 @@ describe("React protocol renderer", () => {
     expect(
       renderer.root.findAll((node) => String(node.type) === "hidden-owner-value"),
     ).toHaveLength(1)
+  })
+
+  test("reports an unknown attribute on a form owner the document never renders", async () => {
+    function HiddenScope(): ReactNode {
+      return createElement("hidden-scope")
+    }
+    function ScopedOwner(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(ExpoTurboFormScope, null, props.children)
+    }
+    function ScopedValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("scoped-value")
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: HiddenScope,
+            schema: z.object({}),
+            tag: "HiddenScope",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: ScopedOwner,
+            formOwner: true,
+            schema: z.object({}),
+            tag: "ScopedOwner",
+          }),
+          defineComponent({
+            attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+            children: "none",
+            component: ScopedValue,
+            tag: "ScopedValue",
+          }),
+        ],
+        name: "hidden-owner-attribute",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><HiddenScope><ScopedOwner id="form" future-layout="stacked" /></HiddenScope><ScopedValue form="form" name="field" value="A" /></Gallery>',
+        { url: "https://example.test/hidden-attribute" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The owner is a known form owner, so resolving it alone would report
+    // nothing. Only decoding it surfaces the attribute the client cannot read.
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toEqual([
+      {
+        attribute: "future-layout",
+        documentUrl: "https://example.test/hidden-attribute",
+        kind: "attribute",
+        nodeKey: "id:form",
+        tag: "ScopedOwner",
+      },
+    ])
   })
 
   test("warns in development and stays console-silent in production", async () => {

@@ -243,11 +243,18 @@ state.
 They stay available through `protocol.data` and never report as unknown.
 
 A `form` association whose owner tag is unknown reports the owner as an unknown
-component instead of failing the control. The association stays inert while the
-owner unwraps and becomes live as soon as a known form owner occupies that node
-key. A `form` value that points at a known component which is not a declared
-form owner remains an error, because that is a document defect rather than a
-vocabulary gap.
+component instead of failing the control. The association is inert: the control
+still renders, and its binding still answers state, validity, and
+`successfulEntries()`, but `submit()`, `requestPlan()`, `submissionProposal()`,
+and `retryFailure()` raise a `RegistryError` and `shouldInterceptSubmission()`
+answers `false`. `action`, `method`, and `enctype` on a tag this client cannot
+interpret must never become a request. The association becomes live as soon as
+a known form owner occupies that node key.
+
+A `form` value that points at a known component which is not a declared form
+owner remains an error, because that is a document defect rather than a
+vocabulary gap. An unknown attribute on a form owner is reported even when the
+document never renders that owner.
 
 Tolerance must not silently show an empty screen. When a tolerated fallback
 leaves no structurally renderable content, Expo Turbo protects each root kind:

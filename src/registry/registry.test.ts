@@ -761,6 +761,18 @@ describe("typed component registry", () => {
     expect(unknown.definition).toBeUndefined()
     expect(unknown.issues).toEqual([{ kind: "component", tag: "FutureForm" }])
 
+    // A known owner reports its own unknown attributes on the decoded path, so
+    // an association can report an owner the document never renders.
+    const decoded = registry.decodeForRender(
+      element('<DemoForm id="form" required="1" future-layout="stacked" />'),
+    )
+    expect(decoded.status).toBe("decoded")
+    if (decoded.status !== "decoded") throw new Error("known form owner did not decode")
+    expect(decoded.decoded.definition.formOwner).toBe(true)
+    expect(decoded.issues).toEqual([
+      { attribute: "future-layout", kind: "attribute", tag: "DemoForm" },
+    ])
+
     // A known owner keeps its definition on the transparent path, so a required
     // attribute failure still resolves as a declared form owner.
     const degraded = registry.decodeForRender(element('<DemoForm id="form" required="bad" />'))
