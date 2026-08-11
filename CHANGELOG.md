@@ -16,10 +16,14 @@ All notable public package, gem, and protocol changes will be recorded here.
   `onUnknownVocabulary` instead of failing the control, and stays inert until a
   known form owner occupies that node key: its binding keeps state, validity,
   and entries, refuses `submit()`, `requestPlan()`, `submissionProposal()`, and
-  `retryFailure()`, and never turns `action` or `method` from an uninterpretable
-  tag into a request. Unknown attributes on a form owner report even when the
-  document never renders that owner. Native form-owner protocol attributes no
-  longer require duplicate component props
+  `retryFailure()`, rejects a submission deferred with `afterCommit` whose owner
+  tag stops being known before it runs, and never turns `action` or `method`
+  from an uninterpretable tag into a request. A refusal raised while rendering
+  drops that node and reports instead of raising the document error surface.
+  Unknown attributes on a form owner report even when the document never renders
+  that owner, and an owner rejected as undeclared reports them before it fails.
+  Native form-owner protocol attributes no longer require duplicate component
+  props
   ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
 - **Breaking:** `ComponentRegistry` and `ExpoTurboProvider` registries now
   require `decodeForRender()`. Registries from `createRegistry()` already

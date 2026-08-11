@@ -14477,6 +14477,208 @@ describe("React protocol renderer", () => {
     ).toHaveLength(1)
   })
 
+  test("rejects a deferred submission when the owner tag stops being known", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+    function CaptureDeferred(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("deferred-form")
+    }
+    function DeferredValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("deferred-value")
+    }
+    const shared = [
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: CaptureDeferred,
+        schema: z.object({}),
+        tag: "CaptureDeferred",
+      }),
+      defineComponent({
+        attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+        children: "none",
+        component: DeferredValue,
+        tag: "DeferredValue",
+      }),
+    ]
+    const skewOwner = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: (props: Readonly<{ children?: ReactNode }>) =>
+        createElement(ExpoTurboFormScope, null, props.children),
+      formOwner: true,
+      schema: z.object({}),
+      tag: "SkewForm",
+    })
+    // Both registries share one base so only the owner tag differs between
+    // them; every other component keeps its identity across the swap.
+    const forgetting = registryWithCounters().use(
+      defineComponentModule({
+        components: shared,
+        name: "deferred-skew-controls",
+        version: "1.0.0",
+      }),
+    )
+    const knowing = forgetting.use(
+      defineComponentModule({
+        components: [skewOwner],
+        name: "deferred-skew-owner",
+        version: "1.0.0",
+      }),
+    )
+    // The control is a sibling of the owner, so forgetting the owner tag leaves
+    // the control mounted with the same form registry and the same owner node.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><SkewForm id="form" action="/danger" method="post" /><DeferredValue form="form" name="field" value="A" /><CaptureDeferred form="form" /></Gallery>',
+        { url: "https://example.test/deferred-skew" },
+      ),
+    )
+    const requests: TurboRequest[] = []
+    const submissionController = new FormSubmissionController(session, {
+      fetch: async (request) => {
+        requests.push(request)
+        return {
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: false,
+          status: 200,
+          text: async () => "<Gallery />",
+          url: request.url,
+        }
+      },
+    })
+    const forms = new DocumentFormControls(session, { submissionController })
+    const errors: ExpoTurboRenderError[] = []
+    const provider = (registry: ExpoTurboProviderProps["registry"]) =>
+      createElement(
+        ExpoTurboProvider,
+        {
+          forms,
+          onError: (event: ExpoTurboRenderError) => errors.push(event),
+          registry,
+          session,
+        },
+        createElement(ExpoTurboRoot),
+      )
+    let renderer: ReactTestRenderer | undefined
+    act(() => {
+      renderer = create(provider(knowing))
+    })
+    if (!renderer) throw new Error("deferred skew renderer was not created")
+
+    // Queue while the owner is known, then forget the tag before the commit
+    // that flushes the queue.
+    const deferred = captured?.submit({
+      afterCommit: true,
+      protocol: { requestId: "deferred-skew" },
+    })
+    let settled: string | undefined
+    deferred?.then(
+      () => {
+        settled = "resolved"
+      },
+      (error: unknown) => {
+        settled = error instanceof Error ? error.message : String(error)
+      },
+    )
+    await act(async () => {
+      renderer?.update(provider(forgetting))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await deferred?.catch(() => undefined)
+    })
+
+    expect(settled).toBe("Expo Turbo form submission requires a known form owner")
+    expect(requests).toHaveLength(0)
+    expect(errors).toHaveLength(0)
+  })
+
+  test("drops a node that refuses an unknown owner while rendering", async () => {
+    function PlanPreview(): ReactNode {
+      const binding = useExpoTurboForm()
+      // A pure builder a host can reasonably call while rendering.
+      const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
+      return createElement("plan-preview", { url: plan.request.url })
+    }
+    const preview = defineComponent({
+      attributes: {},
+      children: "none",
+      component: PlanPreview,
+      schema: z.object({}),
+      tag: "PlanPreview",
+    })
+    const previewOwner = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: (props: Readonly<{ children?: ReactNode }>) =>
+        createElement(ExpoTurboFormScope, null, props.children),
+      formOwner: true,
+      schema: z.object({}),
+      tag: "PreviewOwner",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [preview, previewOwner],
+        name: "render-phase-refusal",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureForm id="form" action="/danger" method="post" /><PlanPreview form="form" /><DemoText>Sibling</DemoText></Gallery>',
+        { url: "https://example.test/render-refusal" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The refusal degrades the node the way an unknown tag with no children
+    // does. It must not raise the document error surface.
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(renderer.root.findAll((node) => String(node.type) === "plan-preview")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Sibling")
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: "https://example.test/render-refusal",
+        kind: "component",
+        nodeKey: "id:form",
+        tag: "FutureForm",
+      },
+    ])
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><PreviewOwner id="form" action="/known" method="post" /></template></turbo-stream>',
+      )
+    })
+
+    // A known owner on the same key resets the association boundary, so the
+    // dropped node renders again.
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    expect(
+      renderer.root.find((node) => String(node.type) === "plan-preview").props,
+    ).toMatchObject({ url: "https://example.test/known" })
+  })
+
   test("reports an unknown attribute on a form owner the document never renders", async () => {
     function HiddenScope(): ReactNode {
       return createElement("hidden-scope")
@@ -14544,6 +14746,74 @@ describe("React protocol renderer", () => {
         kind: "attribute",
         nodeKey: "id:form",
         tag: "ScopedOwner",
+      },
+    ])
+  })
+
+  test("reports an unknown attribute on an undeclared form owner it rejects", async () => {
+    function HiddenHost(): ReactNode {
+      return createElement("hidden-host")
+    }
+    function RejectedValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("rejected-value")
+    }
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "nodes",
+            component: HiddenHost,
+            schema: z.object({}),
+            tag: "HiddenHost",
+          }),
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: () => createElement("not-a-form"),
+            schema: z.object({}),
+            tag: "NotAForm",
+          }),
+          defineComponent({
+            attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+            children: "none",
+            component: RejectedValue,
+            tag: "RejectedValue",
+          }),
+        ],
+        name: "undeclared-owner-attribute",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><HiddenHost><NotAForm id="form" future-layout="stacked" /></HiddenHost><RejectedValue form="form" name="field" value="A" /></Gallery>',
+        { url: "https://example.test/undeclared-owner" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // Pointing `form` at a known component that is not a form owner stays a
+    // document defect, but the throw preempts the reporting effect, so the
+    // owner's unknown attribute is reported before the association fails.
+    expect(errors[0]?.error.message).toContain("is not a declared form owner")
+    expect(vocabulary).toEqual([
+      {
+        attribute: "future-layout",
+        documentUrl: "https://example.test/undeclared-owner",
+        kind: "attribute",
+        nodeKey: "id:form",
+        tag: "NotAForm",
       },
     ])
   })

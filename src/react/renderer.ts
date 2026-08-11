@@ -992,15 +992,31 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
  * operation that would build or dispatch a request, the way a browser gives a
  * control no form owner when `form` points at a non-form element.
  */
-function refuseInertFormOwner(operation: string): never {
-  throw new RegistryError(`Expo Turbo form ${operation} requires a known form owner`)
-}
+type InertFormOwner = Readonly<{
+  issues: readonly RegistryVocabularyIssue[]
+  node: ProtocolElement
+}>
 
 function useFormBinding(
   registry: FormControlRegistry,
   formNodeKey: string,
-  inert = false,
+  inert?: InertFormOwner,
 ): ExpoTurboFormBinding {
+  const { onUnknownVocabulary, session: rendererSession } = useRenderer()
+  const generation = rendererSession.treeGeneration
+  const refuse = useCallback(
+    (operation: string, owner: InertFormOwner): never => {
+      throw new InertFormOwnerError(operation, {
+        generation,
+        handler: onUnknownVocabulary,
+        issues: owner.issues,
+        node: owner.node,
+        session: rendererSession,
+      })
+    },
+    [generation, onUnknownVocabulary, rendererSession],
+  )
+  const committedInert = useRef(inert)
   const committedRegistry = useRef(registry)
   const deferredSubmissions = useRef<DeferredFormSubmission[]>([])
   const mounted = useRef(false)
@@ -1030,6 +1046,7 @@ function useFormBinding(
     }
   }, [])
   useLayoutEffect(() => {
+    committedInert.current = inert
     committedRegistry.current = registry
   })
   useLayoutEffect(() => {
@@ -1052,6 +1069,13 @@ function useFormBinding(
           submission.reject(new StateError("Deferred form submission changed its React binding"))
           continue
         }
+        // The owner tag can stop being known between queueing and execution
+        // while the node and its form registry both stay active, so inertness
+        // is rechecked here rather than trusted from the queueing render.
+        if (committedInert.current) {
+          submission.reject(new InertFormOwnerError("submission"))
+          continue
+        }
         try {
           void submission.registry
             .submit(submission.options, submission.controllerOptions)
@@ -1067,7 +1091,7 @@ function useFormBinding(
       options: ExpoTurboFormSubmitOptions,
       controllerOptions?: FormSubmissionControllerSubmitOptions,
     ): Promise<ActiveFormSubmissionReport> => {
-      if (inert) refuseInertFormOwner("submission")
+      if (inert) refuse("submission", inert)
       if (!formSubmitAfterCommit(options)) return registry.submit(options, controllerOptions)
       if (!mounted.current) {
         return Promise.reject(new StateError("Deferred form submission lost its React binding"))
@@ -1091,7 +1115,7 @@ function useFormBinding(
         })
       })
     },
-    [inert, registry],
+    [inert, refuse, registry],
   )
   return useMemo<ExpoTurboFormBinding>(
     () =>
@@ -1102,12 +1126,11 @@ function useFormBinding(
         dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) =>
-          inert ? refuseInertFormOwner("request planning") : registry.requestPlan(options),
+          inert ? refuse("request planning", inert) : registry.requestPlan(options),
         retryFailure: (
           options: ActiveFormRetryOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) =>
-          inert ? refuseInertFormOwner("retry") : registry.retryFailure(options, controllerOptions),
+        ) => (inert ? refuse("retry", inert) : registry.retryFailure(options, controllerOptions)),
         reportValidity: () => registry.reportValidity(),
         state,
         // An unknown owner is never an Expo Turbo submission to intercept,
@@ -1116,14 +1139,12 @@ function useFormBinding(
           inert ? false : registry.shouldInterceptSubmission(options),
         submit,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
-          inert
-            ? refuseInertFormOwner("submission proposal")
-            : registry.submissionProposal(options),
+          inert ? refuse("submission proposal", inert) : registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, inert, registry, state, submit, terminalState],
+    [formNodeKey, inert, refuse, registry, state, submit, terminalState],
   )
 }
 
@@ -1152,10 +1173,10 @@ function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): Fo
 
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
-  inert: boolean
+  inert?: InertFormOwner
   registry: FormControlRegistry
 }> {
-  const { forms, registry: componentRegistry, session } = useRenderer()
+  const { forms, onUnknownVocabulary, registry: componentRegistry, session } = useRenderer()
   const context = useContext(FormContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const nodeSnapshot = useProtocolNode(nodeKey ?? MISSING_FORM_OWNER_KEY)
@@ -1186,7 +1207,6 @@ function useResolvedFormRegistry(): Readonly<{
     }
     return Object.freeze({
       formNodeKey: context.binding.formNodeKey,
-      inert: false,
       registry: context.registry,
     })
   }
@@ -1195,6 +1215,17 @@ function useResolvedFormRegistry(): Readonly<{
     throw new RegistryError("Expo Turbo form association references a missing form owner")
   }
   if (owner?.status === "undeclared") {
+    // This throw is a document defect rather than a vocabulary gap, but it
+    // preempts the reporting effect, so the owner's own issues are delivered
+    // here. Delivery is claimed per node, generation, issue, and sink, so the
+    // effect and this path cannot report the same issue twice.
+    deliverUnknownVocabularyIssues(
+      session,
+      form,
+      session.treeGeneration,
+      owner.issues,
+      onUnknownVocabulary,
+    )
     throw new RegistryError("Expo Turbo form association target is not a declared form owner")
   }
   // An unknown owner tag keeps the control bound to the owner's node key so its
@@ -1203,7 +1234,9 @@ function useResolvedFormRegistry(): Readonly<{
   // inert: nothing it exposes can build or dispatch a request.
   return Object.freeze({
     formNodeKey: form.key,
-    inert: owner?.status === "unknown",
+    ...(owner?.status === "unknown"
+      ? { inert: Object.freeze({ issues: owner.issues, node: form }) }
+      : {}),
     registry: forms.controlsFor(form.key),
   })
 }
@@ -2473,6 +2506,32 @@ export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
   return useContext(FrameContext)
 }
 
+interface InertFormOwnerMetadata {
+  readonly generation: number
+  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly issues: readonly RegistryVocabularyIssue[]
+  readonly node: ProtocolElement
+  readonly session: DocumentSession
+}
+
+const inertFormOwnerMetadata = new WeakMap<InertFormOwnerError, InertFormOwnerMetadata>()
+
+/**
+ * Refusal from an inert form owner. Handlers see an ordinary `RegistryError`,
+ * so a caller can never mistake a refusal for a usable request. A component
+ * that calls a guarded method while rendering instead degrades to nothing and
+ * reports through `onUnknownVocabulary`, because a vocabulary gap must never
+ * raise the document error surface.
+ */
+class InertFormOwnerError extends RegistryError {
+  constructor(operation: string, metadata?: InertFormOwnerMetadata) {
+    super(`Expo Turbo form ${operation} requires a known form owner`, {
+      ...(metadata ? { target: metadata.node.key } : {}),
+    })
+    if (metadata) inertFormOwnerMetadata.set(this, metadata)
+  }
+}
+
 interface UnknownVocabularyStructuralMetadata {
   readonly diagnostics: readonly RegistryStructuralOutputDiagnostic[]
   readonly generation: number
@@ -2538,6 +2597,25 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   componentDidCatch(error: Error): void {
     if (alreadyReportedRenderErrors.has(error)) return
+    const inertMetadata =
+      error instanceof InertFormOwnerError ? inertFormOwnerMetadata.get(error) : undefined
+    if (inertMetadata) {
+      // A refusal raised while rendering is a tolerated vocabulary gap, not a
+      // document error: report it and let the node degrade to nothing.
+      if (
+        inertMetadata.session.treeGeneration === inertMetadata.generation &&
+        inertMetadata.session.getNodeSnapshot(inertMetadata.node.key)?.node === inertMetadata.node
+      ) {
+        deliverUnknownVocabularyIssues(
+          inertMetadata.session,
+          inertMetadata.node,
+          inertMetadata.generation,
+          inertMetadata.issues,
+          inertMetadata.handler,
+        )
+      }
+      return
+    }
     const structuralMetadata =
       error instanceof UnknownVocabularyStructuralError
         ? unknownVocabularyStructuralMetadata.get(error)
@@ -2571,6 +2649,9 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   render(): ReactNode {
     if (!this.state.error) return this.props.children
+    // A tolerated inert-owner refusal drops the node the way an unknown tag
+    // with no children does, instead of raising the error surface.
+    if (inertFormOwnerMetadata.has(this.state.error as InertFormOwnerError)) return null
     return (
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
     )

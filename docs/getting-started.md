@@ -248,13 +248,21 @@ still renders, and its binding still answers state, validity, and
 `successfulEntries()`, but `submit()`, `requestPlan()`, `submissionProposal()`,
 and `retryFailure()` raise a `RegistryError` and `shouldInterceptSubmission()`
 answers `false`. `action`, `method`, and `enctype` on a tag this client cannot
-interpret must never become a request. The association becomes live as soon as
-a known form owner occupies that node key.
+interpret must never become a request, so a submission deferred with
+`afterCommit` is also rejected when the owner tag stops being known before the
+queued submission runs. The association becomes live as soon as a known form
+owner occupies that node key.
+
+A component that calls one of the refused methods *while rendering* does not
+raise the document error surface. That node renders nothing, the way an unknown
+tag with no children does, and the gap reports through `onUnknownVocabulary`.
+The node renders again once a known form owner occupies the node key.
 
 A `form` value that points at a known component which is not a declared form
 owner remains an error, because that is a document defect rather than a
-vocabulary gap. An unknown attribute on a form owner is reported even when the
-document never renders that owner.
+vocabulary gap. Unknown attributes on the owner are still reported first, and
+an unknown attribute on a form owner is reported even when the document never
+renders that owner.
 
 Tolerance must not silently show an empty screen. When a tolerated fallback
 leaves no structurally renderable content, Expo Turbo protects each root kind:
