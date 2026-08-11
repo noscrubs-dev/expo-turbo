@@ -1105,6 +1105,24 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
   )
 }
 
+type FormOwnerLookup =
+  | Readonly<{ status: "declared" | "undeclared" }>
+  | Readonly<{ issues: readonly RegistryVocabularyIssue[]; status: "unknown" }>
+
+/**
+ * Classifies a form-association target the same way the render decode path
+ * classifies any element: a tag this client does not know is deployment skew
+ * reported as unknown vocabulary, not a failed association.
+ */
+function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): FormOwnerLookup {
+  const resolved = registry.resolve?.(element.tagName)
+  if (resolved) return Object.freeze({ status: resolved.formOwner ? "declared" : "undeclared" })
+  const result = registry.decodeForRender(element)
+  const definition = result.status === "decoded" ? result.decoded.definition : result.definition
+  if (!definition) return Object.freeze({ issues: result.issues, status: "unknown" })
+  return Object.freeze({ status: definition.formOwner ? "declared" : "undeclared" })
+}
+
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
   registry: FormControlRegistry
@@ -1120,6 +1138,13 @@ function useResolvedFormRegistry(): Readonly<{
       ? `id:${formId}`
       : (context?.binding.formNodeKey ?? MISSING_FORM_OWNER_KEY)
   const formSnapshot = useProtocolNode(formNodeKey)
+  const form = formId ? session.tree.getElementById(formId) : undefined
+  const owner =
+    form && formSnapshot?.node === form ? lookupFormOwner(componentRegistry, form) : undefined
+  useUnknownVocabularyReport(
+    owner?.status === "unknown" ? form : undefined,
+    owner?.status === "unknown" ? owner.issues : NO_VOCABULARY_ISSUES,
+  )
 
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey || !node || !isElement(node)) {
@@ -1137,18 +1162,15 @@ function useResolvedFormRegistry(): Readonly<{
     return Object.freeze({ formNodeKey: context.binding.formNodeKey, registry: context.registry })
   }
 
-  const form = session.tree.getElementById(formId)
   if (!form || formSnapshot?.node !== form) {
     throw new RegistryError("Expo Turbo form association references a missing form owner")
   }
-  let definition = componentRegistry.resolve?.(form.tagName)
-  if (!definition) {
-    const result = componentRegistry.decodeForRender(form)
-    definition = result.status === "decoded" ? result.decoded.definition : result.definition
-  }
-  if (!definition?.formOwner) {
+  if (owner?.status === "undeclared") {
     throw new RegistryError("Expo Turbo form association target is not a declared form owner")
   }
+  // An unknown owner tag keeps the control bound to the owner's node key: the
+  // association is inert while the wrapper unwraps, and it becomes live again
+  // as soon as a known form owner occupies that key.
   return Object.freeze({ formNodeKey: form.key, registry: forms.controlsFor(form.key) })
 }
 
@@ -2614,25 +2636,29 @@ function decodeRegisteredElement(
   return registry.decodeForRender(node)
 }
 
+const NO_VOCABULARY_ISSUES: readonly RegistryVocabularyIssue[] = Object.freeze([])
+
+function useUnknownVocabularyReport(
+  node: ProtocolElement | undefined,
+  issues: readonly RegistryVocabularyIssue[],
+): void {
+  const { onUnknownVocabulary, session } = useRenderer()
+  const generation = session.treeGeneration
+  useEffect(() => {
+    if (!node || issues.length === 0) return
+    if (session.treeGeneration !== generation) return
+    if (session.getNodeSnapshot(node.key)?.node !== node) return
+    deliverUnknownVocabularyIssues(session, node, generation, issues, onUnknownVocabulary)
+  }, [generation, issues, node, onUnknownVocabulary, session])
+}
+
 function UnknownVocabularyReporter(
   props: Readonly<{
     issues: readonly RegistryVocabularyIssue[]
     node: ProtocolElement
   }>,
 ): ReactNode {
-  const { onUnknownVocabulary, session } = useRenderer()
-  const generation = session.treeGeneration
-  useEffect(() => {
-    if (session.treeGeneration !== generation) return
-    if (session.getNodeSnapshot(props.node.key)?.node !== props.node) return
-    deliverUnknownVocabularyIssues(
-      session,
-      props.node,
-      generation,
-      props.issues,
-      onUnknownVocabulary,
-    )
-  }, [generation, onUnknownVocabulary, props.issues, props.node, session])
+  useUnknownVocabularyReport(props.node, props.issues)
   return null
 }
 

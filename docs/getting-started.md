@@ -242,6 +242,13 @@ state.
 `data-*` attributes are shared protocol metadata, not component vocabulary.
 They stay available through `protocol.data` and never report as unknown.
 
+A `form` association whose owner tag is unknown reports the owner as an unknown
+component instead of failing the control. The association stays inert while the
+owner unwraps and becomes live as soon as a known form owner occupies that node
+key. A `form` value that points at a known component which is not a declared
+form owner remains an error, because that is a document defect rather than a
+vocabulary gap.
+
 Tolerance must not silently show an empty screen. When a tolerated fallback
 leaves no structurally renderable content, Expo Turbo protects each root kind:
 

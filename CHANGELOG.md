@@ -11,8 +11,11 @@ All notable public package, gem, and protocol changes will be recorded here.
   diagnostics with development warnings, and protect blank output: document
   roots and Frame responses raise their error surface, while a Stream action
   becomes a no-op that leaves the rendered screen intact. `data-*` attributes
-  stay shared protocol metadata and never report as unknown vocabulary. Native
-  form-owner protocol attributes no longer require duplicate component props
+  stay shared protocol metadata and never report as unknown vocabulary. A
+  `form` association whose owner tag is unknown reports the owner through
+  `onUnknownVocabulary` and stays inert until a known form owner occupies that
+  node key, instead of failing the control. Native form-owner protocol
+  attributes no longer require duplicate component props
   ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
 - **Breaking:** `ComponentRegistry` and `ExpoTurboProvider` registries now
   require `decodeForRender()`. Registries from `createRegistry()` already

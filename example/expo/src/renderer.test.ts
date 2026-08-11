@@ -13871,7 +13871,11 @@ describe("React protocol renderer", () => {
     function Resilient(
       props: Readonly<{ children?: ReactNode; count: number; required: number }>,
     ): ReactNode {
-      return createElement("resilient", { count: props.count, required: props.required }, props.children)
+      return createElement(
+        "resilient",
+        { count: props.count, required: props.required },
+        props.children,
+      )
     }
     const resilient = defineComponent({
       attributes: {
@@ -13901,8 +13905,8 @@ describe("React protocol renderer", () => {
     const renderer = render(session, componentRegistry, {
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
-          vocabulary.push(event)
-        },
+        vocabulary.push(event)
+      },
     })
 
     const rendered = renderer.root.findAll((node) => String(node.type) === "resilient")
@@ -13939,8 +13943,8 @@ describe("React protocol renderer", () => {
     )
     const renderer = render(session, registryWithCounters(), {
       onUnknownVocabulary: (event) => {
-          vocabulary.push(event)
-        },
+        vocabulary.push(event)
+      },
     })
 
     await act(async () => {
@@ -13975,8 +13979,8 @@ describe("React protocol renderer", () => {
     )
     const renderer = render(session, registryWithCounters(), {
       onUnknownVocabulary: (event) => {
-          vocabulary.push(event)
-        },
+        vocabulary.push(event)
+      },
       strict: true,
     })
 
@@ -14004,9 +14008,7 @@ describe("React protocol renderer", () => {
     const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
     const renderer = render(
       new DocumentSession(
-        parseExpoTurboDocument(
-          "<Unknown><DemoText>Structural fallback</DemoText></Unknown>",
-        ),
+        parseExpoTurboDocument("<Unknown><DemoText>Structural fallback</DemoText></Unknown>"),
       ),
       registry,
       {
@@ -14067,9 +14069,7 @@ describe("React protocol renderer", () => {
   test("rejects an unknown root that leaves nothing renderable", async () => {
     const errors: ExpoTurboRenderError[] = []
     const renderer = render(
-      new DocumentSession(
-        parseExpoTurboDocument("<Unknown>  <!-- nothing --></Unknown>"),
-      ),
+      new DocumentSession(parseExpoTurboDocument("<Unknown>  <!-- nothing --></Unknown>")),
       registryWithCounters(),
       {
         onError: (event) => errors.push(event),
@@ -14203,6 +14203,166 @@ describe("React protocol renderer", () => {
     expect(renderer.root.findAll((node) => String(node.type) === "fallback-form")).toHaveLength(1)
   })
 
+  test("keeps a form association usable when the owner tag is unknown", async () => {
+    let captured: ExpoTurboFormBinding | undefined
+    function CaptureUnknownOwner(): ReactNode {
+      const binding = useExpoTurboForm()
+      useEffect(() => {
+        captured = binding
+        return () => {
+          if (captured === binding) captured = undefined
+        }
+      }, [binding])
+      return createElement("unknown-owner-form", { nodeKey: binding.formNodeKey })
+    }
+    function UnknownOwnerValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("unknown-owner-value")
+    }
+    function KnownOwner(props: Readonly<{ children?: ReactNode }>): ReactNode {
+      return createElement(
+        ExpoTurboFormScope,
+        null,
+        createElement("known-owner", null, props.children),
+      )
+    }
+    const capture = defineComponent({
+      attributes: {},
+      children: "none",
+      component: CaptureUnknownOwner,
+      schema: z.object({}),
+      tag: "CaptureUnknownOwner",
+    })
+    const value = defineComponent({
+      attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+      children: "none",
+      component: UnknownOwnerValue,
+      tag: "UnknownOwnerValue",
+    })
+    const owner = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: KnownOwner,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "KnownOwner",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [capture, owner, value],
+        name: "unknown-form-owner",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureForm id="form"><DemoText>Owner fallback</DemoText></FutureForm><UnknownOwnerValue form="form" name="field" value="A" /><CaptureUnknownOwner form="form" /></Gallery>',
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: "about:blank",
+        kind: "component",
+        nodeKey: "id:form",
+        tag: "FutureForm",
+      },
+    ])
+    expect(JSON.stringify(renderer.toJSON())).toContain("Owner fallback")
+    expect(renderer.root.find((node) => String(node.type) === "unknown-owner-form").props).toEqual({
+      nodeKey: "id:form",
+    })
+    expect(captured?.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+
+    // The inert association becomes live once a known form owner occupies the
+    // same node key, without ever passing through the document error state.
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><KnownOwner id="form"><DemoText>Owner ready</DemoText></KnownOwner></template></turbo-stream>',
+      )
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(vocabulary).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "known-owner")).toHaveLength(1)
+    expect(captured?.formNodeKey).toBe("id:form")
+    expect(captured?.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+  })
+
+  test("reports an unknown form owner the document never renders", async () => {
+    function HiddenOwner(): ReactNode {
+      return createElement("hidden-owner")
+    }
+    function HiddenOwnerValue(props: Readonly<{ name: string; value: string }>): ReactNode {
+      useExpoTurboFormControl({ kind: "value", name: props.name, value: props.value })
+      return createElement("hidden-owner-value")
+    }
+    const hidden = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: HiddenOwner,
+      schema: z.object({}),
+      tag: "HiddenOwner",
+    })
+    const value = defineComponent({
+      attributes: { name: attr(stringCodec), value: attr(stringCodec) },
+      children: "none",
+      component: HiddenOwnerValue,
+      tag: "HiddenOwnerValue",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [hidden, value],
+        name: "hidden-form-owner",
+        version: "1.0.0",
+      }),
+    )
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><HiddenOwner><FutureForm id="form" /></HiddenOwner><HiddenOwnerValue form="form" name="field" value="A" /></Gallery>',
+        { url: "https://example.test/hidden-owner" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The owner element never mounts, so the association is the only reporter.
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(vocabulary).toEqual([
+      {
+        documentUrl: "https://example.test/hidden-owner",
+        kind: "component",
+        nodeKey: "id:form",
+        tag: "FutureForm",
+      },
+    ])
+    expect(
+      renderer.root.findAll((node) => String(node.type) === "hidden-owner-value"),
+    ).toHaveLength(1)
+  })
+
   test("warns in development and stays console-silent in production", async () => {
     const development = globalThis as typeof globalThis & { __DEV__?: boolean }
     const hadDevelopmentFlag = Object.hasOwn(development, "__DEV__")
@@ -14261,8 +14421,8 @@ describe("React protocol renderer", () => {
     const renderer = render(session, registryWithCounters(), {
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
-          vocabulary.push(event)
-        },
+        vocabulary.push(event)
+      },
       renderError: (event) => createElement("protocol-error", null, event.error.name),
     })
 

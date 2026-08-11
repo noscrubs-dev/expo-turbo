@@ -735,6 +735,43 @@ describe("typed component registry", () => {
     ).toThrow(PropsError)
   })
 
+  test("leaves an unknown form-owner tag without a definition to probe", () => {
+    const owner = defineComponent({
+      attributes: { required: attr(integerCodec) },
+      children: "nodes",
+      component: () => null,
+      formOwner: true,
+      tag: "DemoForm",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [owner],
+        name: "form-owner-lookup",
+        version: "1.0.0",
+      }),
+    )
+
+    // Form association resolves an owner definition through `resolve` first and
+    // falls back to the render decode path. An unknown tag misses both, so the
+    // association has only the reported vocabulary issue to go on.
+    const unknown = registry.decodeForRender(element('<FutureForm id="form" />'))
+    expect(registry.resolve("FutureForm")).toBeUndefined()
+    expect(unknown.status).toBe("transparent")
+    if (unknown.status !== "transparent") throw new Error("unknown form owner did not unwrap")
+    expect(unknown.definition).toBeUndefined()
+    expect(unknown.issues).toEqual([{ kind: "component", tag: "FutureForm" }])
+
+    // A known owner keeps its definition on the transparent path, so a required
+    // attribute failure still resolves as a declared form owner.
+    const degraded = registry.decodeForRender(element('<DemoForm id="form" required="bad" />'))
+    expect(degraded.status).toBe("transparent")
+    if (degraded.status !== "transparent") throw new Error("degraded form owner did not unwrap")
+    expect(degraded.definition?.formOwner).toBe(true)
+    expect(degraded.issues).toEqual([
+      { attribute: "required", kind: "attribute-decode", tag: "DemoForm" },
+    ])
+  })
+
   test("treats inherited binding names as unknown render attributes", () => {
     const registry = createRegistry(primitives)
     const rendered = decodeRegistryElementForRender(
