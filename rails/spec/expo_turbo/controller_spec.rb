@@ -393,6 +393,8 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     web = controller_with_request
 
     [native, web].each do |controller|
+      expect { controller.expo_turbo_client_supports?("cart", "") }.to raise_error(ArgumentError)
+      expect { controller.expo_turbo_client_supports?("cart", "  ") }.to raise_error(ArgumentError)
       expect { controller.expo_turbo_client_supports?("cart", "not a requirement") }.to raise_error(ArgumentError)
       expect { controller.expo_turbo_client_supports?(:cart, ">= 1") }.to raise_error(ArgumentError)
     end

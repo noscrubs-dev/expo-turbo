@@ -122,6 +122,12 @@ describe("typed component registry", () => {
     expect(() =>
       defineComponentModule({ components: [], name: "cart\uFFFF", version: "1" }),
     ).toThrow(RegistryError)
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart\uD800", version: "1" }),
+    ).toThrow(RegistryError)
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart😀", version: "1" }),
+    ).not.toThrow()
     expect(() => defineCapabilityModule({ components: [], name: "cart", version: "v2" })).toThrow(
       RegistryError,
     )

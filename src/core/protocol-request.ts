@@ -68,7 +68,11 @@ function hasModuleControlCharacter(value: string): boolean {
     const codePoint = character.codePointAt(0)
     return (
       codePoint !== undefined &&
-      (codePoint <= 31 || codePoint === 127 || codePoint === 0xfffe || codePoint === 0xffff)
+      (codePoint <= 31 ||
+        codePoint === 127 ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+        codePoint === 0xfffe ||
+        codePoint === 0xffff)
     )
   })
 }

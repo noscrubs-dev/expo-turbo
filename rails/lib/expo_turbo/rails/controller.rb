@@ -77,6 +77,7 @@ module ExpoTurbo
       def expo_turbo_client_supports?(module_name, requirement)
         raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
         raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
+        raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
 
         requirement_parts = requirement.split(",", -1).map(&:strip)
         raise ArgumentError, "requirement must not contain empty clauses" if requirement_parts.any?(&:empty?)
