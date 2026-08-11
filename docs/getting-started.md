@@ -256,7 +256,10 @@ owner occupies that node key.
 A component that calls one of the refused methods *while rendering* does not
 raise the document error surface. That node renders nothing, the way an unknown
 tag with no children does, and the gap reports through `onUnknownVocabulary`.
-The node renders again once a known form owner occupies the node key.
+The node renders again once a known form owner occupies the node key. A dropped
+node counts as no output for the blank-root guard above, so a refusal that
+empties a document root still reaches the error surface rather than showing a
+silent blank screen.
 
 A `form` value that points at a known component which is not a declared form
 owner remains an error, because that is a document defect rather than a

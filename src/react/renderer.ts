@@ -992,30 +992,25 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
  * operation that would build or dispatch a request, the way a browser gives a
  * control no form owner when `form` points at a non-form element.
  */
-type InertFormOwner = Readonly<{
-  issues: readonly RegistryVocabularyIssue[]
-  node: ProtocolElement
-}>
+interface FormOwnerVocabularyMetadata {
+  readonly generation: number
+  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly issues: readonly RegistryVocabularyIssue[]
+  readonly node: ProtocolElement
+  readonly registry: unknown
+  readonly revision: number
+  readonly session: DocumentSession
+}
+
+function refuseInertFormOwner(operation: string, metadata: FormOwnerVocabularyMetadata): never {
+  throw new InertFormOwnerError(operation, metadata)
+}
 
 function useFormBinding(
   registry: FormControlRegistry,
   formNodeKey: string,
-  inert?: InertFormOwner,
+  inert?: FormOwnerVocabularyMetadata,
 ): ExpoTurboFormBinding {
-  const { onUnknownVocabulary, session: rendererSession } = useRenderer()
-  const generation = rendererSession.treeGeneration
-  const refuse = useCallback(
-    (operation: string, owner: InertFormOwner): never => {
-      throw new InertFormOwnerError(operation, {
-        generation,
-        handler: onUnknownVocabulary,
-        issues: owner.issues,
-        node: owner.node,
-        session: rendererSession,
-      })
-    },
-    [generation, onUnknownVocabulary, rendererSession],
-  )
   const committedInert = useRef(inert)
   const committedRegistry = useRef(registry)
   const deferredSubmissions = useRef<DeferredFormSubmission[]>([])
@@ -1073,7 +1068,7 @@ function useFormBinding(
         // while the node and its form registry both stay active, so inertness
         // is rechecked here rather than trusted from the queueing render.
         if (committedInert.current) {
-          submission.reject(new InertFormOwnerError("submission"))
+          submission.reject(new InertFormOwnerError("submission", committedInert.current))
           continue
         }
         try {
@@ -1091,7 +1086,7 @@ function useFormBinding(
       options: ExpoTurboFormSubmitOptions,
       controllerOptions?: FormSubmissionControllerSubmitOptions,
     ): Promise<ActiveFormSubmissionReport> => {
-      if (inert) refuse("submission", inert)
+      if (inert) refuseInertFormOwner("submission", inert)
       if (!formSubmitAfterCommit(options)) return registry.submit(options, controllerOptions)
       if (!mounted.current) {
         return Promise.reject(new StateError("Deferred form submission lost its React binding"))
@@ -1115,7 +1110,7 @@ function useFormBinding(
         })
       })
     },
-    [inert, refuse, registry],
+    [inert, registry],
   )
   return useMemo<ExpoTurboFormBinding>(
     () =>
@@ -1126,11 +1121,14 @@ function useFormBinding(
         dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey,
         requestPlan: (options: ActiveFormRequestPlanOptions) =>
-          inert ? refuse("request planning", inert) : registry.requestPlan(options),
+          inert ? refuseInertFormOwner("request planning", inert) : registry.requestPlan(options),
         retryFailure: (
           options: ActiveFormRetryOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => (inert ? refuse("retry", inert) : registry.retryFailure(options, controllerOptions)),
+        ) =>
+          inert
+            ? refuseInertFormOwner("retry", inert)
+            : registry.retryFailure(options, controllerOptions),
         reportValidity: () => registry.reportValidity(),
         state,
         // An unknown owner is never an Expo Turbo submission to intercept,
@@ -1139,12 +1137,14 @@ function useFormBinding(
           inert ? false : registry.shouldInterceptSubmission(options),
         submit,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
-          inert ? refuse("submission proposal", inert) : registry.submissionProposal(options),
+          inert
+            ? refuseInertFormOwner("submission proposal", inert)
+            : registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, inert, refuse, registry, state, submit, terminalState],
+    [formNodeKey, inert, registry, state, submit, terminalState],
   )
 }
 
@@ -1173,7 +1173,7 @@ function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): Fo
 
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
-  inert?: InertFormOwner
+  inert?: FormOwnerVocabularyMetadata
   registry: FormControlRegistry
 }> {
   const { forms, onUnknownVocabulary, registry: componentRegistry, session } = useRenderer()
@@ -1214,19 +1214,21 @@ function useResolvedFormRegistry(): Readonly<{
   if (!form || formSnapshot?.node !== form) {
     throw new RegistryError("Expo Turbo form association references a missing form owner")
   }
-  if (owner?.status === "undeclared") {
-    // This throw is a document defect rather than a vocabulary gap, but it
-    // preempts the reporting effect, so the owner's own issues are delivered
-    // here. Delivery is claimed per node, generation, issue, and sink, so the
-    // effect and this path cannot report the same issue twice.
-    deliverUnknownVocabularyIssues(
-      session,
-      form,
-      session.treeGeneration,
-      owner.issues,
-      onUnknownVocabulary,
-    )
-    throw new RegistryError("Expo Turbo form association target is not a declared form owner")
+  const vocabulary = form
+    ? Object.freeze({
+        generation: session.treeGeneration,
+        handler: onUnknownVocabulary,
+        issues: owner?.issues ?? NO_VOCABULARY_ISSUES,
+        node: form,
+        registry: componentRegistry,
+        revision: session.revision,
+        session,
+      })
+    : undefined
+  if (owner?.status === "undeclared" && vocabulary) {
+    // The throw preempts the reporting effect, so the owner's issues ride along
+    // and the boundary delivers them once this render commits.
+    throw new UndeclaredFormOwnerError(vocabulary)
   }
   // An unknown owner tag keeps the control bound to the owner's node key so its
   // disabled and pending state stay coherent and the association becomes live
@@ -1234,9 +1236,7 @@ function useResolvedFormRegistry(): Readonly<{
   // inert: nothing it exposes can build or dispatch a request.
   return Object.freeze({
     formNodeKey: form.key,
-    ...(owner?.status === "unknown"
-      ? { inert: Object.freeze({ issues: owner.issues, node: form }) }
-      : {}),
+    ...(owner?.status === "unknown" && vocabulary ? { inert: vocabulary } : {}),
     registry: forms.controlsFor(form.key),
   })
 }
@@ -2506,15 +2506,11 @@ export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
   return useContext(FrameContext)
 }
 
-interface InertFormOwnerMetadata {
-  readonly generation: number
-  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
-  readonly issues: readonly RegistryVocabularyIssue[]
-  readonly node: ProtocolElement
-  readonly session: DocumentSession
+interface VocabularyRenderMetadata extends FormOwnerVocabularyMetadata {
+  readonly tolerated: boolean
 }
 
-const inertFormOwnerMetadata = new WeakMap<InertFormOwnerError, InertFormOwnerMetadata>()
+const vocabularyRenderMetadata = new WeakMap<Error, VocabularyRenderMetadata>()
 
 /**
  * Refusal from an inert form owner. Handlers see an ordinary `RegistryError`,
@@ -2522,14 +2518,112 @@ const inertFormOwnerMetadata = new WeakMap<InertFormOwnerError, InertFormOwnerMe
  * that calls a guarded method while rendering instead degrades to nothing and
  * reports through `onUnknownVocabulary`, because a vocabulary gap must never
  * raise the document error surface.
+ *
+ * Metadata is a construction invariant: every instance of this class carries
+ * what the boundary needs, so two refusals can never be handled differently.
  */
 class InertFormOwnerError extends RegistryError {
-  constructor(operation: string, metadata?: InertFormOwnerMetadata) {
+  constructor(operation: string, metadata: FormOwnerVocabularyMetadata) {
     super(`Expo Turbo form ${operation} requires a known form owner`, {
-      ...(metadata ? { target: metadata.node.key } : {}),
+      target: metadata.node.key,
     })
-    if (metadata) inertFormOwnerMetadata.set(this, metadata)
+    vocabularyRenderMetadata.set(this, Object.freeze({ ...metadata, tolerated: true }))
   }
+}
+
+/**
+ * A `form` value naming a known component that is not a declared form owner.
+ * The association still fails, because that is a document defect rather than a
+ * vocabulary gap, but the owner's own issues travel with the error so the
+ * boundary reports them from the commit phase instead of during render.
+ */
+class UndeclaredFormOwnerError extends RegistryError {
+  constructor(metadata: FormOwnerVocabularyMetadata) {
+    super("Expo Turbo form association target is not a declared form owner", {
+      target: metadata.node.key,
+    })
+    vocabularyRenderMetadata.set(this, Object.freeze({ ...metadata, tolerated: false }))
+  }
+}
+
+interface InertRenderDrop {
+  readonly generation: number
+  readonly registry: unknown
+  readonly revision: number
+}
+
+interface InertRenderDropLedger {
+  readonly drops: Map<string, InertRenderDrop>
+  readonly listeners: Set<() => void>
+  version: number
+}
+
+const inertRenderDropLedgers = new WeakMap<DocumentSession, InertRenderDropLedger>()
+
+function inertRenderDropLedger(session: DocumentSession): InertRenderDropLedger {
+  let ledger = inertRenderDropLedgers.get(session)
+  if (!ledger) {
+    ledger = { drops: new Map(), listeners: new Set(), version: 0 }
+    inertRenderDropLedgers.set(session, ledger)
+  }
+  return ledger
+}
+
+/**
+ * A node dropped by a tolerated refusal renders nothing, but the structural
+ * output analysis counts every registered component as output. Without this
+ * ledger the blank-root guard would read its own accounting as satisfied while
+ * the document rendered nothing at all.
+ */
+function recordInertRenderDrop(metadata: VocabularyRenderMetadata, nodeKey: string): void {
+  const ledger = inertRenderDropLedger(metadata.session)
+  const existing = ledger.drops.get(nodeKey)
+  const drop: InertRenderDrop = {
+    generation: metadata.generation,
+    registry: metadata.registry,
+    revision: metadata.revision,
+  }
+  if (
+    existing &&
+    existing.generation === drop.generation &&
+    existing.registry === drop.registry &&
+    existing.revision === drop.revision
+  ) {
+    return
+  }
+  ledger.drops.set(nodeKey, drop)
+  ledger.version += 1
+  for (const listener of [...ledger.listeners]) listener()
+}
+
+/**
+ * Drops are recorded against the tree revision and registry that produced them,
+ * so a tree mutation or a registry swap retires them without any explicit
+ * clearing. A stale drop can never hold the document in the error state.
+ */
+function useInertRenderDrops(
+  session: DocumentSession,
+  registry: RenderRegistry,
+): ReadonlySet<string> {
+  const ledger = inertRenderDropLedger(session)
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      ledger.listeners.add(listener)
+      return () => {
+        ledger.listeners.delete(listener)
+      }
+    },
+    [ledger],
+  )
+  const version = useCallback(() => ledger.version, [ledger])
+  useSyncExternalStore(subscribe, version, version)
+  const active = new Set<string>()
+  for (const [nodeKey, drop] of ledger.drops) {
+    if (drop.generation !== session.treeGeneration) continue
+    if (drop.registry !== registry || drop.revision !== session.revision) continue
+    active.add(nodeKey)
+  }
+  return active
 }
 
 interface UnknownVocabularyStructuralMetadata {
@@ -2597,24 +2691,29 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   componentDidCatch(error: Error): void {
     if (alreadyReportedRenderErrors.has(error)) return
-    const inertMetadata =
-      error instanceof InertFormOwnerError ? inertFormOwnerMetadata.get(error) : undefined
-    if (inertMetadata) {
-      // A refusal raised while rendering is a tolerated vocabulary gap, not a
-      // document error: report it and let the node degrade to nothing.
+    const vocabulary = vocabularyRenderMetadata.get(error)
+    if (vocabulary) {
+      // Reporting happens here rather than during render so an abandoned
+      // concurrent render cannot emit telemetry for state that never commits.
       if (
-        inertMetadata.session.treeGeneration === inertMetadata.generation &&
-        inertMetadata.session.getNodeSnapshot(inertMetadata.node.key)?.node === inertMetadata.node
+        vocabulary.session.treeGeneration === vocabulary.generation &&
+        vocabulary.session.getNodeSnapshot(vocabulary.node.key)?.node === vocabulary.node
       ) {
         deliverUnknownVocabularyIssues(
-          inertMetadata.session,
-          inertMetadata.node,
-          inertMetadata.generation,
-          inertMetadata.issues,
-          inertMetadata.handler,
+          vocabulary.session,
+          vocabulary.node,
+          vocabulary.generation,
+          vocabulary.issues,
+          vocabulary.handler,
         )
       }
-      return
+      // A refusal raised while rendering is a tolerated vocabulary gap, not a
+      // document error: the node degrades to nothing, and the blank-root guard
+      // is told so its accounting matches what actually rendered.
+      if (vocabulary.tolerated) {
+        recordInertRenderDrop(vocabulary, this.props.nodeKey)
+        return
+      }
     }
     const structuralMetadata =
       error instanceof UnknownVocabularyStructuralError
@@ -2651,7 +2750,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     if (!this.state.error) return this.props.children
     // A tolerated inert-owner refusal drops the node the way an unknown tag
     // with no children does, instead of raising the error surface.
-    if (inertFormOwnerMetadata.has(this.state.error as InertFormOwnerError)) return null
+    if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) return null
     return (
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
     )
@@ -3898,6 +3997,7 @@ function DocumentStructuralOutputGuard(
 export function ExpoTurboRoot(): ReactNode {
   const context = useRenderer()
   const { session } = context
+  const inertRenderDrops = useInertRenderDrops(session, context.registry)
   const root = useProtocolNode(session.tree.document.key)
   const rootElement =
     root?.node.kind === "document" ? root.node.children.find(isElement) : undefined
@@ -3921,9 +4021,14 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
-  const structuralOutput = analyzeRegistryStructuralOutput(context.registry, root.node.children)
+  const structuralOutput = analyzeRegistryStructuralOutput(
+    context.registry,
+    root.node.children,
+    inertRenderDrops,
+  )
   const guardedRendered =
-    structuralOutput.hasOutput || !structuralOutput.hasVocabularyIssues
+    structuralOutput.hasOutput ||
+    (!structuralOutput.hasVocabularyIssues && inertRenderDrops.size === 0)
       ? rendered
       : createElement(
           DocumentStructuralOutputGuard,

@@ -23,6 +23,7 @@ function analyzeNodes(
   registry: StructuralRegistry,
   nodes: readonly ProtocolNode[],
   diagnostics: RegistryStructuralOutputDiagnostic[],
+  droppedKeys: ReadonlySet<string> | undefined,
 ): boolean {
   // Diagnostics are only consumed when nothing renders, so the first renderable
   // node ends the walk.
@@ -33,7 +34,7 @@ function analyzeNodes(
       continue
     }
     if (node.kind === "document") {
-      if (analyzeNodes(registry, node.children, diagnostics)) return true
+      if (analyzeNodes(registry, node.children, diagnostics, droppedKeys)) return true
       continue
     }
     // A Frame is a runtime-managed content region and a Cable source is a live
@@ -43,6 +44,10 @@ function analyzeNodes(
     if (node.kind === "frame" || node.kind === "stream-source") return true
     if (node.kind === "stream" || node.kind === "template") continue
     if (!isElement(node)) continue
+    // A node the render path dropped produces no output and renders none of its
+    // children, so counting it would make this accounting disagree with the
+    // document that was actually committed.
+    if (droppedKeys?.has(node.key)) continue
 
     try {
       const result = registry.decodeForRender(node)
@@ -50,7 +55,7 @@ function analyzeNodes(
       if (result.issues.length > 0) {
         diagnostics.push(Object.freeze({ issues: result.issues, node }))
       }
-      if (analyzeNodes(registry, result.children, diagnostics)) return true
+      if (analyzeNodes(registry, result.children, diagnostics, droppedKeys)) return true
     } catch {
       // A non-vocabulary decode failure belongs to the render path, which
       // reports it through the normal error surface.
@@ -63,9 +68,10 @@ function analyzeNodes(
 export function analyzeRegistryStructuralOutput(
   registry: StructuralRegistry,
   nodes: readonly ProtocolNode[],
+  droppedKeys?: ReadonlySet<string>,
 ): RegistryStructuralOutputAnalysis {
   const diagnostics: RegistryStructuralOutputDiagnostic[] = []
-  const hasOutput = analyzeNodes(registry, nodes, diagnostics)
+  const hasOutput = analyzeNodes(registry, nodes, diagnostics, droppedKeys)
   return Object.freeze({
     diagnostics: Object.freeze(diagnostics),
     hasOutput,

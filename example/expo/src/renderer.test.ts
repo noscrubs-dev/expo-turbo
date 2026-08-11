@@ -14400,7 +14400,7 @@ describe("React protocol renderer", () => {
     await act(async () => {
       await dispatchTurboStreamFragment(
         session,
-        '<turbo-stream action="replace" target="form"><template><LiveOwner id="form" action="/known" method="post"><InertOwnerValue form="form" name="field" value="A" /><CaptureInertOwner form="form" /></LiveOwner></template></turbo-stream>',
+        '<turbo-stream action="replace" target="form"><template><LiveOwner id="form" action="/known" method="get"><InertOwnerValue form="form" name="field" value="A" /><CaptureInertOwner form="form" /></LiveOwner></template></turbo-stream>',
       )
     })
 
@@ -14409,11 +14409,18 @@ describe("React protocol renderer", () => {
     expect(vocabulary).toHaveLength(1)
     expect(captured?.shouldInterceptSubmission()).toBe(true)
     expect(captured?.requestPlan({ protocol: { requestId: "live-plan" } })).toMatchObject({
-      effectiveMethod: "POST",
+      effectiveMethod: "GET",
       entries: [{ name: "field", value: "A" }],
-      request: { method: "POST", url: "https://example.test/known" },
+      request: { method: "GET" },
     })
-    expect(requests).toHaveLength(0)
+
+    // Submitting for real proves this fixture can reach the network at all, so
+    // the zero above is the refusal rather than a controller that never fetches.
+    await act(async () => {
+      await captured?.submit({ protocol: { requestId: "live-submit" } })
+    })
+    expect(requests.map((request) => request.method)).toEqual(["GET"])
+    expect(requests[0]?.url).toContain("https://example.test/known")
   })
 
   test("reports an unknown form owner the document never renders", async () => {
@@ -14446,7 +14453,7 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><HiddenOwner><FutureForm id="form" /></HiddenOwner><HiddenOwnerValue form="form" name="field" value="A" /></Gallery>',
+        '<Gallery><HiddenOwner><FutureForm id="form"><DemoText>Owner subtree</DemoText></FutureForm></HiddenOwner><HiddenOwnerValue form="form" name="field" value="A" /></Gallery>',
         { url: "https://example.test/hidden-owner" },
       ),
     )
@@ -14462,6 +14469,8 @@ describe("React protocol renderer", () => {
     })
 
     // The owner element never mounts, so the association is the only reporter.
+    // Without this the owner's own reporter could satisfy the assertion.
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Owner subtree")
     expect(errors).toHaveLength(0)
     expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
     expect(vocabulary).toEqual([
@@ -14479,6 +14488,11 @@ describe("React protocol renderer", () => {
 
   test("rejects a deferred submission when the owner tag stops being known", async () => {
     let captured: ExpoTurboFormBinding | undefined
+    let rejection: unknown
+    function Rethrower(): ReactNode {
+      if (rejection) throw rejection
+      return createElement("rethrower")
+    }
     function CaptureDeferred(): ReactNode {
       const binding = useExpoTurboForm()
       useEffect(() => {
@@ -14506,6 +14520,13 @@ describe("React protocol renderer", () => {
         children: "none",
         component: DeferredValue,
         tag: "DeferredValue",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: Rethrower,
+        schema: z.object({}),
+        tag: "Rethrower",
       }),
     ]
     const skewOwner = defineComponent({
@@ -14537,7 +14558,7 @@ describe("React protocol renderer", () => {
     // the control mounted with the same form registry and the same owner node.
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><SkewForm id="form" action="/danger" method="post" /><DeferredValue form="form" name="field" value="A" /><CaptureDeferred form="form" /></Gallery>',
+        '<Gallery><SkewForm id="form" action="/danger" method="post" /><DeferredValue form="form" name="field" value="A" /><CaptureDeferred form="form" /><Rethrower /></Gallery>',
         { url: "https://example.test/deferred-skew" },
       ),
     )
@@ -14563,6 +14584,8 @@ describe("React protocol renderer", () => {
           forms,
           onError: (event: ExpoTurboRenderError) => errors.push(event),
           registry,
+          renderError: (event: ExpoTurboRenderError) =>
+            createElement("protocol-error", null, event.error.message),
           session,
         },
         createElement(ExpoTurboRoot),
@@ -14574,21 +14597,21 @@ describe("React protocol renderer", () => {
     if (!renderer) throw new Error("deferred skew renderer was not created")
 
     // Queue while the owner is known, then forget the tag before the commit
-    // that flushes the queue.
-    const deferred = captured?.submit({
-      afterCommit: true,
-      protocol: { requestId: "deferred-skew" },
-    })
+    // that flushes the queue. Both happen inside one act so the queued call
+    // cannot run against the registry that admitted it.
+    let deferred: Promise<unknown> | undefined
     let settled: string | undefined
-    deferred?.then(
-      () => {
-        settled = "resolved"
-      },
-      (error: unknown) => {
-        settled = error instanceof Error ? error.message : String(error)
-      },
-    )
     await act(async () => {
+      deferred = captured?.submit({ afterCommit: true, protocol: { requestId: "deferred-skew" } })
+      deferred?.then(
+        () => {
+          settled = "resolved"
+        },
+        (error: unknown) => {
+          rejection = error
+          settled = error instanceof Error ? error.message : String(error)
+        },
+      )
       renderer?.update(provider(forgetting))
       await Promise.resolve()
     })
@@ -14599,6 +14622,67 @@ describe("React protocol renderer", () => {
     expect(settled).toBe("Expo Turbo form submission requires a known form owner")
     expect(requests).toHaveLength(0)
     expect(errors).toHaveLength(0)
+
+    // The rejected refusal carries the same metadata a render-phase refusal
+    // does, so rethrowing it while rendering is tolerated rather than escalated.
+    expect(renderer.root.findAll((node) => String(node.type) === "rethrower")).toHaveLength(1)
+    await act(async () => {
+      renderer?.update(provider(forgetting))
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(renderer.root.findAll((node) => String(node.type) === "rethrower")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "deferred-value")).toHaveLength(1)
+  })
+
+  test("raises the blank-root error when a refusal empties the document", async () => {
+    function PlanPreview(): ReactNode {
+      const binding = useExpoTurboForm()
+      const plan = binding.requestPlan({ protocol: { requestId: "preview" } })
+      return createElement("plan-preview", { url: plan.request.url })
+    }
+    const preview = defineComponent({
+      attributes: {},
+      children: "none",
+      component: PlanPreview,
+      schema: z.object({}),
+      tag: "BlankingPreview",
+    })
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [preview],
+        name: "blanking-refusal",
+        version: "1.0.0",
+      }),
+    )
+    // The refusing component is the document's only structural output, so the
+    // drop empties the document. Structural analysis counts every registered
+    // component as output, which is exactly the accounting the drop invalidates.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/blanking" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).not.toBe("null")
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+    ])
+    expect(errors[0]?.error).toBeInstanceOf(StateError)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(vocabulary.map(({ tag }) => tag).sort()).toEqual(["FutureForm", "FutureRoot"])
   })
 
   test("drops a node that refuses an unknown owner while rendering", async () => {
@@ -14721,13 +14805,13 @@ describe("React protocol renderer", () => {
     )
     const session = new DocumentSession(
       parseExpoTurboDocument(
-        '<Gallery><HiddenScope><ScopedOwner id="form" future-layout="stacked" /></HiddenScope><ScopedValue form="form" name="field" value="A" /></Gallery>',
+        '<Gallery><HiddenScope><ScopedOwner id="form" future-layout="stacked"><DemoText>Scoped subtree</DemoText></ScopedOwner></HiddenScope><ScopedValue form="form" name="field" value="A" /></Gallery>',
         { url: "https://example.test/hidden-attribute" },
       ),
     )
     const errors: ExpoTurboRenderError[] = []
     const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
-    render(session, registry, {
+    const renderer = render(session, registry, {
       forms: new DocumentFormControls(session),
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
@@ -14738,6 +14822,7 @@ describe("React protocol renderer", () => {
 
     // The owner is a known form owner, so resolving it alone would report
     // nothing. Only decoding it surfaces the attribute the client cannot read.
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Scoped subtree")
     expect(errors).toHaveLength(0)
     expect(vocabulary).toEqual([
       {
@@ -14794,7 +14879,7 @@ describe("React protocol renderer", () => {
     )
     const errors: ExpoTurboRenderError[] = []
     const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
-    render(session, registry, {
+    const renderer = render(session, registry, {
       forms: new DocumentFormControls(session),
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
@@ -14803,6 +14888,8 @@ describe("React protocol renderer", () => {
       renderError: (event) => createElement("protocol-error", null, event.error.message),
     })
 
+    // The owner never renders, so it cannot be its own reporter.
+    expect(renderer.root.findAll((node) => String(node.type) === "not-a-form")).toHaveLength(0)
     // Pointing `form` at a known component that is not a form owner stays a
     // document defect, but the throw preempts the reporting effect, so the
     // owner's unknown attribute is reported before the association fails.

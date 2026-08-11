@@ -19,7 +19,9 @@ All notable public package, gem, and protocol changes will be recorded here.
   `retryFailure()`, rejects a submission deferred with `afterCommit` whose owner
   tag stops being known before it runs, and never turns `action` or `method`
   from an uninterpretable tag into a request. A refusal raised while rendering
-  drops that node and reports instead of raising the document error surface.
+  drops that node and reports instead of raising the document error surface, and
+  a dropped node counts as no output, so a refusal that empties a document root
+  still reaches the blank-root error rather than a silent blank screen.
   Unknown attributes on a form owner report even when the document never renders
   that owner, and an owner rejected as undeclared reports them before it fails.
   Native form-owner protocol attributes no longer require duplicate component
