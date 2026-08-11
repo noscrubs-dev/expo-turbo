@@ -2862,13 +2862,34 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
     // A node-level error surface is real output: a document showing one is not
     // blank, and replacing it with the blank-root surface would hide the error
-    // the host is already reporting. The blank-root surface is the one
-    // exception, because counting it would make the guard observe its own
-    // output. The two are distinguishable here by the error that produced them.
-    if (rendered === null || this.state.error instanceof UnknownVocabularyStructuralError) {
-      return rendered
-    }
+    // the host is already reporting.
+    if (rendered === null || !this.countsRenderedErrorAsOutput(this.state.error)) return rendered
     return createElement(DocumentOutputMarker, { kind: "output" }, rendered)
+  }
+
+  protected countsRenderedErrorAsOutput(_error: Error): boolean {
+    return true
+  }
+}
+
+/**
+ * The boundary at the single position where the blank-root guard raises its own
+ * surface. That surface must not count as output, or the guard would observe
+ * itself and never clear.
+ *
+ * The exclusion is positional rather than a property of the error, because an
+ * error is a value: the guard hands the very same instance to `onError` and
+ * `renderError`, so a host can keep it and throw it again from anywhere, and a
+ * check on its class or identity would follow it there. Which component renders
+ * a surface is chosen by this file at one call site. Host code is never given
+ * this class or an element of it -- the only elements it receives are the
+ * document, Frame and form children rendered below this boundary -- so the
+ * strongest forgery available is re-rendering the base boundary, which counts
+ * its surface as output. Every reachable mistake lands on the safe side.
+ */
+class DocumentBlankGuardBoundary extends NodeErrorBoundary {
+  protected override countsRenderedErrorAsOutput(error: Error): boolean {
+    return !(error instanceof UnknownVocabularyStructuralError)
   }
 }
 
@@ -4239,7 +4260,7 @@ export function ExpoTurboRoot(): ReactNode {
           generation: session.treeGeneration,
         },
         createElement(
-          NodeErrorBoundary,
+          DocumentBlankGuardBoundary,
           {
             nodeKey: root.node.key,
             onError: context.onError,

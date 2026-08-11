@@ -212,6 +212,7 @@ function render(
     documentPreloader?: ExpoTurboProviderProps["documentPreloader"]
     documentRefreshScroll?: DocumentRefreshScrollAdapter
     frameAutoscroll?: FrameAutoscrollAdapter
+    formComponent?: ExpoTurboProviderProps["formComponent"]
     formLinks?: ExpoTurboProviderProps["formLinks"]
     frameComponent?: ExpoTurboProviderProps["frameComponent"]
     framePreloader?: ExpoTurboProviderProps["framePreloader"]
@@ -15086,11 +15087,22 @@ describe("React protocol renderer", () => {
       createElement("document-shell", null, props.children)
     const renderer = render(session, blankingRefusalFixture(), {
       documentComponent: DocumentShell,
-      documentController: new DocumentVisitController(session, {
-        fetch: async () => {
-          throw new Error("unused")
+      documentController: new DocumentVisitController(
+        new DocumentRequestLoader(
+          session,
+          {
+            fetch: async () => {
+              throw new Error("the document chrome fixture never fetches")
+            },
+          },
+          { next: () => "document-chrome-request" },
+        ),
+        {
+          clearTimeout: () => undefined,
+          now: () => 0,
+          setTimeout: () => Object.freeze({}),
         },
-      }),
+      ),
       forms: new DocumentFormControls(session),
       onError: (event) => errors.push(event),
       renderError: (event) => createElement("protocol-error", null, event.error.message),
@@ -15142,6 +15154,69 @@ describe("React protocol renderer", () => {
     expect(errors.map((event) => event.error.message)).toEqual(["node level failure"])
     expect(JSON.stringify(renderer.toJSON())).toContain("node level failure")
     expect(JSON.stringify(renderer.toJSON())).not.toContain("no renderable fallback")
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
+  })
+
+  test("counts a rethrown blank-root error surface raised outside the guard", async () => {
+    // The guard hands its own error object to onError and renderError, so a
+    // host can keep it and throw it again from anywhere. Only the position that
+    // raised it may go uncounted; the class travels and must not decide.
+    let rethrown: Error | undefined
+    function Rethrowing(): ReactNode {
+      if (rethrown) throw rethrown
+      return createElement("rethrowing")
+    }
+    const registry = blankingRefusalFixture().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: {},
+            children: "none",
+            component: Rethrowing,
+            schema: z.object({}),
+            tag: "Rethrowing",
+          }),
+        ],
+        name: "rethrown-structural",
+        version: "1.0.0",
+      }),
+    )
+    const captureSession = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/rethrow-capture" },
+      ),
+    )
+    const captured: ExpoTurboRenderError[] = []
+    render(captureSession, registry, {
+      forms: new DocumentFormControls(captureSession),
+      onError: (event) => captured.push(event),
+      renderError: (event) => createElement("node-error", null, event.error.message),
+    })
+    // The fixture is only meaningful if a real guard error was captured.
+    expect(captured.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+    ])
+    rethrown = captured[0]?.error
+
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><Rethrowing /></FutureRoot>',
+        { url: "https://example.test/rethrow-use" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("node-error", null, event.error.message),
+    })
+
+    // One error, from the node that threw. The guard must not fire a second
+    // one, and the node's surface must not be replaced by the guard's.
+    expect(errors).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "node-error")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "rethrowing")).toHaveLength(0)
     expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(0)
   })
 
