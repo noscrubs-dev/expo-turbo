@@ -235,7 +235,8 @@ transparent wrapper.
 
 Each tolerated case calls `onUnknownVocabulary` after the fallback commits. The
 frozen event identifies the tag, optional attribute, node key, document URL,
-and failure kind. Development builds also write one warning. Production builds
+and failure kind. `nodeKey` and `tag` always describe the same element: the one
+the issue was found on. Development builds also write one warning. Production builds
 stay silent apart from the callback. Callback failures do not change document
 state.
 
@@ -269,20 +270,37 @@ renders that owner.
 
 Form ownership stays declared, so an association failure is still a failure: a
 missing, blank, or undeclared target fails closed exactly as before. What
-changed is that a failure caused by vocabulary is now attributable. When a
-control has no form scope and an unknown tag was unwrapped somewhere above it,
-that tag could have declared ownership in the build that served the document,
-so the failure also reports through `onUnknownVocabulary` with the **control's**
-node key and the unwrapped tag's name. The node key matches the one `onError`
-receives, which is what lets a host correlate the two and tell installed-client
-skew from a document that was written wrong.
+changed is that a failure a host could previously only see as a bare `onError`
+now carries evidence when vocabulary was involved.
 
-The signal is deliberately narrow. A control orphaned in a fully known document
-reports nothing, and neither does a `form` value naming an id that does not
-exist — even when the document contains unknown vocabulary elsewhere, because
-the rule reads the association's own ancestry rather than the document at large.
-An unknown tag never breaks a real ownership chain: a control under a declared
-owner still resolves through an unknown wrapper and reports nothing.
+When a control has no form scope and the render path unwrapped an ancestor
+because of vocabulary — a tag this build does not have, or one whose required
+attributes or child shape it could not decode — the failure also reports
+through `onUnknownVocabulary`. The event describes the **unwrapped element** in
+`nodeKey` and `tag`, exactly like every other vocabulary event, and carries the
+control's key in `failureNodeKey`. That key is the one `onError` receives, so
+the two can be correlated.
+
+Read the event as exactly this and no more:
+
+> this control's form association failed, **and** unknown or undecodable
+> vocabulary was unwrapped above it
+
+It is **not** a claim that the unwrapped element was the control's form owner.
+An installed client does not have the tag, so a new layout wrapper and a new
+form owner are indistinguishable to it; a document with a genuine orphan under
+a new wrapper reports the same event. `kind` still separates the two causes —
+`component` for a tag this build does not have, `attribute-decode` for a value
+it could not read.
+
+What the signal does guarantee is silence when there is no vocabulary involved.
+A control orphaned in a fully known document reports nothing, and neither does
+a `form` value naming an id that does not exist — even when the document
+contains unknown vocabulary elsewhere, because the rule reads the association's
+own ancestry rather than the document at large. Unwrapping never breaks a real
+ownership chain either: a control under a declared owner resolves through an
+unwrapped ancestor, and a declared owner that unwraps keeps its form scope, so
+both render and report nothing.
 
 Tolerance must not silently show an empty screen. When a tolerated fallback
 leaves no structurally renderable content, Expo Turbo protects each root kind:

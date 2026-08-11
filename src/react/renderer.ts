@@ -183,7 +183,20 @@ export type ExpoTurboUnknownVocabularyKind = RegistryVocabularyIssue["kind"]
 export interface ExpoTurboUnknownVocabularyEvent {
   readonly attribute?: string
   readonly documentUrl: string
+  /**
+   * Present when this vocabulary is reported because a form association on
+   * another node failed. It holds that node's key, which is also the key the
+   * matching `onError` carries, so the two can be correlated.
+   *
+   * It states only that unknown or undecodable vocabulary was unwrapped above
+   * that node. It is not a claim that the element in `nodeKey` was its form
+   * owner: an installed client cannot know what a tag it does not have means,
+   * so an unwrapped layout wrapper and an unwrapped form owner are
+   * indistinguishable here.
+   */
+  readonly failureNodeKey?: string
   readonly kind: ExpoTurboUnknownVocabularyKind
+  /** Always the element the vocabulary issue was found on, with `tag`. */
   readonly nodeKey: string
   readonly tag: string
 }
@@ -994,6 +1007,8 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
  * control no form owner when `form` points at a non-form element.
  */
 interface FormOwnerVocabularyMetadata {
+  /** The node whose form association failed, when that is not `node`. */
+  readonly failureNodeKey?: string
   readonly generation: number
   readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
   readonly issues: readonly RegistryVocabularyIssue[]
@@ -1175,14 +1190,19 @@ const MISSING_FORM_SCOPE_MESSAGE =
   "Expo Turbo form binding requires a form scope or explicit form association"
 
 /**
- * Finds the nearest ancestor carrying a tag this client does not know.
+ * Finds the nearest ancestor the render path unwrapped because of vocabulary:
+ * a tag this client does not have, or one whose required attributes or child
+ * shape it could not decode. Both are installed-client skew, and either can
+ * remove an element that carried a form scope in the build that served the
+ * document.
  *
- * An unwrapped unknown element is the only evidence available here that a form
- * scope is missing because of vocabulary rather than because the document never
- * had one: a tag this build cannot read may declare form ownership in the build
- * that served it. Unwrapping never breaks a real ownership chain — a control
- * under a declared owner still resolves through an unknown wrapper — so this
- * only runs once the association has already failed.
+ * This is evidence that vocabulary was unwrapped above a failed association,
+ * and nothing more. It cannot show that the unwrapped element was the form
+ * owner: the client does not have the tag, so a new layout wrapper and a new
+ * form owner look identical from here. Unwrapping never breaks a real
+ * ownership chain — a control under a declared owner still resolves through an
+ * unwrapped ancestor, and a declared owner that unwraps keeps its form scope —
+ * so this only runs once the association has already failed.
  */
 function unwrappedAncestorVocabulary(
   registry: RenderRegistry,
@@ -1200,7 +1220,7 @@ function unwrappedAncestorVocabulary(
         // walk stops rather than attributing this failure to vocabulary.
         return undefined
       }
-      if (result.status === "transparent" && !result.definition) {
+      if (result.status === "transparent" && result.issues.length > 0) {
         return Object.freeze({ issues: result.issues, node: ancestor })
       }
     }
@@ -1245,13 +1265,15 @@ function useResolvedFormRegistry(): Readonly<{
       const unwrapped = unwrappedAncestorVocabulary(componentRegistry, node)
       throw unwrapped
         ? new AttributedFormOwnerError(MISSING_FORM_SCOPE_MESSAGE, {
+            // `nodeKey` and `tag` keep describing one element, the unwrapped
+            // ancestor the issues belong to. The control this failed on travels
+            // separately, so a host can correlate without the pair ever
+            // describing two different elements.
+            failureNodeKey: nodeKey,
             generation: session.treeGeneration,
             handler: onUnknownVocabulary,
             issues: unwrapped.issues,
-            // Reported against the control rather than the unwrapped ancestor:
-            // the ancestor already reports itself, and matching the node key
-            // this failure surfaces on is what makes the two correlatable.
-            node,
+            node: unwrapped.node,
             registry: componentRegistry,
             session,
           })
@@ -2783,6 +2805,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
           vocabulary.generation,
           vocabulary.issues,
           vocabulary.handler,
+          vocabulary.failureNodeKey,
         )
       }
       // A refusal raised while rendering is a tolerated vocabulary gap, not a
@@ -2858,8 +2881,17 @@ function developmentVocabularyWarningsEnabled(): boolean {
   return nodeEnvironment !== "production"
 }
 
-function unknownVocabularyFingerprint(issue: RegistryVocabularyIssue): string {
-  return JSON.stringify([issue.kind, "attribute" in issue ? issue.attribute : ""])
+function unknownVocabularyFingerprint(
+  issue: RegistryVocabularyIssue,
+  failureNodeKey: string | undefined,
+): string {
+  // The failure key participates so an element's own report and a report of the
+  // same issue as the cause of a failed association stay separate deliveries.
+  return JSON.stringify([
+    issue.kind,
+    "attribute" in issue ? issue.attribute : "",
+    failureNodeKey ?? "",
+  ])
 }
 
 function claimUnknownVocabularyDelivery(
@@ -2891,14 +2923,16 @@ function deliverUnknownVocabularyIssues(
   generation: number,
   issues: readonly RegistryVocabularyIssue[],
   handler: ExpoTurboUnknownVocabularyHandler | undefined,
+  failureNodeKey?: string,
 ): void {
   const warn = developmentVocabularyWarningsEnabled()
   if (!handler && !warn) return
   for (const issue of issues) {
-    const fingerprint = unknownVocabularyFingerprint(issue)
+    const fingerprint = unknownVocabularyFingerprint(issue, failureNodeKey)
     const event = Object.freeze({
       ...("attribute" in issue ? { attribute: issue.attribute } : {}),
       documentUrl: session.tree.document.url ?? "about:blank",
+      ...(failureNodeKey !== undefined ? { failureNodeKey } : {}),
       kind: issue.kind,
       nodeKey: node.key,
       tag: issue.tag,

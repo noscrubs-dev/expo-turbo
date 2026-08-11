@@ -15033,6 +15033,13 @@ describe("React protocol renderer", () => {
             tag: "KnownWrapper",
           }),
           defineComponent({
+            attributes: { required: attr(integerCodec) },
+            children: "nodes",
+            component: (props: Readonly<{ children?: ReactNode; required: number }>) =>
+              createElement("decoding-wrapper", null, props.children),
+            tag: "DecodingWrapper",
+          }),
+          defineComponent({
             attributes: {},
             children: "nodes",
             component: (props: Readonly<{ children?: ReactNode }>) =>
@@ -15074,19 +15081,112 @@ describe("React protocol renderer", () => {
     expect(errors[0]?.nodeKey).toBe("id:control")
     expect(JSON.stringify(renderer.toJSON())).toContain("protocol-error")
 
-    // The unwrapped ancestor reports itself with its own node key whether or
-    // not this signal exists, so the added value is strictly the event carrying
-    // the key the failure surfaced on. Asserting only "some event fired" would
-    // pass on that pre-existing report alone.
-    const attributed = vocabulary.filter((event) => event.nodeKey === errors[0]?.nodeKey)
+    // The unwrapped ancestor reports itself whether or not this signal exists,
+    // so the added value is strictly the event that carries the key the failure
+    // surfaced on. Asserting only "some event fired" would pass on that
+    // pre-existing report alone.
+    const attributed = vocabulary.filter((event) => event.failureNodeKey !== undefined)
     expect(attributed).toEqual([
       {
         documentUrl: "https://example.test/attributed-orphan",
+        failureNodeKey: "id:control",
         kind: "component",
-        nodeKey: "id:control",
+        nodeKey: "path.0.0",
         tag: "FutureWrapper",
       },
     ])
+    // `nodeKey` and `tag` still describe one element: the unwrapped ancestor,
+    // never the control the failure surfaced on.
+    expect(attributed[0]?.nodeKey).not.toBe(errors[0]?.nodeKey)
+    expect(attributed[0]?.failureNodeKey).toBe(errors[0]?.nodeKey)
+    expect(vocabulary.filter((event) => event.failureNodeKey === undefined)).toEqual([
+      {
+        documentUrl: "https://example.test/attributed-orphan",
+        kind: "component",
+        nodeKey: "path.0.0",
+        tag: "FutureWrapper",
+      },
+    ])
+  })
+
+  test("attributes an orphaned control to a known wrapper it could not decode", async () => {
+    const { registry } = orphanAttributionFixture()
+    // The tag is known; the value is not. That is still the server sending
+    // vocabulary this build cannot read, and it still unwraps the element.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DecodingWrapper id="wrapper" required="bad"><AttributedControl id="control" /></DecodingWrapper></Gallery>',
+        { url: "https://example.test/undecodable-wrapper" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.error.message).toContain("requires a form scope or explicit form association")
+    expect(errors[0]?.nodeKey).toBe("id:control")
+    expect(JSON.stringify(renderer.toJSON())).toContain("protocol-error")
+    expect(vocabulary.filter((event) => event.failureNodeKey !== undefined)).toEqual([
+      {
+        attribute: "required",
+        documentUrl: "https://example.test/undecodable-wrapper",
+        failureNodeKey: "id:control",
+        kind: "attribute-decode",
+        nodeKey: "id:wrapper",
+        tag: "DecodingWrapper",
+      },
+    ])
+  })
+
+  test("reports a non-owner unwrapping without claiming it owned the control", async () => {
+    const { registry } = orphanAttributionFixture()
+    // `FutureLayout` is a plain layout wrapper in the build that served this
+    // document, so the orphan is a real authoring bug. The client cannot tell
+    // that apart from a new form owner, so the event states only what is
+    // provable: vocabulary was unwrapped above a control whose association
+    // failed. It never claims the element was the owner.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureLayout><AttributedControl id="control" /></FutureLayout></Gallery>',
+        { url: "https://example.test/future-layout" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    render(session, registry, {
+      forms: new DocumentFormControls(session),
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    const attributed = vocabulary.filter((event) => event.failureNodeKey !== undefined)
+    expect(attributed).toEqual([
+      {
+        documentUrl: "https://example.test/future-layout",
+        failureNodeKey: "id:control",
+        kind: "component",
+        nodeKey: "path.0.0",
+        tag: "FutureLayout",
+      },
+    ])
+    // Nothing in the payload names an owner, and the element identity pair is
+    // the unwrapped layout, never the control.
+    expect(Object.keys(attributed[0] ?? {}).some((key) => key.toLowerCase().includes("owner"))).toBe(
+      false,
+    )
+    expect(attributed[0]?.nodeKey).not.toBe(attributed[0]?.failureNodeKey)
   })
 
   test("stays silent for an orphaned control in a fully known document", async () => {
