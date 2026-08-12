@@ -1037,11 +1037,9 @@ export class FormControlRegistry {
     if (this.formMode === "off") return false
     const selection = submitterSelectionOption(options)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
-    if (
-      submitter &&
-      this.isKnownVocabulary(submitter.node) &&
-      closestTurboSetting(submitter.node) === "false"
-    ) {
+    // data-turbo is package-owned, tag-independent vocabulary. Core has no
+    // unknown-vocabulary reporting channel, so honoring this safety opt-out is silent.
+    if (submitter && closestTurboSetting(submitter.node) === "false") {
       return false
     }
     return this.formMode === "optin"
@@ -1165,10 +1163,11 @@ export class FormControlRegistry {
       submitter && readSubmitterAttributes
         ? attributeValue(submitter.node, "data-turbo-frame")
         : undefined
-    const submitterConfirmation =
-      submitter && readSubmitterAttributes
-        ? attributeValue(submitter.node, "data-turbo-confirm")
-        : undefined
+    // Confirmation is also package-owned safety vocabulary, so it remains effective
+    // when the registered submitter tag is unknown.
+    const submitterConfirmation = submitter
+      ? attributeValue(submitter.node, "data-turbo-confirm")
+      : undefined
     const formConfirmation = attributeValue(this.form, "data-turbo-confirm")
     const confirmationMessage = submitterConfirmation ?? formConfirmation
     const submitterAction =

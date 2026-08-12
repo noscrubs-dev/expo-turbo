@@ -416,20 +416,32 @@ describe("native form control registry", () => {
       ),
     )
     const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
-    const controller = new FormSubmissionController(session, {
-      async fetch(request) {
-        requests.push(
-          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
-        )
-        return {
-          headers: {},
-          redirected: false,
-          status: 204,
-          text: async () => "",
-          url: request.url,
-        }
+    const confirmations: string[] = []
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          requests.push(
+            Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+          )
+          return {
+            headers: {},
+            redirected: false,
+            status: 204,
+            text: async () => "",
+            url: request.url,
+          }
+        },
       },
-    })
+      {
+        confirmation: {
+          confirm(message) {
+            confirmations.push(message)
+            return false
+          },
+        },
+      },
+    )
     const registry = new DocumentFormControls(session, {
       focus: {
         blur() {},
@@ -464,7 +476,16 @@ describe("native form control registry", () => {
       validity: { valid: true },
       value: "A",
     })
-    expect(registry.shouldInterceptSubmission({ submitter: submitter.selection })).toBe(true)
+    expect(registry.shouldInterceptSubmission({ submitter: submitter.selection })).toBe(false)
+    if (registry.shouldInterceptSubmission({ submitter: submitter.selection })) {
+      await registry.submit({
+        protocol: { requestId: "unknown-submitter-opt-out" },
+        submitter: submitter.selection,
+      })
+    }
+    expect(requests).toEqual([])
+
+    session.removeAttribute("id:evil", "data-turbo")
 
     const proposal = registry.submissionProposal({
       protocol: { requestId: "unknown-submitter-proposal" },
@@ -489,6 +510,16 @@ describe("native form control registry", () => {
     expect(plan).not.toHaveProperty("body")
     expect(plan.headers.Accept).toBe("application/vnd.expo-turbo+xml")
     session.setAttribute("id:form", "method", "post")
+    await expect(
+      registry.submit({
+        protocol: { requestId: "unknown-submitter-confirmation" },
+        submitter: submitter.selection,
+      }),
+    ).resolves.toMatchObject({ status: "canceled" })
+    expect(requests).toEqual([])
+    expect(confirmations).toEqual(["Danger"])
+
+    session.removeAttribute("id:evil", "data-turbo-confirm")
     await registry.submit({
       protocol: { requestId: "unknown-submitter-submit" },
       submitter: submitter.selection,
