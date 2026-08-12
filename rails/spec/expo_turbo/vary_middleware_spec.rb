@@ -115,6 +115,57 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
     expect(merged["vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
   end
 
+  # Rack 3 permits a header value to be a String or an Array of Strings. An
+  # Array must be read as field names, not stringified, or the cache receives a
+  # field-name list that is not one. The Array form is preserved, because
+  # middleware below this one may append to it.
+  it "merges an array-valued Vary without stringifying it" do
+    _, merged = vary("vary" => ["Accept-Encoding", "Origin"])
+
+    expect(merged["vary"]).to eq(
+      ["Accept-Encoding", "Origin", "Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"]
+    )
+  end
+
+  it "reads a comma-joined string inside an array as separate field names" do
+    _, merged = vary("vary" => ["Accept-Encoding, Accept", "Origin"])
+
+    expect(merged["vary"]).to eq(
+      ["Accept-Encoding, Accept", "Origin", "Turbo-Frame", "X-Expo-Turbo-Modules"]
+    )
+  end
+
+  it "respects an uncacheable Vary that arrives as an array element" do
+    _, only_star = vary("vary" => ["*"])
+    _, trailing_star = vary("vary" => ["Accept-Encoding", "*"])
+
+    expect(only_star["vary"]).to eq(["*"])
+    expect(trailing_star["vary"]).to eq(["Accept-Encoding", "*"])
+  end
+
+  it "stamps an empty array and keeps the array form" do
+    _, merged = vary("vary" => [])
+
+    expect(merged["vary"]).to eq(["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"])
+  end
+
+  it "does not repeat a dimension that an array already carries" do
+    _, merged = vary("vary" => ["accept", "TURBO-FRAME"])
+
+    expect(merged["vary"]).to eq(["accept", "TURBO-FRAME", "X-Expo-Turbo-Modules"])
+  end
+
+  it "keeps a string-valued Vary a string" do
+    _, merged = vary("vary" => "Accept-Encoding")
+
+    expect(merged["vary"]).to be_a(String)
+    expect(merged["vary"]).to eq("Accept-Encoding, Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+  end
+
+  def vary(headers)
+    described_class.new(->(_) { [200, headers, []] }).call({})
+  end
+
   def request(path, env = {})
     status, headers, = ExpoTurboRailsSpecApp.call(
       Rack::MockRequest.env_for(

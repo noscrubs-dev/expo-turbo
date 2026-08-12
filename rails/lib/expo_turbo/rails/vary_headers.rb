@@ -36,16 +36,30 @@ module ExpoTurbo
         return headers unless headers.respond_to?(:[]) && headers.respond_to?(:[]=)
 
         key = vary_key(headers)
-        values = headers[key].to_s.split(",").map(&:strip).reject(&:empty?)
-        return headers if values.include?("*")
+        existing = headers[key]
+        names = field_names(existing)
+        return headers if names.include?("*")
 
-        DIMENSIONS.each do |dimension|
-          values << dimension if values.none? { |value| value.casecmp?(dimension) }
-        end
+        missing = DIMENSIONS.reject { |dimension| names.any? { |name| name.casecmp?(dimension) } }
+        return headers if missing.empty?
 
         headers = headers.dup if headers.frozen?
-        headers[key] = values.join(", ")
+        # Rack 3 permits either form. Keep the one that arrived, so middleware
+        # below this one can keep appending to an Array it built.
+        headers[key] = existing.is_a?(Array) ? existing + missing : (names + missing).join(", ")
         headers
+      end
+
+      # A Rack 3 header value is a String or an Array of Strings, and an Array
+      # element may itself be a comma-joined list. Read every shape as field
+      # names rather than stringifying it, which would turn an Array into one
+      # value that is not a field name at all.
+      def field_names(value)
+        case value
+        when nil then []
+        when Array then value.flat_map { |entry| field_names(entry) }
+        else value.to_s.split(",").map(&:strip).reject(&:empty?)
+        end
       end
 
       def vary_key(headers)
