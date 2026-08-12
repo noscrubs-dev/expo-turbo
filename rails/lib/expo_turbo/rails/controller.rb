@@ -21,7 +21,8 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
-        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?, :expo_turbo_frame_request_id
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
+          :expo_turbo_frame_request_id, :expo_turbo_request?
       end
 
       class_methods do
@@ -70,12 +71,25 @@ module ExpoTurbo
         Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
+      # True only when the request names the Expo Turbo media type exactly.
+      # A wildcard Accept value is not proof of a native client.
+      def expo_turbo_request?
+        MediaType.explicitly_accepted?(request.get_header("HTTP_ACCEPT"))
+      end
+
       def expo_turbo_client_modules
         expo_turbo_module_negotiation.fetch(:modules)
       end
 
+      # Reports which vocabulary answered this request:
+      # :declared, :assumed_latest, or :assumed_none.
+      def expo_turbo_vocabulary
+        expo_turbo_module_negotiation.fetch(:vocabulary)
+      end
+
       def expo_turbo_client_supports?(module_name, requirement)
         raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
+        raise ArgumentError, "module_name must not be blank" if module_name.blank?
         raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
         raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
 
@@ -93,9 +107,11 @@ module ExpoTurbo
       end
 
       def expo_turbo_cache_variant
-        negotiation = expo_turbo_module_negotiation
-        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:cache_variant)
-        [*Frames.cache_variant(expo_turbo_frame_request_id), :modules, module_variant]
+        [
+          *Frames.cache_variant(expo_turbo_frame_request_id),
+          :modules,
+          expo_turbo_module_negotiation.fetch(:cache_variant)
+        ]
       end
 
       def expo_turbo_vary_by_frame!
@@ -122,24 +138,59 @@ module ExpoTurbo
       MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
       MODULE_VERSION_PATTERN = /\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z/
 
+      ASSUMED_LATEST = {vocabulary: :assumed_latest, latest: true, modules: {}.freeze, cache_variant: :latest}.freeze
+      ASSUMED_NONE = {vocabulary: :assumed_none, latest: false, modules: {}.freeze, cache_variant: :none}.freeze
+      VOCABULARY_HEADER = "X-Expo-Turbo-Vocabulary"
+      VOCABULARY_HEADER_VALUES = {
+        declared: "declared",
+        assumed_latest: "assumed-latest",
+        assumed_none: "assumed-none"
+      }.freeze
+
+      # A verified native request fails CLOSED. Neither an absent header nor a
+      # malformed one is evidence that the client understands a module, and
+      # both states (an old client, a header-stripping proxy) are outside the
+      # server's control. Only a request that does not accept Expo Turbo keeps
+      # the fail-open assumption, because module gating cannot apply to it.
       def expo_turbo_module_negotiation
         header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
+        native = expo_turbo_request?
         cached = defined?(@expo_turbo_module_negotiation) && @expo_turbo_module_negotiation
-        return cached.fetch(:value) if cached && cached.fetch(:header).equal?(header)
-
-        value = if header.nil?
-          {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
-        else
-          parsed = expo_turbo_parse_module_header(header)
-          if parsed
-            {latest: false, modules: parsed.fetch(:modules), cache_variant: parsed.fetch(:cache_variant)}.freeze
-          else
-            expo_turbo_report_malformed_module_header
-            {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
-          end
+        if cached && cached.fetch(:header).equal?(header) && cached.fetch(:native) == native
+          expo_turbo_report_vocabulary(cached.fetch(:value))
+          return cached.fetch(:value)
         end
-        @expo_turbo_module_negotiation = {header: header, value: value}.freeze
+
+        value = expo_turbo_negotiate_modules(header, native: native)
+        @expo_turbo_module_negotiation = {header: header, native: native, value: value}.freeze
+        expo_turbo_report_vocabulary(value)
         value
+      end
+
+      def expo_turbo_negotiate_modules(header, native:)
+        assumed = native ? ASSUMED_NONE : ASSUMED_LATEST
+        return assumed if header.nil?
+
+        parsed = expo_turbo_parse_module_header(header)
+        return assumed_or_report(assumed) unless parsed
+
+        {
+          vocabulary: :declared,
+          latest: false,
+          modules: parsed.fetch(:modules),
+          cache_variant: parsed.fetch(:cache_variant)
+        }.freeze
+      end
+
+      def assumed_or_report(assumed)
+        expo_turbo_report_malformed_module_header
+        assumed
+      end
+
+      def expo_turbo_report_vocabulary(value)
+        return unless respond_to?(:response) && response
+
+        response.set_header(VOCABULARY_HEADER, VOCABULARY_HEADER_VALUES.fetch(value.fetch(:vocabulary)))
       end
 
       def expo_turbo_parse_module_header(header)
@@ -220,21 +271,19 @@ module ExpoTurbo
         value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
       end
 
+      # These warnings are not swallowed. A logger that cannot record a
+      # malformed vocabulary header must not remove the only diagnostic.
       def expo_turbo_report_malformed_module_entries(count)
         return unless respond_to?(:logger) && logger
 
         label = (count == 1) ? "entry" : "entries"
         logger.warn("Expo Turbo ignored #{count} malformed X-Expo-Turbo-Modules #{label}")
-      rescue
-        nil
       end
 
       def expo_turbo_report_malformed_module_header
         return unless respond_to?(:logger) && logger
 
         logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Modules header")
-      rescue
-        nil
       end
 
       public

@@ -333,14 +333,14 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
-  it "assumes latest capabilities only when the module header is absent or its envelope is malformed" do
+  it "assumes latest capabilities only for a request that does not accept Expo Turbo" do
     absent_document = controller_with_request("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
     absent_frame = controller_with_request("HTTP_TURBO_FRAME" => "details")
 
-    [absent_document, absent_frame].each do |controller|
-      expect(controller.expo_turbo_client_modules).to eq({})
-      expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
-    end
+    expect(absent_document.expo_turbo_client_modules).to eq({})
+    expect(absent_document.expo_turbo_client_supports?("future-module", ">= 999")).to be(false)
+    expect(absent_frame.expo_turbo_client_modules).to eq({})
+    expect(absent_frame.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
 
     ["", "v2;cart=1", "\xFF".b].each do |header|
       controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => header)
@@ -349,6 +349,14 @@ RSpec.describe ExpoTurbo::Rails::Controller do
       expect { controller.expo_turbo_client_modules }.not_to raise_error
       expect(controller.expo_turbo_client_modules).to eq({})
       expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
+
+      native = controller_with_request(
+        "HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE,
+        "HTTP_X_EXPO_TURBO_MODULES" => header
+      )
+      allow(native).to receive(:logger).and_return(double(warn: nil))
+
+      expect(native.expo_turbo_client_supports?("future-module", ">= 999")).to be(false)
     end
   end
 

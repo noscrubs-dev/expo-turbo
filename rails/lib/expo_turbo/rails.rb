@@ -7,6 +7,7 @@ require "turbo-rails"
 
 require_relative "rails/version"
 require_relative "rails/protocol"
+require_relative "rails/media_type"
 require_relative "rails/route_constraint"
 require_relative "rails/errors"
 require_relative "rails/template_capabilities"
