@@ -96,7 +96,6 @@ export function defineComponentActionModule<
 
 export interface ComponentActionRegistry<Action extends RegistryComponentAction = never> {
   readonly actions: readonly string[]
-  readonly modules: readonly Readonly<{ name: string; version: string }>[]
   resolve(name: string): Action | undefined
   use<Next extends readonly RegistryComponentAction[]>(
     module: ComponentActionModule<string, Next>,
@@ -107,7 +106,6 @@ class ActionRegistry<Action extends RegistryComponentAction>
   implements ComponentActionRegistry<Action>
 {
   readonly actions: readonly string[]
-  readonly modules: readonly Readonly<{ name: string; version: string }>[]
   private readonly definitions = new Map<string, RegistryComponentAction>()
 
   constructor(private readonly actionModules: readonly ComponentActionModule[]) {
@@ -128,11 +126,6 @@ class ActionRegistry<Action extends RegistryComponentAction>
       }
     }
     this.actions = Object.freeze([...this.definitions.keys()].sort())
-    this.modules = Object.freeze(
-      actionModules
-        .map((module) => Object.freeze({ name: module.name, version: module.version }))
-        .sort((left, right) => left.name.localeCompare(right.name)),
-    )
   }
 
   resolve(name: string): Action | undefined {
