@@ -4,7 +4,6 @@ require "active_support/concern"
 require "active_support/core_ext/module/attr_internal"
 require "action_controller/metal/helpers"
 require "action_view/rendering"
-require "pathname"
 require "rubygems/requirement"
 
 module ExpoTurbo
@@ -13,22 +12,42 @@ module ExpoTurbo
       extend ActiveSupport::Concern
       include ActionController::Helpers
       include ActionView::Rendering
+      # An API controller answers with head :no_content when an action does not
+      # render. With a template for the action it should render the template,
+      # exactly as ActionController::Base does, and keep head :no_content when
+      # no template exists.
+      include ActionController::ImplicitRender
 
       included do
-        class_attribute :expo_turbo_views_path, instance_accessor: false
         class_attribute :expo_turbo_template_capabilities_config, instance_accessor: false
+        # Every Frame response must contain the requested Frame. Set false for
+        # one action that deliberately answers with a different Frame.
+        class_attribute :expo_turbo_frame_match, default: true
+        # Set false only for an endpoint that must deliver a payload the
+        # protocol rejects, such as a client-behavior probe.
+        class_attribute :expo_turbo_validate_responses, default: true
+        helper ::Turbo::Engine.helpers if defined?(::Turbo::Engine)
         helper ExpoTurbo::Rails::Attributes::Helper
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
-        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?, :expo_turbo_frame_request_id
+        helper ExpoTurbo::Rails::Caching::Helper
+        # Vary is applied before any other filter runs, because an after_action
+        # never runs when a filter halts the chain or the action raises, and an
+        # authentication redirect, a rate limit, a rejected header, and a
+        # rescued error all reach a shared cache. The after_action repeats it
+        # for an action that replaced the header itself; the merge is
+        # idempotent.
+        prepend_before_action :expo_turbo_vary!
+        before_action :expo_turbo_reject_invalid_frame_request!
+        after_action :expo_turbo_validate_response!
+        after_action :expo_turbo_vary!
+        after_action :expo_turbo_report_response_vocabulary
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
+          :expo_turbo_frame_request_id, :expo_turbo_request?
       end
 
       class_methods do
-        def expo_turbo_view_root(path)
-          self.expo_turbo_views_path = Pathname(path).expand_path
-        end
-
         def expo_turbo_template_capabilities(components: nil, manifest: nil, style_tokens: {}, max_style_tokens: 5)
           self.expo_turbo_template_capabilities_config = TemplateCapabilities.new(
             components:,
@@ -39,25 +58,17 @@ module ExpoTurbo
         end
       end
 
-      def render_expo_turbo(template, locals: {}, status: :ok)
-        body = render_to_string(
-          inline: File.read(expo_turbo_template_file(template)),
-          type: :erb,
-          formats: [:xml],
-          layout: false,
-          locals: locals
-        )
-        raise TemplateError, "Expo Turbo templates must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
+      # ActionView::Rendering renders a template for every option, and this
+      # concern adds it to API controllers, where it would otherwise hide the
+      # registered renderers such as `render turbo_stream:`. Ask the renderers
+      # first, exactly as ActionController::Base orders them.
+      def render_to_body(options = {})
+        if respond_to?(:_render_to_body_with_renderer, true)
+          rendered = _render_to_body_with_renderer(options)
+          return rendered if rendered
+        end
 
-        document = XmlFragments.parse_document(body)
-        XmlFragments.validate_document_ids!(document)
-        expo_turbo_validate_document!(document)
-
-        render plain: body, content_type: MIME_TYPE, status: status
-      rescue XmlFragments::DocumentIdError
-        raise TemplateError, "Expo Turbo templates must use unique nonblank literal ids"
-      rescue XmlFragments::ParseError
-        raise TemplateError, "Expo Turbo templates must render well-formed UTF-8 XML"
+        super
       end
 
       def expo_turbo_frame_request?
@@ -65,17 +76,39 @@ module ExpoTurbo
       end
 
       def expo_turbo_frame_request_id
-        frame_id = request.get_header("HTTP_TURBO_FRAME")
-        frame_id = frame_id.dup.force_encoding(Encoding::UTF_8) if frame_id.is_a?(String)
+        frame_id = expo_turbo_frame_header
         Frames.valid_id?(frame_id) ? frame_id : nil
+      end
+
+      # A malformed Frame id must not become a document request. That failure
+      # is silent: the client asked for one representation and receives
+      # another one.
+      def expo_turbo_reject_invalid_frame_request!
+        frame_id = expo_turbo_frame_header
+        return if frame_id.nil? || Frames.valid_id?(frame_id)
+
+        head :bad_request
+      end
+
+      # True only when the request names the Expo Turbo media type exactly.
+      # A wildcard Accept value is not proof of a native client.
+      def expo_turbo_request?
+        MediaType.explicitly_accepted?(request.get_header("HTTP_ACCEPT"))
       end
 
       def expo_turbo_client_modules
         expo_turbo_module_negotiation.fetch(:modules)
       end
 
+      # Reports which vocabulary answered this request:
+      # :declared, :assumed_latest, or :assumed_none.
+      def expo_turbo_vocabulary
+        expo_turbo_module_negotiation.fetch(:vocabulary)
+      end
+
       def expo_turbo_client_supports?(module_name, requirement)
         raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
+        raise ArgumentError, "module_name must not be blank" if module_name.blank?
         raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
         raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
 
@@ -93,53 +126,117 @@ module ExpoTurbo
       end
 
       def expo_turbo_cache_variant
-        negotiation = expo_turbo_module_negotiation
-        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:cache_variant)
-        [*Frames.cache_variant(expo_turbo_frame_request_id), :modules, module_variant]
+        [
+          *Frames.cache_variant(expo_turbo_frame_request_id),
+          :modules,
+          expo_turbo_module_negotiation.fetch(:cache_variant)
+        ]
       end
 
-      def expo_turbo_vary_by_frame!
+      VARY_DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"].freeze
+
+      # Applied to every response, not only to a request that already carries a
+      # Frame header: a shared cache can receive a Frame request for the same
+      # URL later. Accept is included even when the route forced the format,
+      # because the vocabulary decision reads Accept.
+      def expo_turbo_vary!
         values = response.headers["Vary"].to_s.split(",").map(&:strip).reject(&:blank?)
         return response.headers["Vary"] if values.include?("*")
 
-        values << "Accept" if request.should_apply_vary_header? && values.none? { |value| value.casecmp?("Accept") }
-        values << "Turbo-Frame" if values.none? { |value| value.casecmp?("Turbo-Frame") }
-        values << "X-Expo-Turbo-Modules" if values.none? { |value| value.casecmp?("X-Expo-Turbo-Modules") }
+        VARY_DIMENSIONS.each do |dimension|
+          values << dimension if values.none? { |value| value.casecmp?(dimension) }
+        end
         response.set_header "Vary", values.join(", ")
       end
 
       def expo_turbo_cache_key(*keys)
-        expo_turbo_vary_by_frame!
+        expo_turbo_vary!
         [*keys, *expo_turbo_cache_variant]
       end
 
+      # Format-aware in a request, exactly as in the view.
+      def turbo_stream
+        view_context.turbo_stream
+      end
+
+      # Always Expo Turbo. Broadcasts have no request and therefore no format,
+      # so they need a builder that does not depend on one.
       def expo_turbo_stream
         view_context.expo_turbo_stream
       end
 
       private
 
+      def expo_turbo_frame_header
+        frame_id = request.get_header("HTTP_TURBO_FRAME")
+        frame_id.is_a?(String) ? frame_id.dup.force_encoding(Encoding::UTF_8) : frame_id
+      end
+
       MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
       MODULE_VERSION_PATTERN = /\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z/
 
+      ASSUMED_LATEST = {vocabulary: :assumed_latest, latest: true, modules: {}.freeze, cache_variant: :latest}.freeze
+      ASSUMED_NONE = {vocabulary: :assumed_none, latest: false, modules: {}.freeze, cache_variant: :none}.freeze
+      VOCABULARY_HEADER = "X-Expo-Turbo-Vocabulary"
+      VOCABULARY_HEADER_VALUES = {
+        declared: "declared",
+        assumed_latest: "assumed-latest",
+        assumed_none: "assumed-none"
+      }.freeze
+
+      # A verified native request fails CLOSED. Neither an absent header nor a
+      # malformed one is evidence that the client understands a module, and
+      # both states (an old client, a header-stripping proxy) are outside the
+      # server's control. Only a request that does not accept Expo Turbo keeps
+      # the fail-open assumption, because module gating cannot apply to it.
       def expo_turbo_module_negotiation
         header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
+        native = expo_turbo_request?
         cached = defined?(@expo_turbo_module_negotiation) && @expo_turbo_module_negotiation
-        return cached.fetch(:value) if cached && cached.fetch(:header).equal?(header)
-
-        value = if header.nil?
-          {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
-        else
-          parsed = expo_turbo_parse_module_header(header)
-          if parsed
-            {latest: false, modules: parsed.fetch(:modules), cache_variant: parsed.fetch(:cache_variant)}.freeze
-          else
-            expo_turbo_report_malformed_module_header
-            {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
-          end
+        if cached && cached.fetch(:header).equal?(header) && cached.fetch(:native) == native
+          expo_turbo_report_vocabulary(cached.fetch(:value))
+          return cached.fetch(:value)
         end
-        @expo_turbo_module_negotiation = {header: header, value: value}.freeze
+
+        value = expo_turbo_negotiate_modules(header, native: native)
+        @expo_turbo_module_negotiation = {header: header, native: native, value: value}.freeze
+        expo_turbo_report_vocabulary(value)
         value
+      end
+
+      def expo_turbo_negotiate_modules(header, native:)
+        assumed = native ? ASSUMED_NONE : ASSUMED_LATEST
+        return assumed if header.nil?
+
+        parsed = expo_turbo_parse_module_header(header)
+        return assumed_or_report(assumed) unless parsed
+
+        {
+          vocabulary: :declared,
+          latest: false,
+          modules: parsed.fetch(:modules),
+          cache_variant: parsed.fetch(:cache_variant)
+        }.freeze
+      end
+
+      def assumed_or_report(assumed)
+        expo_turbo_report_malformed_module_header
+        assumed
+      end
+
+      def expo_turbo_response?
+        media_type = response&.media_type
+        media_type == MIME_TYPE || media_type == TURBO_STREAM_MIME_TYPE
+      end
+
+      def expo_turbo_report_response_vocabulary
+        expo_turbo_module_negotiation if expo_turbo_request? || expo_turbo_response?
+      end
+
+      def expo_turbo_report_vocabulary(value)
+        return unless respond_to?(:response) && response
+
+        response.set_header(VOCABULARY_HEADER, VOCABULARY_HEADER_VALUES.fetch(value.fetch(:vocabulary)))
       end
 
       def expo_turbo_parse_module_header(header)
@@ -220,37 +317,22 @@ module ExpoTurbo
         value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
       end
 
+      # These warnings are not swallowed. A logger that cannot record a
+      # malformed vocabulary header must not remove the only diagnostic.
       def expo_turbo_report_malformed_module_entries(count)
         return unless respond_to?(:logger) && logger
 
         label = (count == 1) ? "entry" : "entries"
         logger.warn("Expo Turbo ignored #{count} malformed X-Expo-Turbo-Modules #{label}")
-      rescue
-        nil
       end
 
       def expo_turbo_report_malformed_module_header
         return unless respond_to?(:logger) && logger
 
         logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Modules header")
-      rescue
-        nil
       end
 
       public
-
-      def render_expo_turbo_stream(*streams, status: :ok)
-        streams << yield(expo_turbo_stream) if block_given?
-        body = streams.flatten.compact.join
-        raise TemplateError, "Expo Turbo Stream responses must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
-
-        document = XmlFragments.parse_stream_fragment(body)
-        expo_turbo_validate_stream_fragment!(document)
-
-        render plain: body, content_type: TURBO_STREAM_MIME_TYPE, status: status
-      rescue XmlFragments::ParseError
-        raise TemplateError, "Expo Turbo Stream responses must contain well-formed XML Stream fragments"
-      end
 
       def broadcast_expo_turbo_stream_to(*streamables, content: nil)
         raise ArgumentError, "provide content or a block, not both" if block_given? && !content.nil?
@@ -319,32 +401,69 @@ module ExpoTurbo
         raise TemplateError, "Expo Turbo Stream broadcasts must contain well-formed XML Stream fragments"
       end
 
-      def expo_turbo_template_file(template)
-        expo_turbo_view_file("#{template}.xml.erb")
+      # Ordinary `render` produces the response, so validation happens once, on
+      # the finished response, before Rails delivers it. Rendering a template
+      # of another format, or a Stream for a browser, is left alone.
+      def expo_turbo_validate_response!
+        return unless expo_turbo_validate_responses
+
+        case response.media_type
+        when MIME_TYPE then expo_turbo_validate_document_response!
+        when TURBO_STREAM_MIME_TYPE then expo_turbo_validate_stream_response! if expo_turbo_request?
+        end
       end
 
-      def expo_turbo_partial_file(partial)
-        relative_path = Pathname(partial.to_s)
-        raise TemplateError, "Expo Turbo partial must be named" if partial.blank? || relative_path.absolute? || relative_path.extname.present?
+      def expo_turbo_validate_document_response!
+        body = expo_turbo_response_body
+        return if body.nil?
 
-        expo_turbo_view_file(relative_path.dirname.join("_#{relative_path.basename}").to_s + ".xml.erb")
+        document = XmlFragments.parse_document(body)
+        XmlFragments.validate_document_ids!(document)
+        expo_turbo_validate_document!(document)
+        expo_turbo_match_frame_response!(document)
+      rescue XmlFragments::DocumentIdError
+        raise TemplateError, "Expo Turbo templates must use unique nonblank literal ids"
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo templates must render well-formed UTF-8 XML"
       end
 
-      def expo_turbo_view_file(relative_path)
-        root = self.class.expo_turbo_views_path
-        raise ConfigurationError, "configure expo_turbo_view_root before rendering" unless root
+      def expo_turbo_validate_stream_response!
+        body = expo_turbo_response_body
+        return if body.nil?
 
-        root = root.realpath
-        relative_path = Pathname(relative_path)
-        raise TemplateError, "Expo Turbo template is outside the configured view root" if relative_path.absolute?
+        expo_turbo_validate_stream_fragment!(XmlFragments.parse_stream_fragment(body))
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo Stream responses must contain well-formed XML Stream fragments"
+      end
 
-        candidate = root.join(relative_path).cleanpath
-        raise TemplateError, "Expo Turbo template does not exist" unless candidate.file?
+      def expo_turbo_response_body
+        body = response.body
+        return if body.nil? || body.empty?
 
-        candidate = candidate.realpath
-        raise TemplateError, "Expo Turbo template is outside the configured view root" unless candidate.to_s.start_with?("#{root}#{File::SEPARATOR}")
+        body = body.dup.force_encoding(Encoding::UTF_8)
+        raise TemplateError, "Expo Turbo responses must render valid UTF-8" unless body.valid_encoding?
 
-        candidate.to_s
+        body
+      end
+
+      # The controller cannot know the expected Frame before the view renders,
+      # so the request header is compared against the Frame the response
+      # actually contains. That removes the hand-written id from host code.
+      def expo_turbo_match_frame_response!(document)
+        frame_id = expo_turbo_frame_request_id
+        return if frame_id.nil? || !expo_turbo_frame_match
+        return if document.xpath("//*").any? { |element| expo_turbo_frame_element?(element, frame_id) }
+
+        response.status = :bad_request
+        response.body = ""
+      end
+
+      def expo_turbo_frame_element?(element, frame_id)
+        return false unless element.name == "turbo-frame" && element.namespace&.prefix.nil?
+
+        element.attribute_nodes.any? do |attribute|
+          attribute.name == "id" && attribute.namespace.nil? && attribute.value == frame_id
+        end
       end
     end
   end

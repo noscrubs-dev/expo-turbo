@@ -5,7 +5,7 @@ module Api
     module Demo
       class ProtectedDocumentsController < ApplicationController
         def show
-          render_expo_turbo("demo/protected_documents/show")
+          render "show"
         end
       end
     end
