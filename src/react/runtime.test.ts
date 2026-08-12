@@ -9,6 +9,7 @@ import { createExpoTurboRuntime } from "./runtime-factory.js"
 
 const TestDocument = (() => null) as ComponentType
 const TestForm = (() => null) as ComponentType
+const TestField = (() => null) as ComponentType
 const registry = createRegistry(
   defineComponentModule({
     components: [
@@ -26,6 +27,13 @@ const registry = createRegistry(
         formOwner: true,
         schema: z.object({}),
         tag: "TestForm",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: TestField,
+        schema: z.object({}),
+        tag: "TestField",
       }),
     ],
     name: "runtime-test",
@@ -101,6 +109,80 @@ describe("Expo Turbo runtime", () => {
       { method: "replace", url: "https://example.test/document" },
       { method: "push", url: "https://example.test/next" },
     ])
+  })
+
+  test("hands one host focus adapter to form validation", async () => {
+    const focused: string[] = []
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) =>
+          response(
+            '<TestDocument><TestForm id="form"><TestField id="field" /></TestForm></TestDocument>',
+            request.url,
+          ),
+      },
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const controls = runtime.forms.controlsFor("id:form")
+    controls.register("id:field", {
+      kind: "value",
+      name: "field",
+      validity: { message: "Field is required", valid: false },
+      value: "",
+    })
+
+    expect(controls.reportValidity()).toMatchObject({
+      firstInvalid: { nodeKey: "id:field" },
+      valid: false,
+    })
+    // The host supplies focus exactly once, to the runtime. Reverting the
+    // fan-out makes reportValidity() throw StateError("Invalid form submission
+    // requires a configured focus adapter") instead of recording a focus.
+    expect(focused).toEqual(["id:field"])
+
+    runtime.dispose()
+  })
+
+  test("fails invalid form validation closed when no focus adapter is supplied", async () => {
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) =>
+          response(
+            '<TestDocument><TestForm id="form"><TestField id="field" /></TestForm></TestDocument>',
+            request.url,
+          ),
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const controls = runtime.forms.controlsFor("id:form")
+    controls.register("id:field", {
+      kind: "value",
+      name: "field",
+      validity: { message: "Field is required", valid: false },
+      value: "",
+    })
+
+    // Asserts the absence of a second route: without the new `focus` option
+    // there is no adapter anywhere in the runtime, so the test above can only
+    // have observed the one it passed in.
+    expect(() => controls.reportValidity()).toThrow(
+      "Invalid form submission requires a configured focus adapter",
+    )
+
+    runtime.dispose()
   })
 
   test("does not report a canceled initial visit as loaded", async () => {

@@ -25,4 +25,6 @@ declare module "expo-router" {
   }
 
   export function useRouter(): ExpoTurboImperativeRouter
+
+  export function usePathname(): string
 }

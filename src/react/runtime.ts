@@ -1,6 +1,31 @@
-import { createElement, type ReactNode, useCallback, useEffect, useRef, useState } from "react"
-
 import {
+  type ComponentType,
+  createElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
+
+import type {
+  AutofocusAdapter,
+  AutofocusScrollAdapter,
+  DocumentAnchorScrollAdapter,
+  DocumentAutomaticPreloadPolicy,
+  DocumentHistoryScrollAdapter,
+  DocumentLinkAdapter,
+  DocumentPrefetchPolicy,
+  DocumentRefreshScrollAdapter,
+  DocumentVisitAnnouncementAdapter,
+  FormSubmissionAnnouncementAdapter,
+  FrameAutoscrollAdapter,
+} from "../adapters/index.js"
+import type { StyleAdapter } from "../adapters/styles.js"
+import {
+  type ExpoTurboDocumentBoundaryProps,
+  type ExpoTurboFormBoundaryProps,
+  type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
   ExpoTurboRoot,
   type ExpoTurboUnknownVocabularyHandler,
@@ -17,19 +42,64 @@ export {
   type ExpoTurboRuntime,
 } from "./runtime-factory.js"
 
+/**
+ * Presentation-side adapters forwarded to `ExpoTurboProvider`. Every entry is
+ * optional; an absent entry keeps the renderer's own behavior. Transport,
+ * history, navigation, and focus stay on `ExpoTurboProps` because the runtime
+ * itself consumes them.
+ */
+export interface ExpoTurboRenderAdapters {
+  readonly autofocus?: AutofocusAdapter
+  readonly autofocusScroll?: AutofocusScrollAdapter
+  readonly defaultDirection?: "ltr" | "rtl"
+  readonly documentAnchorScroll?: DocumentAnchorScrollAdapter
+  readonly documentAnnouncements?: DocumentVisitAnnouncementAdapter
+  readonly documentAutomaticPreloadPolicy?: DocumentAutomaticPreloadPolicy
+  readonly documentHistoryScroll?: DocumentHistoryScrollAdapter
+  readonly documentLinks?: DocumentLinkAdapter
+  readonly documentPrefetchPolicy?: DocumentPrefetchPolicy
+  readonly documentRefreshScroll?: DocumentRefreshScrollAdapter
+  readonly formAnnouncements?: FormSubmissionAnnouncementAdapter
+  readonly frameAutoscroll?: FrameAutoscrollAdapter
+  readonly styles?: StyleAdapter
+}
+
+/**
+ * Host chrome wrapped around every mounted document, Frame, and form.
+ *
+ * These components render *below* the renderer's provider but are authored by
+ * the host, so they routinely read host contexts. Everything the host mounts
+ * around `ExpoTurbo` therefore stays an ancestor of them: `ExpoTurbo` inserts
+ * no provider of its own between the host tree and the renderer.
+ */
+export interface ExpoTurboBoundaries {
+  readonly document?: ComponentType<ExpoTurboDocumentBoundaryProps>
+  readonly form?: ComponentType<ExpoTurboFormBoundaryProps>
+  readonly frame?: ComponentType<ExpoTurboFrameBoundaryProps>
+}
+
 export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
+  readonly adapters?: ExpoTurboRenderAdapters
+  readonly boundaries?: ExpoTurboBoundaries
   readonly loading?: ReactNode
   readonly onError?: (error: Error) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   readonly renderError?: (error: Error, retry: () => void) => ReactNode
 }
 
+const NO_RENDER_ADAPTERS: ExpoTurboRenderAdapters = Object.freeze({})
+const NO_BOUNDARIES: ExpoTurboBoundaries = Object.freeze({})
+
 /**
- * Renders a complete Expo Turbo document runtime from the four host-owned
- * inputs: URL, registry, fetch adapter, and optional navigation adapter.
+ * Renders a complete Expo Turbo document runtime from the host-owned inputs:
+ * URL, registry, fetch adapter, and optional history, navigation, and focus
+ * adapters.
  */
 export function ExpoTurbo({
+  adapters = NO_RENDER_ADAPTERS,
+  boundaries = NO_BOUNDARIES,
   fetch,
+  focus,
   history,
   loading = null,
   navigation,
@@ -73,6 +143,7 @@ export function ExpoTurbo({
   useEffect(() => {
     const runtime = createExpoTurboRuntime({
       fetch,
+      ...(focus ? { focus } : {}),
       ...(history ? { history } : {}),
       ...(navigation ? { navigation } : {}),
       registry,
@@ -84,7 +155,7 @@ export function ExpoTurbo({
       if (currentRuntimeRef.current === runtime) currentRuntimeRef.current = undefined
       runtime.dispose()
     }
-  }, [attempt, fetch, history, navigation, registry])
+  }, [attempt, fetch, focus, history, navigation, registry])
 
   // The preceding effect replaces this ref whenever a runtime-defining input
   // changes, so those inputs intentionally restart the visit effect too.
@@ -128,18 +199,56 @@ export function ExpoTurbo({
     return () => {
       active = false
     }
-  }, [attempt, fail, fetch, history, navigation, registry, url])
+  }, [attempt, fail, fetch, focus, history, navigation, registry, url])
 
   if (status.state === "loading") return loading
-  if (status.state === "error") return renderError?.(status.error, retry) ?? null
+  if (status.state === "error") {
+    // A hard failure must never look like a blank screen. Without a host
+    // surface the only host-neutral way to stay loud is to let the error reach
+    // React's own machinery: a dev redbox, or the host's error boundary in
+    // release. Pass `renderError={() => null}` to opt back into silence.
+    if (!renderError) throw status.error
+    return renderError(status.error, retry)
+  }
   const { runtime } = status
 
   return createElement(
     ExpoTurboProvider,
     {
+      ...(adapters.autofocus ? { autofocus: adapters.autofocus } : {}),
+      ...(adapters.autofocusScroll ? { autofocusScroll: adapters.autofocusScroll } : {}),
+      ...(adapters.defaultDirection ? { defaultDirection: adapters.defaultDirection } : {}),
+      ...(adapters.documentAnchorScroll
+        ? { documentAnchorScroll: adapters.documentAnchorScroll }
+        : {}),
+      ...(adapters.documentAnnouncements
+        ? { documentAnnouncements: adapters.documentAnnouncements }
+        : {}),
+      ...(adapters.documentAutomaticPreloadPolicy
+        ? { documentAutomaticPreloadPolicy: adapters.documentAutomaticPreloadPolicy }
+        : {}),
+      ...(boundaries.document ? { documentComponent: boundaries.document } : {}),
       documentController: runtime.controller,
+      ...(adapters.documentHistoryScroll
+        ? { documentHistoryScroll: adapters.documentHistoryScroll }
+        : {}),
+      ...(adapters.documentLinks ? { documentLinks: adapters.documentLinks } : {}),
+      ...(adapters.documentPrefetchPolicy
+        ? { documentPrefetchPolicy: adapters.documentPrefetchPolicy }
+        : {}),
+      ...(adapters.documentRefreshScroll
+        ? { documentRefreshScroll: adapters.documentRefreshScroll }
+        : {}),
+      ...(adapters.formAnnouncements ? { formAnnouncements: adapters.formAnnouncements } : {}),
+      ...(boundaries.form ? { formComponent: boundaries.form } : {}),
       forms: runtime.forms,
+      ...(adapters.frameAutoscroll ? { frameAutoscroll: adapters.frameAutoscroll } : {}),
+      ...(boundaries.frame ? { frameComponent: boundaries.frame } : {}),
       frames: runtime.frames,
+      // Issue #404: the renderer reads navigation from context, so a runtime
+      // that never receives it here fails every external-scheme, cross-origin,
+      // and unvisitable link with a TargetError.
+      ...(navigation ? { navigation } : {}),
       onError: ({ error }) => {
         if (currentRuntimeRef.current !== runtime) return
         onErrorRef.current?.(error)
@@ -150,6 +259,7 @@ export function ExpoTurbo({
       scopes: runtime.scopes,
       session: runtime.session,
       state: runtime.state,
+      ...(adapters.styles ? { styles: adapters.styles } : {}),
     },
     createElement(ExpoTurboRoot),
   )

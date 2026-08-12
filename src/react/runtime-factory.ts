@@ -2,6 +2,7 @@ import type {
   ClockAdapter,
   DocumentHistoryHostAdapter,
   FetchAdapter,
+  FocusAdapter,
   NavigationAdapter,
 } from "../adapters/index.js"
 import {
@@ -47,6 +48,12 @@ export interface ExpoTurboRuntime {
 
 export interface CreateExpoTurboRuntimeOptions {
   readonly fetch: FetchAdapter
+  /**
+   * Logical focus for form validation. The runtime is the single owner: it
+   * hands this one adapter to every consumer that needs it, so a host never
+   * has to pass the same object to two places and keep their lifetimes in step.
+   */
+  readonly focus?: FocusAdapter
   readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
   readonly registry: ComponentRegistry<RegistryComponent>
@@ -109,6 +116,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     visitLifecycle,
   })
   const forms = new DocumentFormControls(session, {
+    ...(options.focus ? { focus: options.focus } : {}),
     formSemantics: options.registry,
     moduleVersions,
     submissionController: submission,

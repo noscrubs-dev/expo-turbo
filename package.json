@@ -22,6 +22,11 @@
       "import": "./dist/core/index.js",
       "default": "./dist/core/index.js"
     },
+    "./expo": {
+      "types": "./dist/expo/index.d.ts",
+      "import": "./dist/expo/index.js",
+      "default": "./dist/expo/index.js"
+    },
     "./expo-router": {
       "types": "./dist/expo-router/index.d.ts",
       "import": "./dist/expo-router/index.js",
@@ -90,10 +95,14 @@
   "packageManager": "bun@1.3.14",
   "peerDependencies": {
     "expo-router": ">=6.0.0",
-    "react": ">=19.1.0"
+    "react": ">=19.1.0",
+    "react-native": ">=0.81.0"
   },
   "peerDependenciesMeta": {
     "expo-router": {
+      "optional": true
+    },
+    "react-native": {
       "optional": true
     }
   },

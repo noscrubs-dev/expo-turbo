@@ -205,10 +205,6 @@ export interface AutofocusScrollAdapter {
 
 export type ScrollAlignment = "start" | "center" | "end" | "nearest"
 
-export interface ScrollAdapter {
-  scrollTo(id: string, alignment: ScrollAlignment): Promise<void> | void
-}
-
 /** Host-owned synchronous request for a same-document anchor scroll. */
 export interface DocumentAnchorScrollAdapter {
   scrollTo(id: string, alignment: "start"): undefined
@@ -253,22 +249,6 @@ export interface DocumentHistoryScrollAdapter {
   restore(position: DocumentScrollPosition): void
 }
 
-export interface StorageAdapter {
-  delete(key: string): Promise<void>
-  get(key: string): Promise<string | undefined>
-  set(key: string, value: string): Promise<void>
-}
-
-export interface ObservabilityEvent {
-  readonly code: string
-  readonly details: Readonly<Record<string, boolean | number | string | undefined>>
-  readonly level: "debug" | "info" | "warning" | "error"
-}
-
-export interface ObservabilityAdapter {
-  report(event: ObservabilityEvent): void
-}
-
 export interface ClockAdapter {
   clearTimeout(handle: unknown): void
   now(): number
@@ -299,10 +279,7 @@ export interface ExpoTurboAdapters<TStyle = unknown> {
   readonly inspector?: ProtocolInspectorAdapter
   readonly lifecycle: LifecycleAdapter
   readonly navigation: NavigationAdapter
-  readonly observability: ObservabilityAdapter
   readonly requestIds: RequestIdAdapter
-  readonly scroll: ScrollAdapter
-  readonly storage: StorageAdapter
   readonly styles: StyleAdapter<TStyle>
   readonly visibility: VisibilityAdapter
 }

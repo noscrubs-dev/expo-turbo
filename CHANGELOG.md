@@ -2,6 +2,69 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## 0.3.0
+
+- Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
+  entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
+  Expo Router history and navigation bridge, the credentialed transport, the
+  runtime and its disposal, and visible loading and error surfaces. Hello world
+  is now one component in one route file. The single `adapters` prop is the
+  escape hatch, with three states per key: absent uses the packaged default, an
+  object overrides it, and `null` turns the key off even where a default
+  exists. Defaults ship for `fetch`, `history`, `navigation`,
+  `documentAnnouncements`, `formAnnouncements`, `documentLinks`,
+  `documentAutomaticPreloadPolicy`, and `documentPrefetchPolicy`. The keys with
+  no default need host-owned native node references, a real scroll container,
+  or application style tokens, so the package cannot supply one.
+- Fix external-scheme, cross-origin, and unvisitable document links failing
+  blank (#404). `ExpoTurbo` forwarded `navigation` to the runtime factory but
+  never to `ExpoTurboProvider`, while the renderer reads it from context, so
+  every `mailto:`, `tel:`, cross-origin, and non-visitable link raised
+  `TargetError` instead of reaching the host adapter.
+- Fix `useExpoRouterAdapters` rebuilding its adapters on every render when
+  called with inline option callbacks (#403), which is exactly what the guide
+  documented. New adapter identity replaced the whole runtime, which refetched
+  the document without bound and left a permanently blank screen. Options are
+  now read through a ref at call time and only the *presence* of `openExternal`
+  participates in memoization, so the returned adapters keep one identity for
+  the life of the mount.
+- Add `focus` to `createExpoTurboRuntime` and `ExpoTurbo`. The runtime is the
+  single owner and hands the adapter to form validation itself; when the same
+  object also satisfies `AutofocusAdapter`, `ExpoTurboApp` fans it out to the
+  renderer as well. A host supplies focus once instead of keeping two owners of
+  one adapter in step by hand.
+- Add `useExpoTurboDisposable` to `expo-turbo/react`. The reference-counting
+  and microtask-deferred disposal that hosts were copying by hand now lives in
+  the package, so a StrictMode double-mount, a Fast Refresh cycle, or a route
+  swap hands a shared runtime over instead of tearing it down.
+- Add `boundaries` to `ExpoTurbo` and `ExpoTurboApp` for host-authored
+  document, Frame, and form chrome. Neither component mounts a provider between
+  the host tree and the renderer, so host contexts stay ancestors of those
+  components.
+- **Breaking:** Remove `ScrollAdapter`, `StorageAdapter`,
+  `ObservabilityAdapter`, and `ObservabilityEvent`, along with the required
+  `scroll`, `storage`, and `observability` members of `ExpoTurboAdapters`. They
+  were required fields with no consumer anywhere in the package, the examples,
+  the Rails gem, or the protocol. Migration: delete those three members from
+  any `ExpoTurboAdapters` value. Nothing read them, so no behavior changes.
+  `ScrollAlignment` stays; `FrameAutoscrollRequest` still uses it. Keep host
+  persistence and telemetry in the host, and wire scrolling through the
+  specific adapters that are actually consumed, such as `frameAutoscroll`,
+  `documentAnchorScroll`, `documentRefreshScroll`, `documentHistoryScroll`, and
+  `autofocusScroll`.
+- **Breaking:** `ExpoTurbo` no longer renders `null` when a document fails and
+  no `renderError` was supplied; it rethrows the failure during render.
+  Misconfigured, still-loading, and hard-failed were previously the same blank
+  screen. `ExpoTurbo` is host-neutral and has no primitives to draw with, so
+  letting React's own machinery take the error is the only way for it to stay
+  loud: a redbox in development, and the host's nearest error boundary in
+  release. Migration: pass `renderError`, adopt `ExpoTurboApp` (which always
+  supplies a visible surface), or pass `renderError={() => null}` to keep the
+  old silence.
+- **Breaking:** `react-native` is now an optional peer dependency, required
+  only by the new `expo-turbo/expo` entrypoint. Migration: none for existing
+  entrypoints; applications already depend on React Native.
+
 ## 0.2.0 - 2026-08-12
 
 - **Breaking:** Send decodable live registry module versions on document,

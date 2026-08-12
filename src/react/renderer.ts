@@ -710,7 +710,22 @@ export interface ExpoTurboProviderProps {
   readonly styles?: StyleAdapter
 }
 
-function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefined): void {
+export interface ExpoTurboDisposable {
+  dispose(): void
+}
+
+/**
+ * Reference-counts a shared disposable across every mount that claims it, and
+ * disposes it one microtask after the last claim is released so that a
+ * remount in the same commit — StrictMode, a Fast Refresh cycle, a route
+ * swap — hands the resource over instead of tearing it down.
+ *
+ * This is the bookkeeping every host was previously copying by hand. Hosts on
+ * the `ExpoTurboApp`/`ExpoTurbo` path never need it: those components own the
+ * runtime they create. It is public for hosts that compose a runtime manually
+ * and share it between screens.
+ */
+export function useExpoTurboDisposable(resource: ExpoTurboDisposable | undefined): void {
   useEffect(() => {
     if (!resource) return
     providerDisposableOwners.set(resource, (providerDisposableOwners.get(resource) ?? 0) + 1)
@@ -725,6 +740,8 @@ function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefin
     }
   }, [resource])
 }
+
+const useProviderDisposable = useExpoTurboDisposable
 
 const EMPTY_DOCUMENT_OUTPUT_LEDGER: DocumentOutputLedger = createDocumentOutputLedger()
 
