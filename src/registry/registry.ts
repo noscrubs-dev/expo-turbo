@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import { RegistryError } from "../core/errors.js"
 import type { FormContainerRole } from "../core/forms.js"
+import { isExpoTurboModuleName, isExpoTurboModuleVersion } from "../core/protocol-request.js"
 import type { ProtocolElement, ProtocolNode } from "../core/tree.js"
 import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions.js"
 import { type AttributeDefinition, attributeDefinitionParts } from "./attributes.js"
@@ -409,8 +410,12 @@ function freezeCapabilityModule<
   const Name extends string,
   const Definitions extends readonly RegistryComponentDefinition[],
 >(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
-  if (!config.name.trim()) throw new RegistryError("Component modules require a name")
-  if (!config.version.trim()) throw new RegistryError("Component modules require a version")
+  if (!isExpoTurboModuleName(config.name)) {
+    throw new RegistryError("Component modules require a valid name")
+  }
+  if (!isExpoTurboModuleVersion(config.version)) {
+    throw new RegistryError("Component module versions must use RubyGems version syntax")
+  }
   return Object.freeze({
     components: Object.freeze([...config.components]) as unknown as Definitions,
     name: config.name,

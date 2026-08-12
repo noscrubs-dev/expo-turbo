@@ -9,8 +9,17 @@ export interface ProtocolRequestHeaderOptions {
   readonly acceptsTurboStream?: boolean
   readonly capabilityHash?: string
   readonly frameId?: string
+  readonly moduleVersions?: string
   readonly requestId: string
 }
+
+export interface ExpoTurboModuleVersion {
+  readonly name: string
+  readonly version: string
+}
+
+const RUBYGEMS_VERSION_PATTERN =
+  /^[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 export interface ProtocolUrlResolution {
   readonly documentOrigin: string
@@ -54,6 +63,61 @@ function requestHeaderValue(value: unknown): string {
   return value
 }
 
+function hasModuleControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0)
+    return (
+      codePoint !== undefined &&
+      (codePoint <= 31 ||
+        codePoint === 127 ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+        codePoint === 0xfffe ||
+        codePoint === 0xffff)
+    )
+  })
+}
+
+export function isExpoTurboModuleName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    value.trim() === value &&
+    !hasModuleControlCharacter(value)
+  )
+}
+
+export function isExpoTurboModuleVersion(value: unknown): value is string {
+  return typeof value === "string" && RUBYGEMS_VERSION_PATTERN.test(value)
+}
+
+export function serializeModuleVersionsHeader(modules: readonly ExpoTurboModuleVersion[]): string {
+  if (!Array.isArray(modules)) {
+    throw new RequestError("Module versions must be an array")
+  }
+  const names = new Set<string>()
+  const entries = modules.map((module) => {
+    if (!module || typeof module !== "object" || Array.isArray(module)) {
+      throw new RequestError("Module version entries must be objects")
+    }
+    const name: unknown = module.name
+    const version: unknown = module.version
+    if (!isExpoTurboModuleName(name)) {
+      throw new RequestError("Module version names are invalid")
+    }
+    if (!isExpoTurboModuleVersion(version)) {
+      throw new RequestError("Module versions must use RubyGems version syntax")
+    }
+    if (names.has(name)) throw new RequestError("Module version names must be unique")
+    names.add(name)
+    try {
+      return `${encodeURIComponent(name)}=${encodeURIComponent(version)}`
+    } catch {
+      throw new RequestError("Module version metadata is invalid")
+    }
+  })
+  return `v1;${entries.join(",")}`
+}
+
 export function protocolRequestHeaders(
   options: ProtocolRequestHeaderOptions,
 ): Readonly<Record<string, string>> {
@@ -67,6 +131,8 @@ export function protocolRequestHeaders(
   const capabilityHash =
     options.capabilityHash === undefined ? undefined : requestHeaderValue(options.capabilityHash)
   const frameId = options.frameId === undefined ? undefined : requestHeaderValue(options.frameId)
+  const moduleVersions =
+    options.moduleVersions === undefined ? undefined : requestHeaderValue(options.moduleVersions)
   return Object.freeze({
     Accept: options.acceptsTurboStream
       ? `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`
@@ -75,6 +141,7 @@ export function protocolRequestHeaders(
     "X-Expo-Turbo-Runtime": EXPO_TURBO_RUNTIME_VERSION,
     "X-Turbo-Request-Id": requestId,
     ...(capabilityHash ? { "X-Expo-Turbo-Capabilities": capabilityHash } : {}),
+    ...(moduleVersions ? { "X-Expo-Turbo-Modules": moduleVersions } : {}),
     ...(frameId ? { "Turbo-Frame": frameId } : {}),
   })
 }

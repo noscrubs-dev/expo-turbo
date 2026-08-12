@@ -169,7 +169,10 @@ describe("FormLinkSubmissionController", () => {
   test("preserves decoded query order and duplicates across direct unsafe verbs", async () => {
     const document = session('<Gallery><DemoLink id="link" data-turbo-method="put" /></Gallery>')
     const { links, requests } = harness(document, {
-      controller: { capabilityHash: "sha256:generated-links" },
+      controller: {
+        capabilityHash: "sha256:generated-links",
+        moduleVersions: "v1;cart=2",
+      },
     })
 
     for (const method of ["put", "PaTcH", "DELETE"]) {
@@ -196,6 +199,7 @@ describe("FormLinkSubmissionController", () => {
       expect(request.headers).toMatchObject({
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
         "X-Expo-Turbo-Capabilities": "sha256:generated-links",
+        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Turbo-Request-Id": `link-${index + 1}`,
       })
     }

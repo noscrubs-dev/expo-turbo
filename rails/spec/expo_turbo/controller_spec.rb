@@ -315,17 +315,102 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(controller).not_to be_expo_turbo_frame_request
   end
 
+  it "decodes module versions for document and Frame requests and exposes them to views" do
+    headers = {
+      "HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE,
+      "HTTP_X_EXPO_TURBO_MODULES" => "v1;Module%C3%A9=2.1.0,noscrubs-cart=3"
+    }
+    document = controller_with_request(headers)
+    frame = controller_with_request(headers.merge("HTTP_TURBO_FRAME" => "details"))
+
+    [document, frame].each do |controller|
+      expect(controller.expo_turbo_client_modules).to eq("Moduleé" => "2.1.0", "noscrubs-cart" => "3")
+      expect(controller.expo_turbo_client_supports?("noscrubs-cart", ">= 2")).to be(true)
+      expect(controller.expo_turbo_client_supports?("noscrubs-cart", ">= 4")).to be(false)
+      expect(controller.expo_turbo_client_supports?("missing", ">= 1")).to be(false)
+      expect(controller.view_context.expo_turbo_client_modules).to eq(controller.expo_turbo_client_modules)
+      expect(controller.view_context.expo_turbo_client_supports?("Moduleé", "~> 2.0")).to be(true)
+    end
+  end
+
+  it "assumes latest capabilities only when the module header is absent or its envelope is malformed" do
+    absent_document = controller_with_request("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    absent_frame = controller_with_request("HTTP_TURBO_FRAME" => "details")
+
+    [absent_document, absent_frame].each do |controller|
+      expect(controller.expo_turbo_client_modules).to eq({})
+      expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
+    end
+
+    ["", "v2;cart=1", "\xFF".b].each do |header|
+      controller = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => header)
+      allow(controller).to receive(:logger).and_return(double(warn: nil))
+
+      expect { controller.expo_turbo_client_modules }.not_to raise_error
+      expect(controller.expo_turbo_client_modules).to eq({})
+      expect(controller.expo_turbo_client_supports?("future-module", ">= 999")).to be(true)
+    end
+  end
+
+  it "drops malformed module entries without discarding valid negotiation" do
+    controller = controller_with_request(
+      "HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2,bad-version=v2,bad%00name=1,other=3%0A,cart=4"
+    )
+    logger = double
+    allow(logger).to receive(:warn)
+    allow(controller).to receive(:logger).and_return(logger)
+
+    expect(controller.expo_turbo_client_modules).to eq("cart" => "2")
+    expect(controller.expo_turbo_client_supports?("cart", ">= 2")).to be(true)
+    expect(controller.expo_turbo_client_supports?("bad-version", ">= 1")).to be(false)
+    expect(logger).to have_received(:warn).with("Expo Turbo ignored 4 malformed X-Expo-Turbo-Modules entries")
+
+    empty_registry = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;")
+    expect(empty_registry.expo_turbo_client_supports?("future-module", ">= 1")).to be(false)
+
+    ["v1;cart", "v1;cart=%ZZ", "v1;=1", "v1;cart=not-a-version"].each do |header|
+      malformed = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => header)
+      allow(malformed).to receive(:logger).and_return(double(warn: nil))
+
+      expect { malformed.expo_turbo_client_modules }.not_to raise_error
+      expect(malformed.expo_turbo_client_modules).to eq({})
+      expect(malformed.expo_turbo_client_supports?("cart", ">= 0")).to be(false)
+    end
+  end
+
+  it "supports comma-separated requirement clauses" do
+    native = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+    web = controller_with_request
+
+    expect(native.expo_turbo_client_supports?("cart", ">= 1, < 3")).to be(true)
+    expect(native.expo_turbo_client_supports?("cart", ">= 1, < 2")).to be(false)
+    expect(web.expo_turbo_client_supports?("cart", ">= 1, < 3")).to be(true)
+    expect { native.expo_turbo_client_supports?("cart", ">= 1,") }.to raise_error(ArgumentError)
+  end
+
+  it "raises for invalid requirement queries before applying web fail-open behavior" do
+    native = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+    web = controller_with_request
+
+    [native, web].each do |controller|
+      expect { controller.expo_turbo_client_supports?("cart", "") }.to raise_error(ArgumentError)
+      expect { controller.expo_turbo_client_supports?("cart", "  ") }.to raise_error(ArgumentError)
+      expect { controller.expo_turbo_client_supports?("cart", "not a requirement") }.to raise_error(ArgumentError)
+      expect { controller.expo_turbo_client_supports?(:cart, ">= 1") }.to raise_error(ArgumentError)
+    end
+  end
+
   it "builds distinct conditional cache keys for documents and each valid Frame" do
     document = controller_with_request
     details = controller_with_request("HTTP_TURBO_FRAME" => "details")
     sidebar = controller_with_request("HTTP_TURBO_FRAME" => "sidebar")
     invalid = controller_with_request("HTTP_TURBO_FRAME" => "details\u0000invalid")
 
-    expect(document.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :document])
-    expect(details.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "details"])
-    expect(sidebar.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "sidebar"])
-    expect(invalid.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :document])
-    expect(document.response.headers["Vary"]).to eq("Turbo-Frame")
+    expect(document.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :document, :modules, :latest])
+    expect(details.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "details", :modules, :latest])
+    expect(sidebar.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "sidebar", :modules, :latest])
+    expect(invalid.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :document, :modules, :latest])
+    expect(document.response.headers["Vary"]).to eq("Turbo-Frame, X-Expo-Turbo-Modules")
   end
 
   it "keeps document and Frame ETags distinct through Rails conditional GET" do
@@ -356,12 +441,38 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(first_version).not_to eq(next_version)
   end
 
+  it "builds distinct conditional validators for reported module versions" do
+    first = conditional_etag(controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=1"))
+    next_version = conditional_etag(controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2"))
+
+    expect(first).not_to eq(next_version)
+  end
+
+  it "keeps encoded module names unambiguous in Rails cache keys" do
+    legitimate = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;a=1,b=2")
+    slash_name = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;a%2F1%2Fb=2")
+
+    legitimate_key = ActiveSupport::Cache.expand_cache_key(legitimate.expo_turbo_cache_variant)
+    slash_name_key = ActiveSupport::Cache.expand_cache_key(slash_name.expo_turbo_cache_variant)
+
+    expect(legitimate_key).not_to eq(slash_name_key)
+    expect(conditional_etag(legitimate)).not_to eq(conditional_etag(slash_name))
+  end
+
+  it "canonicalizes module whitespace before it reaches cache keys" do
+    canonical = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=1")
+    padded = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;%20cart%20=%20%201%20")
+
+    expect(padded.expo_turbo_client_modules).to eq("cart" => "1")
+    expect(padded.expo_turbo_cache_variant).to eq(canonical.expo_turbo_cache_variant)
+  end
+
   it "merges the Frame cache variation without replacing existing Vary values" do
     controller = controller_with_request
     controller.response.set_header "Vary", "Accept-Encoding, turbo-frame"
 
-    expect(controller.expo_turbo_vary_by_frame!).to eq("Accept-Encoding, turbo-frame")
-    expect(controller.response.headers["Vary"]).to eq("Accept-Encoding, turbo-frame")
+    expect(controller.expo_turbo_vary_by_frame!).to eq("Accept-Encoding, turbo-frame, X-Expo-Turbo-Modules")
+    expect(controller.response.headers["Vary"]).to eq("Accept-Encoding, turbo-frame, X-Expo-Turbo-Modules")
 
     controller.response.set_header "Vary", "*"
 
@@ -373,7 +484,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
     controller.expo_turbo_vary_by_frame!
 
-    expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame")
+    expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
   end
 
   it "rejects non-Stream response fragments before rendering" do

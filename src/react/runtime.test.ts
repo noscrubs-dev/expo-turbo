@@ -8,6 +8,7 @@ import { createRegistry, defineComponent, defineComponentModule } from "../regis
 import { createExpoTurboRuntime } from "./runtime-factory.js"
 
 const TestDocument = (() => null) as ComponentType
+const TestForm = (() => null) as ComponentType
 const registry = createRegistry(
   defineComponentModule({
     components: [
@@ -17,6 +18,14 @@ const registry = createRegistry(
         component: TestDocument,
         schema: z.object({}),
         tag: "TestDocument",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "nodes",
+        component: TestForm,
+        formOwner: true,
+        schema: z.object({}),
+        tag: "TestForm",
       }),
     ],
     name: "runtime-test",
@@ -42,7 +51,7 @@ describe("Expo Turbo runtime", () => {
       fetch: {
         fetch: async (request) => {
           requests.push(request)
-          return response("<TestDocument />", request.url)
+          return response('<TestDocument><TestForm id="form" /></TestDocument>', request.url)
         },
       },
       registry,
@@ -54,6 +63,13 @@ describe("Expo Turbo runtime", () => {
     expect(runtime.session.tree.document.children.find(isElement)?.tagName).toBe("TestDocument")
     expect(requests).toHaveLength(1)
     expect(requests[0]?.headers["X-Expo-Turbo-Capabilities"]).toBe(registry.capabilities.hash)
+    expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
+
+    const formRequest = runtime.forms
+      .controlsFor("id:form")
+      .requestPlan({ protocol: { requestId: "form-1" } }).request
+    expect(formRequest.headers["X-Expo-Turbo-Capabilities"]).toBeUndefined()
+    expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
 
     runtime.dispose()
     runtime.dispose()

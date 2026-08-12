@@ -22,6 +22,8 @@ import {
   FrameRequestLoader,
 } from "expo-turbo/core";
 
+import { DEMO_MODULE_VERSIONS } from "./demo-registry";
+
 export interface DemoFrameControllers {
   readonly frames: FrameControllerRegistry;
   readonly preloader: FramePreloader;
@@ -125,6 +127,7 @@ export function createDemoFrameControllers(
     transport,
     { next: () => `demo-frame-preload-${++requestId}` },
     preloadCache,
+    { moduleVersions: DEMO_MODULE_VERSIONS },
   );
   const frames = new FrameControllerRegistry(
     session,
@@ -132,7 +135,13 @@ export function createDemoFrameControllers(
       session,
       transport,
       { next: () => `demo-frame-${++requestId}` },
-      { preloadBehavior: "preview", preloadCache, refresh, streamLifecycle },
+      {
+        moduleVersions: DEMO_MODULE_VERSIONS,
+        preloadBehavior: "preview",
+        preloadCache,
+        refresh,
+        streamLifecycle,
+      },
     ),
     visibility,
     navigation,

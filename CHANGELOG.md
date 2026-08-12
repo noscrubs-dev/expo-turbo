@@ -4,6 +4,14 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- **Breaking:** Send decodable live registry module versions on document,
+  Frame, form, and preload requests, and add Rails helpers for version
+  negotiation while retaining the existing capability hash. Module versions
+  must now use RubyGems syntax; migrate values such as `v2` to `2`,
+  `1.0.0+build` to `1.0.0.build`, `2024w03` to `2024.3`, and `1_0` to `1.0`.
+  Module names must also be trimmed and free of protocol control characters
+  before upgrading
+  ([#393](https://github.com/noscrubs-dev/expo-turbo/issues/393)).
 - Let the React renderer tolerate installed-client vocabulary skew. Unknown
   components now unwrap to their children, unknown attributes are ignored,
   optional attribute decode failures use their schema fallback, and required

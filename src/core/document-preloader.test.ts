@@ -147,7 +147,7 @@ describe("document preloader", () => {
       },
       ids,
       cache,
-      { capabilityHash: "sha256:capabilities" },
+      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
     )
 
     const report = await preloader.preload("./next?filter=active")
@@ -164,6 +164,7 @@ describe("document preloader", () => {
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
+        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Expo-Turbo-Protocol": "0.1",
         "X-Expo-Turbo-Runtime": "0.1.7",
         "X-Sec-Purpose": "prefetch",

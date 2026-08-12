@@ -1,11 +1,47 @@
 import { describe, expect, test } from "bun:test"
 
-import { TargetError } from "./errors"
+import { RequestError, TargetError } from "./errors"
 import {
+  protocolRequestHeaders,
   resolveDocumentLinkAnchor,
   resolveDocumentLinkFragment,
   resolveDocumentLinkUrl,
+  serializeModuleVersionsHeader,
 } from "./protocol-request"
+
+describe("module version request header", () => {
+  test("encodes exact module name and version pairs without removing the capability hash", () => {
+    const moduleVersions = serializeModuleVersionsHeader([
+      { name: "Moduleé", version: "2.1.0" },
+      { name: "cart,offers", version: "3.0-beta.1" },
+    ])
+
+    expect(moduleVersions).toBe("v1;Module%C3%A9=2.1.0,cart%2Coffers=3.0-beta.1")
+    expect(
+      protocolRequestHeaders({
+        capabilityHash: "fnv1a32:12345678",
+        moduleVersions,
+        requestId: "request-1",
+      }),
+    ).toMatchObject({
+      "X-Expo-Turbo-Capabilities": "fnv1a32:12345678",
+      "X-Expo-Turbo-Modules": moduleVersions,
+    })
+    expect(serializeModuleVersionsHeader([])).toBe("v1;")
+  })
+
+  test("rejects duplicate names and invalid header metadata", () => {
+    expect(() =>
+      serializeModuleVersionsHeader([
+        { name: "cart", version: "1" },
+        { name: "cart", version: "2" },
+      ]),
+    ).toThrow(RequestError)
+    expect(() => serializeModuleVersionsHeader([{ name: "cart", version: "bad\nvalue" }])).toThrow(
+      RequestError,
+    )
+  })
+})
 
 describe("document link URL admission", () => {
   test("admits normalized mail and telephone schemes without weakening protocol URLs", () => {

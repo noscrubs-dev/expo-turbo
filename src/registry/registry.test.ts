@@ -33,7 +33,6 @@ import {
 import { decodeRegistryElementForRender } from "./registry-decode-internal"
 
 const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
-
 const card = defineComponent({
   aliases: ["LegacyCard"],
   attributes: {
@@ -117,6 +116,24 @@ function element(xml: string) {
 }
 
 describe("typed component registry", () => {
+  test("enforces the request protocol grammar for module names and versions", () => {
+    expect(() => defineComponentModule({ components: [], name: " cart ", version: "1" })).toThrow(
+      RegistryError,
+    )
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart\uFFFF", version: "1" }),
+    ).toThrow(RegistryError)
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart\uD800", version: "1" }),
+    ).toThrow(RegistryError)
+    expect(() =>
+      defineComponentModule({ components: [], name: "cart😀", version: "1" }),
+    ).not.toThrow()
+    expect(() => defineCapabilityModule({ components: [], name: "cart", version: "v2" })).toThrow(
+      RegistryError,
+    )
+  })
+
   test("derives component props from attribute definitions", () => {
     const typedProps: ComponentProps<typeof derivedCard.component> = {
       disabled: false,

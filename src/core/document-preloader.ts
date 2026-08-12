@@ -31,6 +31,7 @@ import { classifyTopLevelLocation } from "./visitability.js"
 export interface DocumentPreloaderOptions {
   readonly capabilityHash?: string
   readonly limits?: Partial<ParseLimits>
+  readonly moduleVersions?: string
   readonly prefetchCache?: DocumentPrefetchCache
   readonly requestLifecycle?: RequestLifecycle
 }
@@ -103,6 +104,7 @@ export class DocumentPreloader {
   private readonly active = new Map<string, ActiveDocumentPreload>()
   private readonly capabilityHash: string | undefined
   private readonly limits: Partial<ParseLimits> | undefined
+  private readonly moduleVersions: string | undefined
   private readonly prefetchCache: DocumentPrefetchCache | undefined
   private readonly requestLifecycle: RequestLifecycle | undefined
 
@@ -126,11 +128,13 @@ export class DocumentPreloader {
 
     let capabilityHash: unknown
     let configuredLimits: unknown
+    let moduleVersions: unknown
     let requestLifecycle: unknown
     let prefetchCache: unknown
     try {
       capabilityHash = options.capabilityHash
       configuredLimits = options.limits
+      moduleVersions = options.moduleVersions
       prefetchCache = options.prefetchCache
       requestLifecycle = options.requestLifecycle
     } catch {
@@ -140,6 +144,10 @@ export class DocumentPreloader {
       throw new PropsError("Document preloader capability hash must be a string")
     }
     this.capabilityHash = capabilityHash
+    if (moduleVersions !== undefined && typeof moduleVersions !== "string") {
+      throw new PropsError("Document preloader module versions must be a string")
+    }
+    this.moduleVersions = moduleVersions
     if (
       prefetchCache !== undefined &&
       (!prefetchCache ||
@@ -365,6 +373,7 @@ export class DocumentPreloader {
       headers: Object.freeze({
         ...protocolRequestHeaders({
           ...(this.capabilityHash !== undefined ? { capabilityHash: this.capabilityHash } : {}),
+          ...(this.moduleVersions !== undefined ? { moduleVersions: this.moduleVersions } : {}),
           requestId,
         }),
         "X-Sec-Purpose": "prefetch",

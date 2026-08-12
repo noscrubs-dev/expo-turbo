@@ -16,7 +16,7 @@ import {
   type DemoLiveFetch,
   nativeDemoLiveFetch,
 } from "./demo-live-transport"
-import { DEMO_REGISTRY } from "./demo-registry"
+import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry"
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime"
 
 const OUTER_FRAME_ID = "morph-outer"
@@ -111,7 +111,7 @@ export function createDemoLiveMorphRuntime(
       {
         next: () => `demo-live-morph-frame-${++frameRequestId}`,
       },
-      { frameLifecycle },
+      { frameLifecycle, moduleVersions: DEMO_MODULE_VERSIONS },
     ),
   )
   let disposed = false

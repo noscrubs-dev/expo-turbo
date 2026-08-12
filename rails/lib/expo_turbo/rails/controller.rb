@@ -5,6 +5,7 @@ require "active_support/core_ext/module/attr_internal"
 require "action_controller/metal/helpers"
 require "action_view/rendering"
 require "pathname"
+require "rubygems/requirement"
 
 module ExpoTurbo
   module Rails
@@ -20,7 +21,7 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
-        helper_method :expo_turbo_frame_request?, :expo_turbo_frame_request_id
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?, :expo_turbo_frame_request_id
       end
 
       class_methods do
@@ -69,8 +70,32 @@ module ExpoTurbo
         Frames.valid_id?(frame_id) ? frame_id : nil
       end
 
+      def expo_turbo_client_modules
+        expo_turbo_module_negotiation.fetch(:modules)
+      end
+
+      def expo_turbo_client_supports?(module_name, requirement)
+        raise ArgumentError, "module_name must be a String" unless module_name.is_a?(String)
+        raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
+        raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
+
+        requirement_parts = requirement.split(",", -1).map(&:strip)
+        raise ArgumentError, "requirement must not contain empty clauses" if requirement_parts.any?(&:empty?)
+
+        parsed_requirement = Gem::Requirement.new(*requirement_parts)
+        negotiation = expo_turbo_module_negotiation
+        return true if negotiation.fetch(:latest)
+
+        version = negotiation.fetch(:modules)[module_name]
+        return false unless version
+
+        parsed_requirement.satisfied_by?(Gem::Version.new(version))
+      end
+
       def expo_turbo_cache_variant
-        Frames.cache_variant(expo_turbo_frame_request_id)
+        negotiation = expo_turbo_module_negotiation
+        module_variant = negotiation.fetch(:latest) ? :latest : negotiation.fetch(:cache_variant)
+        [*Frames.cache_variant(expo_turbo_frame_request_id), :modules, module_variant]
       end
 
       def expo_turbo_vary_by_frame!
@@ -79,6 +104,7 @@ module ExpoTurbo
 
         values << "Accept" if request.should_apply_vary_header? && values.none? { |value| value.casecmp?("Accept") }
         values << "Turbo-Frame" if values.none? { |value| value.casecmp?("Turbo-Frame") }
+        values << "X-Expo-Turbo-Modules" if values.none? { |value| value.casecmp?("X-Expo-Turbo-Modules") }
         response.set_header "Vary", values.join(", ")
       end
 
@@ -90,6 +116,128 @@ module ExpoTurbo
       def expo_turbo_stream
         view_context.expo_turbo_stream
       end
+
+      private
+
+      MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
+      MODULE_VERSION_PATTERN = /\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z/
+
+      def expo_turbo_module_negotiation
+        header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
+        cached = defined?(@expo_turbo_module_negotiation) && @expo_turbo_module_negotiation
+        return cached.fetch(:value) if cached && cached.fetch(:header).equal?(header)
+
+        value = if header.nil?
+          {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
+        else
+          parsed = expo_turbo_parse_module_header(header)
+          if parsed
+            {latest: false, modules: parsed.fetch(:modules), cache_variant: parsed.fetch(:cache_variant)}.freeze
+          else
+            expo_turbo_report_malformed_module_header
+            {latest: true, modules: {}.freeze, cache_variant: "v1;"}.freeze
+          end
+        end
+        @expo_turbo_module_negotiation = {header: header, value: value}.freeze
+        value
+      end
+
+      def expo_turbo_parse_module_header(header)
+        return unless header.is_a?(String)
+
+        header = header.dup.force_encoding(Encoding::UTF_8)
+        return unless header.valid_encoding? && header.ascii_only? && header.start_with?("v1;")
+
+        payload = header.delete_prefix("v1;")
+        return {modules: {}.freeze, cache_variant: "v1;"}.freeze if payload.empty?
+
+        modules = {}
+        encoded_pairs = []
+        malformed_entries = 0
+        payload.split(",", -1).each do |entry|
+          pair = expo_turbo_parse_module_entry(entry)
+          if pair.nil? || modules.key?(pair.fetch(:name))
+            malformed_entries += 1
+            next
+          end
+
+          name = pair.fetch(:name).freeze
+          version = pair.fetch(:version).freeze
+          modules[name] = version
+          encoded_pairs << pair.fetch(:encoded)
+        end
+        expo_turbo_report_malformed_module_entries(malformed_entries) if malformed_entries.positive?
+
+        modules.freeze
+        encoded_pairs.sort!
+        {modules: modules, cache_variant: "v1;#{encoded_pairs.join(",")}".freeze}.freeze
+      rescue ArgumentError
+        nil
+      end
+
+      def expo_turbo_parse_module_entry(entry)
+        return unless entry.count("=") == 1
+
+        encoded_name, encoded_version = entry.split("=", 2)
+        return unless MODULE_HEADER_PART.match?(encoded_name) && MODULE_HEADER_PART.match?(encoded_version)
+
+        name = expo_turbo_decode_module_part(encoded_name).force_encoding(Encoding::UTF_8)
+        version = expo_turbo_decode_module_part(encoded_version).force_encoding(Encoding::UTF_8)
+        return unless name.valid_encoding? && version.valid_encoding?
+        return if expo_turbo_module_part_has_controls?(name) || expo_turbo_module_part_has_controls?(version)
+
+        name = name.strip
+        version = version.strip
+        return if name.empty? || version.empty?
+        return unless MODULE_VERSION_PATTERN.match?(version)
+        Gem::Version.new(version)
+
+        {
+          name: name,
+          version: version,
+          encoded: "#{expo_turbo_encode_module_part(name)}=#{expo_turbo_encode_module_part(version)}".freeze
+        }.freeze
+      rescue ArgumentError
+        nil
+      end
+
+      def expo_turbo_decode_module_part(encoded)
+        encoded.gsub(/%([0-9A-Fa-f]{2})/) { Regexp.last_match(1).hex.chr }
+      end
+
+      def expo_turbo_encode_module_part(value)
+        value.b.bytes.map do |byte|
+          case byte
+          when 48..57, 65..90, 97..122, 33, 39, 40, 41, 42, 45, 46, 95, 126
+            byte.chr
+          else
+            format("%%%02X", byte)
+          end
+        end.join
+      end
+
+      def expo_turbo_module_part_has_controls?(value)
+        value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
+      end
+
+      def expo_turbo_report_malformed_module_entries(count)
+        return unless respond_to?(:logger) && logger
+
+        label = (count == 1) ? "entry" : "entries"
+        logger.warn("Expo Turbo ignored #{count} malformed X-Expo-Turbo-Modules #{label}")
+      rescue
+        nil
+      end
+
+      def expo_turbo_report_malformed_module_header
+        return unless respond_to?(:logger) && logger
+
+        logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Modules header")
+      rescue
+        nil
+      end
+
+      public
 
       def render_expo_turbo_stream(*streams, status: :ok)
         streams << yield(expo_turbo_stream) if block_given?

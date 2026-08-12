@@ -6,6 +6,11 @@ require "timeout"
 require "tempfile"
 
 RSpec.describe "standalone demo host" do
+  def expect_vary_headers(*headers)
+    actual_headers = response.headers.fetch("Vary").split(",").map { |value| value.strip.downcase }
+    expect(actual_headers).to include(*headers.map(&:downcase))
+  end
+
   it "boots the sibling gem without adding routes" do
     get "/up"
 
@@ -118,7 +123,7 @@ RSpec.describe "standalone demo host" do
     token = source&.[]("signed-stream-name")
 
     expect(response).to have_http_status(:ok)
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(source&.[]("channel")).to eq(ExpoTurbo::Rails::Cable::ProtectedStreamsChannel.name)
     expect(source&.[]("data-grant")).to eq(ExpoTurboDemo::NativeCableTicket::GRANT)
     expect(ExpoTurbo::Rails::Cable.verified_protected_stream_name(token)).to eq(
@@ -308,7 +313,7 @@ RSpec.describe "standalone demo host" do
     get "/api/expo_turbo/demo/response_scenarios/frame", headers: frame_headers
     frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
     expect(response).to have_http_status(:ok)
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-response-frame")
 
@@ -389,7 +394,7 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
     expect(response.charset).to eq("utf-8")
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-frame")
     expect(frame.at_xpath("./DemoText[@id='demo-stream-message']")&.text)
@@ -422,7 +427,7 @@ RSpec.describe "standalone demo host" do
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(outer.name).to eq("turbo-frame")
     expect(outer["id"]).to eq("morph-outer")
     expect(outer["src"]).to eq("/api/expo_turbo/demo/morph/outer")
@@ -441,7 +446,7 @@ RSpec.describe "standalone demo host" do
 
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(inner.name).to eq("turbo-frame")
     expect(inner["id"]).to eq("morph-inner")
     expect(inner["src"]).to eq("/api/expo_turbo/demo/morph/inner")
@@ -464,7 +469,7 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:ok)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
     expect(response.charset).to eq("utf-8")
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-form-frame")
     expect(frame.at_xpath("./DemoForm[@id='demo-form']")&.[]("action"))
@@ -513,7 +518,7 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
     expect(response.charset).to eq("utf-8")
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(frame.name).to eq("turbo-frame")
     expect(frame["id"]).to eq("demo-form-frame")
     expect(frame.at_xpath(".//DemoFormInput[@id='demo-form-first-name']")&.[]("value")).to eq("invalid")
@@ -532,7 +537,7 @@ RSpec.describe "standalone demo host" do
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.media_type).to eq(ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE)
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(stream["action"]).to eq("replace")
     expect(stream["method"]).to eq("morph")
     expect(stream["target"]).to eq("demo-form")
@@ -579,7 +584,7 @@ RSpec.describe "standalone demo host" do
 
       expect(response).to have_http_status(:bad_request)
       expect(response.body).to be_empty
-      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+      expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     end
   end
 
@@ -761,7 +766,7 @@ RSpec.describe "standalone demo host" do
 
       expect(response).to have_http_status(:unprocessable_content)
       expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
-      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+      expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
       frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
       expect(frame["id"]).to eq("demo-form-frame")
       expect(frame.at_xpath(".//DemoFormFile[@id='demo-form-attachment']")&.[]("error"))
@@ -789,7 +794,7 @@ RSpec.describe "standalone demo host" do
 
       expect(response).to have_http_status(:unprocessable_content)
       expect(response.media_type).to eq(ExpoTurbo::Rails::MIME_TYPE)
-      expect(response.headers["Vary"]).to eq("Turbo-Frame")
+      expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
       frame = ExpoTurbo::Rails::Testing.parse_document(response.body).root
       expect(frame["id"]).to eq("demo-form-frame")
       expect(frame.at_xpath(".//DemoFormFile[@id='demo-form-attachment']")&.[]("error"))
@@ -805,7 +810,7 @@ RSpec.describe "standalone demo host" do
 
     expect(response).to have_http_status(:no_content)
     expect(response.headers["Location"]).to be_nil
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame", "X-Expo-Turbo-Modules")
     expect(response.body).to be_empty
   end
 
@@ -845,7 +850,7 @@ RSpec.describe "standalone demo host" do
     expect(response).to have_http_status(:bad_request)
     expect(response.media_type).not_to eq("application/json")
     expect(response.body).to be_empty
-    expect(response.headers["Vary"]).to eq("Turbo-Frame")
+    expect_vary_headers("Turbo-Frame")
 
     post "/api/expo_turbo/demo/form",
       params: {commit: "other", profile: {first_name: "Ada"}},

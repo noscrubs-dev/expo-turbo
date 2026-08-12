@@ -203,6 +203,7 @@ export interface FormControlRegistryOptions {
   readonly focus?: FocusAdapter
   readonly formSemantics?: FormControlSemantics
   readonly formMode?: FormMode
+  readonly moduleVersions?: string
   readonly submissionController?: FormSubmissionController
 }
 
@@ -899,6 +900,9 @@ export class FormControlRegistry {
       throw new PropsError("Form semantics must provide formContainerRole")
     }
     this.formMode = normalizeFormMode(options.formMode ?? "on")
+    if (options.moduleVersions !== undefined && typeof options.moduleVersions !== "string") {
+      throw new PropsError("Form module versions must be a string")
+    }
     this.submissionActivity = formSubmissionActivity(session, form)
     this.unregisterFormDisposal = session.registerDisposal(formNodeKey, () => {
       this.disposeRegistry(false)
@@ -1109,7 +1113,12 @@ export class FormControlRegistry {
       documentUrl,
       entries: this.collectSuccessfulEntries(submitter),
       form: formRequestAttributes(this.form),
-      protocol,
+      protocol: {
+        ...protocol,
+        ...(this.options.moduleVersions !== undefined
+          ? { moduleVersions: this.options.moduleVersions }
+          : {}),
+      },
       ...(signal !== undefined ? { signal } : {}),
       ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
     })
@@ -1155,6 +1164,9 @@ export class FormControlRegistry {
       form: formRequestAttributes(this.form),
       protocol: {
         ...protocol,
+        ...(this.options.moduleVersions !== undefined
+          ? { moduleVersions: this.options.moduleVersions }
+          : {}),
         ...(destination.kind === "frame" ? { frameId: destination.frameId } : {}),
       },
       ...(signal !== undefined ? { signal } : {}),

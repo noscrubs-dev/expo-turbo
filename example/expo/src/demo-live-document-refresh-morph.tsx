@@ -17,7 +17,7 @@ import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Text, View } from "react-native";
 
-import { DEMO_REGISTRY } from "./demo-registry";
+import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import {
   createDemoLiveFetchAdapter,
@@ -89,9 +89,14 @@ export async function createDemoLiveDocumentRefreshMorphRuntime(
   );
   const transport = createDemoLiveFetchAdapter(fetch);
   let documentRequestId = 0;
-  const loader = new DocumentRequestLoader(session, transport, {
-    next: () => `demo-live-document-refresh-morph-${++documentRequestId}`,
-  });
+  const loader = new DocumentRequestLoader(
+    session,
+    transport,
+    {
+      next: () => `demo-live-document-refresh-morph-${++documentRequestId}`,
+    },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
+  );
   const loaded = await loader.load(endpoints.documentUrl);
   if (loaded.status !== "committed") {
     throw new RequestError("The standalone Rails document refresh morph did not commit");
@@ -123,9 +128,14 @@ export async function createDemoLiveDocumentRefreshMorphRuntime(
     submissionLifecycle,
   });
   let streamRequestId = 0;
-  const formLinks = new FormLinkSubmissionController(session, formController, {
-    next: () => `demo-live-document-refresh-morph-link-${++streamRequestId}`,
-  });
+  const formLinks = new FormLinkSubmissionController(
+    session,
+    formController,
+    {
+      next: () => `demo-live-document-refresh-morph-link-${++streamRequestId}`,
+    },
+    { moduleVersions: DEMO_MODULE_VERSIONS },
+  );
   let disposed = false;
 
   return Object.freeze({
