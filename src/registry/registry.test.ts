@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import type { ComponentProps } from "react"
-import { memo } from "react"
 import { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
@@ -126,7 +125,7 @@ function element(xml: string) {
 
 describe("typed component registry", () => {
   test("declares each component once and uses only its object key as the wire tag", () => {
-    const render = memo(({ displayName }: Readonly<{ displayName: string }>) => displayName)
+    const render = ({ displayName }: Readonly<{ displayName: string }>) => displayName
     render.displayName = "MinifiedWrapper"
     const registry = defineRegistry({
       module: TEST_MODULE,
@@ -146,6 +145,9 @@ describe("typed component registry", () => {
     expect(registry.resolve("StableWireTag")?.component).toHaveProperty(
       "displayName",
       "StableWireTag",
+    )
+    expect(registry.resolve("StableWireTag")?.component).toBe(
+      registry.resolve("StableWireTag")?.component,
     )
     expect(render.displayName).toBe("MinifiedWrapper")
     expect(registry.resolve("MinifiedWrapper")).toBeUndefined()

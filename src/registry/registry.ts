@@ -1,4 +1,4 @@
-import { type ComponentType, createElement, type ReactNode } from "react"
+import type { ComponentClass, ComponentType, ReactNode } from "react"
 import { z } from "zod"
 
 import { RegistryError } from "../core/errors.js"
@@ -227,6 +227,30 @@ export function component(
     render: config.render as ComponentType<Readonly<Record<string, unknown>>>,
     ...("schema" in config ? { schema: config.schema } : {}),
   })
+}
+
+function registeredComponentRenderer(
+  render: ComponentType<Readonly<Record<string, unknown>>>,
+  tag: string,
+): ComponentType<Readonly<Record<string, unknown>>> {
+  if (typeof render === "function") {
+    const prototype = render.prototype as Readonly<{ isReactComponent?: unknown }> | undefined
+    if (prototype?.isReactComponent) {
+      const RenderClass = render as ComponentClass<Readonly<Record<string, unknown>>>
+      class RegisteredComponent extends RenderClass {}
+      RegisteredComponent.displayName = tag
+      return RegisteredComponent
+    }
+    const registered = (props: Readonly<Record<string, unknown>>) =>
+      Reflect.apply(render, undefined, [props])
+    registered.displayName = tag
+    return registered
+  }
+
+  const exotic = render as unknown as Readonly<Record<string, unknown>>
+  return Object.freeze({ ...exotic, displayName: tag }) as unknown as ComponentType<
+    Readonly<Record<string, unknown>>
+  >
 }
 
 interface ErasedAttributeBinding {
@@ -913,10 +937,10 @@ export function defineRegistry<
         { target: tag },
       )
     }
-    const declaredRender = declaration.render
-    const registeredRender = (props: Readonly<Record<string, unknown>>) =>
-      createElement(declaredRender, props)
-    registeredRender.displayName = tag
+    const registeredRender = registeredComponentRenderer(
+      declaration.render as ComponentType<Readonly<Record<string, unknown>>>,
+      tag,
+    )
     const definition = createComponentDefinition({
       aliases: declaration.aliases,
       attributes: declaration.attributes,
