@@ -197,6 +197,7 @@ export type FormContainerRole = "datalist" | "fieldset" | "legend"
 
 export interface FormControlSemantics {
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
+  resolve?(tagOrAlias: string): Readonly<{ readonly formOwner?: boolean }> | undefined
 }
 
 export interface FormControlRegistryOptions {
@@ -864,6 +865,7 @@ function normalizeDescriptor(
 export class FormControlRegistry {
   private disposed = false
   private readonly form: ProtocolElement
+  private readonly formOwnerKnown: boolean
   private readonly formSemantics: FormControlSemantics | undefined
   private readonly formMode: FormMode
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
@@ -895,10 +897,14 @@ export class FormControlRegistry {
     this.formSemantics = options.formSemantics
     if (
       this.formSemantics !== undefined &&
-      (!this.formSemantics || typeof this.formSemantics.formContainerRole !== "function")
+      (!this.formSemantics ||
+        typeof this.formSemantics.formContainerRole !== "function" ||
+        (this.formSemantics.resolve !== undefined &&
+          typeof this.formSemantics.resolve !== "function"))
     ) {
-      throw new PropsError("Form semantics must provide formContainerRole")
+      throw new PropsError("Form semantics must provide formContainerRole and optional resolve")
     }
+    this.formOwnerKnown = this.classifyFormOwner()
     this.formMode = normalizeFormMode(options.formMode ?? "on")
     if (options.moduleVersions !== undefined && typeof options.moduleVersions !== "string") {
       throw new PropsError("Form module versions must be a string")
@@ -1026,6 +1032,7 @@ export class FormControlRegistry {
 
   shouldInterceptSubmission(options: SuccessfulFormEntriesOptions = {}): boolean {
     this.assertActive()
+    if (!this.formOwnerKnown) return false
     if (this.formMode === "off") return false
     const selection = submitterSelectionOption(options)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
@@ -1099,6 +1106,7 @@ export class FormControlRegistry {
 
   requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
     this.assertActive()
+    this.assertKnownFormOwner("request planning")
     const admittedOptions = activeFormOptions(options, "request plan")
     const protocol = activeProtocolOptions(
       activeFormOption(admittedOptions, "protocol", "request plan"),
@@ -1126,6 +1134,7 @@ export class FormControlRegistry {
 
   submissionProposal(options: ActiveFormSubmissionProposalOptions): FormSubmissionProposal {
     this.assertActive()
+    this.assertKnownFormOwner("submission proposal")
     const admittedOptions = activeFormOptions(options, "submission proposal")
     const protocol = activeProtocolOptions(
       activeFormOption(admittedOptions, "protocol", "submission proposal"),
@@ -1231,6 +1240,7 @@ export class FormControlRegistry {
     requiresSafeTransport: boolean,
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
+    this.assertKnownFormOwner(requiresSafeTransport ? "retry" : "submission")
     const admittedOptions = activeFormOptions(options, "submit")
     if (hasActiveFormOption(admittedOptions, "signal", "submit")) {
       throw new RequestError("Active form submission owns its abort signal")
@@ -1276,6 +1286,7 @@ export class FormControlRegistry {
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
+    this.assertKnownFormOwner("retry")
     const admittedOptions = activeFormOptions(options, "retry")
     const protocol = activeProtocolOptions(activeFormOption(admittedOptions, "protocol", "retry"))
     const source = this.submissionActivity.retrySource()
@@ -1507,6 +1518,41 @@ export class FormControlRegistry {
         target: this.form.key,
       })
     }
+  }
+
+  private assertKnownFormOwner(operation: string): void {
+    if (this.formOwnerKnown) return
+    throw new RegistryError(`Expo Turbo form ${operation} requires a known form owner`, {
+      target: this.form.key,
+    })
+  }
+
+  private classifyFormOwner(): boolean {
+    const resolve = this.formSemantics?.resolve
+    if (!resolve) return true
+    let definition: Readonly<{ readonly formOwner?: boolean }> | undefined
+    try {
+      definition = resolve.call(this.formSemantics, this.form.tagName)
+    } catch {
+      throw new RegistryError("Expo Turbo form owner vocabulary could not be resolved", {
+        target: this.form.key,
+      })
+    }
+    if (definition === undefined) return false
+    let formOwner: unknown
+    try {
+      formOwner = definition.formOwner
+    } catch {
+      throw new RegistryError("Expo Turbo form owner vocabulary could not be read", {
+        target: this.form.key,
+      })
+    }
+    if (formOwner !== true) {
+      throw new RegistryError("Expo Turbo form association target is not a declared form owner", {
+        target: this.form.key,
+      })
+    }
+    return true
   }
 
   private assertRecordActive(record: FormControlRecord): void {

@@ -178,6 +178,10 @@ const FORM_SEMANTICS = Object.freeze({
     if (element.tagName === "DemoLegend") return "legend" as const
     return undefined
   },
+  resolve: (tagName: string) => {
+    if (tagName === "FutureForm") return undefined
+    return Object.freeze({ formOwner: tagName === "DemoForm" })
+  },
 })
 
 function registryFor(
@@ -186,10 +190,114 @@ function registryFor(
 ): FormControlRegistry {
   const form = session.tree.getElementById("form")
   if (!form) throw new Error("form fixture is missing")
-  return new FormControlRegistry(session, form.key, options)
+  return new FormControlRegistry(session, form.key, {
+    formSemantics: FORM_SEMANTICS,
+    ...options,
+  })
 }
 
 describe("native form control registry", () => {
+  test("refuses every request path for an unknown owner before transport while known owners stay live", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <FutureForm id="future" action="/danger" method="post">
+            <DemoInput id="future-field" />
+          </FutureForm>
+          <DemoForm id="known" action="/safe" method="post">
+            <DemoInput id="known-field" />
+          </DemoForm>
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        requests.push(
+          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+        )
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const forms = new DocumentFormControls(session, {
+      formSemantics: FORM_SEMANTICS,
+      submissionController: controller,
+    })
+    const future = forms.controlsFor("id:future")
+    future.register("id:future-field", { kind: "value", name: "field", value: "A" })
+
+    expect(future.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+    expect(future.checkValidity()).toEqual({ invalidControls: [], valid: true })
+    expect(future.submissionState).toMatchObject({ busy: false, status: "idle" })
+
+    const attempts = [
+      () => future.requestPlan({ protocol: { requestId: "future-plan" } }),
+      () => future.submissionProposal({ protocol: { requestId: "future-proposal" } }),
+      () => future.submit({ protocol: { requestId: "future-submit" } }),
+      () => future.retryFailure({ protocol: { requestId: "future-retry" } }),
+    ]
+    const failures: unknown[] = []
+    for (const attempt of attempts) {
+      try {
+        await attempt()
+        failures.push(undefined)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(failures).toHaveLength(4)
+    for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+    expect(
+      failures.map((failure) => (failure instanceof Error ? failure.message : undefined)),
+    ).toEqual([
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+    ])
+    expect(future.shouldInterceptSubmission()).toBe(false)
+
+    const known = new DocumentFormControls(session, {
+      formSemantics: FORM_SEMANTICS,
+      submissionController: controller,
+    }).controlsFor("id:known")
+    known.register("id:known-field", { kind: "value", name: "field", value: "B" })
+    expect(known.requestPlan({ protocol: { requestId: "known-plan" } }).request).toMatchObject({
+      body: { value: "field=B" },
+      method: "POST",
+      url: "https://example.test/safe",
+    })
+    await expect(known.submit({ protocol: { requestId: "known-submit" } })).resolves.toMatchObject({
+      requestId: "known-submit",
+      status: "empty",
+    })
+    expect(requests).toEqual([
+      { body: "field=B", method: "POST", url: "https://example.test/safe" },
+    ])
+  })
+
+  test("keeps a known non-form owner loud", () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoInput id="not-form" /></Gallery>', {
+        url: "https://example.test/current",
+      }),
+    )
+    const forms = new DocumentFormControls(session, { formSemantics: FORM_SEMANTICS })
+
+    expect(() => forms.controlsFor("id:not-form")).toThrow(
+      "Expo Turbo form association target is not a declared form owner",
+    )
+  })
+
   test("never infers successful controls from server XML without a native registration", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -670,7 +778,7 @@ describe("native form control registry", () => {
 
   test("matches Turbo form modes across independent form and submitter ancestry", () => {
     const session = formModeFixture()
-    const on = new FormControlRegistry(session, "id:form")
+    const on = registryFor(session)
     const save = on.register("id:save", { kind: "submitter", name: "commit", value: "save" })
     const external = on.register("id:external-submit", {
       kind: "submitter",
@@ -700,7 +808,7 @@ describe("native form control registry", () => {
     session.removeAttribute("id:save", "data-turbo")
     session.removeAttribute("id:external-submit", "data-turbo")
     session.removeAttribute("id:external-outer", "data-turbo")
-    const optin = new FormControlRegistry(session, "id:form", { formMode: "optin" })
+    const optin = registryFor(session, { formMode: "optin" })
     const optinSave = optin.register("id:save", {
       kind: "submitter",
       name: "commit",
@@ -728,7 +836,7 @@ describe("native form control registry", () => {
 
   test("keeps form mode off as an interaction short-circuit and rejects invalid modes", () => {
     const session = formModeFixture()
-    const off = new FormControlRegistry(session, "id:form", { formMode: "off" })
+    const off = registryFor(session, { formMode: "off" })
     const initialState = off.submissionState
     const initialTerminalState = off.submissionTerminalState
 
