@@ -4,18 +4,22 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.3.0
 
-- **Breaking:** Add the declare-once registry. Use `defineRegistry()` with a
-  `components` object. Use each object key as the wire tag. Use `component()`
-  for the component contract and `render()` for the React implementation. The
-  key does not depend on a function name, so minification, a higher-order
-  component, `React.memo()`, or a normal function rename cannot change the wire
-  protocol. The old module API stays available for compatibility, but new
-  registry code must not use its separate component array.
+- **Breaking:** Add the declare-once registry. Use `defineRegistry()` with one
+  `module: { name, version }` identity and a `components` object. Use each
+  object key as the wire tag. Use `component()` for the component contract and
+  `render()` for the React implementation. The module identity preserves
+  server negotiation. The key does not depend on a function name, so
+  minification, a higher-order component, `React.memo()`, or a normal function
+  rename cannot change the wire protocol. The old module API stays available
+  for compatibility, but new registry code must not use its separate component
+  array.
 - **Breaking:** The new registry throws for an unknown component in
-  development. In production, it keeps the child fallback and always writes a
-  deduplicated contract diagnostic. `onUnknownVocabulary` is still useful, but
-  it is not the only production signal. Migrate development fixtures by adding
-  the missing component key. Do not disable this check.
+  development when React Native sets `__DEV__` or tooling sets
+  `NODE_ENV=development`. Unset tooling environments use production behavior.
+  In production, it keeps the child fallback and always writes a deduplicated
+  contract diagnostic. `onUnknownVocabulary` is still useful, but it is not the
+  only production signal. Migrate development fixtures by adding the missing
+  component key. Do not disable this check.
 - **Breaking:** An invalid legacy module name or RubyGems version no longer
   stops app boot. The registry quarantines the full module, including its
   components, and does not send a support claim for it. This makes server
@@ -37,8 +41,11 @@ All notable public package, gem, and protocol changes will be recorded here.
   7. `morphState: "reset"` gives the non-default state policy. The default is
      `preserve`.
 - Mechanical registry migration:
-  1. Replace `createRegistry(defineComponentModule({ components: [...] }))`
-     with `defineRegistry({ components: { ... } })`.
+  1. Replace
+     `createRegistry(defineComponentModule({ name, version, components: [...] }))`
+     with `defineRegistry({ module: { name, version }, components: { ... } })`.
+     Keep the same module name and version so server negotiation does not
+     change.
   2. Move each old `tag` value to the matching object key.
   3. Replace `component:` with `render:` and replace child strings with
      `nodes`, `text`, or `none`.

@@ -201,6 +201,11 @@ export function component(
       >
     | DeclareExplicitComponentConfig<z.ZodObject, ComponentChildren>,
 ): ComponentDeclaration {
+  if ("schema" in config && config.styles !== undefined) {
+    throw new RegistryError(
+      'Components with an explicit schema must declare "style-tokens" in attributes',
+    )
+  }
   if (config.styles !== undefined && Object.hasOwn(config.attributes ?? {}, "style-tokens")) {
     throw new RegistryError('Component style acceptance must use only the "styles" field')
   }
@@ -838,9 +843,9 @@ class Registry<Component extends RegistryComponent>
         }
         const fingerprint = `${issue.kind}:${issue.tag}`
         if (!this.reportedFallbacks.has(fingerprint)) {
-          this.reportedFallbacks.add(fingerprint)
           try {
             console.error("Expo Turbo registry contract fallback", issue)
+            this.reportedFallbacks.add(fingerprint)
           } catch {
             // A diagnostic sink must not turn production skew into a render failure.
           }
@@ -899,6 +904,10 @@ export interface DefineRegistryConfig<
   Declarations extends Readonly<Record<string, ComponentDeclaration>>,
 > {
   readonly components: Declarations
+  readonly module: Readonly<{
+    readonly name: string
+    readonly version: string
+  }>
 }
 
 export function defineRegistry<
@@ -907,6 +916,18 @@ export function defineRegistry<
   config: DefineRegistryConfig<Declarations>,
 ): ManifestComponentRegistry<ComponentsFromDeclarations<Declarations>> {
   const components = Object.entries(config.components).map(([tag, declaration]) => {
+    if (
+      typeof declaration !== "object" ||
+      declaration === null ||
+      !Object.hasOwn(declaration, COMPONENT_DECLARATION) ||
+      declaration[COMPONENT_DECLARATION] !== true
+    ) {
+      throw new RegistryError(
+        `Component ${JSON.stringify(tag)} must be declared with component()`,
+        { target: tag },
+      )
+    }
+    declaration.render.displayName = tag
     const definition = createComponentDefinition({
       aliases: declaration.aliases,
       attributes: declaration.attributes,
@@ -921,9 +942,10 @@ export function defineRegistry<
     })
     return Object.freeze({ ...definition, component: declaration.render })
   })
-  return new Registry<ComponentsFromDeclarations<Declarations>>(
-    [],
-    components as ComponentsFromDeclarations<Declarations>[],
-    true,
-  )
+  const module = defineComponentModule({
+    components: components as ComponentsFromDeclarations<Declarations>[],
+    name: config.module.name,
+    version: config.module.version,
+  })
+  return new Registry<ComponentsFromDeclarations<Declarations>>([module], [], true)
 }

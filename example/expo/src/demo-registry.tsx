@@ -122,13 +122,12 @@ function DemoNativeSwitch({
 
 type DemoPlan = "none" | "starter" | "pro";
 
-/* component() installs each render method as a React component. */
-/* eslint-disable react-hooks/rules-of-hooks */
 export const DEMO_REGISTRY = defineRegistry({
+  module: { name: "demo-primitives", version: "0.1.0" },
   components: {
     Gallery: component({
       children: nodes,
-      render({ children }) {
+      render: function Gallery({ children }) {
         const direction = useExpoTurboDirection();
         return (
           <View
@@ -148,7 +147,7 @@ export const DEMO_REGISTRY = defineRegistry({
         tone: attr(enumCodec(["positive", "warning"])).optional(),
       },
       children: nodes,
-      render({ children, styleTokens, title, tone }) {
+      render: function DemoCard({ children, styleTokens, title, tone }) {
         const direction = useExpoTurboDirection();
         const resolvedStyle = useDemoComponentStyle({
           component: DEMO_CARD_BASE_STYLE,
@@ -184,7 +183,7 @@ export const DEMO_REGISTRY = defineRegistry({
     }),
     DemoText: component({
       children: textChildren,
-      render({ children }) {
+      render: function DemoText({ children }) {
         const direction = useExpoTurboDirection();
         return (
           <Text
@@ -225,7 +224,7 @@ export const DEMO_REGISTRY = defineRegistry({
     DemoAction: component({
       attributes: { message: attr(stringCodec) },
       children: none,
-      render({ message }) {
+      render: function DemoAction({ message }) {
         const [pending, setPending] = useState(false);
         const [status, setStatus] = useState("Ready");
         const greeting = useDocumentState<string>("last-greeting");
@@ -275,7 +274,7 @@ export const DEMO_REGISTRY = defineRegistry({
         href: attr(stringCodec, z.string().trim().min(1)),
       },
       children: nodes,
-      render({ accessibilityLabel, children, disabled, href }) {
+      render: function DemoDocumentLink({ accessibilityLabel, children, disabled, href }) {
         const activate = useExpoTurboDocumentLink(href);
         const prefetch = useExpoTurboDocumentLinkPrefetch(href);
         const [error, setError] = useState<string>();
@@ -336,7 +335,7 @@ export const DEMO_REGISTRY = defineRegistry({
     DemoAnchorTarget: component({
       attributes: { id: attr(stringCodec, z.string().trim().min(1)) },
       children: nodes,
-      render({ children, id }) {
+      render: function DemoAnchorTarget({ children, id }) {
         const { onLayout, setNativeTarget } = useDemoDocumentAnchorTarget(id);
         return (
           <View
@@ -359,7 +358,7 @@ export const DEMO_REGISTRY = defineRegistry({
         message: attr(stringCodec, z.string().trim().min(1)),
       },
       children: none,
-      render({
+      render: function DemoStreamMorphProbe({
         incrementLabel = "Increment HTTP Stream morph counter",
         message,
       }) {
@@ -450,7 +449,7 @@ export const DEMO_REGISTRY = defineRegistry({
         value: attr(stringCodec),
       },
       children: none,
-      render({ label, name, required, value }) {
+      render: function DemoFormInput({ label, name, required, value }) {
         const direction = useExpoTurboDirection();
         const [current, setCurrent] = useState(value);
         const inputRef = useRef<TextInput>(null);
@@ -540,7 +539,7 @@ export const DEMO_REGISTRY = defineRegistry({
         name: attr(stringCodec, z.string().trim().min(1)),
       },
       children: none,
-      render({ error, filename, label, name }) {
+      render: function DemoFormFile({ error, filename, label, name }) {
         const mounted = useRef(true);
         // A rejected matching Frame response replaces this component. Keep the
         // intentionally bounded picker result with the document so retrying does
@@ -640,7 +639,7 @@ export const DEMO_REGISTRY = defineRegistry({
         value: attr(stringCodec),
       },
       children: none,
-      render({ checked, error, label, name, value }) {
+      render: function DemoFormCheckbox({ checked, error, label, name, value }) {
         const [current, setCurrent] = useState(checked);
         const control = useExpoTurboFormControl({
           checked: current,
@@ -688,7 +687,7 @@ export const DEMO_REGISTRY = defineRegistry({
         selected: attr(enumCodec(["none", "starter", "pro"])),
       },
       children: none,
-      render({ error, label, name, selected }) {
+      render: function DemoFormPlanSelect({ error, label, name, selected }) {
         const [current, setCurrent] = useState(selected);
         const control = useExpoTurboFormControl({
           kind: "select",
@@ -768,7 +767,7 @@ export const DEMO_REGISTRY = defineRegistry({
         value: attr(stringCodec),
       },
       children: none,
-      render(props) {
+      render: function DemoFormSubmitter(props) {
         const { label, name, value } = props;
         const formBinding = useExpoTurboForm();
         const control = useExpoTurboFormControl({
@@ -829,7 +828,6 @@ export const DEMO_REGISTRY = defineRegistry({
     }),
   },
 });
-/* eslint-enable react-hooks/rules-of-hooks */
 
 export const DEMO_MODULE_VERSIONS = serializeModuleVersionsHeader(
   DEMO_REGISTRY.capabilities.modules,

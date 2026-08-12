@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
 import { parseExpoTurboDocument } from "../core/parser"
+import { serializeModuleVersionsHeader } from "../core/protocol-request"
 import { isElement } from "../core/tree"
 import { attr } from "./attributes"
 import {
@@ -40,6 +41,7 @@ import {
 import { decodeRegistryElementForRender } from "./registry-decode-internal"
 
 const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
+const TEST_MODULE = { name: "test-primitives", version: "0.1.0" } as const
 const card = defineComponent({
   aliases: ["LegacyCard"],
   attributes: {
@@ -127,6 +129,7 @@ describe("typed component registry", () => {
     const render = memo(({ displayName }: Readonly<{ displayName: string }>) => displayName)
     render.displayName = "MinifiedWrapper"
     const registry = defineRegistry({
+      module: TEST_MODULE,
       components: {
         StableWireTag: component({
           attributes: {
@@ -140,14 +143,59 @@ describe("typed component registry", () => {
 
     expect(registry.capabilities.components.map(({ tag }) => tag)).toEqual(["StableWireTag"])
     expect(registry.resolve("StableWireTag")?.component).toBe(render)
+    expect(render.displayName).toBe("StableWireTag")
     expect(registry.resolve("MinifiedWrapper")).toBeUndefined()
     expect(registry.decode(element('<StableWireTag display-name=" Ada " />')).props).toEqual({
       displayName: "Ada",
     })
   })
 
+  test("publishes one required module identity in the manifest and request header", () => {
+    const registry = defineRegistry({
+      module: { name: "demo-primitives", version: "0.1.0" },
+      components: {
+        DemoText: component({ children: textChildren, render: ({ children }) => children }),
+      },
+    })
+
+    expect(registry.capabilities.modules).toEqual([{ name: "demo-primitives", version: "0.1.0" }])
+    expect(serializeModuleVersionsHeader(registry.capabilities.modules)).toBe(
+      "v1;demo-primitives=0.1.0",
+    )
+  })
+
+  test("rejects unbranded component entries with a registry error", () => {
+    expect(() =>
+      defineRegistry({
+        module: TEST_MODULE,
+        components: {
+          WrongApi: defineComponent({
+            attributes: {},
+            children: "none",
+            component: () => null,
+            schema: z.object({}),
+            tag: "WrongApi",
+          }),
+        },
+      } as unknown as Parameters<typeof defineRegistry>[0]),
+    ).toThrow(RegistryError)
+  })
+
+  test("rejects styles on the explicit schema escape hatch at runtime", () => {
+    expect(() =>
+      component({
+        attributes: {},
+        children: none,
+        render: () => null,
+        schema: z.object({ styleTokens: z.array(z.string()) }),
+        styles: attr(tokenListCodec("unsafe-style", ["tone:quiet"], { maxTokens: 1 })),
+      } as never),
+    ).toThrow(RegistryError)
+  })
+
   test("derives empty props and child behavior without empty declarations", () => {
     const registry = defineRegistry({
+      module: TEST_MODULE,
       components: {
         NodeContainer: component({
           children: nodes,
@@ -171,6 +219,7 @@ describe("typed component registry", () => {
   test("keeps aliases, style acceptance, form role, and reset morph policy explicit", () => {
     const styleTokens = ["tone:quiet", "space:roomy"] as const
     const registry = defineRegistry({
+      module: TEST_MODULE,
       components: {
         StyledForm: component({
           aliases: ["LegacyStyledForm"],
@@ -205,6 +254,7 @@ describe("typed component registry", () => {
       })
       .refine(({ end, start }) => end >= start)
     const registry = defineRegistry({
+      module: TEST_MODULE,
       components: {
         PriceRange: component({
           attributes: {
@@ -236,6 +286,7 @@ describe("typed component registry", () => {
     development.__DEV__ = true
     try {
       const registry = defineRegistry({
+        module: TEST_MODULE,
         components: {
           Known: component({ children: none, render: () => null }),
         },
@@ -259,6 +310,7 @@ describe("typed component registry", () => {
     console.error = (...values: unknown[]) => diagnostics.push(values)
     try {
       const registry = defineRegistry({
+        module: TEST_MODULE,
         components: {
           Known: component({ children: none, render: () => null }),
         },
@@ -284,6 +336,69 @@ describe("typed component registry", () => {
     }
   })
 
+  test("retries a mandatory production diagnostic after its sink throws", () => {
+    const development = globalThis as typeof globalThis & { __DEV__?: boolean }
+    const previous = development.__DEV__
+    const originalError = console.error
+    let attempts = 0
+    development.__DEV__ = false
+    console.error = () => {
+      attempts += 1
+      if (attempts === 1) throw new Error("diagnostic sink failed")
+    }
+    try {
+      const registry = defineRegistry({
+        module: TEST_MODULE,
+        components: {
+          Known: component({ children: none, render: () => null }),
+        },
+      })
+      const unknown = element("<Unknown />")
+
+      expect(registry.resolve("Unknown")).toBeUndefined()
+      expect(registry.decodeForRender(unknown).status).toBe("transparent")
+      expect(registry.decodeForRender(unknown).status).toBe("transparent")
+      expect(registry.decodeForRender(unknown).status).toBe("transparent")
+      expect(attempts).toBe(2)
+    } finally {
+      console.error = originalError
+      if (previous === undefined) delete development.__DEV__
+      else development.__DEV__ = previous
+    }
+  })
+
+  test("uses production fallback in tooling unless development is explicit", () => {
+    const development = globalThis as typeof globalThis & { __DEV__?: boolean }
+    const previousDevelopment = development.__DEV__
+    const previousEnvironment = process.env.NODE_ENV
+    const originalError = console.error
+    const diagnostics: unknown[][] = []
+    delete development.__DEV__
+    delete process.env.NODE_ENV
+    console.error = (...values: unknown[]) => diagnostics.push(values)
+    try {
+      const registry = defineRegistry({
+        module: TEST_MODULE,
+        components: {
+          Known: component({ children: none, render: () => null }),
+        },
+      })
+      const unknown = element("<Unknown />")
+
+      expect(registry.resolve("Unknown")).toBeUndefined()
+      expect(registry.decodeForRender(unknown).status).toBe("transparent")
+      expect(diagnostics).toHaveLength(1)
+      process.env.NODE_ENV = "development"
+      expect(() => registry.decodeForRender(unknown)).toThrow(/Unknown component "Unknown"/)
+    } finally {
+      console.error = originalError
+      if (previousDevelopment === undefined) delete development.__DEV__
+      else development.__DEV__ = previousDevelopment
+      if (previousEnvironment === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = previousEnvironment
+    }
+  })
+
   test("quarantines invalid legacy module metadata so boot continues and support stays absent", () => {
     const spaced = defineComponentModule({ components: [card], name: " cart ", version: "1" })
     const invalidVersion = defineCapabilityModule({
@@ -303,12 +418,21 @@ describe("typed component registry", () => {
     })
 
     const runtime = createRegistry(spaced, noncharacter, surrogate)
+    const declared = defineRegistry({
+      module: { name: " cart ", version: "1" },
+      components: {
+        DeclaredCard: component({ children: none, render: () => null }),
+      },
+    })
     const manifest = createCapabilityManifest(invalidVersion)
     expect(runtime.capabilities.modules).toEqual([])
     expect(runtime.capabilities.components).toEqual([])
     expect(runtime.resolve("DemoCard")).toBeUndefined()
     expect(manifest.modules).toEqual([])
     expect(manifest.components).toEqual([])
+    expect(declared.capabilities.modules).toEqual([])
+    expect(declared.capabilities.components).toEqual([])
+    expect(declared.resolve("DeclaredCard")).toBeUndefined()
     expect(() =>
       defineComponentModule({ components: [], name: "cart😀", version: "1" }),
     ).not.toThrow()
