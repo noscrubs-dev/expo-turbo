@@ -8,9 +8,12 @@ All notable public package, gem, and protocol changes will be recorded here.
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old
   client and a header-stripping proxy, the two states a server cannot control,
-  were exactly the two that claimed support for everything. A request that
-  names `application/vnd.expo-turbo+xml` in `Accept` now answers `false` for a
-  module it did not declare. A request that does not accept Expo Turbo keeps
+  were exactly the two that claimed support for everything. A request whose
+  `Accept` names `application/vnd.expo-turbo+xml` exactly and prefers it over
+  every other media range now answers `false` for a module it did not declare.
+  A wildcard, a lower quality than another range, and a quality value outside
+  the RFC 9110 grammar are all not native, so unreadable syntax never denies
+  service. A request that does not accept Expo Turbo keeps
   the fail-open assumption. Every response reports which vocabulary answered it
   in `X-Expo-Turbo-Vocabulary`: `declared`, `assumed-none`, or
   `assumed-latest`. Migration: a native client must send
@@ -25,8 +28,9 @@ All notable public package, gem, and protocol changes will be recorded here.
   for the same URL, and `Accept` was omitted whenever a route forced the format.
   Migration: rename `expo_turbo_vary_by_frame!` to `expo_turbo_vary!`, and
   delete the call unless another cache API needs it; the gem now applies it from
-  an `after_action`. Hosts that cache aggressively will see a lower hit rate on
-  routes that do not vary by Frame.
+  a prepended `before_action`, so a rejected header, an authentication
+  redirect, a rate limit, and a rescued error all carry it. Hosts that cache
+  aggressively will see a lower hit rate on routes that do not vary by Frame.
 - **Breaking:** Key `Rails.cache` fragments of an Expo Turbo render by the same
   Frame and module identity. `Vary` protects a shared HTTP cache and does not
   protect `Rails.cache`, so a fragment gated on a module version could be read
@@ -68,7 +72,9 @@ All notable public package, gem, and protocol changes will be recorded here.
   the parallel namespace. `expo_turbo_frame_tag`, `expo_turbo_stream_from`, and
   `expo_turbo_dom_id` are removed. Migration: rename them to `turbo_frame_tag`,
   `turbo_stream_from`, and `dom_id`; each keeps its Expo Turbo behavior during
-  an Expo Turbo render and calls `turbo-rails` or Rails otherwise.
+  an Expo Turbo render and calls `turbo-rails` or Rails otherwise. The branch
+  is chosen by the format Rails selected for the render, so a browser that
+  names the Expo Turbo type at a low quality still gets HTML behavior.
   `turbo_stream_from` still appends the hidden `:expo` stream-name suffix.
   `turbo_frame_tag` now accepts every id shape `turbo-rails` accepts, including
   a Symbol, and still normalizes a model class to the same id on `turbo-rails`

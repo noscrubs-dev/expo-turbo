@@ -64,12 +64,20 @@ the Accept header itself, but it is no longer needed to reach the format.
 
 ## What the format changes
 
-`expo_turbo_request?` is true only when the request names
-`application/vnd.expo-turbo+xml` in `Accept`, which every native client sends. A
-wildcard `Accept` from a browser is not proof of a native client.
+`expo_turbo_request?` is true only when `Accept` names
+`application/vnd.expo-turbo+xml` exactly **and prefers it**: no other media
+range may carry a higher quality. Every native client sends the type alone, or
+beside the Turbo Stream type at equal quality. A browser wildcard, a lower
+quality than `text/html`, and a malformed quality value such as `q=2` or
+`q=0.5junk` are all not native.
 
-Each standard helper takes its Expo Turbo branch during an Expo Turbo render,
-and calls `turbo-rails` for every other render:
+Each standard helper takes its Expo Turbo branch from **the format Rails
+selected for the render**, never from the `Accept` header on its own. A browser
+may name the Expo Turbo type at a low quality while Rails renders HTML, and a
+helper that disagreed with that choice would break an ordinary web page. The one
+exception is a Turbo Stream response, whose media type is identical for both
+audiences; there the selected format cannot separate them, and a verified native
+request decides.
 
 | Helper | Expo Turbo render | Other render |
 | --- | --- | --- |
