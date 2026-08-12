@@ -108,6 +108,61 @@ All notable public package, gem, and protocol changes will be recorded here.
   miss attributes built by `tag.*` helpers, and no response validator can
   recover the original value once an XML parser has applied attribute-value
   normalization.
+- **Breaking:** Add the declare-once registry. Use `defineRegistry()` with one
+  `module: { name, version }` identity and a `components` object. Use each
+  object key as the wire tag. Use `component()` for the component contract and
+  `render()` for the React implementation. The module identity preserves
+  server negotiation. The key does not depend on a function name, so
+  minification, a higher-order component, `React.memo()`, or a normal function
+  rename cannot change the wire protocol. The old module API stays available
+  for compatibility, but new registry code must not use its separate component
+  array.
+- **Breaking:** The new registry throws for an unknown component in
+  development when React Native sets `__DEV__` or tooling sets
+  `NODE_ENV=development`. Unset tooling environments use production behavior.
+  In production, it keeps the child fallback and always writes a deduplicated
+  contract diagnostic. `onUnknownVocabulary` is still useful, but it is not the
+  only production signal. Migrate development fixtures by adding the missing
+  component key. Do not disable this check.
+- **Breaking:** An invalid legacy module name or RubyGems version no longer
+  stops app boot. The registry quarantines the full module, including its
+  components, and does not send a support claim for it. This makes server
+  negotiation fail closed. This also applies to the required `module` identity
+  in `defineRegistry()`: one bad name or version quarantines all components in
+  that registry. Fix the value to restore the full registry. For example,
+  change `name: "cart "` to `name: "cart"`, or change `version: "v2"` to
+  `version: "2"`.
+- **Breaking:** Remove `ComponentActionRegistry.modules`. It had no consumer.
+  Keep module metadata on `defineComponentActionModule()` if you use that API,
+  but do not read it from the action registry.
+- A normal component contract keeps only seven facts explicit:
+  1. The object key gives the stable wire tag.
+  2. Each `attr()` codec gives the runtime wire decoder because TypeScript
+     types do not exist at runtime.
+  3. `nodes`, `text`, or `none` gives the wire child rule because React cannot
+     infer it.
+  4. `role` gives form ownership or container behavior before render.
+  5. `aliases` gives deliberate compatibility names.
+  6. `styles` gives the bounded style-token set that the component accepts.
+  7. `morphState: "reset"` gives the non-default state policy. The default is
+     `preserve`.
+- Mechanical registry migration:
+  1. Replace
+     `createRegistry(defineComponentModule({ name, version, components: [...] }))`
+     with `defineRegistry({ module: { name, version }, components: { ... } })`.
+     Keep the same module name and version so server negotiation does not
+     change.
+  2. Move each old `tag` value to the matching object key.
+  3. Replace `component:` with `render:` and replace child strings with
+     `nodes`, `text`, or `none`.
+  4. Replace each `{ codec, prop }` binding and matching Zod field with one
+     `attr(codec, optionalSchema)`. Use `.optional()` or `.default(value)` on
+     that attribute. Kebab-case wire names produce camel-case prop names.
+  5. Delete empty `attributes` and `schema` objects. Move `style-tokens` to
+     `styles`. Move `formOwner` or `formContainer` to `role`.
+  6. Keep the explicit `schema` overload only for a cross-field rule, a prop
+     that has only a default and no wire attribute, or two wire attributes that
+     map to one prop.
 
 ## 0.2.0 - 2026-08-12
 

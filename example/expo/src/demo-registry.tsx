@@ -1,13 +1,16 @@
 import { serializeModuleVersionsHeader } from "expo-turbo/core";
 import {
   attr,
-  createRegistry,
-  defineComponent,
-  defineComponentModule,
+  component,
+  defineRegistry,
   enumCodec,
+  formOwner,
   jsonCodec,
+  nodes,
+  none,
   presenceCodec,
   stringCodec,
+  text as textChildren,
   tokenListCodec,
 } from "expo-turbo/registry";
 import type { ReactNode } from "react";
@@ -30,323 +33,30 @@ import {
 import { recordGreeting } from "./demo-actions";
 import { useDemoAutofocusScrollTarget } from "./demo-autofocus-scroll";
 import { DemoFlatListRegion, DemoNestedScrollRegion } from "./demo-boundaries";
-import { pickDemoTextUpload, type DemoPickedTextUpload } from "./demo-document-picker";
+import {
+  pickDemoTextUpload,
+  type DemoPickedTextUpload,
+} from "./demo-document-picker";
 import { useDemoFocusHandle } from "./demo-focus";
 import { useDemoComponentStyle } from "./demo-style-runtime";
 import {
   DEMO_CARD_BASE_STYLE,
   DEMO_CARD_TONE_STYLES,
   DEMO_STYLE_TOKENS,
-  type DemoStyleToken,
 } from "./demo-styles";
 import { useDemoDocumentAnchorTarget } from "./demo-document-anchor-scroll";
 
-function nativeLayoutDirection(direction: ExpoTurboDirection | undefined): "inherit" | "ltr" | "rtl" {
+function nativeLayoutDirection(
+  direction: ExpoTurboDirection | undefined,
+): "inherit" | "ltr" | "rtl" {
   return direction === "ltr" || direction === "rtl" ? direction : "inherit";
 }
 
-function DemoGalleryComponent({ children }: { children?: ReactNode }) {
-  const direction = useExpoTurboDirection();
-  return <View style={[{ gap: 12 }, { direction: nativeLayoutDirection(direction) }]}>{children}</View>;
-}
-
-const gallery = defineComponent({
-  attributes: {},
-  children: "nodes",
-  component: DemoGalleryComponent,
-  schema: z.object({}),
-  tag: "Gallery",
-});
-
-function DemoCardComponent({
-  children,
-  styleTokens,
-  title,
-  tone,
-}: {
-  children?: ReactNode;
-  styleTokens: readonly DemoStyleToken[];
-  title: string;
-  tone?: keyof typeof DEMO_CARD_TONE_STYLES;
-}) {
-  const direction = useExpoTurboDirection();
-  const resolvedStyle = useDemoComponentStyle({
-    component: DEMO_CARD_BASE_STYLE,
-    ...(tone ? { props: DEMO_CARD_TONE_STYLES[tone] } : {}),
-    tokens: styleTokens,
-  });
-  return (
-    <View style={[resolvedStyle, { direction: nativeLayoutDirection(direction) }]}>
-      <Text selectable style={{ fontSize: 17, fontWeight: "600", writingDirection: direction ?? "auto" }}>
-        {title}
-      </Text>
-      {children}
-    </View>
-  );
-}
-
-const card = defineComponent({
-  attributes: {
-    "style-tokens": attr(
-      tokenListCodec("demo-style", DEMO_STYLE_TOKENS, {
-        maxTokens: 5,
-      }),
-    ).default([]),
-    title: attr(stringCodec),
-    tone: attr(enumCodec(["positive", "warning"])).optional(),
-  },
-  children: "nodes",
-  component: DemoCardComponent,
-  tag: "DemoCard",
-});
-
-function DemoTextComponent({ children }: { children?: ReactNode }) {
-  const direction = useExpoTurboDirection();
-  return (
-    <Text selectable style={{ color: "#435160", fontSize: 14, lineHeight: 21, writingDirection: direction ?? "auto" }}>
-      {children}
-    </Text>
-  );
-}
-
-const text = defineComponent({
-  attributes: {},
-  children: "text",
-  component: DemoTextComponent,
-  schema: z.object({}),
-  tag: "DemoText",
-});
-
-const scrollRegion = defineComponent({
-  attributes: { id: { codec: stringCodec, prop: "id" } },
-  children: "nodes",
-  component: DemoNestedScrollRegion,
-  schema: z.object({ id: z.string().trim().min(1) }),
-  tag: "DemoScrollRegion",
-});
-
-const flatListFrameIds = z.array(z.string().trim().min(1)).min(1).max(8).readonly();
-
-const flatListRegion = defineComponent({
-  attributes: {
-    "frame-ids": {
-      codec: jsonCodec("demo-flat-list-frame-ids", flatListFrameIds, { maxBytes: 512 }),
-      prop: "frameIds",
-    },
-    id: { codec: stringCodec, prop: "id" },
-  },
-  children: "nodes",
-  component: DemoFlatListRegion,
-  schema: z.object({ frameIds: flatListFrameIds, id: z.string().trim().min(1) }),
-  tag: "DemoFlatListRegion",
-});
-
-function DemoDocumentLinkComponent({
-  accessibilityLabel,
-  children,
-  disabled,
-  href,
-}: {
-  accessibilityLabel?: string;
-  children?: ReactNode;
-  disabled: boolean;
-  href: string;
-}) {
-  const activate = useExpoTurboDocumentLink(href);
-  const prefetch = useExpoTurboDocumentLinkPrefetch(href);
-  const [error, setError] = useState<string>();
-  const [pending, setPending] = useState(false);
-  const unavailable = disabled || pending;
-  return (
-    <View style={{ gap: 6 }}>
-      <Pressable
-        accessibilityLabel={accessibilityLabel}
-        accessibilityRole="link"
-        accessibilityState={{ busy: pending, disabled: unavailable }}
-        disabled={unavailable}
-        onPressIn={prefetch}
-        onPressOut={prefetch.cancel}
-        onPress={() => {
-          prefetch.commit();
-          setError(undefined);
-          setPending(true);
-          void activate()
-            .catch((reason: unknown) => {
-              setError(reason instanceof Error ? reason.message : "Document visit failed");
-            })
-            .finally(() => setPending(false));
-        }}
-        testID={
-          accessibilityLabel
-            ? `demo-document-link-${accessibilityLabel.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "")}`
-            : undefined
-        }
-        style={({ pressed }) => ({
-          alignItems: "center",
-          backgroundColor: pressed ? "#d5e6f7" : "#e7f1fb",
-          borderColor: "#9ebcda",
-          borderRadius: 12,
-          borderWidth: 1,
-          opacity: unavailable ? 0.6 : 1,
-          padding: 12,
-        })}
-      >
-        {children}
-      </Pressable>
-      {error ? (
-        <Text selectable style={{ color: "#a62525", fontSize: 13 }}>
-          {error}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-const documentLink = defineComponent({
-  attributes: {
-    "accessibility-label": { codec: stringCodec, prop: "accessibilityLabel" },
-    disabled: { codec: presenceCodec, prop: "disabled" },
-    href: { codec: stringCodec, prop: "href" },
-  },
-  children: "nodes",
-  component: DemoDocumentLinkComponent,
-  schema: z.object({
-    accessibilityLabel: z.string().trim().min(1).optional(),
-    disabled: z.boolean().default(false),
-    href: z.string().trim().min(1),
-  }),
-  tag: "DemoDocumentLink",
-});
-
-function DemoAnchorTargetComponent({ children, id }: { children?: ReactNode; id: string }) {
-  const { onLayout, setNativeTarget } = useDemoDocumentAnchorTarget(id);
-  return (
-    <View
-      collapsable={false}
-      onLayout={onLayout}
-      ref={setNativeTarget}
-      testID={`demo-anchor-target-${id}`}
-    >
-      {children}
-    </View>
-  );
-}
-
-const anchorTarget = defineComponent({
-  attributes: { id: { codec: stringCodec, prop: "id" } },
-  children: "nodes",
-  component: DemoAnchorTargetComponent,
-  schema: z.object({ id: z.string().trim().min(1) }),
-  tag: "DemoAnchorTarget",
-});
-
-function DemoActionComponent({ message }: { message: string }) {
-  const [pending, setPending] = useState(false);
-  const [status, setStatus] = useState("Ready");
-  const greeting = useDocumentState<string>("last-greeting");
-  const execute = useComponentAction(recordGreeting, {
-    onEnd: () => setPending(false),
-    onError: ({ error }) => setStatus(error.message),
-    onSuccess: ({ result }) => setStatus(result),
-  });
-  return (
-    <View style={{ gap: 6 }}>
-      <Pressable
-        accessibilityRole="button"
-        disabled={pending}
-        onPress={() => {
-          setPending(true);
-          void execute({ message }).catch(() => undefined);
-        }}
-        style={({ pressed }) => ({
-          alignItems: "center",
-          backgroundColor: pressed ? "#19375a" : "#285589",
-          borderRadius: 12,
-          opacity: pending ? 0.6 : 1,
-          padding: 12,
-        })}
-      >
-        <Text style={{ color: "white", fontWeight: "600" }}>
-          {pending ? "Running…" : "Run typed component action"}
-        </Text>
-      </Pressable>
-      <Text selectable style={{ color: "#435160", fontSize: 13 }}>
-        {status}
-      </Text>
-      <Text selectable style={{ color: "#435160", fontSize: 13 }}>
-        Document state: {greeting.value ?? "not set"}
-      </Text>
-    </View>
-  );
-}
-
-const action = defineComponent({
-  attributes: { message: { codec: stringCodec, prop: "message" } },
-  children: "none",
-  component: DemoActionComponent,
-  schema: z.object({ message: z.string() }),
-  tag: "DemoAction",
-});
-
-function DemoStreamMorphProbeComponent({
-  incrementLabel = "Increment HTTP Stream morph counter",
-  message,
-}: {
-  incrementLabel?: string;
-  message: string;
-}) {
-  const [count, setCount] = useState(0);
-  return (
-    <View accessibilityLabel="Rails HTTP Stream morph proof" style={{ gap: 6 }}>
-      <Text accessibilityLabel={message} selectable style={{ color: "#435160", fontSize: 14 }}>
-        {message}
-      </Text>
-      <Text
-        accessibilityLabel={`Local count: ${count}`}
-        selectable
-        style={{ color: "#435160", fontSize: 13 }}
-        testID="demo-http-stream-morph-count"
-      >
-        Local count: {count}
-      </Text>
-      <Pressable
-        accessibilityLabel={incrementLabel}
-        accessibilityRole="button"
-        onPress={() => setCount((current) => current + 1)}
-        style={({ pressed }) => ({
-          alignSelf: "flex-start",
-          opacity: pressed ? 0.7 : 1,
-        })}
-      >
-        <Text style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}>
-          Increment local count
-        </Text>
-      </Pressable>
-    </View>
-  );
-}
-
-const streamMorphProbe = defineComponent({
-  attributes: {
-    "increment-label": { codec: stringCodec, prop: "incrementLabel" },
-    message: { codec: stringCodec, prop: "message" },
-  },
-  children: "none",
-  component: DemoStreamMorphProbeComponent,
-  schema: z.object({
-    incrementLabel: z.string().trim().min(1).optional(),
-    message: z.string().trim().min(1),
-  }),
-  tag: "DemoStreamMorphProbe",
-});
-
-function DemoFormComponent({ children }: { children?: ReactNode }) {
-  return (
-    <ExpoTurboFormScope>
-      <DemoFormSurface>{children}</DemoFormSurface>
-    </ExpoTurboFormScope>
-  );
-}
+const flatListFrameIds = z
+  .array(z.string().trim().min(1))
+  .min(1)
+  .max(8)
+  .readonly();
 
 function DemoFormSurface({ children }: { children?: ReactNode }) {
   const form = useExpoTurboForm();
@@ -370,301 +80,7 @@ function DemoFormSurface({ children }: { children?: ReactNode }) {
   );
 }
 
-function DemoFormFieldsetComponent({
-  children,
-  disabled,
-}: {
-  children?: ReactNode;
-  disabled: boolean;
-}) {
-  return (
-    <View
-      accessibilityState={{ disabled }}
-      style={{
-        borderColor: disabled ? "#c8d1dc" : "#9eb0c3",
-        borderRadius: 10,
-        borderWidth: 1,
-        gap: 8,
-        padding: 10,
-      }}
-    >
-      {children}
-    </View>
-  );
-}
-
-const formFieldset = defineComponent({
-  attributes: { disabled: { codec: presenceCodec, prop: "disabled" } },
-  children: "nodes",
-  component: DemoFormFieldsetComponent,
-  formContainer: "fieldset",
-  schema: z.object({ disabled: z.boolean().default(false) }),
-  tag: "DemoFormFieldset",
-});
-
-const formLegend = defineComponent({
-  attributes: {},
-  children: "nodes",
-  component: ({ children }: { children?: ReactNode }) => (
-    <View style={{ gap: 8 }}>{children}</View>
-  ),
-  formContainer: "legend",
-  schema: z.object({}),
-  tag: "DemoFormLegend",
-});
-
-const form = defineComponent({
-  attributes: {},
-  children: "nodes",
-  component: DemoFormComponent,
-  formOwner: true,
-  schema: z.object({}),
-  tag: "DemoForm",
-});
-
-function DemoFormInputComponent({
-  label,
-  name,
-  required,
-  value,
-}: {
-  label: string;
-  name: string;
-  required: boolean;
-  value: string;
-}) {
-  const direction = useExpoTurboDirection();
-  const [current, setCurrent] = useState(value);
-  const inputRef = useRef<TextInput>(null);
-  const validation = required
-    ? z.string().trim().min(1, `${label} is required`).safeParse(current)
-    : undefined;
-  const validity =
-    validation === undefined || validation.success
-      ? ({ valid: true } as const)
-      : ({
-          message: validation.error.issues[0]?.message ?? `${label} is invalid`,
-          valid: false,
-        } as const);
-  const control = useExpoTurboFormControl({
-    kind: "value",
-    name,
-    value: current,
-    ...(required ? { validity } : {}),
-  });
-  const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
-  const autofocusScroll = useDemoAutofocusScrollTarget(control.nodeKey, inputRef);
-  return (
-    <View style={{ direction: nativeLayoutDirection(direction), gap: 6 }}>
-      <Text style={{ color: "#435160", fontSize: 13, writingDirection: direction ?? "auto" }}>{label}</Text>
-      <TextInput
-        accessibilityHint={!validity.valid ? validity.message : undefined}
-        accessibilityLabel={label}
-        accessibilityState={control.accessibilityState}
-        editable={!control.disabled}
-        onBlur={() => {
-          autofocusScroll.onBlur();
-          focusHandlers.onBlur();
-        }}
-        onChangeText={setCurrent}
-        onFocus={() => {
-          focusHandlers.onFocus();
-          autofocusScroll.onFocus();
-        }}
-        onLayout={autofocusScroll.onLayout}
-        ref={inputRef}
-        style={{
-          backgroundColor: control.disabled ? "#f6f8fa" : "white",
-          borderColor: validity.valid ? "#9eb0c3" : "#a62525",
-          borderRadius: 10,
-          borderWidth: 1,
-          color: "#172230",
-          paddingHorizontal: 12,
-          paddingVertical: 10,
-          writingDirection: direction ?? "auto",
-        }}
-        testID={`demo-form-input-${control.nodeKey.replaceAll(":", "-")}`}
-        value={current}
-      />
-      {!validity.valid ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13, writingDirection: direction ?? "auto" }}>
-          {validity.message}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-const formInput = defineComponent({
-  attributes: {
-    label: { codec: stringCodec, prop: "label" },
-    name: { codec: stringCodec, prop: "name" },
-    required: { codec: presenceCodec, prop: "required" },
-    value: { codec: stringCodec, prop: "value" },
-  },
-  children: "none",
-  component: DemoFormInputComponent,
-  schema: z.object({
-    label: z.string(),
-    name: z.string(),
-    required: z.boolean().default(false),
-    value: z.string(),
-  }),
-  tag: "DemoFormInput",
-});
-
 const DEMO_UPLOAD_CONTENT = "Expo Turbo native multipart upload\n";
-
-function DemoFormFileComponent({
-  error,
-  filename,
-  label,
-  name,
-}: {
-  error?: string;
-  filename: string;
-  label: string;
-  name: string;
-}) {
-  const mounted = useRef(true);
-  // A rejected matching Frame response replaces this component. Keep the
-  // intentionally bounded picker result with the document so retrying does
-  // not make an iOS user choose the same file again.
-  const pickedState = useDocumentState<DemoPickedTextUpload>("demo-upload-attachment");
-  const picked = pickedState.value;
-  const [pickerError, setPickerError] = useState<string>();
-  const [selecting, setSelecting] = useState(false);
-  const fallbackAttachment = useMemo(
-    () => ({
-      blob: new Blob([DEMO_UPLOAD_CONTENT], { type: "text/plain" }),
-      filename,
-    }),
-    [filename],
-  );
-  const attachment = picked?.attachment ?? fallbackAttachment;
-  const control = useExpoTurboFormControl({
-    entries: [{ name, value: attachment }],
-    kind: "entries",
-  });
-  const disabled = control.disabled || selecting;
-  const displayedError = pickerError ?? error;
-  const selectedFilename = attachment.filename;
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const chooseFile = () => {
-    if (disabled) return;
-    setPickerError(undefined);
-    setSelecting(true);
-    void pickDemoTextUpload()
-      .then((next) => {
-        if (next && mounted.current) pickedState.set(next);
-      })
-      .catch((error: unknown) => {
-        if (!mounted.current) return;
-        setPickerError(error instanceof Error ? error.message : "Unable to select a text file");
-      })
-      .finally(() => {
-        if (mounted.current) setSelecting(false);
-      });
-  };
-
-  return (
-    <View
-      accessibilityHint={displayedError}
-      accessibilityLabel={`${label}: ${selectedFilename}`}
-      accessibilityState={control.accessibilityState}
-      style={{ gap: 4, opacity: disabled ? 0.55 : 1 }}
-    >
-      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
-      <Text selectable style={{ color: "#172230", fontSize: 14 }}>
-        {picked ? "Selected" : "Ready"}: {selectedFilename}
-      </Text>
-      <Pressable
-        accessibilityLabel={`Choose ${label}`}
-        accessibilityRole="button"
-        accessibilityState={{ busy: selecting, disabled }}
-        disabled={disabled}
-        onPress={chooseFile}
-        style={{ alignSelf: "flex-start", opacity: disabled ? 0.55 : 1 }}
-      >
-        <Text style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}>
-          {selecting ? "Opening Files…" : "Choose a text file"}
-        </Text>
-      </Pressable>
-      {displayedError ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
-          {displayedError}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-const formFile = defineComponent({
-  attributes: {
-    error: { codec: stringCodec, prop: "error" },
-    filename: { codec: stringCodec, prop: "filename" },
-    label: { codec: stringCodec, prop: "label" },
-    name: { codec: stringCodec, prop: "name" },
-  },
-  children: "none",
-  component: DemoFormFileComponent,
-  schema: z.object({
-    error: z.string().trim().min(1).optional(),
-    filename: z.string().trim().min(1),
-    label: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-  }),
-  tag: "DemoFormFile",
-});
-
-function DemoFormCheckboxComponent({
-  checked,
-  error,
-  label,
-  name,
-  value,
-}: {
-  checked: boolean;
-  error?: string;
-  label: string;
-  name: string;
-  value: string;
-}) {
-  const [current, setCurrent] = useState(checked);
-  const control = useExpoTurboFormControl({
-    checked: current,
-    kind: "checkable",
-    name,
-    value,
-  });
-  return (
-    <View
-      accessibilityHint={error}
-      accessibilityState={{ ...control.accessibilityState, checked: current }}
-      style={{ gap: 4, opacity: control.disabled ? 0.55 : 1 }}
-    >
-      <DemoNativeSwitch
-        accessibilityLabel={label}
-        accessibilityState={{ ...control.accessibilityState, checked: current }}
-        disabled={control.disabled}
-        onValueChange={setCurrent}
-        value={current}
-      />
-      <Text style={{ color: "#172230", fontSize: 14 }}>{label}</Text>
-      {error ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
-          {error}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
 
 function DemoNativeSwitch({
   accessibilityLabel,
@@ -704,210 +120,714 @@ function DemoNativeSwitch({
   );
 }
 
-const formCheckbox = defineComponent({
-  attributes: {
-    checked: { codec: presenceCodec, prop: "checked" },
-    error: { codec: stringCodec, prop: "error" },
-    label: { codec: stringCodec, prop: "label" },
-    name: { codec: stringCodec, prop: "name" },
-    value: { codec: stringCodec, prop: "value" },
-  },
-  children: "none",
-  component: DemoFormCheckboxComponent,
-  schema: z.object({
-    checked: z.boolean().default(false),
-    error: z.string().trim().min(1).optional(),
-    label: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-    value: z.string(),
-  }),
-  tag: "DemoFormCheckbox",
-});
-
 type DemoPlan = "none" | "starter" | "pro";
 
-function DemoFormPlanSelectComponent({
-  error,
-  label,
-  name,
-  selected,
-}: {
-  error?: string;
-  label: string;
-  name: string;
-  selected: DemoPlan;
-}) {
-  const [current, setCurrent] = useState(selected);
-  const control = useExpoTurboFormControl({
-    kind: "select",
-    name,
-    options: [
-      { kind: "option", selected: current === "starter", value: "starter" },
-      { kind: "option", selected: current === "pro", value: "pro" },
-    ],
-  });
-  const option = (value: Exclude<DemoPlan, "none">, optionLabel: string) => {
-    const isSelected = current === value;
-    return (
-      <Pressable
-        accessibilityLabel={optionLabel}
-        accessibilityRole="radio"
-        accessibilityState={{ ...control.accessibilityState, selected: isSelected }}
-        disabled={control.disabled}
-        key={value}
-        onPress={() => setCurrent(value)}
-        style={{
-          backgroundColor: isSelected ? "#d7e8fa" : "white",
-          borderColor: isSelected ? "#285589" : "#9eb0c3",
-          borderRadius: 10,
-          borderWidth: 1,
-          opacity: control.disabled ? 0.55 : 1,
-          padding: 10,
-        }}
-      >
-        <Text style={{ color: "#172230", fontSize: 14, fontWeight: isSelected ? "600" : "400" }}>
-          {optionLabel}
-        </Text>
-      </Pressable>
-    );
-  };
-  return (
-    <View accessibilityHint={error} style={{ gap: 6 }}>
-      <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
-      <View accessibilityLabel={label} style={{ gap: 6 }}>
-        {option("starter", "Starter plan")}
-        {option("pro", "Pro plan")}
-      </View>
-      {error ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#a62525", fontSize: 13 }}>
-          {error}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
+export const DEMO_REGISTRY = defineRegistry({
+  module: { name: "demo-primitives", version: "0.1.0" },
+  components: {
+    Gallery: component({
+      children: nodes,
+      render: function Gallery({ children }) {
+        const direction = useExpoTurboDirection();
+        return (
+          <View
+            style={[
+              { gap: 12 },
+              { direction: nativeLayoutDirection(direction) },
+            ]}
+          >
+            {children}
+          </View>
+        );
+      },
+    }),
+    DemoCard: component({
+      attributes: {
+        title: attr(stringCodec),
+        tone: attr(enumCodec(["positive", "warning"])).optional(),
+      },
+      children: nodes,
+      render: function DemoCard({ children, styleTokens, title, tone }) {
+        const direction = useExpoTurboDirection();
+        const resolvedStyle = useDemoComponentStyle({
+          component: DEMO_CARD_BASE_STYLE,
+          ...(tone ? { props: DEMO_CARD_TONE_STYLES[tone] } : {}),
+          tokens: styleTokens,
+        });
+        return (
+          <View
+            style={[
+              resolvedStyle,
+              { direction: nativeLayoutDirection(direction) },
+            ]}
+          >
+            <Text
+              selectable
+              style={{
+                fontSize: 17,
+                fontWeight: "600",
+                writingDirection: direction ?? "auto",
+              }}
+            >
+              {title}
+            </Text>
+            {children}
+          </View>
+        );
+      },
+      styles: attr(
+        tokenListCodec("demo-style", DEMO_STYLE_TOKENS, {
+          maxTokens: 5,
+        }),
+      ).default([]),
+    }),
+    DemoText: component({
+      children: textChildren,
+      render: function DemoText({ children }) {
+        const direction = useExpoTurboDirection();
+        return (
+          <Text
+            selectable
+            style={{
+              color: "#435160",
+              fontSize: 14,
+              lineHeight: 21,
+              writingDirection: direction ?? "auto",
+            }}
+          >
+            {children}
+          </Text>
+        );
+      },
+    }),
+    DemoScrollRegion: component({
+      attributes: { id: attr(stringCodec, z.string().trim().min(1)) },
+      children: nodes,
+      render(props) {
+        return <DemoNestedScrollRegion {...props} />;
+      },
+    }),
+    DemoFlatListRegion: component({
+      attributes: {
+        "frame-ids": attr(
+          jsonCodec("demo-flat-list-frame-ids", flatListFrameIds, {
+            maxBytes: 512,
+          }),
+        ),
+        id: attr(stringCodec, z.string().trim().min(1)),
+      },
+      children: nodes,
+      render(props) {
+        return <DemoFlatListRegion {...props} />;
+      },
+    }),
+    DemoAction: component({
+      attributes: { message: attr(stringCodec) },
+      children: none,
+      render: function DemoAction({ message }) {
+        const [pending, setPending] = useState(false);
+        const [status, setStatus] = useState("Ready");
+        const greeting = useDocumentState<string>("last-greeting");
+        const execute = useComponentAction(recordGreeting, {
+          onEnd: () => setPending(false),
+          onError: ({ error }) => setStatus(error.message),
+          onSuccess: ({ result }) => setStatus(result),
+        });
+        return (
+          <View style={{ gap: 6 }}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={pending}
+              onPress={() => {
+                setPending(true);
+                void execute({ message }).catch(() => undefined);
+              }}
+              style={({ pressed }) => ({
+                alignItems: "center",
+                backgroundColor: pressed ? "#19375a" : "#285589",
+                borderRadius: 12,
+                opacity: pending ? 0.6 : 1,
+                padding: 12,
+              })}
+            >
+              <Text style={{ color: "white", fontWeight: "600" }}>
+                {pending ? "Running…" : "Run typed component action"}
+              </Text>
+            </Pressable>
+            <Text selectable style={{ color: "#435160", fontSize: 13 }}>
+              {status}
+            </Text>
+            <Text selectable style={{ color: "#435160", fontSize: 13 }}>
+              Document state: {greeting.value ?? "not set"}
+            </Text>
+          </View>
+        );
+      },
+    }),
+    DemoDocumentLink: component({
+      attributes: {
+        "accessibility-label": attr(
+          stringCodec,
+          z.string().trim().min(1),
+        ).optional(),
+        disabled: attr(presenceCodec).default(false),
+        href: attr(stringCodec, z.string().trim().min(1)),
+      },
+      children: nodes,
+      render: function DemoDocumentLink({ accessibilityLabel, children, disabled, href }) {
+        const activate = useExpoTurboDocumentLink(href);
+        const prefetch = useExpoTurboDocumentLinkPrefetch(href);
+        const [error, setError] = useState<string>();
+        const [pending, setPending] = useState(false);
+        const unavailable = disabled || pending;
+        return (
+          <View style={{ gap: 6 }}>
+            <Pressable
+              accessibilityLabel={accessibilityLabel}
+              accessibilityRole="link"
+              accessibilityState={{ busy: pending, disabled: unavailable }}
+              disabled={unavailable}
+              onPressIn={prefetch}
+              onPressOut={prefetch.cancel}
+              onPress={() => {
+                prefetch.commit();
+                setError(undefined);
+                setPending(true);
+                void activate()
+                  .catch((reason: unknown) => {
+                    setError(
+                      reason instanceof Error
+                        ? reason.message
+                        : "Document visit failed",
+                    );
+                  })
+                  .finally(() => setPending(false));
+              }}
+              testID={
+                accessibilityLabel
+                  ? `demo-document-link-${accessibilityLabel
+                      .toLowerCase()
+                      .replaceAll(/[^a-z0-9]+/g, "-")
+                      .replaceAll(/^-|-$/g, "")}`
+                  : undefined
+              }
+              style={({ pressed }) => ({
+                alignItems: "center",
+                backgroundColor: pressed ? "#d5e6f7" : "#e7f1fb",
+                borderColor: "#9ebcda",
+                borderRadius: 12,
+                borderWidth: 1,
+                opacity: unavailable ? 0.6 : 1,
+                padding: 12,
+              })}
+            >
+              {children}
+            </Pressable>
+            {error ? (
+              <Text selectable style={{ color: "#a62525", fontSize: 13 }}>
+                {error}
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
+    DemoAnchorTarget: component({
+      attributes: { id: attr(stringCodec, z.string().trim().min(1)) },
+      children: nodes,
+      render: function DemoAnchorTarget({ children, id }) {
+        const { onLayout, setNativeTarget } = useDemoDocumentAnchorTarget(id);
+        return (
+          <View
+            collapsable={false}
+            onLayout={onLayout}
+            ref={setNativeTarget}
+            testID={`demo-anchor-target-${id}`}
+          >
+            {children}
+          </View>
+        );
+      },
+    }),
+    DemoStreamMorphProbe: component({
+      attributes: {
+        "increment-label": attr(
+          stringCodec,
+          z.string().trim().min(1),
+        ).optional(),
+        message: attr(stringCodec, z.string().trim().min(1)),
+      },
+      children: none,
+      render: function DemoStreamMorphProbe({
+        incrementLabel = "Increment HTTP Stream morph counter",
+        message,
+      }) {
+        const [count, setCount] = useState(0);
+        return (
+          <View
+            accessibilityLabel="Rails HTTP Stream morph proof"
+            style={{ gap: 6 }}
+          >
+            <Text
+              accessibilityLabel={message}
+              selectable
+              style={{ color: "#435160", fontSize: 14 }}
+            >
+              {message}
+            </Text>
+            <Text
+              accessibilityLabel={`Local count: ${count}`}
+              selectable
+              style={{ color: "#435160", fontSize: 13 }}
+              testID="demo-http-stream-morph-count"
+            >
+              Local count: {count}
+            </Text>
+            <Pressable
+              accessibilityLabel={incrementLabel}
+              accessibilityRole="button"
+              onPress={() => setCount((current) => current + 1)}
+              style={({ pressed }) => ({
+                alignSelf: "flex-start",
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Text
+                style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}
+              >
+                Increment local count
+              </Text>
+            </Pressable>
+          </View>
+        );
+      },
+    }),
+    DemoForm: component({
+      children: nodes,
+      render({ children }) {
+        return (
+          <ExpoTurboFormScope>
+            <DemoFormSurface>{children}</DemoFormSurface>
+          </ExpoTurboFormScope>
+        );
+      },
+      role: formOwner,
+    }),
+    DemoFormFieldset: component({
+      attributes: { disabled: attr(presenceCodec).default(false) },
+      children: nodes,
+      render({ children, disabled }) {
+        return (
+          <View
+            accessibilityState={{ disabled }}
+            style={{
+              borderColor: disabled ? "#c8d1dc" : "#9eb0c3",
+              borderRadius: 10,
+              borderWidth: 1,
+              gap: 8,
+              padding: 10,
+            }}
+          >
+            {children}
+          </View>
+        );
+      },
+      role: "fieldset",
+    }),
+    DemoFormLegend: component({
+      children: nodes,
+      render({ children }) {
+        return <View style={{ gap: 8 }}>{children}</View>;
+      },
+      role: "legend",
+    }),
+    DemoFormInput: component({
+      attributes: {
+        label: attr(stringCodec),
+        name: attr(stringCodec),
+        required: attr(presenceCodec).default(false),
+        value: attr(stringCodec),
+      },
+      children: none,
+      render: function DemoFormInput({ label, name, required, value }) {
+        const direction = useExpoTurboDirection();
+        const [current, setCurrent] = useState(value);
+        const inputRef = useRef<TextInput>(null);
+        const validation = required
+          ? z.string().trim().min(1, `${label} is required`).safeParse(current)
+          : undefined;
+        const validity =
+          validation === undefined || validation.success
+            ? ({ valid: true } as const)
+            : ({
+                message:
+                  validation.error.issues[0]?.message ?? `${label} is invalid`,
+                valid: false,
+              } as const);
+        const control = useExpoTurboFormControl({
+          kind: "value",
+          name,
+          value: current,
+          ...(required ? { validity } : {}),
+        });
+        const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
+        const autofocusScroll = useDemoAutofocusScrollTarget(
+          control.nodeKey,
+          inputRef,
+        );
+        return (
+          <View style={{ direction: nativeLayoutDirection(direction), gap: 6 }}>
+            <Text
+              style={{
+                color: "#435160",
+                fontSize: 13,
+                writingDirection: direction ?? "auto",
+              }}
+            >
+              {label}
+            </Text>
+            <TextInput
+              accessibilityHint={!validity.valid ? validity.message : undefined}
+              accessibilityLabel={label}
+              accessibilityState={control.accessibilityState}
+              editable={!control.disabled}
+              onBlur={() => {
+                autofocusScroll.onBlur();
+                focusHandlers.onBlur();
+              }}
+              onChangeText={setCurrent}
+              onFocus={() => {
+                focusHandlers.onFocus();
+                autofocusScroll.onFocus();
+              }}
+              onLayout={autofocusScroll.onLayout}
+              ref={inputRef}
+              style={{
+                backgroundColor: control.disabled ? "#f6f8fa" : "white",
+                borderColor: validity.valid ? "#9eb0c3" : "#a62525",
+                borderRadius: 10,
+                borderWidth: 1,
+                color: "#172230",
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                writingDirection: direction ?? "auto",
+              }}
+              testID={`demo-form-input-${control.nodeKey.replaceAll(":", "-")}`}
+              value={current}
+            />
+            {!validity.valid ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={{
+                  color: "#a62525",
+                  fontSize: 13,
+                  writingDirection: direction ?? "auto",
+                }}
+              >
+                {validity.message}
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
+    DemoFormFile: component({
+      attributes: {
+        error: attr(stringCodec, z.string().trim().min(1)).optional(),
+        filename: attr(stringCodec, z.string().trim().min(1)),
+        label: attr(stringCodec, z.string().trim().min(1)),
+        name: attr(stringCodec, z.string().trim().min(1)),
+      },
+      children: none,
+      render: function DemoFormFile({ error, filename, label, name }) {
+        const mounted = useRef(true);
+        // A rejected matching Frame response replaces this component. Keep the
+        // intentionally bounded picker result with the document so retrying does
+        // not make an iOS user choose the same file again.
+        const pickedState = useDocumentState<DemoPickedTextUpload>(
+          "demo-upload-attachment",
+        );
+        const picked = pickedState.value;
+        const [pickerError, setPickerError] = useState<string>();
+        const [selecting, setSelecting] = useState(false);
+        const fallbackAttachment = useMemo(
+          () => ({
+            blob: new Blob([DEMO_UPLOAD_CONTENT], { type: "text/plain" }),
+            filename,
+          }),
+          [filename],
+        );
+        const attachment = picked?.attachment ?? fallbackAttachment;
+        const control = useExpoTurboFormControl({
+          entries: [{ name, value: attachment }],
+          kind: "entries",
+        });
+        const disabled = control.disabled || selecting;
+        const displayedError = pickerError ?? error;
+        const selectedFilename = attachment.filename;
+        useEffect(() => {
+          mounted.current = true;
+          return () => {
+            mounted.current = false;
+          };
+        }, []);
 
-const formPlanSelect = defineComponent({
-  attributes: {
-    error: { codec: stringCodec, prop: "error" },
-    label: { codec: stringCodec, prop: "label" },
-    name: { codec: stringCodec, prop: "name" },
-    selected: { codec: enumCodec(["none", "starter", "pro"]), prop: "selected" },
-  },
-  children: "none",
-  component: DemoFormPlanSelectComponent,
-  schema: z.object({
-    error: z.string().trim().min(1).optional(),
-    label: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-    selected: z.enum(["none", "starter", "pro"]),
-  }),
-  tag: "DemoFormPlanSelect",
-});
-
-function DemoFormSubmitterComponent(props: {
-  formaction?: string;
-  formenctype?: string;
-  formmethod?: string;
-  label: string;
-  name: string;
-  value: string;
-}) {
-  const { label, name, value } = props;
-  const formBinding = useExpoTurboForm();
-  const control = useExpoTurboFormControl({ kind: "submitter", name, value });
-  const loadingObserved = useDocumentState<boolean>(
-    `demo-submission-loading-observed:${control.nodeKey}`,
-  );
-  const requestId = useRef(0);
-  useEffect(() => {
-    if (control.submitsWith) loadingObserved.set(true);
-  }, [control.submitsWith, loadingObserved]);
-  return (
-    <View style={{ gap: 4 }}>
-      <Pressable
-        accessibilityLabel={label}
-        accessibilityRole="button"
-        accessibilityState={control.accessibilityState}
-        disabled={control.disabled}
-        onPress={() => {
-          const submitter = control.selection();
-          if (!formBinding.shouldInterceptSubmission({ submitter })) return;
-          void formBinding
-            .submit({
-              protocol: { requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}` },
-              submitter,
+        const chooseFile = () => {
+          if (disabled) return;
+          setPickerError(undefined);
+          setSelecting(true);
+          void pickDemoTextUpload()
+            .then((next) => {
+              if (next && mounted.current) pickedState.set(next);
             })
-            .catch(() => undefined);
-        }}
-        testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
-        style={({ pressed }) => ({
-          alignItems: "center",
-          backgroundColor: pressed ? "#19375a" : "#285589",
-          borderRadius: 10,
-          padding: 12,
-        })}
-      >
-        <Text style={{ color: "white", fontWeight: "600" }}>
-          {control.submitsWith ?? label}
-        </Text>
-      </Pressable>
-      {loadingObserved.value ? (
-        <Text accessibilityLiveRegion="polite" style={{ color: "#435160", fontSize: 13 }}>
-          Submission loading state observed
-        </Text>
-      ) : null}
-    </View>
-  );
-}
+            .catch((error: unknown) => {
+              if (!mounted.current) return;
+              setPickerError(
+                error instanceof Error
+                  ? error.message
+                  : "Unable to select a text file",
+              );
+            })
+            .finally(() => {
+              if (mounted.current) setSelecting(false);
+            });
+        };
 
-const formSubmitter = defineComponent({
-  attributes: {
-    formaction: { codec: stringCodec, prop: "formaction" },
-    formenctype: { codec: stringCodec, prop: "formenctype" },
-    formmethod: { codec: stringCodec, prop: "formmethod" },
-    label: { codec: stringCodec, prop: "label" },
-    name: { codec: stringCodec, prop: "name" },
-    value: { codec: stringCodec, prop: "value" },
+        return (
+          <View
+            accessibilityHint={displayedError}
+            accessibilityLabel={`${label}: ${selectedFilename}`}
+            accessibilityState={control.accessibilityState}
+            style={{ gap: 4, opacity: disabled ? 0.55 : 1 }}
+          >
+            <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+            <Text selectable style={{ color: "#172230", fontSize: 14 }}>
+              {picked ? "Selected" : "Ready"}: {selectedFilename}
+            </Text>
+            <Pressable
+              accessibilityLabel={`Choose ${label}`}
+              accessibilityRole="button"
+              accessibilityState={{ busy: selecting, disabled }}
+              disabled={disabled}
+              onPress={chooseFile}
+              style={{ alignSelf: "flex-start", opacity: disabled ? 0.55 : 1 }}
+            >
+              <Text
+                style={{ color: "#0a5ca8", fontSize: 14, fontWeight: "600" }}
+              >
+                {selecting ? "Opening Files…" : "Choose a text file"}
+              </Text>
+            </Pressable>
+            {displayedError ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={{ color: "#a62525", fontSize: 13 }}
+              >
+                {displayedError}
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
+    DemoFormCheckbox: component({
+      attributes: {
+        checked: attr(presenceCodec).default(false),
+        error: attr(stringCodec, z.string().trim().min(1)).optional(),
+        label: attr(stringCodec, z.string().trim().min(1)),
+        name: attr(stringCodec, z.string().trim().min(1)),
+        value: attr(stringCodec),
+      },
+      children: none,
+      render: function DemoFormCheckbox({ checked, error, label, name, value }) {
+        const [current, setCurrent] = useState(checked);
+        const control = useExpoTurboFormControl({
+          checked: current,
+          kind: "checkable",
+          name,
+          value,
+        });
+        return (
+          <View
+            accessibilityHint={error}
+            accessibilityState={{
+              ...control.accessibilityState,
+              checked: current,
+            }}
+            style={{ gap: 4, opacity: control.disabled ? 0.55 : 1 }}
+          >
+            <DemoNativeSwitch
+              accessibilityLabel={label}
+              accessibilityState={{
+                ...control.accessibilityState,
+                checked: current,
+              }}
+              disabled={control.disabled}
+              onValueChange={setCurrent}
+              value={current}
+            />
+            <Text style={{ color: "#172230", fontSize: 14 }}>{label}</Text>
+            {error ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={{ color: "#a62525", fontSize: 13 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
+    DemoFormPlanSelect: component({
+      attributes: {
+        error: attr(stringCodec, z.string().trim().min(1)).optional(),
+        label: attr(stringCodec, z.string().trim().min(1)),
+        name: attr(stringCodec, z.string().trim().min(1)),
+        selected: attr(enumCodec(["none", "starter", "pro"])),
+      },
+      children: none,
+      render: function DemoFormPlanSelect({ error, label, name, selected }) {
+        const [current, setCurrent] = useState(selected);
+        const control = useExpoTurboFormControl({
+          kind: "select",
+          name,
+          options: [
+            {
+              kind: "option",
+              selected: current === "starter",
+              value: "starter",
+            },
+            { kind: "option", selected: current === "pro", value: "pro" },
+          ],
+        });
+        const option = (
+          value: Exclude<DemoPlan, "none">,
+          optionLabel: string,
+        ) => {
+          const isSelected = current === value;
+          return (
+            <Pressable
+              accessibilityLabel={optionLabel}
+              accessibilityRole="radio"
+              accessibilityState={{
+                ...control.accessibilityState,
+                selected: isSelected,
+              }}
+              disabled={control.disabled}
+              key={value}
+              onPress={() => setCurrent(value)}
+              style={{
+                backgroundColor: isSelected ? "#d7e8fa" : "white",
+                borderColor: isSelected ? "#285589" : "#9eb0c3",
+                borderRadius: 10,
+                borderWidth: 1,
+                opacity: control.disabled ? 0.55 : 1,
+                padding: 10,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#172230",
+                  fontSize: 14,
+                  fontWeight: isSelected ? "600" : "400",
+                }}
+              >
+                {optionLabel}
+              </Text>
+            </Pressable>
+          );
+        };
+        return (
+          <View accessibilityHint={error} style={{ gap: 6 }}>
+            <Text style={{ color: "#435160", fontSize: 13 }}>{label}</Text>
+            <View accessibilityLabel={label} style={{ gap: 6 }}>
+              {option("starter", "Starter plan")}
+              {option("pro", "Pro plan")}
+            </View>
+            {error ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={{ color: "#a62525", fontSize: 13 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
+    DemoFormSubmitter: component({
+      attributes: {
+        formaction: attr(stringCodec).optional(),
+        formenctype: attr(stringCodec).optional(),
+        formmethod: attr(stringCodec).optional(),
+        label: attr(stringCodec),
+        name: attr(stringCodec),
+        value: attr(stringCodec),
+      },
+      children: none,
+      render: function DemoFormSubmitter(props) {
+        const { label, name, value } = props;
+        const formBinding = useExpoTurboForm();
+        const control = useExpoTurboFormControl({
+          kind: "submitter",
+          name,
+          value,
+        });
+        const loadingObserved = useDocumentState<boolean>(
+          `demo-submission-loading-observed:${control.nodeKey}`,
+        );
+        const requestId = useRef(0);
+        useEffect(() => {
+          if (control.submitsWith) loadingObserved.set(true);
+        }, [control.submitsWith, loadingObserved]);
+        return (
+          <View style={{ gap: 4 }}>
+            <Pressable
+              accessibilityLabel={label}
+              accessibilityRole="button"
+              accessibilityState={control.accessibilityState}
+              disabled={control.disabled}
+              onPress={() => {
+                const submitter = control.selection();
+                if (!formBinding.shouldInterceptSubmission({ submitter }))
+                  return;
+                void formBinding
+                  .submit({
+                    protocol: {
+                      requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}`,
+                    },
+                    submitter,
+                  })
+                  .catch(() => undefined);
+              }}
+              testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
+              style={({ pressed }) => ({
+                alignItems: "center",
+                backgroundColor: pressed ? "#19375a" : "#285589",
+                borderRadius: 10,
+                padding: 12,
+              })}
+            >
+              <Text style={{ color: "white", fontWeight: "600" }}>
+                {control.submitsWith ?? label}
+              </Text>
+            </Pressable>
+            {loadingObserved.value ? (
+              <Text
+                accessibilityLiveRegion="polite"
+                style={{ color: "#435160", fontSize: 13 }}
+              >
+                Submission loading state observed
+              </Text>
+            ) : null}
+          </View>
+        );
+      },
+    }),
   },
-  children: "none",
-  component: DemoFormSubmitterComponent,
-  schema: z.object({
-    formaction: z.string().optional(),
-    formenctype: z.string().optional(),
-    formmethod: z.string().optional(),
-    label: z.string(),
-    name: z.string(),
-    value: z.string(),
-  }),
-  tag: "DemoFormSubmitter",
 });
-
-export const DEMO_REGISTRY = createRegistry(
-  defineComponentModule({
-    components: [
-      gallery,
-      card,
-      text,
-      scrollRegion,
-      flatListRegion,
-      action,
-      documentLink,
-      anchorTarget,
-      streamMorphProbe,
-      form,
-      formFieldset,
-      formLegend,
-      formInput,
-      formFile,
-      formCheckbox,
-      formPlanSelect,
-      formSubmitter,
-    ],
-    name: "demo-primitives",
-    version: "0.1.0",
-  }),
-);
 
 export const DEMO_MODULE_VERSIONS = serializeModuleVersionsHeader(
   DEMO_REGISTRY.capabilities.modules,
