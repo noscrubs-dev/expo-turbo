@@ -84,14 +84,14 @@ RSpec.describe ExpoTurbo::Rails::DomIds do
       include ExpoTurbo::Rails::Controller
     end
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
     context = controller.view_context
-    id = context.expo_turbo_dom_id(record, :frame)
-    rendered = context.expo_turbo_frame_tag(id) { '<Room id="room_7"/>'.html_safe }
+    id = context.dom_id(record, :frame)
+    rendered = context.turbo_frame_tag(id) { '<Room id="room_7"/>'.html_safe }
 
     expect(id).to eq("frame_room_7")
     expect(Nokogiri::XML(rendered.to_s) { |config| config.strict }.root["id"]).to eq(id)
-    expect(context.expo_turbo_stream.remove(context.expo_turbo_dom_id(record)).to_s)
+    expect(context.expo_turbo_stream.remove(context.dom_id(record)).to_s)
       .to eq('<turbo-stream action="remove" target="room_7"></turbo-stream>')
   end
 end

@@ -4,7 +4,6 @@ require "active_support/concern"
 require "active_support/core_ext/module/attr_internal"
 require "action_controller/metal/helpers"
 require "action_view/rendering"
-require "pathname"
 require "rubygems/requirement"
 
 module ExpoTurbo
@@ -13,16 +12,28 @@ module ExpoTurbo
       extend ActiveSupport::Concern
       include ActionController::Helpers
       include ActionView::Rendering
+      # An API controller answers with head :no_content when an action does not
+      # render. With a template for the action it should render the template,
+      # exactly as ActionController::Base does, and keep head :no_content when
+      # no template exists.
+      include ActionController::ImplicitRender
 
       included do
-        class_attribute :expo_turbo_views_path, instance_accessor: false
         class_attribute :expo_turbo_template_capabilities_config, instance_accessor: false
+        # Every Frame response must contain the requested Frame. Set false for
+        # one action that deliberately answers with a different Frame.
+        class_attribute :expo_turbo_frame_match, default: true
+        # Set false only for an endpoint that must deliver a payload the
+        # protocol rejects, such as a client-behavior probe.
+        class_attribute :expo_turbo_validate_responses, default: true
+        helper ::Turbo::Engine.helpers if defined?(::Turbo::Engine)
         helper ExpoTurbo::Rails::Attributes::Helper
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
         helper ExpoTurbo::Rails::Caching::Helper
         before_action :expo_turbo_reject_invalid_frame_request!
+        after_action :expo_turbo_validate_response!
         after_action :expo_turbo_vary!
         after_action :expo_turbo_report_response_vocabulary
         helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
@@ -30,10 +41,6 @@ module ExpoTurbo
       end
 
       class_methods do
-        def expo_turbo_view_root(path)
-          self.expo_turbo_views_path = Pathname(path).expand_path
-        end
-
         def expo_turbo_template_capabilities(components: nil, manifest: nil, style_tokens: {}, max_style_tokens: 5)
           self.expo_turbo_template_capabilities_config = TemplateCapabilities.new(
             components:,
@@ -44,25 +51,17 @@ module ExpoTurbo
         end
       end
 
-      def render_expo_turbo(template, locals: {}, status: :ok)
-        body = render_to_string(
-          inline: File.read(expo_turbo_template_file(template)),
-          type: :erb,
-          formats: [:xml],
-          layout: false,
-          locals: locals
-        )
-        raise TemplateError, "Expo Turbo templates must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
+      # ActionView::Rendering renders a template for every option, and this
+      # concern adds it to API controllers, where it would otherwise hide the
+      # registered renderers such as `render turbo_stream:`. Ask the renderers
+      # first, exactly as ActionController::Base orders them.
+      def render_to_body(options = {})
+        if respond_to?(:_render_to_body_with_renderer, true)
+          rendered = _render_to_body_with_renderer(options)
+          return rendered if rendered
+        end
 
-        document = XmlFragments.parse_document(body)
-        XmlFragments.validate_document_ids!(document)
-        expo_turbo_validate_document!(document)
-
-        render plain: body, content_type: MIME_TYPE, status: status
-      rescue XmlFragments::DocumentIdError
-        raise TemplateError, "Expo Turbo templates must use unique nonblank literal ids"
-      rescue XmlFragments::ParseError
-        raise TemplateError, "Expo Turbo templates must render well-formed UTF-8 XML"
+        super
       end
 
       def expo_turbo_frame_request?
@@ -148,6 +147,13 @@ module ExpoTurbo
         [*keys, *expo_turbo_cache_variant]
       end
 
+      # Format-aware in a request, exactly as in the view.
+      def turbo_stream
+        view_context.turbo_stream
+      end
+
+      # Always Expo Turbo. Broadcasts have no request and therefore no format,
+      # so they need a builder that does not depend on one.
       def expo_turbo_stream
         view_context.expo_turbo_stream
       end
@@ -321,19 +327,6 @@ module ExpoTurbo
 
       public
 
-      def render_expo_turbo_stream(*streams, status: :ok)
-        streams << yield(expo_turbo_stream) if block_given?
-        body = streams.flatten.compact.join
-        raise TemplateError, "Expo Turbo Stream responses must render valid UTF-8" unless body.encoding == Encoding::UTF_8 && body.valid_encoding?
-
-        document = XmlFragments.parse_stream_fragment(body)
-        expo_turbo_validate_stream_fragment!(document)
-
-        render plain: body, content_type: TURBO_STREAM_MIME_TYPE, status: status
-      rescue XmlFragments::ParseError
-        raise TemplateError, "Expo Turbo Stream responses must contain well-formed XML Stream fragments"
-      end
-
       def broadcast_expo_turbo_stream_to(*streamables, content: nil)
         raise ArgumentError, "provide content or a block, not both" if block_given? && !content.nil?
 
@@ -401,32 +394,69 @@ module ExpoTurbo
         raise TemplateError, "Expo Turbo Stream broadcasts must contain well-formed XML Stream fragments"
       end
 
-      def expo_turbo_template_file(template)
-        expo_turbo_view_file("#{template}.xml.erb")
+      # Ordinary `render` produces the response, so validation happens once, on
+      # the finished response, before Rails delivers it. Rendering a template
+      # of another format, or a Stream for a browser, is left alone.
+      def expo_turbo_validate_response!
+        return unless expo_turbo_validate_responses
+
+        case response.media_type
+        when MIME_TYPE then expo_turbo_validate_document_response!
+        when TURBO_STREAM_MIME_TYPE then expo_turbo_validate_stream_response! if expo_turbo_request?
+        end
       end
 
-      def expo_turbo_partial_file(partial)
-        relative_path = Pathname(partial.to_s)
-        raise TemplateError, "Expo Turbo partial must be named" if partial.blank? || relative_path.absolute? || relative_path.extname.present?
+      def expo_turbo_validate_document_response!
+        body = expo_turbo_response_body
+        return if body.nil?
 
-        expo_turbo_view_file(relative_path.dirname.join("_#{relative_path.basename}").to_s + ".xml.erb")
+        document = XmlFragments.parse_document(body)
+        XmlFragments.validate_document_ids!(document)
+        expo_turbo_validate_document!(document)
+        expo_turbo_match_frame_response!(document)
+      rescue XmlFragments::DocumentIdError
+        raise TemplateError, "Expo Turbo templates must use unique nonblank literal ids"
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo templates must render well-formed UTF-8 XML"
       end
 
-      def expo_turbo_view_file(relative_path)
-        root = self.class.expo_turbo_views_path
-        raise ConfigurationError, "configure expo_turbo_view_root before rendering" unless root
+      def expo_turbo_validate_stream_response!
+        body = expo_turbo_response_body
+        return if body.nil?
 
-        root = root.realpath
-        relative_path = Pathname(relative_path)
-        raise TemplateError, "Expo Turbo template is outside the configured view root" if relative_path.absolute?
+        expo_turbo_validate_stream_fragment!(XmlFragments.parse_stream_fragment(body))
+      rescue XmlFragments::ParseError
+        raise TemplateError, "Expo Turbo Stream responses must contain well-formed XML Stream fragments"
+      end
 
-        candidate = root.join(relative_path).cleanpath
-        raise TemplateError, "Expo Turbo template does not exist" unless candidate.file?
+      def expo_turbo_response_body
+        body = response.body
+        return if body.nil? || body.empty?
 
-        candidate = candidate.realpath
-        raise TemplateError, "Expo Turbo template is outside the configured view root" unless candidate.to_s.start_with?("#{root}#{File::SEPARATOR}")
+        body = body.dup.force_encoding(Encoding::UTF_8)
+        raise TemplateError, "Expo Turbo responses must render valid UTF-8" unless body.valid_encoding?
 
-        candidate.to_s
+        body
+      end
+
+      # The controller cannot know the expected Frame before the view renders,
+      # so the request header is compared against the Frame the response
+      # actually contains. That removes the hand-written id from host code.
+      def expo_turbo_match_frame_response!(document)
+        frame_id = expo_turbo_frame_request_id
+        return if frame_id.nil? || !expo_turbo_frame_match
+        return if document.xpath("//*").any? { |element| expo_turbo_frame_element?(element, frame_id) }
+
+        response.status = :bad_request
+        response.body = ""
+      end
+
+      def expo_turbo_frame_element?(element, frame_id)
+        return false unless element.name == "turbo-frame" && element.namespace&.prefix.nil?
+
+        element.attribute_nodes.any? do |attribute|
+          attribute.name == "id" && attribute.namespace.nil? && attribute.value == frame_id
+        end
       end
     end
   end

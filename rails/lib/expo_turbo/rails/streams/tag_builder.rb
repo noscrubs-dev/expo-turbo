@@ -14,31 +14,9 @@ module ExpoTurbo
         REQUEST_ID_ATTRIBUTE_KEYS = [:"request-id", "request-id"].freeze
         REQUEST_ID_UNSET = Object.new.freeze
 
-        class XmlRenderableContext < BasicObject
-          def initialize(view_context, partial_renderer)
-            @view_context = view_context
-            @partial_renderer = partial_renderer
-          end
-
-          def render(partial: nil, locals: {}, **options, &block)
-            if partial.nil? || !locals.is_a?(::Hash) || options.any? || block
-              ::Kernel.raise ::ExpoTurbo::Rails::TemplateError,
-                "Expo Turbo renderables may render only configured XML partials"
-            end
-
-            @partial_renderer.call(partial, locals)
-          end
-
-          def capture(*arguments, &block)
-            @view_context.capture(*arguments, &block)
-          end
-        end
-        private_constant :XmlRenderableContext
-
-        def initialize(view_context, partial_resolver:, fragment_validator: nil)
+        def initialize(view_context, fragment_validator: nil)
           @view_context = view_context
           @fragment_validator = fragment_validator
-          @partial_resolver = partial_resolver
         end
 
         def append(target, content = nil, partial: nil, layout: nil, locals: {}, **attributes, &)
@@ -154,13 +132,13 @@ module ExpoTurbo
           end
 
           if partial
-            render_xml_partial(partial, locals)
+            render_expo_turbo(partial: partial, locals: locals)
           elsif layout
-            render_xml_layout(layout, locals, &block)
+            render_expo_turbo(layout: layout, locals: locals, &block)
           elsif block
             @view_context.capture(&block)
           elsif content.respond_to?(:render_in)
-            render_renderable(content)
+            content.render_in(@view_context)
           elsif !content.nil?
             render_record(content) || content.to_s
           else
@@ -168,45 +146,18 @@ module ExpoTurbo
           end
         end
 
-        def render_xml_partial(partial, locals)
-          @view_context.render(
-            inline: File.read(@partial_resolver.call(partial)),
-            type: :erb,
-            formats: [:xml],
-            layout: false,
-            locals: locals
-          )
-        end
-
-        def render_xml_layout(layout, locals, &block)
-          template = ActionView::Template::Inline.new(
-            File.read(@partial_resolver.call(layout)),
-            "expo_turbo/#{layout}.xml.erb",
-            ActionView::Template.handler_for_extension(:erb),
-            locals: locals.keys,
-            format: :xml
-          )
-
-          template.render(@view_context, locals, &block)
+        # The Expo Turbo format is the confinement. Ordinary Rails lookup with
+        # this format cannot select an HTML partial, so no separate resolver is
+        # needed and no fallback to .html.erb exists.
+        def render_expo_turbo(**rendering, &block)
+          @view_context.render(formats: [MIME_SYMBOL], **rendering, &block)
         end
 
         def render_record(record)
           model = record.respond_to?(:to_model) ? record.to_model : record
           return unless model.respond_to?(:to_partial_path)
 
-          partial = model.to_partial_path
-          local_name = File.basename(partial.to_s).delete_prefix("_").to_sym
-          render_xml_partial(partial, {local_name => record})
-        end
-
-        def render_renderable(renderable)
-          format = renderable.format if renderable.respond_to?(:format)
-          unless format.respond_to?(:to_sym) && format.to_sym == :xml
-            raise ArgumentError, "Expo Turbo renderables must declare format: :xml"
-          end
-
-          context = XmlRenderableContext.new(@view_context, method(:render_xml_partial))
-          renderable.render_in(context)
+          render_expo_turbo(partial: record)
         end
 
         def content_from_attributes(content, attributes)

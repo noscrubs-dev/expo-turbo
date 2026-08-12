@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 require "action_controller/api"
-require "fileutils"
-require "tmpdir"
 require "spec_helper"
+require "support/rendering"
 
 RSpec.describe "Expo Turbo cache identity" do
+  include ExpoTurboSpecRendering
+
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
@@ -13,14 +14,14 @@ RSpec.describe "Expo Turbo cache identity" do
       expo_turbo_template_capabilities(components: {"Screen" => {}})
 
       def show
-        render_expo_turbo "show"
+        render "specs/show"
       end
     end
   end
 
   it "varies every response without a manual call in the action" do
-    in_view_root do
-      status, headers, = render_document
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => "<Screen/>") do
+      status, headers, = dispatch(controller_class)
 
       expect(status).to eq(200)
       expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
@@ -81,20 +82,5 @@ RSpec.describe "Expo Turbo cache identity" do
 
   def native_controller(headers = {})
     controller_with_request({"HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE}.merge(headers))
-  end
-
-  def in_view_root
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(File.join(root, "show.xml.erb"), "<Screen/>")
-      controller_class.expo_turbo_view_root(root)
-      yield
-    end
-  end
-
-  def render_document
-    status, headers, body = controller_class.action(:show).call(ActionDispatch::TestRequest.create.env)
-    [status, headers, body.each.to_a.join]
   end
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "action_controller/api"
+require "support/rendering"
 require "spec_helper"
 require "action_cable/subscription_adapter/base"
 require "action_cable/subscription_adapter/subscriber_map"
@@ -22,6 +23,8 @@ class ExpoTurboRefreshDebouncer
 end
 
 RSpec.describe ExpoTurbo::Rails::Streams do
+  include ExpoTurboSpecRendering
+
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
@@ -51,7 +54,7 @@ RSpec.describe ExpoTurbo::Rails::Streams do
   end
 
   it "signs and broadcasts the same Expo-only stream" do
-    source = controller_class.new.view_context.expo_turbo_stream_from(
+    source = expo_turbo_view_context(controller_class).turbo_stream_from(
       "",
       "room",
       id: "room-source",
@@ -110,7 +113,7 @@ RSpec.describe ExpoTurbo::Rails::Streams do
 
     job = @job_adapter.enqueued_jobs.fetch(0)
     arguments = ActiveJob::Arguments.deserialize(job[:args])
-    source = controller_class.new.view_context.expo_turbo_stream_from(streamable, :updates).to_s
+    source = expo_turbo_view_context(controller_class).turbo_stream_from(streamable, :updates).to_s
     signed_name = source[/signed-stream-name="([^"]+)"/, 1]
     expect(job[:job]).to eq(ExpoTurbo::Rails::Streams::BroadcastJob)
     expect(arguments).to eq(["rooms/1:updates:expo", {content: content}])
@@ -288,7 +291,7 @@ RSpec.describe ExpoTurbo::Rails::Streams do
   end
 
   it "does not allow a source to override its signed standard-channel descriptor" do
-    context = controller_class.new.view_context
+    context = expo_turbo_view_context(controller_class)
     reserved_data_keys = [
       :channel,
       "channel",
@@ -306,13 +309,13 @@ RSpec.describe ExpoTurbo::Rails::Streams do
       {"data-channel" => "PrivateChannel"},
       {"data-signed-stream-name" => "forged"}
     ].each do |attributes|
-      expect { context.expo_turbo_stream_from("room", **attributes) }
+      expect { context.turbo_stream_from("room", **attributes) }
         .to raise_error(ArgumentError, /reserve channel and signed stream name/)
     end
 
     reserved_data_keys.each do |key|
       [{data: {key => "forged"}}, {"data" => {key => "forged"}}].each do |attributes|
-        expect { context.expo_turbo_stream_from("room", **attributes) }
+        expect { context.turbo_stream_from("room", **attributes) }
           .to raise_error(ArgumentError, /reserve channel and signed stream name/)
       end
     end

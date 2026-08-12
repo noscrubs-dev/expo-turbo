@@ -9,18 +9,12 @@ module ExpoTurbo
       # identity into every fragment key of an Expo Turbo render, and leaves
       # HTML fragment keys unchanged.
       module Helper
+        include Format::Helper
+
         def cache_fragment_name(name = {}, skip_digest: nil, digest_path: nil)
-          return super unless expo_turbo_fragment_identity?
+          return super unless expo_turbo_render?
 
           super([name, *controller.expo_turbo_cache_variant], skip_digest:, digest_path:)
-        end
-
-        private
-
-        def expo_turbo_fragment_identity?
-          return false unless controller.respond_to?(:expo_turbo_cache_variant)
-
-          controller.expo_turbo_request? || Array(lookup_context.formats).first == MIME_SYMBOL
         end
       end
     end

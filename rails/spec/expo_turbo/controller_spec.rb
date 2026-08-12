@@ -1,9 +1,8 @@
 # frozen_string_literal: true
 
 require "action_controller/api"
-require "fileutils"
-require "tmpdir"
 require "spec_helper"
+require "support/rendering"
 require "expo_turbo/rails/testing"
 
 class ExpoTurboFrameHelperSpecRecord
@@ -15,6 +14,8 @@ class ExpoTurboFrameHelperSpecRecord
 end
 
 RSpec.describe ExpoTurbo::Rails::Controller do
+  include ExpoTurboSpecRendering
+
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
@@ -30,43 +31,28 @@ RSpec.describe ExpoTurbo::Rails::Controller do
       )
 
       def show
-        render_expo_turbo "show"
+        render "specs/show"
       end
     end
   end
 
-  it "confines templates to the configured host view root" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      outside = File.join(directory, "outside.xml.erb")
-      FileUtils.mkdir_p(root)
-      File.write(outside, "<Outside />")
-
-      controller_class.expo_turbo_view_root(root)
-      controller = controller_class.new
-
-      expect { controller.send(:expo_turbo_template_file, "../outside") }
-        .to raise_error(ExpoTurbo::Rails::TemplateError, /outside the configured view root/)
+  it "cannot select an HTML template for an Expo Turbo render" do
+    with_templates(controller_class, "specs/show.html.erb" => "<p>HTML</p>") do
+      expect { render_document }.to raise_error(ActionView::MissingTemplate)
     end
   end
 
-  it "requires declared capabilities for a configured Expo Turbo view root" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(File.join(root, "show.xml.erb"), "<DemoScreen/>")
-      unconfigured_controller = Class.new(ActionController::API) do
-        include ExpoTurbo::Rails::Controller
+  it "requires declared capabilities before it delivers an Expo Turbo response" do
+    unconfigured_controller = Class.new(ActionController::API) do
+      include ExpoTurbo::Rails::Controller
 
-        def show
-          render_expo_turbo "show"
-        end
+      def show
+        render "specs/show"
       end
-      unconfigured_controller.expo_turbo_view_root(root)
+    end
 
-      expect {
-        unconfigured_controller.action(:show).call(ActionDispatch::TestRequest.create.env)
-      }.to raise_error(
+    with_templates(unconfigured_controller, "specs/show.expo_turbo.erb" => "<DemoScreen/>") do
+      expect { dispatch(unconfigured_controller) }.to raise_error(
         ExpoTurbo::Rails::ConfigurationError,
         "configure expo_turbo_template_capabilities before rendering Expo Turbo templates"
       )
@@ -74,13 +60,12 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   end
 
   it "redacts semantic template admission failures" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(File.join(root, "show.xml.erb"), '<DemoScreen><PrivateComponent secret="value"/></DemoScreen>')
-      controller_class.expo_turbo_view_root(root)
-      controller_class.expo_turbo_template_capabilities(components: {"DemoScreen" => {}})
+    controller_class.expo_turbo_template_capabilities(components: {"DemoScreen" => {}})
 
+    with_templates(
+      controller_class,
+      "specs/show.expo_turbo.erb" => '<DemoScreen><PrivateComponent secret="value"/></DemoScreen>'
+    ) do
       expect { render_document }
         .to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens") { |error|
           expect(error.message).not_to include("PrivateComponent", "secret", "value")
@@ -89,18 +74,13 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   end
 
   it "renders a strict host XML document without changing its output" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(
-        File.join(root, "show.xml.erb"),
-        <<~XML
-          <?xml version="1.0" encoding="UTF-8"?>
-          <Demo:Screen xmlns:Demo="urn:expo-demo" xml:space="preserve"><Demo:Text>first\r
-          second\rthird</Demo:Text></Demo:Screen>
-        XML
-      )
-      controller_class.expo_turbo_view_root(root)
+    template = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <Demo:Screen xmlns:Demo="urn:expo-demo" xml:space="preserve"><Demo:Text>first\r
+      second\rthird</Demo:Text></Demo:Screen>
+    XML
+
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
       status, headers, body = render_document
       document = ExpoTurbo::Rails::Testing.parse_document(body)
       text = document.at_xpath("/Demo:Screen/Demo:Text", "Demo" => "urn:expo-demo")
@@ -142,12 +122,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     ]
 
     invalid_templates.each do |template|
-      Dir.mktmpdir do |directory|
-        root = File.join(directory, "expo_turbo")
-        FileUtils.mkdir_p(root)
-        File.write(File.join(root, "show.xml.erb"), template)
-        controller_class.expo_turbo_view_root(root)
-
+      with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
         expect { render_document }
           .to raise_error(ExpoTurbo::Rails::TemplateError) { |error|
             expect(error.message).to eq("Expo Turbo templates must render well-formed UTF-8 XML")
@@ -166,12 +141,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     ]
 
     invalid_templates.each do |template|
-      Dir.mktmpdir do |directory|
-        root = File.join(directory, "expo_turbo")
-        FileUtils.mkdir_p(root)
-        File.write(File.join(root, "show.xml.erb"), template)
-        controller_class.expo_turbo_view_root(root)
-
+      with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
         expect { render_document }
           .to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use unique nonblank literal ids") { |error|
             expect(error.message).not_to include("same", "Text")
@@ -181,12 +151,9 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   end
 
   it "does not treat namespaced id attributes as literal document IDs" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(File.join(root, "show.xml.erb"), '<Screen xmlns:meta="urn:metadata"><Text meta:id=""/></Screen>')
-      controller_class.expo_turbo_view_root(root)
+    template = '<Screen xmlns:meta="urn:metadata"><Text meta:id=""/></Screen>'
 
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
       status, = render_document
 
       expect(status).to eq(200)
@@ -194,12 +161,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   end
 
   it "keeps literal ID blankness aligned with the native ECMAScript parser" do
-    Dir.mktmpdir do |directory|
-      root = File.join(directory, "expo_turbo")
-      FileUtils.mkdir_p(root)
-      File.write(File.join(root, "show.xml.erb"), '<Screen id="&#x85;"/>')
-      controller_class.expo_turbo_view_root(root)
-
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => '<Screen id="&#x85;"/>') do
       status, = render_document
 
       expect(status).to eq(200)
@@ -208,8 +170,8 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
   it "delegates literal Frame tags to turbo-rails from API view contexts" do
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
-    rendered = controller.view_context.expo_turbo_frame_tag(
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    rendered = controller.view_context.turbo_frame_tag(
       "details",
       src: "/frames/details",
       target: "sidebar",
@@ -227,8 +189,8 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
   it "normalizes model classes to Turbo Frame IDs from API view contexts" do
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
-    rendered = controller.view_context.expo_turbo_frame_tag(ExpoTurboFrameHelperSpecRecord)
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    rendered = controller.view_context.turbo_frame_tag(ExpoTurboFrameHelperSpecRecord)
     frame = Nokogiri::XML(rendered.to_s) { |config| config.strict }.root
 
     expect(frame["id"]).to eq("new_demo_record")
@@ -236,9 +198,9 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
   it "requires self-contained XML Frame fragments without changing preserved text" do
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
     calls = 0
-    rendered = controller.view_context.expo_turbo_frame_tag("details") do
+    rendered = controller.view_context.turbo_frame_tag("details") do
       calls += 1
       "<Demo:Text xmlns:Demo=\"urn:expo-demo\" xml:space=\"preserve\">first\r\nsecond\rthird</Demo:Text>".html_safe
     end
@@ -252,7 +214,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
 
   it "rejects malformed Frame markup without exposing its source" do
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
 
     [
       "<Demo:Text/>",
@@ -261,15 +223,15 @@ RSpec.describe ExpoTurbo::Rails::Controller do
       "<?build data?><DemoText/>"
     ].each do |markup|
       expect {
-        controller.view_context.expo_turbo_frame_tag("details") { markup.html_safe }
+        controller.view_context.turbo_frame_tag("details") { markup.html_safe }
       }.to raise_error(ExpoTurbo::Rails::TemplateError) { |error| expect(error.message).not_to include("Demo:Text", "not-for-errors") }
     end
   end
 
   it "allows unprefixed Frame tags in a default namespace" do
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
-    rendered = controller.view_context.expo_turbo_frame_tag("details", xmlns: "urn:expo-test")
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    rendered = controller.view_context.turbo_frame_tag("details", xmlns: "urn:expo-test")
     frame = ExpoTurbo::Rails::Testing.parse_document(rendered.to_s).root
 
     expect(frame.name).to eq("turbo-frame")
@@ -277,13 +239,16 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   end
 
   it "rejects invalid Expo Turbo Frame IDs" do
-    controller = controller_class.new
-    invalid_ids = [nil, :details, "", "  ", "\u2003", "details\nnext", "\uFFFE", "\uFFFF", "\xFF".dup.force_encoding(Encoding::UTF_8)]
+    context = expo_turbo_view_context(controller_class)
+    invalid_ids = [nil, "", "  ", "\u2003", "details\nnext", "\uFFFE", "\uFFFF", "\xFF".dup.force_encoding(Encoding::UTF_8)]
 
     invalid_ids.each do |id|
-      expect { controller.view_context.expo_turbo_frame_tag(id) }
+      expect { context.turbo_frame_tag(id) }
         .to raise_error(ExpoTurbo::Rails::TemplateError, /Frame id/)
     end
+
+    # turbo-rails normalizes a Symbol id, and the Expo Turbo branch keeps that.
+    expect(context.turbo_frame_tag(:details).to_s).to include('id="details"')
   end
 
   it "normalizes Rack's binary Turbo-Frame header" do
@@ -495,22 +460,30 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
   end
 
-  it "rejects non-Stream response fragments before rendering" do
-    invalid = '<Demo:Text xmlns:Demo="urn:expo-demo">not a Stream</Demo:Text>'
+  it "rejects a non-Stream response fragment before delivery" do
+    stream_controller = Class.new(ActionController::API) do
+      include ExpoTurbo::Rails::Controller
 
-    expect { controller_with_request.render_expo_turbo_stream(invalid) }
+      expo_turbo_template_capabilities(components: {"DemoText" => {}})
+
+      def show
+        render turbo_stream: '<Demo:Text xmlns:Demo="urn:expo-demo">not a Stream</Demo:Text>'
+      end
+    end
+
+    expect { dispatch(stream_controller) }
       .to raise_error(ExpoTurbo::Rails::TemplateError, /well-formed XML Stream fragments/)
   end
 
   it "validates Frame and Stream helper output against configured capabilities" do
     controller_class.expo_turbo_template_capabilities(components: {"DemoText" => {}})
-    controller = controller_with_request
+    context = expo_turbo_view_context(controller_class)
 
     expect {
-      controller.view_context.expo_turbo_frame_tag("details") { "<PrivateComponent/>".html_safe }
+      context.turbo_frame_tag("details") { "<PrivateComponent/>".html_safe }
     }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens")
     expect {
-      controller.expo_turbo_stream.append("details", "<PrivateComponent/>")
+      context.turbo_stream.append("details", "<PrivateComponent/>")
     }.to raise_error(ExpoTurbo::Rails::TemplateError, "Expo Turbo templates must use declared components and valid style tokens")
   end
 
@@ -536,9 +509,8 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     controller
   end
 
-  def render_document
-    status, headers, body = controller_class.action(:show).call(ActionDispatch::TestRequest.create.env)
-    [status, headers, body.each.to_a.join]
+  def render_document(headers = {})
+    dispatch(controller_class, headers: headers)
   end
 
   def conditional_etag(controller, representation: "accounts/details-v1")

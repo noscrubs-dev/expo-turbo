@@ -71,11 +71,7 @@ module ExpoTurbo
         private
 
         def refresh_content(request_id:, **attributes)
-          tag_builder = TagBuilder.new(
-            nil,
-            partial_resolver: ->(_) { raise ConfigurationError, "Expo Turbo refresh tags do not render partials" }
-          )
-          valid_content!(tag_builder.refresh(request_id:, **attributes).to_s)
+          valid_content!(TagBuilder.new(nil).refresh(request_id:, **attributes).to_s)
         end
 
         def refresh_debouncer_for(stream_name, request_id)

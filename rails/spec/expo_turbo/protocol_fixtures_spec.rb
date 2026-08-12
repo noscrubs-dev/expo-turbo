@@ -47,8 +47,8 @@ RSpec.describe "shared protocol fixtures" do
 
   def frame(id, **attributes, &block)
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
-    controller.view_context.expo_turbo_frame_tag(id, **attributes, &block)
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.view_context.turbo_frame_tag(id, **attributes, &block)
   end
 
   def fixture_path(file)
