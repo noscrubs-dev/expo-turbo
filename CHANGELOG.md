@@ -15,7 +15,20 @@ All notable public package, gem, and protocol changes will be recorded here.
   `documentAnnouncements`, `formAnnouncements`, `documentLinks`,
   `documentAutomaticPreloadPolicy`, and `documentPrefetchPolicy`. The keys with
   no default need host-owned native node references, a real scroll container,
-  or application style tokens, so the package cannot supply one.
+  application style tokens, or a socket and credential policy, so the package
+  cannot supply one. The document path follows the mounted Expo Router route
+  including its search parameters, so a catch-all route needs no configuration.
+- Add a `cable` adapter to `createExpoTurboRuntime`, `ExpoTurbo`, and
+  `ExpoTurboApp`. Supplying it builds the Cable Stream source registry that
+  serves `turbo-cable-stream-source`, and the runtime owns its disposal.
+  Subscription and dispatch faults reach `onError` without replacing the
+  mounted document, because they are Stream transport faults rather than
+  document faults.
+- Fix `ExpoTurboProvider` and a runtime-owning `ExpoTurbo` both disposing
+  `scopes` and `state`. The runtime created them and disposes them itself, so
+  the provider now takes `ownsStateDisposal: false` from `ExpoTurbo` and skips
+  its own claim. A host composing `ExpoTurboProvider` by hand keeps the
+  previous behavior, since the prop defaults to `true`.
 - Fix external-scheme, cross-origin, and unvisitable document links failing
   blank (#404). `ExpoTurbo` forwarded `navigation` to the runtime factory but
   never to `ExpoTurboProvider`, while the renderer reads it from context, so
@@ -52,15 +65,16 @@ All notable public package, gem, and protocol changes will be recorded here.
   specific adapters that are actually consumed, such as `frameAutoscroll`,
   `documentAnchorScroll`, `documentRefreshScroll`, `documentHistoryScroll`, and
   `autofocusScroll`.
-- **Breaking:** `ExpoTurbo` no longer renders `null` when a document fails and
-  no `renderError` was supplied; it rethrows the failure during render.
-  Misconfigured, still-loading, and hard-failed were previously the same blank
-  screen. `ExpoTurbo` is host-neutral and has no primitives to draw with, so
-  letting React's own machinery take the error is the only way for it to stay
-  loud: a redbox in development, and the host's nearest error boundary in
-  release. Migration: pass `renderError`, adopt `ExpoTurboApp` (which always
-  supplies a visible surface), or pass `renderError={() => null}` to keep the
-  old silence.
+- **Breaking:** `renderError` is now required on `ExpoTurbo`. Misconfigured,
+  still-loading, and hard-failed were previously the same blank screen, and a
+  host-neutral component has no primitives with which to draw a better one.
+  Throwing instead is not an option either: an unhandled render throw is fatal
+  on both React Native platforms, which is worse than the blank screen it would
+  replace. Requiring the surface moves the decision to compile time, where it
+  costs nothing and cannot be missed. An untyped host that still omits it gets
+  one `console.error` and an empty render rather than a crash. Migration: pass
+  `renderError`, adopt `ExpoTurboApp` (which ships a visible surface), or pass
+  `renderError={() => null}` to keep rendering nothing.
 - **Breaking:** `react-native` is now an optional peer dependency, required
   only by the new `expo-turbo/expo` entrypoint. Migration: none for existing
   entrypoints; applications already depend on React Native.

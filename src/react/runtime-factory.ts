@@ -1,11 +1,14 @@
 import type {
+  CableAdapter,
   ClockAdapter,
   DocumentHistoryHostAdapter,
   FetchAdapter,
   FocusAdapter,
   NavigationAdapter,
 } from "../adapters/index.js"
+import type { ExpoTurboError } from "../core/errors.js"
 import {
+  CableStreamSourceRegistry,
   DocumentFormControls,
   DocumentHistory,
   DocumentRefreshController,
@@ -42,11 +45,18 @@ export interface ExpoTurboRuntime {
   readonly scopes: DocumentStateScopes
   readonly session: DocumentSession
   readonly state: DocumentStateStore
+  /** Present only when a Cable adapter was supplied. */
+  readonly streamSources?: CableStreamSourceRegistry
   dispose(): void
   load(): Promise<DocumentVisitResult>
 }
 
 export interface CreateExpoTurboRuntimeOptions {
+  /**
+   * Transport for `turbo-cable-stream-source` elements. Supplying it is what
+   * creates the Stream source registry; the runtime owns its disposal.
+   */
+  readonly cable?: CableAdapter
   readonly fetch: FetchAdapter
   /**
    * Logical focus for form validation. The runtime is the single owner: it
@@ -56,6 +66,12 @@ export interface CreateExpoTurboRuntimeOptions {
   readonly focus?: FocusAdapter
   readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
+  /**
+   * Receives Cable subscription and dispatch failures. These are Stream
+   * transport faults, not document faults, so they are reported rather than
+   * replacing the mounted document with an error surface.
+   */
+  readonly onCableError?: (error: ExpoTurboError) => void
   readonly registry: ComponentRegistry<RegistryComponent>
   readonly url: string
 }
@@ -121,6 +137,12 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     moduleVersions,
     submissionController: submission,
   })
+  const onCableError = options.onCableError
+  const streamSources = options.cable
+    ? new CableStreamSourceRegistry(session, options.cable, {
+        onError: (error) => onCableError?.(error),
+      })
+    : undefined
   let disposed = false
 
   return Object.freeze({
@@ -130,11 +152,13 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     scopes,
     session,
     state,
+    ...(streamSources ? { streamSources } : {}),
     dispose(): void {
       if (disposed) return
       disposed = true
       forms.dispose()
       frames.dispose()
+      streamSources?.dispose()
       refresh.dispose()
       controller.cancel()
       loader.cancel()

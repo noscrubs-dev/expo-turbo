@@ -86,9 +86,9 @@ Router history and navigation bridge, the credentialed transport, the runtime
 and its disposal, a loading spinner, and a retryable error surface. The only
 work left is declaring your components, which the next section covers.
 
-Pass `path` when the document is not the mounted route, such as
-`path="/orders"`. Search parameters are not inferred from the router; put them
-in `path` when a document needs them.
+The document path follows the mounted route, search parameters included, so
+`/orders?page=2` requests `/orders?page=2`. Pass `path` when the document is not
+the mounted route, such as `path="/orders"`.
 
 ### Adapters
 
@@ -120,12 +120,15 @@ key has three states:
 | `documentAnnouncements`, `formAnnouncements` | `AccessibilityInfo` announcements |
 | `documentLinks` | `Linking.openURL` |
 | `documentAutomaticPreloadPolicy`, `documentPrefetchPolicy` | Same-origin URLs only |
-| `autofocus`, `autofocusScroll`, `documentAnchorScroll`, `documentHistoryScroll`, `documentRefreshScroll`, `focus`, `frameAutoscroll`, `styles` | None |
+| `autofocus`, `autofocusScroll`, `cable`, `documentAnchorScroll`, `documentHistoryScroll`, `documentRefreshScroll`, `focus`, `frameAutoscroll`, `styles` | None |
 
 The keys with no default need host-owned native node references, a real scroll
-container, or application style tokens, so the package cannot supply one. For
-those keys `null` and absent behave identically; they are listed so an
-application can supply its own without leaving `ExpoTurboApp`.
+container, application style tokens, or — for `cable` — a socket, endpoint, and
+credential policy, so the package cannot supply one. For those keys `null` and
+absent behave identically; they are listed so an application can supply its own
+without leaving `ExpoTurboApp`. Supplying `cable` is what enables
+`turbo-cable-stream-source`; the runtime owns the subscription registry and
+releases it on unmount.
 
 Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
 library hands the same instance to form validation and to the renderer, so an
@@ -137,10 +140,35 @@ runtime has always owned them internally.
 ### Loading and error surfaces
 
 `ExpoTurboApp` renders a spinner while a document loads and a retryable error
-card when one fails. Development builds name the real error, because that is
-the only reader who can act on a `ContentTypeError`. Release builds show one
-fixed sentence instead, and `onError` still receives the real error in both, so
-telemetry loses nothing. Pass `loading` or `renderError` to replace either.
+card when one fails. Development builds name the error, because that is the
+only reader who can act on a `ContentTypeError`. Release builds show one fixed
+sentence instead, and `onError` receives the same error object the surface was
+given, so a release build still has a diagnostic path:
+
+```tsx
+<ExpoTurboApp
+  origin="https://example.com"
+  registry={registry}
+  onError={(error) => telemetry.captureException(error)}
+/>
+```
+
+Be precise about what that error is. Expo Turbo redacts transport causes on
+purpose: a socket or DNS failure is reported as
+`RequestError("Document request failed")` and the underlying cause is **not**
+attached, so `onError` alone will not tell you why the network call failed.
+Its `context` carries the typed protocol detail — method, status, content type,
+parse location — which is what distinguishes a `ContentTypeError` from a
+`RequestError` from a `StateError`. For the underlying transport cause, observe
+it where it is still in hand, in your own fetch adapter:
+
+```ts
+createDefaultFetchAdapter({
+  onResponse: ({ status, url }) => telemetry.captureBreadcrumb({ status, url }),
+})
+```
+
+Pass `loading` or `renderError` to replace either surface.
 
 ### Transport
 
@@ -267,11 +295,12 @@ adapter:
 />
 ```
 
-`ExpoTurbo` has no surface of its own to draw with, so **an omitted
-`renderError` rethrows the failure during render** rather than showing a blank
-screen. A dev build turns that into a redbox and a release build routes it to
-the host's nearest error boundary. Pass `renderError={() => null}` to opt back
-into silence.
+`renderError` is **required** on `ExpoTurbo`. A host-neutral component has no
+primitives to draw with, so it can neither invent a failure surface nor throw:
+an unhandled render throw is fatal on both React Native platforms, which is
+worse than the blank screen it would be replacing. Making the surface the
+host's decision at compile time is what keeps a failed document from being
+either. Pass `renderError={() => null}` to deliberately render nothing.
 
 `useExpoRouterAdapters` builds the Expo Router history and navigation adapters
 directly. It returns one identity for the life of the mount, so inline option
@@ -281,9 +310,13 @@ callbacks are safe:
 import * as Linking from "expo-linking"
 import { useExpoRouterAdapters } from "expo-turbo/expo-router"
 
-const { history, navigation } = useExpoRouterAdapters({
-  openExternal: (url) => Linking.openURL(url),
-})
+function DocumentScreen() {
+  const { history, navigation } = useExpoRouterAdapters({
+    openExternal: (url) => Linking.openURL(url),
+  })
+
+  return <ExpoTurbo history={history} navigation={navigation} {...rest} />
+}
 ```
 
 By default, an absolute document URL maps to its path, query, and fragment.

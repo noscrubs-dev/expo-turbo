@@ -2,7 +2,12 @@
 
 import { describe, expect, mock, test } from "bun:test"
 import type { DocumentLinkAdapter, TurboResponse } from "expo-turbo/adapters"
-import { EXPO_TURBO_MIME_TYPE, TargetError } from "expo-turbo/core"
+import {
+  DocumentStateScopes,
+  DocumentStateStore,
+  EXPO_TURBO_MIME_TYPE,
+  TargetError,
+} from "expo-turbo/core"
 import type { ExpoTurboDocumentBoundaryProps } from "expo-turbo/react"
 import { useExpoTurboDocumentLink } from "expo-turbo/react"
 import {
@@ -18,6 +23,7 @@ import {
   createElement,
   type ReactElement,
   type ReactNode,
+  StrictMode,
   useContext,
 } from "react"
 import { act, create, type ReactTestRenderer } from "react-test-renderer"
@@ -32,6 +38,8 @@ globalWithAct.IS_REACT_ACT_ENVIRONMENT = true
 const openedUrls: string[] = []
 const announcements: string[] = []
 let routerPath = "/catalog/shoes"
+/** Set to override what `useUnstableGlobalHref` reports; defaults to routerPath. */
+let routerHref: string | undefined
 
 mock.module("expo-router", () => ({
   usePathname: () => routerPath,
@@ -41,6 +49,7 @@ mock.module("expo-router", () => ({
     push: () => undefined,
     replace: () => undefined,
   }),
+  useUnstableGlobalHref: () => routerHref ?? routerPath,
 }))
 
 mock.module("react-native", () => ({
@@ -208,6 +217,75 @@ describe("ExpoTurboApp zero-configuration entrypoint", () => {
     expect(transport.urls).toEqual([`${ORIGIN}/catalog/shoes`])
     expect(renderer.toJSON()).toMatchObject({ type: "doc" })
 
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("carries router search parameters into the document request", async () => {
+    routerPath = "/catalog/shoes"
+    routerHref = "/catalog/shoes?size=44&color=red#reviews"
+    const transport = stubTransport("<AppDoc />")
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: transport.fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    // Inferring from the pathname alone drops the query and silently requests
+    // a different document than the one the route addresses.
+    expect(transport.urls).toEqual([`${ORIGIN}/catalog/shoes?size=44&color=red#reviews`])
+
+    routerHref = undefined
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("never lets a router-supplied hostname move the document origin", async () => {
+    routerPath = "/catalog/shoes"
+    // Expo Router documents that this private hook may start returning an
+    // absolute URL. If it ever does, the document must still be fetched from
+    // the origin the host declared.
+    routerHref = "https://attacker.example/catalog/shoes?size=44"
+    const transport = stubTransport("<AppDoc />")
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: transport.fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    expect(transport.urls).toEqual([`${ORIGIN}/catalog/shoes?size=44`])
+    expect(transport.urls[0]).not.toContain("attacker.example")
+
+    routerHref = undefined
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("falls back to the pathname when the href hook yields nothing usable", async () => {
+    routerPath = "/catalog/shoes"
+    routerHref = ""
+    const transport = stubTransport("<AppDoc />")
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: transport.fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    expect(transport.urls).toEqual([`${ORIGIN}/catalog/shoes`])
+
+    routerHref = undefined
     await act(async () => {
       renderer.unmount()
     })
@@ -446,6 +524,266 @@ describe("ExpoTurboApp adapters escape hatch", () => {
     await act(async () => {
       renderer.unmount()
     })
+  })
+})
+
+describe("ExpoTurboApp cable adapter", () => {
+  const CABLE_XML =
+    '<AppDoc><turbo-cable-stream-source channel="ClientChannel" signed-stream-name="cart" /></AppDoc>'
+
+  function recordingCable() {
+    const identifiers: string[] = []
+    let unsubscribes = 0
+    return {
+      adapter: {
+        subscribe(identifier: string) {
+          identifiers.push(identifier)
+          return {
+            unsubscribe() {
+              unsubscribes += 1
+            },
+          }
+        },
+      },
+      identifiers,
+      get unsubscribes() {
+        return unsubscribes
+      },
+    }
+  }
+
+  test("subscribes a Stream source and unsubscribes on unmount", async () => {
+    routerPath = "/cable"
+    const cable = recordingCable()
+    const transport = stubTransport(CABLE_XML)
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { cable: cable.adapter, fetch: transport.fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    expect(cable.identifiers).toHaveLength(1)
+    expect(cable.identifiers[0]).toContain("ClientChannel")
+
+    await act(async () => {
+      renderer.unmount()
+      await nextTurn()
+    })
+    // The runtime owns the registry, so its disposal releases the socket.
+    expect(cable.unsubscribes).toBe(1)
+  })
+
+  test("does not subscribe when the key is absent or null", async () => {
+    routerPath = "/cable"
+    const absent = recordingCable()
+    const off = recordingCable()
+
+    const withoutKey = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: stubTransport(CABLE_XML).fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+    await act(async () => {
+      withoutKey.unmount()
+    })
+
+    const withNull = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { cable: null, fetch: stubTransport(CABLE_XML).fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+    await act(async () => {
+      withNull.unmount()
+    })
+
+    // Asserts the absence of a second route: no packaged default quietly
+    // supplies a socket, in either state.
+    expect(absent.identifiers).toEqual([])
+    expect(off.identifiers).toEqual([])
+  })
+})
+
+describe("ExpoTurboApp runtime disposal", () => {
+  /**
+   * Counts `dispose()` per instance on the two objects the runtime creates and
+   * the provider also used to claim. `ExpoTurboApp` builds its runtime
+   * internally, so instrumenting the prototypes is the only way to observe the
+   * real path rather than a stand-in.
+   */
+  async function withDisposalCounts(
+    run: () => Promise<void>,
+  ): Promise<{ scopes: number[]; state: number[] }> {
+    const scopeCounts = new Map<object, number>()
+    const stateCounts = new Map<object, number>()
+    const originalScopes = DocumentStateScopes.prototype.dispose
+    const originalState = DocumentStateStore.prototype.dispose
+
+    DocumentStateScopes.prototype.dispose = function patched(this: object) {
+      scopeCounts.set(this, (scopeCounts.get(this) ?? 0) + 1)
+      return originalScopes.call(this)
+    }
+    DocumentStateStore.prototype.dispose = function patched(this: object) {
+      stateCounts.set(this, (stateCounts.get(this) ?? 0) + 1)
+      return originalState.call(this)
+    }
+
+    try {
+      await run()
+    } finally {
+      DocumentStateScopes.prototype.dispose = originalScopes
+      DocumentStateStore.prototype.dispose = originalState
+    }
+
+    return { scopes: [...scopeCounts.values()], state: [...stateCounts.values()] }
+  }
+
+  test("disposes a real runtime's scopes and state exactly once", async () => {
+    routerPath = "/disposal"
+    const transport = stubTransport("<AppDoc />")
+
+    const counts = await withDisposalCounts(async () => {
+      const renderer = await mount(
+        createElement(ExpoTurboApp, {
+          adapters: { fetch: transport.fetch },
+          origin: ORIGIN,
+          registry,
+        }),
+      )
+      await act(async () => {
+        renderer.unmount()
+        await nextTurn()
+      })
+    })
+
+    // Two owners were calling dispose() on one object. That is harmless only
+    // while both stay idempotent, which is not a property to depend on.
+    expect(counts.scopes).toEqual([1])
+    expect(counts.state).toEqual([1])
+  })
+
+  test("keeps two apps in one tree independent", async () => {
+    routerPath = "/disposal"
+    const first = stubTransport('<AppDoc><AppDocLink href="/first" /></AppDoc>')
+    const second = stubTransport('<AppDoc><AppDocLink href="/second" /></AppDoc>')
+
+    const counts = await withDisposalCounts(async () => {
+      let renderer: ReactTestRenderer | undefined
+      await act(async () => {
+        renderer = create(
+          createElement(
+            "tree",
+            null,
+            createElement(ExpoTurboApp, {
+              adapters: { fetch: first.fetch },
+              key: "first",
+              origin: ORIGIN,
+              registry,
+            }),
+            createElement(ExpoTurboApp, {
+              adapters: { fetch: second.fetch },
+              key: "second",
+              origin: ORIGIN,
+              registry,
+            }),
+          ),
+        )
+      })
+      await act(async () => {
+        await nextTurn()
+      })
+
+      // Same registry, two runtimes, two documents.
+      expect(first.urls).toHaveLength(1)
+      expect(second.urls).toHaveLength(1)
+
+      // Drop the first; the second must keep working, not inherit a disposed
+      // store through the shared registry.
+      await act(async () => {
+        renderer?.update(
+          createElement(
+            "tree",
+            null,
+            createElement(ExpoTurboApp, {
+              adapters: { fetch: second.fetch },
+              key: "second",
+              origin: ORIGIN,
+              registry,
+            }),
+          ),
+        )
+        await nextTurn()
+      })
+      expect(JSON.stringify(renderer?.toJSON() ?? null)).toContain("/second")
+
+      await act(async () => {
+        renderer?.unmount()
+        await nextTurn()
+      })
+    })
+
+    expect(counts.scopes).toEqual([1, 1])
+    expect(counts.state).toEqual([1, 1])
+  })
+
+  test("survives a same-registry remount the way Fast Refresh replays it", async () => {
+    routerPath = "/disposal"
+    const transport = stubTransport("<AppDoc />")
+
+    const counts = await withDisposalCounts(async () => {
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        const renderer = await mount(
+          createElement(ExpoTurboApp, {
+            adapters: { fetch: transport.fetch },
+            origin: ORIGIN,
+            registry,
+          }),
+        )
+        expect(renderer.toJSON()).toMatchObject({ type: "doc" })
+        await act(async () => {
+          renderer.unmount()
+          await nextTurn()
+        })
+      }
+    })
+
+    // One runtime per cycle, each disposed once, none disposed twice.
+    expect(counts.scopes.length).toBeGreaterThanOrEqual(3)
+    expect(counts.scopes.every((count) => count === 1)).toBe(true)
+    expect(counts.state.every((count) => count === 1)).toBe(true)
+  })
+
+  test("survives a StrictMode double mount", async () => {
+    routerPath = "/disposal"
+    const transport = stubTransport("<AppDoc />")
+
+    const counts = await withDisposalCounts(async () => {
+      const renderer = await mount(
+        createElement(
+          StrictMode,
+          null,
+          createElement(ExpoTurboApp, {
+            adapters: { fetch: transport.fetch },
+            origin: ORIGIN,
+            registry,
+          }),
+        ),
+      )
+      expect(renderer.toJSON()).toMatchObject({ type: "doc" })
+      await act(async () => {
+        renderer.unmount()
+        await nextTurn()
+      })
+    })
+
+    expect(counts.scopes.every((count) => count === 1)).toBe(true)
+    expect(counts.state.every((count) => count === 1)).toBe(true)
   })
 })
 

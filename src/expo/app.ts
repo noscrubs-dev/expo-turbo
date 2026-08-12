@@ -5,6 +5,7 @@ import { createDefaultFetchAdapter } from "../adapters/fetch.js"
 import type {
   AutofocusAdapter,
   AutofocusScrollAdapter,
+  CableAdapter,
   DocumentAnchorScrollAdapter,
   DocumentAutomaticPreloadPolicy,
   DocumentHistoryHostAdapter,
@@ -49,6 +50,11 @@ export interface ExpoTurboAppAdapters {
   readonly autofocus?: AutofocusAdapter | null
   /** No default: revealing a focused node needs a host scroll container. */
   readonly autofocusScroll?: AutofocusScrollAdapter | null
+  /**
+   * No default: a Cable transport needs a host-owned socket, endpoint, and
+   * credential policy. Supplying it enables `turbo-cable-stream-source`.
+   */
+  readonly cable?: CableAdapter | null
   /** No default: anchor scrolling needs a host scroll container. */
   readonly documentAnchorScroll?: DocumentAnchorScrollAdapter | null
   /** Default: announces visit status through `AccessibilityInfo`. */
@@ -218,6 +224,7 @@ export function ExpoTurboApp({
   const routerAdapters = useExpoRouterAdapters()
   const url = documentUrl(origin, path ?? routerPath)
 
+  const cable = resolveAdapter(adapters.cable, undefined)
   const fetchAdapter = resolveAdapter(adapters.fetch, DEFAULT_FETCH)
   const history = resolveAdapter(adapters.history, routerAdapters.history)
   const navigation = resolveAdapter(adapters.navigation, routerAdapters.navigation)
@@ -304,6 +311,7 @@ export function ExpoTurboApp({
   return createElement(ExpoTurbo, {
     adapters: renderAdapters,
     ...(boundaries ? { boundaries } : {}),
+    ...(cable ? { cable } : {}),
     fetch: fetchAdapter,
     ...(focus ? { focus } : {}),
     ...(history ? { history } : {}),

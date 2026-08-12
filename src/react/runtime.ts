@@ -84,11 +84,36 @@ export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
   readonly loading?: ReactNode
   readonly onError?: (error: Error) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
-  readonly renderError?: (error: Error, retry: () => void) => ReactNode
+  /**
+   * Required. A host-neutral component has no primitives to draw with, so it
+   * cannot invent a failure surface, and it must not escalate: an unhandled
+   * render throw is fatal on both React Native platforms. Making this the
+   * host's decision at compile time is what keeps a failed document from
+   * being either a blank screen or a crash.
+   *
+   * `ExpoTurboApp` from `expo-turbo/expo` supplies one for you. Pass
+   * `() => null` to deliberately render nothing.
+   */
+  readonly renderError: (error: Error, retry: () => void) => ReactNode
 }
 
 const NO_RENDER_ADAPTERS: ExpoTurboRenderAdapters = Object.freeze({})
 const NO_BOUNDARIES: ExpoTurboBoundaries = Object.freeze({})
+
+/**
+ * Reaches the platform console without depending on a DOM or Node type
+ * declaration, so the host-neutral entrypoint keeps building with `types: []`.
+ */
+function reportMissingRenderError(error: Error): void {
+  const diagnostics = (
+    globalThis as { console?: { error?: (...values: readonly unknown[]) => void } }
+  ).console
+  diagnostics?.error?.(
+    "[expo-turbo] ExpoTurbo received no renderError, so a failed document renders nothing. " +
+      "Pass renderError, or use ExpoTurboApp from expo-turbo/expo, which ships a visible surface.",
+    error,
+  )
+}
 
 /**
  * Renders a complete Expo Turbo document runtime from the host-owned inputs:
@@ -98,6 +123,7 @@ const NO_BOUNDARIES: ExpoTurboBoundaries = Object.freeze({})
 export function ExpoTurbo({
   adapters = NO_RENDER_ADAPTERS,
   boundaries = NO_BOUNDARIES,
+  cable,
   fetch,
   focus,
   history,
@@ -130,6 +156,16 @@ export function ExpoTurbo({
     | Readonly<{ runtime: ExpoTurboRuntime; state: "ready" }>
   >({ state: "loading" })
 
+  // An untyped host can still omit the required `renderError`. Say so where a
+  // developer will see it — LogBox in development, the device log in release —
+  // rather than throwing, which React Native escalates to a fatal.
+  useEffect(() => {
+    // `typeof`, not truthiness: the prop is required, so TypeScript narrows it
+    // to always-defined and only an untyped host can arrive here without it.
+    if (status.state !== "error" || typeof renderError === "function") return
+    reportMissingRenderError(status.error)
+  }, [renderError, status])
+
   const fail = useCallback((reason: unknown) => {
     const error =
       reason instanceof Error ? reason : new Error("Expo Turbo document could not be loaded")
@@ -142,10 +178,12 @@ export function ExpoTurbo({
   // biome-ignore lint/correctness/useExhaustiveDependencies: url is handled by the visit effect
   useEffect(() => {
     const runtime = createExpoTurboRuntime({
+      ...(cable ? { cable } : {}),
       fetch,
       ...(focus ? { focus } : {}),
       ...(history ? { history } : {}),
       ...(navigation ? { navigation } : {}),
+      onCableError: (error) => onErrorRef.current?.(error),
       registry,
       url,
     })
@@ -155,7 +193,7 @@ export function ExpoTurbo({
       if (currentRuntimeRef.current === runtime) currentRuntimeRef.current = undefined
       runtime.dispose()
     }
-  }, [attempt, fetch, focus, history, navigation, registry])
+  }, [attempt, cable, fetch, focus, history, navigation, registry])
 
   // The preceding effect replaces this ref whenever a runtime-defining input
   // changes, so those inputs intentionally restart the visit effect too.
@@ -199,15 +237,15 @@ export function ExpoTurbo({
     return () => {
       active = false
     }
-  }, [attempt, fail, fetch, focus, history, navigation, registry, url])
+  }, [attempt, cable, fail, fetch, focus, history, navigation, registry, url])
 
   if (status.state === "loading") return loading
   if (status.state === "error") {
-    // A hard failure must never look like a blank screen. Without a host
-    // surface the only host-neutral way to stay loud is to let the error reach
-    // React's own machinery: a dev redbox, or the host's error boundary in
-    // release. Pass `renderError={() => null}` to opt back into silence.
-    if (!renderError) throw status.error
+    // `renderError` is required, so an untyped host is the only way to arrive
+    // here without one. Rendering nothing is survivable; throwing would be
+    // fatal in a release build, which is strictly worse than the blank screen
+    // it was meant to replace. The effect above says so once, out loud.
+    if (typeof renderError !== "function") return null
     return renderError(status.error, retry)
   }
   const { runtime } = status
@@ -255,10 +293,14 @@ export function ExpoTurbo({
         setStatus({ error, state: "error" })
       },
       onUnknownVocabulary: forwardUnknownVocabulary,
+      // The runtime created scopes and state and disposes them in its own
+      // cleanup, so the provider must not dispose them a second time.
+      ownsStateDisposal: false,
       registry,
       scopes: runtime.scopes,
       session: runtime.session,
       state: runtime.state,
+      ...(runtime.streamSources ? { streamSources: runtime.streamSources } : {}),
       ...(adapters.styles ? { styles: adapters.styles } : {}),
     },
     createElement(ExpoTurboRoot),

@@ -701,6 +701,15 @@ export interface ExpoTurboProviderProps {
   readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
+  /**
+   * Whether this provider disposes `scopes` and `state` when it unmounts.
+   * Defaults to `true`, which is what a host composing them by hand expects.
+   *
+   * `ExpoTurbo` passes `false`: the runtime it built created those objects and
+   * disposes them itself, and two owners calling `dispose()` on one object is
+   * only harmless for as long as both stay idempotent.
+   */
+  readonly ownsStateDisposal?: boolean
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
   readonly scopes?: DocumentStateScopes
@@ -748,8 +757,9 @@ const EMPTY_DOCUMENT_OUTPUT_LEDGER: DocumentOutputLedger = createDocumentOutputL
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const outputLedger = useRef<DocumentOutputLedger | undefined>(undefined)
   outputLedger.current ??= createDocumentOutputLedger()
-  useProviderDisposable(props.scopes)
-  useProviderDisposable(props.state)
+  const ownsStateDisposal = props.ownsStateDisposal !== false
+  useProviderDisposable(ownsStateDisposal ? props.scopes : undefined)
+  useProviderDisposable(ownsStateDisposal ? props.state : undefined)
   useInsertionEffect(
     () =>
       registerStructuralOutputAdmission(props.session, (request) => {

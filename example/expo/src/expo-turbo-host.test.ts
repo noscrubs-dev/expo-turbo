@@ -273,38 +273,104 @@ describe("useExpoTurboDisposable", () => {
   })
 })
 
-describe("ExpoTurbo default error surface", () => {
-  test("surfaces a load failure to the host error boundary when renderError is absent", async () => {
-    CatchingBoundary.caught = undefined
-    const failure = new Error("document transport refused")
+describe("ExpoTurbo failure surface", () => {
+  const failingTransport = {
+    fetch: async () => {
+      throw new Error("document transport refused")
+    },
+  }
 
+  test("renders the host surface with no error boundary anywhere above it", async () => {
+    // No boundary in this tree at all. React Native turns an unhandled render
+    // throw into a fatal (JavascriptException on Android, RCTFatal on iOS), so
+    // this is the configuration a released app actually runs and the one that
+    // must never escalate.
     const renderer = await mount(
-      createElement(
-        CatchingBoundary,
-        null,
-        createElement(ExpoTurbo, {
-          fetch: {
-            fetch: async () => {
-              throw failure
-            },
-          },
-          registry,
-          url: DOCUMENT_URL,
-        }),
-      ),
+      createElement(ExpoTurbo, {
+        fetch: failingTransport,
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      }),
     )
 
-    // Reverting the default makes this branch return `null`: the boundary never
-    // renders, `caught` stays undefined, and the tree is an empty screen.
-    expect(CatchingBoundary.caught).toBeInstanceOf(Error)
-    expect(renderer.toJSON()).toMatchObject({ type: "boundary-caught" })
+    // The transport redacts the original cause, so the surface receives the
+    // package's own message.
+    expect(renderer.toJSON()).toMatchObject({
+      props: { message: "Document request failed" },
+      type: "render-error",
+    })
 
     await act(async () => {
       renderer.unmount()
     })
   })
 
-  test("keeps an explicit renderError in charge and never reaches the boundary", async () => {
+  test("does not escalate to a fatal when a JavaScript host omits renderError", async () => {
+    // `renderError` is a required prop, so TypeScript rejects this call. An
+    // untyped host can still reach it, and reaching it must stay survivable:
+    // render nothing, say so once, and never throw. Again with no boundary.
+    const errors: unknown[][] = []
+    const console = globalThis.console
+    const originalError = console.error
+    console.error = (...args: unknown[]) => {
+      errors.push(args)
+    }
+
+    try {
+      const renderer = await mount(
+        createElement(ExpoTurbo, {
+          fetch: failingTransport,
+          registry,
+          url: DOCUMENT_URL,
+        } as never),
+      )
+
+      // Survived: the tree is still mounted and rendering, not torn down.
+      expect(renderer.toJSON()).toBeNull()
+      // Exactly one diagnostic of ours; React logs its own warnings through the
+      // same channel, so count only the message this package emits.
+      const ours = errors.filter((args) => String(args[0]).includes("[expo-turbo]"))
+      expect(ours).toHaveLength(1)
+      expect(String(ours[0]?.[0])).toContain("renderError")
+
+      await act(async () => {
+        renderer.unmount()
+      })
+    } finally {
+      console.error = originalError
+    }
+  })
+
+  test("reports the failure to onError even when it renders nothing", async () => {
+    const reported: Error[] = []
+    const console = globalThis.console
+    const originalError = console.error
+    console.error = () => undefined
+
+    try {
+      const renderer = await mount(
+        createElement(ExpoTurbo, {
+          fetch: failingTransport,
+          onError: (error: Error) => reported.push(error),
+          registry,
+          url: DOCUMENT_URL,
+        } as never),
+      )
+
+      // The diagnostic path stays open regardless of what was rendered.
+      expect(reported).toHaveLength(1)
+      expect(reported[0]?.name).toBe("RequestError")
+
+      await act(async () => {
+        renderer.unmount()
+      })
+    } finally {
+      console.error = originalError
+    }
+  })
+
+  test("never reaches a boundary that is present", async () => {
     CatchingBoundary.caught = undefined
 
     const renderer = await mount(
@@ -312,11 +378,7 @@ describe("ExpoTurbo default error surface", () => {
         CatchingBoundary,
         null,
         createElement(ExpoTurbo, {
-          fetch: {
-            fetch: async () => {
-              throw new Error("document transport refused")
-            },
-          },
+          fetch: failingTransport,
           registry,
           renderError: (error: Error) => createElement("render-error", { message: error.message }),
           url: DOCUMENT_URL,
@@ -324,14 +386,10 @@ describe("ExpoTurbo default error surface", () => {
       ),
     )
 
-    // The opt-out path: a host that supplies a surface owns presentation, and
-    // the throw must not fire behind its back. The transport redacts the
-    // original cause, so the surface receives the package's own message.
+    // Asserts the absence of the escalation route: a host that supplies a
+    // surface owns presentation, and nothing may throw past it.
     expect(CatchingBoundary.caught).toBeUndefined()
-    expect(renderer.toJSON()).toMatchObject({
-      props: { message: "Document request failed" },
-      type: "render-error",
-    })
+    expect(renderer.toJSON()).toMatchObject({ type: "render-error" })
 
     await act(async () => {
       renderer.unmount()

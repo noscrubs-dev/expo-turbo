@@ -34,11 +34,13 @@ const router = {
   },
 }
 
-// The bridge module imports both hooks, so the mock must cover both or the
-// named import fails to link.
+// The bridge module imports every one of these, and Bun cannot statically see
+// named exports through expo-router's CJS re-export barrel, so an incomplete
+// mock fails to link rather than falling through to the real module.
 mock.module("expo-router", () => ({
   usePathname: () => "/document",
   useRouter: () => router,
+  useUnstableGlobalHref: () => "/document",
 }))
 
 const { useExpoRouterAdapters } = await import("expo-turbo/expo-router")

@@ -16,16 +16,25 @@ const DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8"?>
 const requestedUrls: string[] = []
 const originalFetch = globalThis.fetch
 
+/**
+ * The route file lives at `app/api/expo_turbo/demo/document.tsx`, so the
+ * mounted Expo Router path is already the document path and the route passes
+ * no `path` prop. That is what makes this exercise pathname inference rather
+ * than an explicit override.
+ */
+const ROUTE_PATH = "/api/expo_turbo/demo/document"
+
 process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN = "https://rails.example.test"
 
 mock.module("expo-router", () => ({
-  usePathname: () => "/turbo-app",
+  usePathname: () => ROUTE_PATH,
   useRouter: () => ({
     back: () => undefined,
     canGoBack: () => true,
     push: () => undefined,
     replace: () => undefined,
   }),
+  useUnstableGlobalHref: () => ROUTE_PATH,
 }))
 
 mock.module("react-native", () => ({
@@ -59,7 +68,7 @@ globalThis.fetch = (async (url: string | URL) => {
   return response
 }) as typeof globalThis.fetch
 
-const { default: TurboAppRoute } = await import("./app/turbo-app")
+const { default: TurboAppRoute } = await import("./app/api/expo_turbo/demo/document")
 
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -83,8 +92,9 @@ test("the example route renders a real document through ExpoTurboApp", async () 
   })
 
   // The shipped route, its shipped registry, and the packaged default fetch
-  // adapter — no test-only transport substituted anywhere in the path.
-  expect(requestedUrls).toEqual(["https://rails.example.test/api/expo_turbo/demo/document"])
+  // adapter — no test-only transport substituted anywhere in the path, and the
+  // URL came from origin plus inferred pathname, not from a `path` prop.
+  expect(requestedUrls).toEqual([`https://rails.example.test${ROUTE_PATH}`])
   expect(containsText(renderer?.toJSON(), "Rendered by the zero-configuration host.")).toBe(true)
 
   await act(async () => {

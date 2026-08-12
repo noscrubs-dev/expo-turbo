@@ -1,4 +1,4 @@
-import { usePathname, useRouter } from "expo-router"
+import { usePathname, useRouter, useUnstableGlobalHref } from "expo-router"
 import { useMemo, useRef } from "react"
 import {
   assertExpoRouterAdapterHost,
@@ -21,13 +21,40 @@ export {
 } from "./adapters.js"
 
 /**
- * The mounted Expo Router pathname, used as the default document path.
+ * A base that only exists to parse a possibly-relative href. It is never the
+ * origin a document is fetched from; only the path portion of the result is
+ * used, and the caller resolves that against its own origin.
+ */
+const HREF_PARSE_BASE = "https://expo-turbo-router.invalid"
+
+export function expoRouterDocumentPath(href: unknown, pathname: string): string {
+  if (typeof href !== "string" || href.trim() === "") return pathname
+  try {
+    const parsed = new URL(href, HREF_PARSE_BASE)
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+  } catch {
+    return pathname
+  }
+}
+
+/**
+ * The mounted Expo Router path, including search parameters.
+ *
+ * `usePathname()` drops the query, which would silently fetch the wrong
+ * document for any route carrying one. `useUnstableGlobalHref()` keeps it, at
+ * the cost of being a private Expo Router API that reserves the right to start
+ * returning an absolute URL with a hostname. Taking only the path portion makes
+ * that change a no-op here and keeps a router-supplied hostname from ever
+ * redirecting a document request away from the host's own origin. If it yields
+ * nothing usable, the pathname is still correct, just query-free.
  *
  * This module is the package's only permitted importer of `expo-router`, so
  * every other entrypoint reaches the router through here.
  */
 export function useExpoRouterDocumentPath(): string {
-  return usePathname()
+  const pathname = usePathname()
+  const href = useUnstableGlobalHref()
+  return expoRouterDocumentPath(href, pathname)
 }
 
 /**
