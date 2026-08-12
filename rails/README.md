@@ -243,12 +243,15 @@ logged, and that warning is not swallowed.
 
 ## Caching
 
-Every response the Rails application produces varies on `Accept`,
-`Turbo-Frame`, and `X-Expo-Turbo-Modules`. This is unconditional: a shared cache
-can receive a Frame request for a URL that was first fetched as a document, and
-`Accept` decides the vocabulary even when a route forced the format.
+A response can differ by `Accept`, by `Turbo-Frame`, and by the client's module
+versions, so a shared cache must key on all three: it can receive a Frame
+request for a URL that was first fetched as a document, and `Accept` decides the
+vocabulary even when a route forced the format. The gem states its `Vary`
+guarantee as a boundary rather than as "every response", because one layer
+cannot reach every response and a guarantee with unwritten holes is worse than a
+narrower one.
 
-Two layers apply it, because one cannot reach every response:
+Two layers apply the header:
 
 - A prepended `before_action` sets it before any host filter runs, so host code
   can read and extend it during the action, and a conditional-GET `304` built
@@ -260,17 +263,39 @@ Two layers apply it, because one cannot reach every response:
   an unrescued exception or an unknown route never passes through a controller
   at all.
 
-**What is deliberately not covered.** The middleware sits inside
-`ActionDispatch::Static`, `Rack::Sendfile`, and `ActionDispatch::HostAuthorization`,
-so a static file, a sendfile response, a host-authorization rejection, and any
-response the web server writes without entering Rails do not carry these
-dimensions. That is intended: none of them is a representation of an Expo Turbo
-resource, so their bytes do not change with `Accept`, `Turbo-Frame`, or the
-client module versions, and adding the dimensions would only cost a shared cache
-its hit rate on assets. A host that serves Expo Turbo XML from middleware above
-this point must add `Vary` itself. Set
-`config.expo_turbo.vary_middleware = false` to remove the middleware layer; the
-controller layer then still applies, with the gaps described above.
+### Guaranteed to carry `Vary: Accept, Turbo-Frame, X-Expo-Turbo-Modules`
+
+Every response the Rails application emits below the middleware, whatever
+produced it:
+
+- any routed controller response, including `head`, redirects, and `304`
+- a response from a filter that halted the chain, including one a host
+  prepended ahead of this gem's own filter
+- a `rescue_from` handler's response
+- a response `ActionDispatch::ShowExceptions` built for an unrescued exception
+- a routing error for an unknown path
+
+### Not covered, and why
+
+Anything produced **above** the middleware never reaches it:
+
+| Producer | Why it is excluded |
+| --- | --- |
+| `ActionDispatch::Static`, `Rack::Sendfile` | a static file's bytes do not change with these headers, and stamping them costs a shared cache its hit rate on assets |
+| `ActionDispatch::HostAuthorization` | a rejected host is not a representation of any resource |
+| the web server (Puma, nginx) — malformed request lines, timeouts, `502`/`504` | never enters Rails |
+| a proxy or CDN that synthesizes its own response — cached error pages, WAF blocks, maintenance pages | never enters the origin at all |
+
+None of those is a representation of an Expo Turbo resource, so none of them
+varies by `Accept`, `Turbo-Frame`, or the client module versions.
+
+**What a host must do.** If you cache anything from that list *and* serve Expo
+Turbo XML for the same URL, add the three dimensions yourself at that layer: a
+`Vary` header on the CDN rule, the static-file handler, or the proxy response.
+If you serve Expo Turbo XML from middleware installed above this one, that
+middleware owns its own `Vary`. Set `config.expo_turbo.vary_middleware = false`
+to remove the middleware layer; the controller layer then still applies, and the
+halted-filter and exception responses listed above lose the header.
 
 `Vary` does not protect `Rails.cache`. Fragment cache keys of an Expo Turbo
 render therefore include the same Frame and module identity, so a module-gated
