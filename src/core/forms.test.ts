@@ -179,7 +179,7 @@ const FORM_SEMANTICS = Object.freeze({
     return undefined
   },
   resolve: (tagName: string) => {
-    if (tagName === "FutureForm") return undefined
+    if (tagName === "FutureForm" || tagName === "FutureButton") return undefined
     return Object.freeze({ formOwner: tagName === "DemoForm" })
   },
 })
@@ -190,10 +190,14 @@ function registryFor(
 ): FormControlRegistry {
   const form = session.tree.getElementById("form")
   if (!form) throw new Error("form fixture is missing")
-  return new FormControlRegistry(session, form.key, {
-    formSemantics: FORM_SEMANTICS,
-    ...options,
-  })
+  return new FormControlRegistry(session, form.key, options)
+}
+
+function knownRegistryFor(
+  session: DocumentSession,
+  options: FormControlRegistryOptions = {},
+): FormControlRegistry {
+  return registryFor(session, { ...options, formSemantics: FORM_SEMANTICS })
 }
 
 describe("native form control registry", () => {
@@ -296,6 +300,206 @@ describe("native form control registry", () => {
     expect(() => forms.controlsFor("id:not-form")).toThrow(
       "Expo Turbo form association target is not a declared form owner",
     )
+  })
+
+  test("fails closed before transport when form-owner resolution is unavailable", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <FutureForm id="future" action="/danger" method="post">
+            <DemoInput id="future-field" />
+          </FutureForm>
+          <DemoForm id="known" action="/safe" method="post">
+            <DemoInput id="known-field" />
+          </DemoForm>
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        requests.push(
+          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+        )
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const legacySemantics = Object.freeze({
+      formContainerRole: FORM_SEMANTICS.formContainerRole,
+    })
+    const unavailable = [
+      new DocumentFormControls(session, { submissionController: controller }),
+      new DocumentFormControls(session, {
+        formSemantics: legacySemantics,
+        submissionController: controller,
+      }),
+    ]
+    const failures: unknown[] = []
+    for (const forms of unavailable) {
+      const future = forms.controlsFor("id:future")
+      future.register("id:future-field", { kind: "value", name: "field", value: "A" })
+      expect(future.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+      expect(future.checkValidity()).toEqual({ invalidControls: [], valid: true })
+      expect(future.shouldInterceptSubmission()).toBe(false)
+      for (const attempt of [
+        () => future.requestPlan({ protocol: { requestId: "unresolved-plan" } }),
+        () => future.submissionProposal({ protocol: { requestId: "unresolved-proposal" } }),
+        () => future.submit({ protocol: { requestId: "unresolved-submit" } }),
+        () => future.retryFailure({ protocol: { requestId: "unresolved-retry" } }),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(failures).toHaveLength(8)
+    for (const failure of failures) {
+      expect(failure).toBeInstanceOf(RegistryError)
+    }
+    expect(failures.map((failure) => (failure as Error).message)).toEqual([
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+    ])
+
+    const known = new DocumentFormControls(session, {
+      formSemantics: FORM_SEMANTICS,
+      submissionController: controller,
+    }).controlsFor("id:known")
+    known.register("id:known-field", { kind: "value", name: "field", value: "B" })
+    await known.submit({ protocol: { requestId: "known-owner" } })
+    expect(requests).toEqual([
+      { body: "field=B", method: "POST", url: "https://example.test/safe" },
+    ])
+  })
+
+  test("does not read request overrides from an unknown registered submitter", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="form" action="/safe" method="post">
+            <DemoInput id="field" />
+            <FutureButton
+              data-turbo="false"
+              data-turbo-action="replace"
+              data-turbo-confirm="Danger"
+              data-turbo-frame="danger-frame"
+              data-turbo-stream=""
+              id="evil"
+              formaction="/danger"
+              formenctype="application/x-www-form-urlencoded"
+              formmethod="delete"
+              formnovalidate=""
+              formtarget="_blank"
+            />
+          </DemoForm>
+          <turbo-frame id="danger-frame" />
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        requests.push(
+          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+        )
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const registry = new DocumentFormControls(session, {
+      focus: {
+        blur() {},
+        focus() {},
+        getFocusedId: () => undefined,
+      },
+      formSemantics: FORM_SEMANTICS,
+      submissionController: controller,
+    }).controlsFor("id:form")
+    const field = registry.register("id:field", {
+      kind: "value",
+      name: "field",
+      validity: { message: "Required", valid: false },
+      value: "A",
+    })
+    const submitter = registry.register("id:evil", {
+      kind: "submitter",
+      name: "commit",
+      value: "go",
+    })
+
+    await expect(
+      registry.submit({
+        protocol: { requestId: "unknown-submitter-invalid" },
+        submitter: submitter.selection,
+      }),
+    ).resolves.toMatchObject({ status: "invalid" })
+    expect(requests).toEqual([])
+    field.update({
+      kind: "value",
+      name: "field",
+      validity: { valid: true },
+      value: "A",
+    })
+    expect(registry.shouldInterceptSubmission({ submitter: submitter.selection })).toBe(true)
+
+    const proposal = registry.submissionProposal({
+      protocol: { requestId: "unknown-submitter-proposal" },
+      submitter: submitter.selection,
+    })
+    expect(proposal.destination).toEqual({ kind: "document" })
+    expect(proposal.plan.request).toMatchObject({
+      body: { value: "field=A&commit=go" },
+      method: "POST",
+      url: "https://example.test/safe",
+    })
+
+    session.removeAttribute("id:form", "method")
+    const plan = registry.requestPlan({
+      protocol: { requestId: "unknown-submitter-plan" },
+      submitter: submitter.selection,
+    }).request
+    expect(plan).toMatchObject({
+      method: "GET",
+      url: "https://example.test/safe?field=A&commit=go",
+    })
+    expect(plan).not.toHaveProperty("body")
+    expect(plan.headers.Accept).toBe("application/vnd.expo-turbo+xml")
+    session.setAttribute("id:form", "method", "post")
+    await registry.submit({
+      protocol: { requestId: "unknown-submitter-submit" },
+      submitter: submitter.selection,
+    })
+    expect(requests).toEqual([
+      {
+        body: "field=A&commit=go",
+        method: "POST",
+        url: "https://example.test/safe",
+      },
+    ])
   })
 
   test("never infers successful controls from server XML without a native registration", () => {
@@ -448,7 +652,7 @@ describe("native form control registry", () => {
 
   test("collects frozen bounded multi-name string entries at the control's document position", () => {
     const session = formFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const source = [
       { name: "profile[given_name]", value: "Ada" },
       { name: "profile[roles][]", value: "author" },
@@ -523,7 +727,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const attachment = {
       blob: new Blob(["native fixture"], { type: "text/plain" }),
       filename: "native-fixture.txt",
@@ -778,7 +982,7 @@ describe("native form control registry", () => {
 
   test("matches Turbo form modes across independent form and submitter ancestry", () => {
     const session = formModeFixture()
-    const on = registryFor(session)
+    const on = new FormControlRegistry(session, "id:form", { formSemantics: FORM_SEMANTICS })
     const save = on.register("id:save", { kind: "submitter", name: "commit", value: "save" })
     const external = on.register("id:external-submit", {
       kind: "submitter",
@@ -808,7 +1012,10 @@ describe("native form control registry", () => {
     session.removeAttribute("id:save", "data-turbo")
     session.removeAttribute("id:external-submit", "data-turbo")
     session.removeAttribute("id:external-outer", "data-turbo")
-    const optin = registryFor(session, { formMode: "optin" })
+    const optin = new FormControlRegistry(session, "id:form", {
+      formMode: "optin",
+      formSemantics: FORM_SEMANTICS,
+    })
     const optinSave = optin.register("id:save", {
       kind: "submitter",
       name: "commit",
@@ -836,7 +1043,7 @@ describe("native form control registry", () => {
 
   test("keeps form mode off as an interaction short-circuit and rejects invalid modes", () => {
     const session = formModeFixture()
-    const off = registryFor(session, { formMode: "off" })
+    const off = new FormControlRegistry(session, "id:form", { formMode: "off" })
     const initialState = off.submissionState
     const initialTerminalState = off.submissionTerminalState
 
@@ -1051,7 +1258,7 @@ describe("native form control registry", () => {
         },
       },
     )
-    const registry = registryFor(session, {
+    const registry = knownRegistryFor(session, {
       focus: {
         blur() {},
         focus: (nodeKey) => {
@@ -1181,7 +1388,7 @@ describe("native form control registry", () => {
         },
       },
     )
-    const registry = registryFor(session, {
+    const registry = knownRegistryFor(session, {
       focus: {
         blur() {},
         focus: (nodeKey) => {
@@ -1270,7 +1477,7 @@ describe("native form control registry", () => {
         }
       },
     })
-    const registry = registryFor(session, { submissionController: controller })
+    const registry = knownRegistryFor(session, { submissionController: controller })
 
     await expect(
       registry.submit({ protocol: { requestId: "safe-get-initial" } }),
@@ -1336,7 +1543,7 @@ describe("native form control registry", () => {
       },
       { requestLifecycle: lifecycle },
     )
-    const registry = registryFor(session, { submissionController: controller })
+    const registry = knownRegistryFor(session, { submissionController: controller })
 
     await expect(
       registry.submit({ protocol: { requestId: "safe-lifecycle-initial" } }),
@@ -1385,7 +1592,7 @@ describe("native form control registry", () => {
       },
       { requestLifecycle: lifecycle },
     )
-    const registry = registryFor(session, { submissionController: controller })
+    const registry = knownRegistryFor(session, { submissionController: controller })
 
     await expect(
       registry.submit({ protocol: { requestId: "unsafe-prefetch-initial" } }),
@@ -1428,7 +1635,7 @@ describe("native form control registry", () => {
         }
       },
     })
-    const registry = registryFor(session, { submissionController: controller })
+    const registry = knownRegistryFor(session, { submissionController: controller })
     registry.register("id:field", {
       kind: "value",
       value: "",
@@ -1893,7 +2100,7 @@ describe("native form control registry", () => {
 
   test("invalidates a proposal when its external submitter changes form owner", () => {
     const session = externalFormFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const submitter = registry.register("id:external-submit", {
       kind: "submitter",
       name: "commit",
@@ -2317,7 +2524,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     registry.register("id:select", {
       kind: "select",
       name: "choice[]",
@@ -2363,7 +2570,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const field = registry.register("id:field", {
       kind: "value",
       name: "profile[name]",
@@ -2476,7 +2683,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     registry.register("id:charset", {
       directionality: { name: "charset.dir", value: "rtl" },
       kind: "hidden",
@@ -2531,7 +2738,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     registry.register("id:field", { kind: "value", name: "value", value: "one" })
     const submitter = registry.register("id:save", {
       kind: "submitter",
@@ -2649,7 +2856,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const submitter = registry.register("id:save", { kind: "submitter" })
 
     const named = registry.submissionProposal({
@@ -2698,7 +2905,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const submitter = registry.register("id:save", { kind: "submitter" })
     const proposal = registry.submissionProposal({
       protocol: { requestId: "identity" },
@@ -2748,7 +2955,7 @@ describe("native form control registry", () => {
 
   test("snapshots caller inputs once before admitting an exact live proposal", () => {
     const session = formFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const form = session.tree.getElementById("form")
     if (!form) throw new Error("form fixture is missing")
     let signalReads = 0
@@ -2768,7 +2975,7 @@ describe("native form control registry", () => {
   })
 
   test("stages and redacts active request inputs before composing builder plans", () => {
-    const registry = registryFor(formFixture())
+    const registry = knownRegistryFor(formFixture())
     const planners = [
       (options: unknown) => registry.requestPlan(options as never),
       (options: unknown) => registry.submissionProposal(options as never).plan,
@@ -2900,7 +3107,7 @@ describe("native form control registry", () => {
         }
       },
     })
-    const registry = registryFor(session, { submissionController: controller })
+    const registry = knownRegistryFor(session, { submissionController: controller })
     const submitReads: Record<string, number> = {}
     const submitProtocol = {
       get capabilityHash() {
@@ -2994,7 +3201,7 @@ describe("native form control registry", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     registry.register("id:field", { kind: "value", name: "query", value: "live value" })
     const submitter = registry.register("id:save", { kind: "submitter" })
     session.setAttribute("id:form", "action", "/after?discard=1")
@@ -3030,7 +3237,7 @@ describe("native form control registry", () => {
 
   test("rejects planning after exact form replacement or without an active document URL", () => {
     const session = formFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const form = session.tree.getElementById("form")
     if (!form) throw new Error("form fixture is missing")
     const replacement = parseExpoTurboDocument('<DemoForm id="form" />').getElementById("form")
@@ -3043,7 +3250,7 @@ describe("native form control registry", () => {
 
     const noUrl = formFixture()
     noUrl.replaceTree(parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>'))
-    const noUrlRegistry = registryFor(noUrl)
+    const noUrlRegistry = knownRegistryFor(noUrl)
     expect(() => noUrlRegistry.requestPlan({ protocol: { requestId: "missing-url" } })).toThrow(
       RequestError,
     )
@@ -3051,7 +3258,7 @@ describe("native form control registry", () => {
 
   test("requires a registration-bound active submitter owned by this registry", () => {
     const session = formFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const value = registry.register("id:first", {
       kind: "value",
       name: "field",
@@ -3099,7 +3306,7 @@ describe("native form control registry", () => {
 
   test("rejects a stale submitter selection after same-key replacement", () => {
     const session = formFixture()
-    const registry = registryFor(session)
+    const registry = knownRegistryFor(session)
     const save = session.tree.getElementById("save")
     if (!save) throw new Error("submitter fixture is missing")
     const original = registry.register(save.key, {
