@@ -250,12 +250,6 @@ export function ExpoTurboApp({
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
 
-  // A configuration failure still has to reach the host's telemetry, and it has
-  // to do so without a render-time side effect.
-  useEffect(() => {
-    if ("error" in target) onErrorRef.current?.(target.error)
-  }, [target])
-
   const cable = resolveAdapter(adapters.cable, undefined)
   const fetchAdapter = resolveAdapter(adapters.fetch, DEFAULT_FETCH)
   const history = resolveAdapter(adapters.history, routerAdapters.history)
@@ -338,15 +332,28 @@ export function ExpoTurboApp({
     [renderError],
   )
 
-  if ("error" in target) return surface(target.error, NO_RETRY)
-  if (!fetchAdapter)
-    return surface(new StateError("Expo Turbo app requires a fetch adapter"), NO_RETRY)
+  // Every configuration failure resolves through this one value, so each one
+  // both renders and reports. A visible error the host's telemetry never hears
+  // about is the blank screen again, just better dressed.
+  const resolved = useMemo<
+    Readonly<{ error: Error }> | Readonly<{ fetch: FetchAdapter; url: string }>
+  >(() => {
+    if ("error" in target) return { error: target.error }
+    if (!fetchAdapter) return { error: new StateError("Expo Turbo app requires a fetch adapter") }
+    return { fetch: fetchAdapter, url: target.url }
+  }, [fetchAdapter, target])
+
+  useEffect(() => {
+    if ("error" in resolved) onErrorRef.current?.(resolved.error)
+  }, [resolved])
+
+  if ("error" in resolved) return surface(resolved.error, NO_RETRY)
 
   return createElement(ExpoTurbo, {
     adapters: renderAdapters,
     ...(boundaries ? { boundaries } : {}),
     ...(cable ? { cable } : {}),
-    fetch: fetchAdapter,
+    fetch: resolved.fetch,
     ...(focus ? { focus } : {}),
     ...(history ? { history } : {}),
     loading: loading ?? DEFAULT_LOADING,
@@ -355,6 +362,6 @@ export function ExpoTurboApp({
     ...(onUnknownVocabulary ? { onUnknownVocabulary } : {}),
     registry,
     renderError: surface,
-    url: target.url,
+    url: resolved.url,
   })
 }

@@ -271,22 +271,53 @@ describe("ExpoTurboApp zero-configuration entrypoint", () => {
     })
   })
 
-  test("falls back to the pathname when the href hook yields nothing usable", async () => {
+  test("refuses rather than falling back when the href hook yields nothing usable", async () => {
     routerPath = "/catalog/shoes"
     routerHref = ""
     const transport = stubTransport("<AppDoc />")
+    const reported: Error[] = []
 
     const renderer = await mount(
       createElement(ExpoTurboApp, {
         adapters: { fetch: transport.fetch },
+        onError: (error: Error) => reported.push(error),
         origin: ORIGIN,
         registry,
       }),
     )
 
-    expect(transport.urls).toEqual([`${ORIGIN}/catalog/shoes`])
+    // An unreadable href is not a licence to use the bare pathname: that turns
+    // "I cannot read the path" into a confident request for a different
+    // document, which is the failure refusing to infer exists to prevent.
+    expect(transport.urls).toEqual([])
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeDefined()
+    expect(reported[0]?.message).toContain("Pass an explicit `path`")
 
     routerHref = undefined
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("reports a missing transport instead of only showing it", async () => {
+    routerPath = "/catalog/shoes"
+    const reported: Error[] = []
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: null },
+        onError: (error: Error) => reported.push(error),
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    // A visible error the host's telemetry never hears about is the blank
+    // screen again, just better dressed.
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeDefined()
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.message).toContain("fetch adapter")
+
     await act(async () => {
       renderer.unmount()
     })

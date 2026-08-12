@@ -23,11 +23,19 @@ All notable public package, gem, and protocol changes will be recorded here.
   serves `turbo-cable-stream-source`, and the runtime owns its disposal.
   Subscription and dispatch faults reach `onError` without replacing the
   mounted document, because they are Stream transport faults rather than
-  document faults. The runtime also wires a `DocumentReconnectReconciler`, so a
-  server-directed reconnect reconciles the document it was disconnected from
-  instead of leaving anything broadcast during the gap silently missing. The
-  reconciliation is deferred until the active visit settles and dropped if the
-  document changed meanwhile.
+  document faults. A Cable-delivered `<turbo-stream action="refresh">` is wired
+  through as well.
+
+  A server-directed reconnect also recovers the document it was disconnected
+  from, so nothing broadcast during the gap is silently missing. The recovery
+  holds one invariant rather than a list of visit outcomes: it stays armed until
+  the document it needs has actually been re-fetched, discharged only by
+  observing that the active document's tree generation advanced, or that the app
+  has moved to a different document and the recovery is moot. A refusal, a
+  cancellation, a failed navigation, or a superseded request is therefore not a
+  special case — none of them is the observation that discharges it, so the
+  recovery simply stays armed. Attempts are bounded and exhausting them reports
+  through `onBackgroundError`.
 - The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
   It is a private Expo Router export, and a static named import of a missing
   export is a module-level `SyntaxError` that would take the whole

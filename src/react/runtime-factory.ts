@@ -36,6 +36,13 @@ const clock: ClockAdapter = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 }
 
+/** Matches the core controllers' own fallback when no observer was supplied. */
+function rethrowUnobserved(error: Error): void {
+  queueMicrotask(() => {
+    throw error
+  })
+}
+
 const PLACEHOLDER_DOCUMENT =
   '<turbo-frame id="expo-turbo-placeholder" disabled="" data-turbo-cache-control="no-cache" />'
 
@@ -106,11 +113,11 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     visitLifecycle,
   })
   const onBackgroundError = options.onBackgroundError
-  // Without an observer, a failed refresh queues an uncaught microtask throw:
-  // silent to the host and uncatchable by it at the same time.
-  const refresh = new DocumentRefreshController(session, controller, clock, {
-    onError: (error) => onBackgroundError?.(error),
-  })
+  // Spread rather than a wrapper: an always-present callback would replace each
+  // controller's own fallback reporting with a no-op when the host supplied
+  // nothing, which is worse than the default it displaced.
+  const backgroundErrorOption = onBackgroundError ? { onError: onBackgroundError } : {}
+  const refresh = new DocumentRefreshController(session, controller, clock, backgroundErrorOption)
   const frameHistory = history
     ? new FrameHistoryCoordinator(session, {
         history,
@@ -151,21 +158,22 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   // settles; the recovery scheduler then owns the debounce and, crucially,
   // survives a navigation that starts inside it and does not complete.
   const cableRecovery = options.cable
-    ? new CableDocumentRecovery(controller, clock, {
-        onError: (error) => onBackgroundError?.(error),
-      })
+    ? new CableDocumentRecovery(session, controller, clock, backgroundErrorOption)
     : undefined
   const reconnectRefresh =
     options.cable && cableRecovery
-      ? new DocumentReconnectReconciler(cableRecovery, controller, {
-          onError: (error) => onBackgroundError?.(error),
-        })
+      ? new DocumentReconnectReconciler(cableRecovery, controller, backgroundErrorOption)
       : undefined
   const streamSources =
     options.cable && reconnectRefresh
       ? new CableStreamSourceRegistry(session, options.cable, {
-          onError: (error) => onBackgroundError?.(error),
+          // This registry requires an observer, so the fallback has to be the
+          // loud one rather than a no-op that swallows the fault.
+          onError: onBackgroundError ?? rethrowUnobserved,
           reconnectRefresh,
+          // Without this, a Cable-delivered `<turbo-stream action="refresh">`
+          // silently does nothing at all: no request, no error.
+          streamOptions: { refresh },
         })
       : undefined
   let disposed = false

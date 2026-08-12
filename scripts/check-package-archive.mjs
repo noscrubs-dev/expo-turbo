@@ -70,10 +70,39 @@ try {
     join(packageRoot, "scripts/expo-entrypoint-loader.mjs"),
     join(extracted, "scripts", "expo-entrypoint-loader.mjs"),
   )
-  const importable = subpaths
+  /**
+   * A named export per entrypoint. Asserting only "it imported as an object"
+   * passes for a blanked module — every ESM namespace is an object, empty or
+   * not — which is how a stripped `expo-turbo/adapters` would slip through.
+   *
+   * `./testing` is deliberately empty until the first executable fixtures land,
+   * so it is asserted as empty rather than skipped: if it grows exports, this
+   * list has to be updated on purpose.
+   */
+  const expectedExports = {
+    ".": ["EXPO_TURBO_RUNTIME_VERSION", "EXPO_TURBO_STATUS", "createDefaultFetchAdapter"],
+    "./adapters": ["createDefaultFetchAdapter", "defineStyleAdapter", "isTurboMultipartBody"],
+    "./core": ["DocumentSession", "parseExpoTurboDocument", "StateError"],
+    "./expo": ["ExpoTurboApp", "ExpoTurboErrorSurface", "ExpoTurboLoadingSurface"],
+    "./expo-router": ["createExpoRouterAdapters", "useExpoRouterAdapters"],
+    "./react": ["ExpoTurbo", "ExpoTurboProvider", "ExpoTurboRoot", "useExpoTurboDisposable"],
+    "./registry": ["attr", "createRegistry", "defineComponentModule"],
+    "./testing": [],
+  }
+
+  const declared = subpaths
     .map(([subpath]) => subpath)
     .filter((subpath) => subpath !== "./package.json")
-    .map((subpath) => (subpath === "." ? manifest.name : `${manifest.name}${subpath.slice(1)}`))
+  const unchecked = declared.filter((subpath) => !(subpath in expectedExports))
+  assert.deepEqual(
+    unchecked,
+    [],
+    `these entrypoints ship with nothing asserted about them: ${unchecked.join(", ")}`,
+  )
+  const checks = declared.map((subpath) => [
+    subpath === "." ? manifest.name : `${manifest.name}${subpath.slice(1)}`,
+    expectedExports[subpath],
+  ])
 
   writeFileSync(
     join(extracted, "archive-runner.mjs"),
@@ -81,14 +110,23 @@ try {
       'import assert from "node:assert/strict"',
       'import { register } from "node:module"',
       'register("./scripts/expo-entrypoint-loader.mjs", import.meta.url)',
-      `const specifiers = ${JSON.stringify(importable)}`,
-      "for (const specifier of specifiers) {",
+      `const checks = ${JSON.stringify(checks)}`,
+      "for (const [specifier, names] of checks) {",
       "  const module = await import(specifier)",
       "  assert.ok(module && typeof module === 'object', `${specifier} did not load`)",
-      "}",
-      `const expo = await import(${JSON.stringify(`${manifest.name}/expo`)})`,
-      "for (const name of ['ExpoTurboApp', 'ExpoTurboErrorSurface', 'ExpoTurboLoadingSurface']) {",
-      "  assert.equal(typeof expo[name], 'function', `${name} is missing from the packed archive`)",
+      "  for (const name of names) {",
+      "    assert.ok(",
+      "      module[name] !== undefined,",
+      "      `${specifier} is missing its ${name} export in the packed archive`,",
+      "    )",
+      "  }",
+      "  if (names.length === 0) {",
+      "    assert.deepEqual(",
+      "      Object.keys(module).filter((key) => key !== 'default'),",
+      "      [],",
+      "      `${specifier} is documented as empty but ships exports`,",
+      "    )",
+      "  }",
       "}",
       `const root = await import(${JSON.stringify(manifest.name)})`,
       "assert.equal(root.EXPO_TURBO_RUNTIME_VERSION, " +

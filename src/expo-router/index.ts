@@ -45,13 +45,24 @@ const useRouterHref: () => string | undefined =
     ? ExpoRouter.useUnstableGlobalHref
     : () => undefined
 
-export function expoRouterDocumentPath(href: unknown, pathname: string): string {
-  if (typeof href !== "string" || href.trim() === "") return pathname
+/**
+ * The path portion of a router href, or `undefined` when the href cannot be
+ * trusted.
+ *
+ * `pathname` is deliberately *not* a fallback. It cannot carry a query, so
+ * substituting it turns an unreadable href into a confident request for a
+ * different document — the same silent wrong-document failure that refusing to
+ * infer exists to prevent. If the href is unusable the caller must ask for an
+ * explicit path.
+ */
+export function expoRouterDocumentPath(href: unknown): string | undefined {
+  if (typeof href !== "string" || href.trim() === "") return undefined
   try {
     const parsed = new URL(href, HREF_PARSE_BASE)
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`
+    return path === "" ? undefined : path
   } catch {
-    return pathname
+    return undefined
   }
 }
 
@@ -82,11 +93,13 @@ export const expoRouterDocumentPathIsInferable: boolean =
   typeof ExpoRouter.useUnstableGlobalHref === "function"
 
 export function useExpoRouterDocumentPath(): string | undefined {
-  const pathname = ExpoRouter.usePathname()
+  // Both hooks are always called, so hook order never depends on the outcome.
+  // `usePathname()` is read for its subscription: it is what re-renders the
+  // screen on navigation, and the href hook alone would not.
+  ExpoRouter.usePathname()
   const href = useRouterHref()
-  // Always called, both branches, so hook order never depends on this.
   if (!expoRouterDocumentPathIsInferable) return undefined
-  return expoRouterDocumentPath(href, pathname)
+  return expoRouterDocumentPath(href)
 }
 
 /**

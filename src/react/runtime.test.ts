@@ -352,13 +352,127 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
+  test("recovers when a navigation cancels the recovery in flight and then fails", async () => {
+    const documentUrl = "https://example.test/document"
+    const nextUrl = "https://example.test/next"
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    let releaseRecovery: (() => void) | undefined
+    let releaseNavigation: (() => void) | undefined
+
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          // Hold the second GET of the document — the recovery — so a
+          // navigation can cancel it while it is in flight.
+          if (request.url === documentUrl && requests.length > 1) {
+            await new Promise<void>((resolve) => {
+              releaseRecovery = resolve
+            })
+          }
+          if (request.url === nextUrl) {
+            await new Promise<void>((_resolve, reject) => {
+              releaseNavigation = () => reject(new Error("navigation transport refused"))
+            })
+          }
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    const handlers = callbacks[0]
+    if (!handlers) throw new Error("the Cable adapter was never subscribed")
+
+    handlers.connected(false)
+    handlers.disconnected(true)
+    handlers.connected(true)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 50))
+    expect(requests).toEqual([documentUrl, documentUrl])
+
+    // Cancel the in-flight recovery with a navigation, then fail it. The
+    // cancelled recovery resolves with a result rather than `undefined`, so any
+    // scheme keyed on that value concludes the refresh happened.
+    const visit = runtime.controller.visit(nextUrl).catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    releaseRecovery?.()
+    releaseNavigation?.()
+    await visit
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 250))
+
+    // The document was never re-fetched, so the recovery still owed one.
+    expect(requests).toEqual([documentUrl, documentUrl, nextUrl, documentUrl])
+    expect(runtime.session.tree.document.url).toBe(documentUrl)
+
+    runtime.dispose()
+  })
+
+  test("applies a Cable-delivered refresh Stream action", async () => {
+    const documentUrl = "https://example.test/document"
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    callbacks[0]?.connected(false)
+
+    await callbacks[0]?.received(
+      '<turbo-stream action="refresh" target="ignored"><template></template></turbo-stream>',
+    )
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 150))
+
+    // Without `streamOptions.refresh` the action is a silent no-op: no request,
+    // no error, nothing for a host to notice.
+    expect(requests).toEqual([documentUrl, documentUrl])
+
+    runtime.dispose()
+  })
+
   test("drops the reconnect recovery when the navigation that swallowed it succeeds", async () => {
     const { documentUrl, nextUrl, requests, runtime } =
       await reconnectDuringHeldNavigation("succeed")
 
-    // Asserts the absence of a pointless second route: a visit that committed
-    // fresh content already satisfied the recovery, so re-arming would refetch
-    // for nothing.
+    // Request count alone cannot tell "dropped" from "still armed" here: a
+    // retained recovery targets the old URL, which `refreshCurrent` refuses, so
+    // it would issue no request either way. The drop itself is asserted
+    // directly on `armed` in cable-recovery-internal.test.ts; this only pins
+    // that a successful navigation costs no extra fetch.
     expect(requests).toEqual([documentUrl, nextUrl])
 
     runtime.dispose()
