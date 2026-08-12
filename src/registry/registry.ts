@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from "react"
+import { type ComponentType, createElement, type ReactNode } from "react"
 import { z } from "zod"
 
 import { RegistryError } from "../core/errors.js"
@@ -22,6 +22,7 @@ const RESERVED_TAGS = new Set([
 ])
 
 export const REGISTRY_CAPABILITY_MANIFEST_VERSION = 1 as const
+const MAX_FALLBACK_DIAGNOSTIC_ATTEMPTS = 3
 
 type StringKey<Value> = Extract<keyof Value, string>
 
@@ -657,29 +658,9 @@ function capabilityHash(value: string): string {
 export function createCapabilityManifest(
   ...modules: readonly CapabilityModule[]
 ): VersionedRegistryCapabilityManifest {
-  return createCapabilityManifestWithComponents(modules, [])
-}
-
-function createCapabilityManifestWithComponents(
-  modules: readonly CapabilityModule[],
-  declaredComponents: readonly RegistryComponentDefinition[],
-): VersionedRegistryCapabilityManifest {
   const moduleNames = new Set<string>()
   const owners = new Map<string, string>()
-  const definitions: RegistryComponentDefinition[] = [...declaredComponents]
-
-  for (const definition of declaredComponents) {
-    for (const name of [definition.tag, ...definition.aliases]) {
-      const owner = owners.get(name)
-      if (owner) {
-        throw new RegistryError(
-          `Component name ${JSON.stringify(name)} is declared more than once`,
-          { target: name },
-        )
-      }
-      owners.set(name, "registry")
-    }
-  }
+  const definitions: RegistryComponentDefinition[] = []
 
   for (const module of modules) {
     if (moduleIsQuarantined(module)) continue
@@ -691,6 +672,12 @@ function createCapabilityManifestWithComponents(
       for (const name of [definition.tag, ...definition.aliases]) {
         const owner = owners.get(name)
         if (owner) {
+          if (owner === module.name) {
+            throw new RegistryError(
+              `Component name ${JSON.stringify(name)} is declared more than once in component module ${JSON.stringify(module.name)}`,
+              { target: name },
+            )
+          }
           throw new RegistryError(
             `Component name ${JSON.stringify(name)} is owned by both ${JSON.stringify(owner)} and ${JSON.stringify(module.name)}`,
             { target: name },
@@ -793,19 +780,14 @@ class Registry<Component extends RegistryComponent>
 {
   readonly capabilities: VersionedRegistryCapabilityManifest
   private readonly components = new Map<string, RegistryComponent>()
+  private readonly fallbackDiagnosticAttempts = new Map<string, number>()
   private readonly reportedFallbacks = new Set<string>()
 
   constructor(
     private readonly modules: readonly ComponentModule[],
-    private readonly declaredComponents: readonly RegistryComponent[] = [],
     private readonly invertedStrictness = false,
   ) {
-    this.capabilities = createCapabilityManifestWithComponents(modules, declaredComponents)
-    for (const component of declaredComponents) {
-      for (const name of [component.tag, ...component.aliases]) {
-        this.components.set(name, component)
-      }
-    }
+    this.capabilities = createCapabilityManifest(...modules)
     for (const module of modules) {
       if (moduleIsQuarantined(module)) continue
       for (const component of module.components) {
@@ -842,11 +824,16 @@ class Registry<Component extends RegistryComponent>
           })
         }
         const fingerprint = `${issue.kind}:${issue.tag}`
-        if (!this.reportedFallbacks.has(fingerprint)) {
+        const attempts = this.fallbackDiagnosticAttempts.get(fingerprint) ?? 0
+        if (
+          !this.reportedFallbacks.has(fingerprint) &&
+          attempts < MAX_FALLBACK_DIAGNOSTIC_ATTEMPTS
+        ) {
           try {
             console.error("Expo Turbo registry contract fallback", issue)
             this.reportedFallbacks.add(fingerprint)
           } catch {
+            this.fallbackDiagnosticAttempts.set(fingerprint, attempts + 1)
             // A diagnostic sink must not turn production skew into a render failure.
           }
         }
@@ -877,7 +864,6 @@ class Registry<Component extends RegistryComponent>
   ): ManifestComponentRegistry<Component | Next[number]> {
     return new Registry<Component | Next[number]>(
       [...this.modules, module],
-      this.declaredComponents,
       this.invertedStrictness,
     )
   }
@@ -927,7 +913,10 @@ export function defineRegistry<
         { target: tag },
       )
     }
-    declaration.render.displayName = tag
+    const declaredRender = declaration.render
+    const registeredRender = (props: Readonly<Record<string, unknown>>) =>
+      createElement(declaredRender, props)
+    registeredRender.displayName = tag
     const definition = createComponentDefinition({
       aliases: declaration.aliases,
       attributes: declaration.attributes,
@@ -940,12 +929,12 @@ export function defineRegistry<
       ...(declaration.schema !== undefined ? { schema: declaration.schema } : {}),
       tag,
     })
-    return Object.freeze({ ...definition, component: declaration.render })
+    return Object.freeze({ ...definition, component: registeredRender })
   })
   const module = defineComponentModule({
     components: components as ComponentsFromDeclarations<Declarations>[],
     name: config.module.name,
     version: config.module.version,
   })
-  return new Registry<ComponentsFromDeclarations<Declarations>>([module], [], true)
+  return new Registry<ComponentsFromDeclarations<Declarations>>([module], true)
 }

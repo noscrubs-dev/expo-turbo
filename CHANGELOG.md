@@ -23,7 +23,9 @@ All notable public package, gem, and protocol changes will be recorded here.
 - **Breaking:** An invalid legacy module name or RubyGems version no longer
   stops app boot. The registry quarantines the full module, including its
   components, and does not send a support claim for it. This makes server
-  negotiation fail closed. Fix the value to restore the module. For example,
+  negotiation fail closed. This also applies to the required `module` identity
+  in `defineRegistry()`: one bad name or version quarantines all components in
+  that registry. Fix the value to restore the full registry. For example,
   change `name: "cart "` to `name: "cart"`, or change `version: "v2"` to
   `version: "2"`.
 - **Breaking:** Remove `ComponentActionRegistry.modules`. It had no consumer.

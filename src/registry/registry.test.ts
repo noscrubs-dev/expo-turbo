@@ -142,12 +142,36 @@ describe("typed component registry", () => {
     })
 
     expect(registry.capabilities.components.map(({ tag }) => tag)).toEqual(["StableWireTag"])
-    expect(registry.resolve("StableWireTag")?.component).toBe(render)
-    expect(render.displayName).toBe("StableWireTag")
+    expect(registry.resolve("StableWireTag")?.component).not.toBe(render)
+    expect(registry.resolve("StableWireTag")?.component).toHaveProperty(
+      "displayName",
+      "StableWireTag",
+    )
+    expect(render.displayName).toBe("MinifiedWrapper")
     expect(registry.resolve("MinifiedWrapper")).toBeUndefined()
     expect(registry.decode(element('<StableWireTag display-name=" Ada " />')).props).toEqual({
       displayName: "Ada",
     })
+  })
+
+  test("does not mutate frozen or shared caller renderers when it adds React names", () => {
+    const shared = Object.freeze(function LibraryButton() {
+      return null
+    })
+    const declaration = component({ children: none, render: shared })
+
+    const registry = defineRegistry({
+      module: TEST_MODULE,
+      components: { DemoButton: declaration, SecondaryButton: declaration },
+    })
+
+    expect((shared as Readonly<{ displayName?: string }>).displayName).toBeUndefined()
+    expect(shared.name).toBe("LibraryButton")
+    expect(registry.resolve("DemoButton")?.component).toHaveProperty("displayName", "DemoButton")
+    expect(registry.resolve("SecondaryButton")?.component).toHaveProperty(
+      "displayName",
+      "SecondaryButton",
+    )
   })
 
   test("publishes one required module identity in the manifest and request header", () => {
@@ -360,6 +384,35 @@ describe("typed component registry", () => {
       expect(registry.decodeForRender(unknown).status).toBe("transparent")
       expect(registry.decodeForRender(unknown).status).toBe("transparent")
       expect(attempts).toBe(2)
+    } finally {
+      console.error = originalError
+      if (previous === undefined) delete development.__DEV__
+      else development.__DEV__ = previous
+    }
+  })
+
+  test("bounds retries when the mandatory production diagnostic sink always throws", () => {
+    const development = globalThis as typeof globalThis & { __DEV__?: boolean }
+    const previous = development.__DEV__
+    const originalError = console.error
+    let attempts = 0
+    development.__DEV__ = false
+    console.error = () => {
+      attempts += 1
+      throw new Error("diagnostic sink failed")
+    }
+    try {
+      const registry = defineRegistry({
+        module: TEST_MODULE,
+        components: { Known: component({ children: none, render: () => null }) },
+      })
+      const unknown = element("<Unknown />")
+
+      expect(registry.resolve("Unknown")).toBeUndefined()
+      for (let index = 0; index < 50; index += 1) {
+        expect(registry.decodeForRender(unknown).status).toBe("transparent")
+      }
+      expect(attempts).toBe(3)
     } finally {
       console.error = originalError
       if (previous === undefined) delete development.__DEV__
@@ -1226,6 +1279,31 @@ describe("typed component registry", () => {
     })
     expect(() => createRegistry(primitives, duplicate)).toThrow(/primitives.*commerce/)
     expect(() => createRegistry(primitives, primitives)).toThrow(/Duplicate component module/)
+
+    const aliasCollision = defineComponentModule({
+      components: [
+        defineComponent({
+          aliases: ["B"],
+          attributes: {},
+          children: "none",
+          component: () => null,
+          schema: z.object({}),
+          tag: "A",
+        }),
+        defineComponent({
+          attributes: {},
+          children: "none",
+          component: () => null,
+          schema: z.object({}),
+          tag: "B",
+        }),
+      ],
+      name: "probe",
+      version: "0.1.0",
+    })
+    expect(() => createRegistry(aliasCollision)).toThrow(
+      'Component name "B" is declared more than once in component module "probe"',
+    )
   })
 
   test("generates the runtime manifest from component-free definitions", () => {
