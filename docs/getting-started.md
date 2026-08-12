@@ -65,29 +65,92 @@ The [Expo example guide](../example/expo/README.md) documents fixture and live
 Rails modes; the [Rails example guide](../example/rails/README.md) documents
 Redis, reset, readiness, and test commands.
 
-## Build a host
+## Quickstart
 
-An adopting Expo application should:
+Adopting Expo Turbo costs one component. Put it in a catch-all Expo Router
+route and the mounted pathname becomes the document path:
 
-1. Define application components with `attr()` declarations through
-   `expo-turbo/registry`.
-2. Render the high-level `ExpoTurbo` component from `expo-turbo/react` with
-   the document URL, registry, fetch adapter, and optional navigation adapter.
-3. Supply only the adapters the host needs: fetch, navigation/history,
-   lifecycle/reachability, focus/scroll, styles, storage, observability, and
-   optional Cable transport.
-4. Render admitted XML through `ExpoTurboRoot`; never execute server-selected
-   code or fall back to an unrelated JSON renderer.
-5. Keep credentials, origin selection, identity rotation, retry policy, and
-   product state in the host.
+```tsx
+// app/[...path].tsx
+import { ExpoTurboApp } from "expo-turbo/expo"
 
-The package provides a credentialed default transport. It keeps protocol
-headers from the request, returns XML `4xx` and `5xx` responses for normal
-protocol handling, and applies the timeout to request hooks, the fetch,
-response hooks, and response-body reads. Request hooks receive a frozen header
-record and can return more headers. Response hooks receive frozen metadata
-without access to the response body. A hook failure rejects the request with a
-redacted `RequestError`.
+import { registry } from "../registry"
+
+export default function Screen() {
+  return <ExpoTurboApp origin="https://example.com" registry={registry} />
+}
+```
+
+That is the whole native side. `ExpoTurboApp` owns the document URL, the Expo
+Router history and navigation bridge, the credentialed transport, the runtime
+and its disposal, a loading spinner, and a retryable error surface. The only
+work left is declaring your components, which the next section covers.
+
+Pass `path` when the document is not the mounted route, such as
+`path="/orders"`. Search parameters are not inferred from the router; put them
+in `path` when a document needs them.
+
+### Adapters
+
+Everything else is an adapter, and `adapters` is the single escape hatch. Each
+key has three states:
+
+| State | Meaning |
+| --- | --- |
+| absent | Use the packaged default, when the key has one |
+| an object | Use exactly this adapter |
+| `null` | Explicitly off, even where a default exists |
+
+```tsx
+<ExpoTurboApp
+  origin="https://example.com"
+  registry={registry}
+  adapters={{
+    fetch: createDefaultFetchAdapter({ onRequest: authHeaders }),
+    documentLinks: null,
+    focus: focusRegistry,
+  }}
+/>
+```
+
+| Adapter | Default |
+| --- | --- |
+| `fetch` | `createDefaultFetchAdapter()` |
+| `history`, `navigation` | The Expo Router bridge |
+| `documentAnnouncements`, `formAnnouncements` | `AccessibilityInfo` announcements |
+| `documentLinks` | `Linking.openURL` |
+| `documentAutomaticPreloadPolicy`, `documentPrefetchPolicy` | Same-origin URLs only |
+| `autofocus`, `autofocusScroll`, `documentAnchorScroll`, `documentHistoryScroll`, `documentRefreshScroll`, `focus`, `frameAutoscroll`, `styles` | None |
+
+The keys with no default need host-owned native node references, a real scroll
+container, or application style tokens, so the package cannot supply one. For
+those keys `null` and absent behave identically; they are listed so an
+application can supply its own without leaving `ExpoTurboApp`.
+
+Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
+library hands the same instance to form validation and to the renderer, so an
+application never keeps two owners of one adapter in step by hand.
+
+`clock`, `requestIds`, and `restorationIds` are not adapters at all: the
+runtime has always owned them internally.
+
+### Loading and error surfaces
+
+`ExpoTurboApp` renders a spinner while a document loads and a retryable error
+card when one fails. Development builds name the real error, because that is
+the only reader who can act on a `ContentTypeError`. Release builds show one
+fixed sentence instead, and `onError` still receives the real error in both, so
+telemetry loses nothing. Pass `loading` or `renderError` to replace either.
+
+### Transport
+
+The packaged transport is credentialed. It keeps protocol headers from the
+request, returns XML `4xx` and `5xx` responses for normal protocol handling,
+and applies the timeout to request hooks, the fetch, response hooks, and
+response-body reads. Request hooks receive a frozen header record and can
+return more headers. Response hooks receive frozen metadata without access to
+the response body. A hook failure rejects the request with a redacted
+`RequestError`.
 
 ```ts
 import { createDefaultFetchAdapter } from "expo-turbo/adapters"
@@ -104,36 +167,7 @@ const fetchAdapter = createDefaultFetchAdapter({
 })
 ```
 
-Expo Router applications can use the optional bridge:
-
-```tsx
-import * as Linking from "expo-linking"
-import { useExpoRouterAdapters } from "expo-turbo/expo-router"
-
-function DocumentScreen() {
-  const { history, navigation } = useExpoRouterAdapters({
-    openExternal: (url) => Linking.openURL(url),
-  })
-
-  return (
-    <ExpoTurbo
-      url={documentUrl}
-      registry={registry}
-      fetch={fetchAdapter}
-      history={history}
-      navigation={navigation}
-    />
-  )
-}
-```
-
-By default, an absolute document URL maps to its path, query, and fragment.
-Supply `hrefForDocument(url)` when the app uses a catch-all or another route
-space. Supply `openExternal(url)` for the host's real browser or native-link
-hand-off. When it is absent, the compatibility fallback pushes the absolute URL
-through Expo Router. This bridge supplies synchronous history writes and basic
-navigation. Managed native traversal metadata, restoration event delivery, and
-app-specific external-link policy remain host work.
+## Declare components
 
 Define registry attributes next to their wire codecs in a file that does not
 import React Native components:
@@ -210,8 +244,15 @@ matching schema as the second `attr()` argument. The explicit component
 `schema` form remains available when one object schema must validate
 relationships between multiple props.
 
-The standard host path owns session, visit, Frame, form, refresh, state, and
-disposal wiring:
+## Advanced composition
+
+`ExpoTurboApp` is the documented path. The lower layers stay public for hosts
+that need them, and each one gives up something the layer above supplies.
+
+`ExpoTurbo` from `expo-turbo/react` is the same runtime without the Expo
+Router, transport, and surface defaults. It owns session, visit, Frame, form,
+refresh, state, and disposal wiring, but the host supplies the URL and every
+adapter:
 
 ```tsx
 <ExpoTurbo
@@ -225,6 +266,57 @@ disposal wiring:
   renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
 />
 ```
+
+`ExpoTurbo` has no surface of its own to draw with, so **an omitted
+`renderError` rethrows the failure during render** rather than showing a blank
+screen. A dev build turns that into a redbox and a release build routes it to
+the host's nearest error boundary. Pass `renderError={() => null}` to opt back
+into silence.
+
+`useExpoRouterAdapters` builds the Expo Router history and navigation adapters
+directly. It returns one identity for the life of the mount, so inline option
+callbacks are safe:
+
+```tsx
+import * as Linking from "expo-linking"
+import { useExpoRouterAdapters } from "expo-turbo/expo-router"
+
+const { history, navigation } = useExpoRouterAdapters({
+  openExternal: (url) => Linking.openURL(url),
+})
+```
+
+By default, an absolute document URL maps to its path, query, and fragment.
+Supply `hrefForDocument(url)` when the app uses a catch-all or another route
+space. Supply `openExternal(url)` for the host's real browser or native-link
+hand-off. When it is absent, the compatibility fallback pushes the absolute URL
+through Expo Router. This bridge supplies synchronous history writes and basic
+navigation. Managed native traversal metadata, restoration event delivery, and
+app-specific external-link policy remain host work.
+
+These adapters are the runtime's identity. `ExpoTurbo` replaces its whole
+runtime when `fetch`, `history`, `navigation`, `focus`, or `registry` changes
+identity, so build them outside render or memoize them; an adapter rebuilt on
+every render refetches without bound.
+
+`createExpoTurboRuntime` suits a host that controls loading and presentation
+separately, and `ExpoTurboProvider` with `ExpoTurboRoot` suits one that
+composes the renderer itself. Import individual primitives from
+`expo-turbo/core` only when custom runtime composition is required.
+
+A host that shares one runtime across screens can use
+`useExpoTurboDisposable(runtime)` to reference-count it. It disposes one
+microtask after the last claim is released, so a StrictMode double-mount, a
+Fast Refresh cycle, or a route swap hands the runtime over instead of tearing
+it down.
+
+Components passed through `boundaries` render inside the document but are
+authored by the host, so they routinely read host contexts. Neither
+`ExpoTurboApp` nor `ExpoTurbo` mounts a provider between the host tree and the
+renderer, so anything wrapped around them stays an ancestor of those
+components.
+
+## Vocabulary tolerance
 
 Installed clients can have an older component vocabulary than the server. An
 unknown component becomes a transparent wrapper, so its children still render.
@@ -324,15 +416,10 @@ diagnostic keeps its existing native behavior.
 `ExpoTurboProvider` must implement `decodeForRender()`; `resolve()` stays
 optional, and direct `decode()` calls stay strict.
 
-Changing `url` performs a visit on the existing runtime. Without `history`, it
-uses an ordinary visit; with `history`, it uses a replace visit so the host
-router remains synchronized. Expo Turbo then owns history identity, snapshots,
-and document/Frame coordination.
-
-Use `createExpoTurboRuntime` when the host needs to control loading and
-presentation separately. It accepts the same `history` adapter. Import the
-individual primitives from `expo-turbo/core` only when custom runtime
-composition is required.
+Changing the document path performs a visit on the existing runtime. Without
+`history`, it uses an ordinary visit; with `history`, it uses a replace visit
+so the host router remains synchronized. Expo Turbo then owns history identity,
+snapshots, and document/Frame coordination.
 
 ### Module version negotiation
 
@@ -373,10 +460,13 @@ reloads the active document, so the component does not need a duplicated
 `reload-href` attribute.
 
 Use
+[`example/expo/src/app/turbo-app.tsx`](../example/expo/src/app/turbo-app.tsx)
+for the whole zero-configuration entrypoint,
 [`example/expo/src/demo-registry.tsx`](../example/expo/src/demo-registry.tsx)
-for registry and component patterns and
+for registry and component patterns, and
 [`example/expo/src/demo-runtime.tsx`](../example/expo/src/demo-runtime.tsx) for
-the complete provider, document, Frame, form, history, and Cable composition.
+the hand-composed provider, document, Frame, form, history, and Cable wiring
+that advanced composition looks like.
 
 An adopting Rails application should:
 
@@ -402,6 +492,7 @@ The complete Rails API and examples are in the
 | `expo-turbo` | Version/status constants and the combined public surface |
 | `expo-turbo/core` | Parser, tree/session, visits, Frames, forms, Streams, lifecycle, and errors |
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
+| `expo-turbo/expo` | `ExpoTurboApp`, the zero-configuration Expo entrypoint, and its surfaces |
 | `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | Provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |

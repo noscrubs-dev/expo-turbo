@@ -14,13 +14,8 @@ import {
   type FrameControllerRegistry,
   type FramePreloader,
 } from "expo-turbo/core";
-import { ExpoTurboProvider } from "expo-turbo/react";
-import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useEffect,
-} from "react";
+import { ExpoTurboProvider, useExpoTurboDisposable } from "expo-turbo/react";
+import { createContext, type ReactNode, useContext } from "react";
 
 import { createDemoActionRuntime } from "./demo-actions";
 import {
@@ -87,7 +82,6 @@ export interface DemoRuntimeOptions {
 }
 
 const DemoRuntimeContext = createContext<DemoRuntime | undefined>(undefined);
-const runtimeOwners = new WeakMap<DemoRuntime, number>();
 let sharedRuntime: DemoRuntime | undefined;
 
 export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime {
@@ -234,31 +228,27 @@ function isDemoFixtureFetchAdapter(fetchAdapter: FetchAdapter): fetchAdapter is 
 }
 
 function getSharedDemoRuntime(): DemoRuntime {
-  sharedRuntime ??= createDemoRuntime();
-  return sharedRuntime;
-}
-
-function useDemoRuntimeOwner(runtime: DemoRuntime): void {
-  useEffect(() => {
-    runtimeOwners.set(runtime, (runtimeOwners.get(runtime) ?? 0) + 1);
-    return () => {
-      const owners = Math.max(0, (runtimeOwners.get(runtime) ?? 0) - 1);
-      runtimeOwners.set(runtime, owners);
-      queueMicrotask(() => {
-        if (runtimeOwners.get(runtime) !== 0) return;
-        runtimeOwners.delete(runtime);
-        runtime.dispose();
-        if (sharedRuntime === runtime) sharedRuntime = undefined;
-      });
-    };
-  }, [runtime]);
+  if (sharedRuntime) return sharedRuntime;
+  const runtime = createDemoRuntime();
+  // The reference counting that decides *when* to dispose now lives in the
+  // package (useExpoTurboDisposable). All this wrapper still owns is releasing
+  // the module-level slot when that disposal finally happens.
+  const shared: DemoRuntime = Object.freeze({
+    ...runtime,
+    dispose(): void {
+      if (sharedRuntime === shared) sharedRuntime = undefined;
+      runtime.dispose();
+    },
+  });
+  sharedRuntime = shared;
+  return shared;
 }
 
 export function DemoRuntimeProvider({
   children,
   runtime = getSharedDemoRuntime(),
 }: Readonly<{ children?: ReactNode; runtime?: DemoRuntime }>) {
-  useDemoRuntimeOwner(runtime);
+  useExpoTurboDisposable(runtime);
   return (
     <DemoRuntimeContext.Provider value={runtime}>
       <DemoFocusProvider focus={runtime.focus}>
