@@ -1,7 +1,6 @@
 class ApplicationController < ActionController::API
-  include ExpoTurbo::Rails::Controller
-
-  expo_turbo_view_root Rails.root.join("app/views/expo_turbo")
+  # The Engine installs the concern, so no include is written here.
+  #
   # Each child mode mirrors the demo client registry in
   # example/expo/src/demo-registry.tsx. The server rejects a child that the
   # native decoder cannot render before the response leaves the host.

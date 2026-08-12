@@ -8,7 +8,7 @@ module Api
             broadcast_expo_turbo_stream_to("demo-stream") do |stream|
               stream.replace(
                 "demo-stream-message",
-                partial: "demo/streams/message",
+                partial: "api/expo_turbo/demo/streams/message",
                 locals: {message: "Broadcast from the standalone Rails demo"}
               )
             end

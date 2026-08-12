@@ -52,23 +52,20 @@ module Api
         private
 
         def require_form_frame!
-          head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
+          head :bad_request unless expo_turbo_frame_request?
         end
 
         def render_form(first_name: "", error: nil, status: :ok, plan_error: nil, plan_selected: "none", terms_accepted: false, terms_error: nil, upload_error: nil)
-          render_expo_turbo "demo/forms/show", locals: {error:, first_name:, plan_error:, plan_selected:, terms_accepted:, terms_error:, upload_error:}, status:
+          render "show", locals: {error:, first_name:, plan_error:, plan_selected:, terms_accepted:, terms_error:, upload_error:}, status:
         end
 
         def render_morph_validation_error(error:)
-          render_expo_turbo_stream(
-            expo_turbo_stream.replace(
-              "demo-form",
-              method: :morph,
-              partial: "demo/forms/first_name_form",
-              locals: {error:, first_name: ""}
-            ),
-            status: :unprocessable_content
-          )
+          render turbo_stream: turbo_stream.replace(
+            "demo-form",
+            method: :morph,
+            partial: "first_name_form",
+            locals: {error:, first_name: ""}
+          ), status: :unprocessable_content
         end
 
         def render_bad_form_request

@@ -4,10 +4,15 @@ module Api
   module ExpoTurbo
     module Demo
       class ProtectedFramesController < ApplicationController
-        def show
-          return head :bad_request unless expo_turbo_frame_request_id == "demo-protected-frame"
+        before_action :require_frame_request!
 
-          render_expo_turbo("demo/protected_frames/show")
+        def show
+        end
+
+        private
+
+        def require_frame_request!
+          head :bad_request unless expo_turbo_frame_request?
         end
       end
     end

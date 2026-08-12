@@ -6,6 +6,12 @@ require "timeout"
 require "tempfile"
 
 RSpec.describe "standalone demo host" do
+  # The native client asks for a Stream response and for Expo Turbo XML, which
+  # is what makes the response Expo Turbo rather than browser HTML.
+  def native_stream_headers
+    {"Accept" => "#{ExpoTurbo::Rails::TURBO_STREAM_MIME_TYPE}, #{ExpoTurbo::Rails::MIME_TYPE}"}
+  end
+
   def expect_vary_headers(*headers)
     actual_headers = response.headers.fetch("Vary").split(",").map { |value| value.strip.downcase }
     expect(actual_headers).to include(*headers.map(&:downcase))
@@ -155,7 +161,7 @@ RSpec.describe "standalone demo host" do
 
   it "serves standard sibling Stream fragments from confined XML partials" do
     host! "localhost"
-    get "/api/expo_turbo/demo/stream"
+    get "/api/expo_turbo/demo/stream", headers: native_stream_headers
 
     fragment = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
     streams = fragment.xpath("/expo-turbo-test-root/turbo-stream")
@@ -201,7 +207,7 @@ RSpec.describe "standalone demo host" do
 
   it "serves an exact Rails Stream morph from a confined XML partial" do
     host! "localhost"
-    get "/api/expo_turbo/demo/stream", params: {mode: "morph"}
+    get "/api/expo_turbo/demo/stream", params: {mode: "morph"}, headers: native_stream_headers
 
     fragment = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
     streams = fragment.xpath("/expo-turbo-test-root/turbo-stream")
@@ -219,7 +225,7 @@ RSpec.describe "standalone demo host" do
 
   it "serves a standard request-id-free Refresh Stream morph" do
     host! "localhost"
-    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph"}
+    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph"}, headers: native_stream_headers
 
     stream = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
       .at_xpath("/expo-turbo-test-root/turbo-stream")
@@ -236,7 +242,7 @@ RSpec.describe "standalone demo host" do
     host! "localhost"
     get "/api/expo_turbo/demo/stream",
       params: {mode: "refresh-morph-originating"},
-      headers: {"X-Turbo-Request-Id" => "originating-refresh"}
+      headers: native_stream_headers.merge("X-Turbo-Request-Id" => "originating-refresh")
 
     streams = ExpoTurbo::Rails::Testing.parse_stream_fragment(response.body)
       .xpath("/expo-turbo-test-root/turbo-stream")
@@ -250,13 +256,13 @@ RSpec.describe "standalone demo host" do
     expect(streams.last["method"]).to eq("morph")
     expect(streams.last["request-id"]).to eq("originating-refresh")
 
-    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph-originating"}
+    get "/api/expo_turbo/demo/stream", params: {mode: "refresh-morph-originating"}, headers: native_stream_headers
     expect(response).to have_http_status(:bad_request)
   end
 
   it "rejects an unknown standalone Rails Stream mode" do
     host! "localhost"
-    get "/api/expo_turbo/demo/stream", params: {mode: "unsupported"}
+    get "/api/expo_turbo/demo/stream", params: {mode: "unsupported"}, headers: native_stream_headers
 
     expect(response).to have_http_status(:bad_request)
   end

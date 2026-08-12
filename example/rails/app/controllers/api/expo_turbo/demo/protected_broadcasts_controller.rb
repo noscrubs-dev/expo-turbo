@@ -7,7 +7,7 @@ module Api
         def create
           content = expo_turbo_stream.replace(
             "demo-protected-stream-message",
-            partial: "demo/streams/protected_message",
+            partial: "api/expo_turbo/demo/streams/protected_message",
             locals: {message: "Protected broadcast from the standalone Rails demo"}
           ).to_s
           ::ExpoTurbo::Rails::Cable.broadcast_protected_to(ExpoTurboDemo::NativeCableTicket::STREAM, content:)
