@@ -6,3 +6,4 @@ node_modules/
 pkg/
 rails/.ruby-lsp/
 rails/pkg/
+rails/log/

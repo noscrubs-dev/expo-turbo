@@ -30,6 +30,7 @@ import {
   type RegistryCapabilityManifest,
   type RegistryComponent,
 } from "./registry"
+import { decodeRegistryElementForRender } from "./registry-decode-internal"
 
 const CARD_STYLE_TOKENS = ["layout:row", "space:roomy", "tone:featured"] as const
 
@@ -436,6 +437,367 @@ describe("typed component registry", () => {
     ).toThrow(RegistryError)
   })
 
+  test("tolerates render vocabulary while keeping direct decode strict", () => {
+    const registry = createRegistry(primitives)
+    const resolve = registry.resolve.bind(registry)
+
+    expect(() => registry.decode(element("<Unknown />"))).toThrow(RegistryError)
+    const unknown = decodeRegistryElementForRender(
+      resolve,
+      element("<Unknown><DemoText>Fallback</DemoText></Unknown>"),
+    )
+    expect(unknown.status).toBe("transparent")
+    if (unknown.status !== "transparent") throw new Error("unknown component did not unwrap")
+    expect(unknown.children.filter(isElement)).toHaveLength(1)
+    expect(unknown.issues).toEqual([{ kind: "component", tag: "Unknown" }])
+    expect(Object.isFrozen(unknown)).toBe(true)
+    expect(Object.isFrozen(unknown.issues)).toBe(true)
+    expect(Object.isFrozen(unknown.issues[0])).toBe(true)
+
+    const optional = decodeRegistryElementForRender(
+      resolve,
+      element(
+        '<DemoCard surprise="x" heading="Hello" count="1" enabled="yes" data-state="ready" />',
+      ),
+    )
+    expect(optional.status).toBe("decoded")
+    if (optional.status !== "decoded") throw new Error("optional attribute did not decode")
+    expect(optional.decoded.props).toMatchObject({ count: 1, enabled: true, title: "Hello" })
+    expect(optional.decoded.protocol.data).toEqual({ state: "ready" })
+    expect(optional.issues).toEqual([
+      { attribute: "surprise", kind: "attribute", tag: "DemoCard" },
+      { attribute: "enabled", kind: "attribute-decode", tag: "DemoCard" },
+    ])
+
+    const required = decodeRegistryElementForRender(
+      resolve,
+      element('<DemoCard heading="Hello" count="invalid"><DemoText>Fallback</DemoText></DemoCard>'),
+    )
+    expect(required.status).toBe("transparent")
+    if (required.status !== "transparent") throw new Error("required attribute did not unwrap")
+    expect(required.children.filter(isElement)).toHaveLength(1)
+    expect(required.issues).toEqual([
+      { attribute: "count", kind: "attribute-decode", tag: "DemoCard" },
+    ])
+
+    const refinedRequired = decodeRegistryElementForRender(
+      resolve,
+      element('<DemoCard heading="" count="1" />'),
+    )
+    expect(refinedRequired.status).toBe("transparent")
+    expect(refinedRequired.issues).toEqual([
+      { attribute: "heading", kind: "attribute-decode", tag: "DemoCard" },
+    ])
+    expect(() =>
+      decodeRegistryElementForRender(resolve, element('<Unknown dir="sideways" />')),
+    ).toThrow(PropsError)
+  })
+
+  test("classifies derived attribute schema failures per binding", () => {
+    const refined = defineComponent({
+      attributes: {
+        optional: attr(stringCodec, z.string().min(1)).default("fallback"),
+        required: attr(stringCodec, z.string().min(1)),
+      },
+      children: "nodes",
+      component: () => null,
+      tag: "Refined",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [refined],
+        name: "refined",
+        version: "1.0.0",
+      }),
+    )
+    const resolve = registry.resolve.bind(registry)
+
+    const optional = decodeRegistryElementForRender(
+      resolve,
+      element('<Refined optional="" required="ready" />'),
+    )
+    expect(optional.status).toBe("decoded")
+    if (optional.status !== "decoded") throw new Error("optional refinement did not decode")
+    expect(optional.decoded.props).toEqual({ optional: "fallback", required: "ready" })
+    expect(optional.issues).toEqual([
+      { attribute: "optional", kind: "attribute-decode", tag: "Refined" },
+    ])
+
+    const required = decodeRegistryElementForRender(
+      resolve,
+      element('<Refined required=""><DemoText>Fallback</DemoText></Refined>'),
+    )
+    expect(required.status).toBe("transparent")
+    expect(required.issues).toEqual([
+      { attribute: "required", kind: "attribute-decode", tag: "Refined" },
+    ])
+  })
+
+  test("classifies explicit property schemas without rerunning transforms", () => {
+    let transforms = 0
+    const schema = z
+      .object({
+        optional: z.string().min(1).default("fallback"),
+        required: z.string().min(1),
+        transformed: z.string().transform((value) => {
+          transforms += 1
+          return value.length
+        }),
+      })
+      .refine((props) => props.optional !== props.required)
+    const explicit = defineComponent({
+      attributes: {
+        optional: { codec: stringCodec, prop: "optional" },
+        required: { codec: stringCodec, prop: "required" },
+        transformed: { codec: stringCodec, prop: "transformed" },
+      },
+      children: "none",
+      component: () => null,
+      schema,
+      tag: "ExplicitRefined",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [explicit],
+        name: "explicit-refined",
+        version: "1.0.0",
+      }),
+    )
+    const resolve = registry.resolve.bind(registry)
+
+    const optional = decodeRegistryElementForRender(
+      resolve,
+      element('<ExplicitRefined optional="" required="ready" transformed="four" />'),
+    )
+    expect(optional.status).toBe("decoded")
+    if (optional.status !== "decoded") throw new Error("explicit optional did not decode")
+    expect(optional.decoded.props).toEqual({
+      optional: "fallback",
+      required: "ready",
+      transformed: 4,
+    })
+    expect(optional.issues).toEqual([
+      { attribute: "optional", kind: "attribute-decode", tag: "ExplicitRefined" },
+    ])
+    expect(transforms).toBe(1)
+
+    const required = decodeRegistryElementForRender(
+      resolve,
+      element('<ExplicitRefined required="" transformed="five" />'),
+    )
+    expect(required.status).toBe("transparent")
+    expect(required.issues).toEqual([
+      { attribute: "required", kind: "attribute-decode", tag: "ExplicitRefined" },
+    ])
+
+    // A cross-field rejection means the served markup no longer satisfies this
+    // installed contract, so the node unwraps instead of failing the document.
+    const crossField = decodeRegistryElementForRender(
+      resolve,
+      element('<ExplicitRefined optional="same" required="same" transformed="three" />'),
+    )
+    expect(crossField.status).toBe("transparent")
+    expect(crossField.issues).toEqual([{ kind: "component", tag: "ExplicitRefined" }])
+    expect(() =>
+      registry.decode(
+        element('<ExplicitRefined optional="same" required="same" transformed="three" />'),
+      ),
+    ).toThrow(PropsError)
+  })
+
+  test("unwraps a node whose props or child slots no longer match the markup", () => {
+    const registry = createRegistry(primitives)
+    const resolve = registry.resolve.bind(registry)
+
+    // A required attribute the server stopped sending is ordinary skew.
+    const missing = decodeRegistryElementForRender(
+      resolve,
+      element('<DemoCard heading="Hello"><DemoText>Fallback</DemoText></DemoCard>'),
+    )
+    expect(missing.status).toBe("transparent")
+    expect(missing.issues).toEqual([{ kind: "component", tag: "DemoCard" }])
+    expect(() => registry.decode(element('<DemoCard heading="Hello" />'))).toThrow(PropsError)
+
+    // The issue's fallback channel: new vocabulary nested inside a text-only
+    // component must degrade instead of failing the document.
+    const textSlot = decodeRegistryElementForRender(
+      resolve,
+      element("<DemoText>hi <FutureEm>there</FutureEm></DemoText>"),
+    )
+    expect(textSlot.status).toBe("transparent")
+    expect(textSlot.issues).toEqual([{ kind: "component", tag: "DemoText" }])
+    expect(() => registry.decode(element("<DemoText><DemoCard /></DemoText>"))).toThrow(PropsError)
+
+    // Invalid shared protocol values stay fatal on both paths.
+    expect(() =>
+      decodeRegistryElementForRender(
+        resolve,
+        element('<DemoCard heading="Hello" dir="sideways" />'),
+      ),
+    ).toThrow(PropsError)
+  })
+
+  test("defaults missing and invalid prototype-named derived props", () => {
+    const prototypeProps = defineComponent({
+      attributes: {
+        constructor: attr(integerCodec).default(7),
+        toString: attr(stringCodec).default("safe"),
+      },
+      children: "none",
+      component: () => null,
+      tag: "PrototypeProps",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [prototypeProps],
+        name: "prototype-props",
+        version: "1.0.0",
+      }),
+    )
+    const resolve = registry.resolve.bind(registry)
+
+    expect(registry.decode(element("<PrototypeProps />")).props).toEqual({
+      constructor: 7,
+      toString: "safe",
+    })
+    const rendered = decodeRegistryElementForRender(
+      resolve,
+      element('<PrototypeProps constructor="bad" />'),
+    )
+    expect(rendered.status).toBe("decoded")
+    if (rendered.status !== "decoded") throw new Error("prototype props did not decode")
+    expect(rendered.decoded.props).toEqual({ constructor: 7, toString: "safe" })
+    expect(rendered.issues).toEqual([
+      { attribute: "constructor", kind: "attribute-decode", tag: "PrototypeProps" },
+    ])
+  })
+
+  test("keeps legacy bindings without requiredness eligible for defaults", () => {
+    const legacy: RegistryComponent = {
+      aliases: [],
+      attributeBindings: {
+        count: { codec: integerCodec, prop: "count" },
+      },
+      children: "none",
+      component: () => null,
+      decodeProps: (attributes) => ({ count: attributes.count ?? 5 }),
+      formOwner: false,
+      morphState: "preserve",
+      tag: "LegacyDefault",
+    }
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [legacy],
+        name: "legacy-default",
+        version: "1.0.0",
+      }),
+    )
+    const rendered = registry.decodeForRender(element('<LegacyDefault count="bad" />'))
+
+    expect(rendered.status).toBe("decoded")
+    if (rendered.status !== "decoded") throw new Error("legacy default did not decode")
+    expect(rendered.decoded.props).toEqual({ count: 5 })
+    expect(rendered.issues).toEqual([
+      { attribute: "count", kind: "attribute-decode", tag: "LegacyDefault" },
+    ])
+  })
+
+  test("admits package-owned attributes only on form owners", () => {
+    const owner = defineComponent({
+      attributes: {},
+      children: "nodes",
+      component: () => null,
+      formOwner: true,
+      schema: z.object({}),
+      tag: "DemoForm",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [owner],
+        name: "form-owner",
+        version: "1.0.0",
+      }),
+    )
+    const form = element(
+      '<DemoForm action="/submit" enctype="multipart/form-data" method="post" novalidate="" target="frame" />',
+    )
+
+    expect(registry.decode(form).props).toEqual({})
+    const rendered = decodeRegistryElementForRender(registry.resolve.bind(registry), form)
+    expect(rendered.status).toBe("decoded")
+    expect(rendered.issues).toEqual([])
+    expect(registry.capabilities.components[0]?.attributes).toEqual([])
+
+    expect(() =>
+      createRegistry(primitives).decode(
+        element('<DemoCard heading="Hello" count="1" action="/submit" />'),
+      ),
+    ).toThrow(PropsError)
+  })
+
+  test("leaves an unknown form-owner tag without a definition to probe", () => {
+    const owner = defineComponent({
+      attributes: { required: attr(integerCodec) },
+      children: "nodes",
+      component: () => null,
+      formOwner: true,
+      tag: "DemoForm",
+    })
+    const registry = createRegistry(
+      defineComponentModule({
+        components: [owner],
+        name: "form-owner-lookup",
+        version: "1.0.0",
+      }),
+    )
+
+    // Form association resolves an owner definition through `resolve` first and
+    // falls back to the render decode path. An unknown tag misses both, so the
+    // association has only the reported vocabulary issue to go on.
+    const unknown = registry.decodeForRender(element('<FutureForm id="form" />'))
+    expect(registry.resolve("FutureForm")).toBeUndefined()
+    expect(unknown.status).toBe("transparent")
+    if (unknown.status !== "transparent") throw new Error("unknown form owner did not unwrap")
+    expect(unknown.definition).toBeUndefined()
+    expect(unknown.issues).toEqual([{ kind: "component", tag: "FutureForm" }])
+
+    // A known owner reports its own unknown attributes on the decoded path, so
+    // an association can report an owner the document never renders.
+    const decoded = registry.decodeForRender(
+      element('<DemoForm id="form" required="1" future-layout="stacked" />'),
+    )
+    expect(decoded.status).toBe("decoded")
+    if (decoded.status !== "decoded") throw new Error("known form owner did not decode")
+    expect(decoded.decoded.definition.formOwner).toBe(true)
+    expect(decoded.issues).toEqual([
+      { attribute: "future-layout", kind: "attribute", tag: "DemoForm" },
+    ])
+
+    // A known owner keeps its definition on the transparent path, so a required
+    // attribute failure still resolves as a declared form owner.
+    const degraded = registry.decodeForRender(element('<DemoForm id="form" required="bad" />'))
+    expect(degraded.status).toBe("transparent")
+    if (degraded.status !== "transparent") throw new Error("degraded form owner did not unwrap")
+    expect(degraded.definition?.formOwner).toBe(true)
+    expect(degraded.issues).toEqual([
+      { attribute: "required", kind: "attribute-decode", tag: "DemoForm" },
+    ])
+  })
+
+  test("treats inherited binding names as unknown render attributes", () => {
+    const registry = createRegistry(primitives)
+    const rendered = decodeRegistryElementForRender(
+      registry.resolve.bind(registry),
+      element('<DemoCard heading="Hello" count="1" constructor="x" toString="y" />'),
+    )
+
+    expect(rendered.status).toBe("decoded")
+    expect(rendered.issues).toEqual([
+      { attribute: "constructor", kind: "attribute", tag: "DemoCard" },
+      { attribute: "toString", kind: "attribute", tag: "DemoCard" },
+    ])
+  })
+
   test("decodes text children through the shared whitespace contract", () => {
     const registry = createRegistry(primitives)
 
@@ -649,7 +1011,7 @@ describe("typed component registry", () => {
   })
 })
 
-function acceptLegacyRegistryShapes(): void {
+function acceptRegistryShapes(): void {
   const component: RegistryComponent = {
     aliases: [],
     attributeBindings: {
@@ -673,6 +1035,9 @@ function acceptLegacyRegistryShapes(): void {
     decode() {
       throw new Error("not used")
     },
+    decodeForRender() {
+      throw new Error("not used")
+    },
     formContainerRole() {
       return undefined
     },
@@ -686,10 +1051,15 @@ function acceptLegacyRegistryShapes(): void {
       throw new Error("not used")
     },
   }
+  const { decodeForRender, ...decodeOnly } = registry
+  // @ts-expect-error Provider registries require tolerant render decoding.
+  const invalid: ComponentRegistry<RegistryComponent> = decodeOnly
   void component
+  void decodeForRender
+  void invalid
   void registry
 }
-void acceptLegacyRegistryShapes
+void acceptRegistryShapes
 
 function rejectMismatchedAttributeSchema(): void {
   // @ts-expect-error Attribute schema input must accept the codec decode value.

@@ -12,6 +12,7 @@ import {
   dispatchTurboStreamFragment,
   type StreamActionReport,
 } from "./streams"
+import { registerStructuralOutputAdmission } from "./structural-output-admission-internal"
 import { attributeValue, isElement, type ProtocolElement } from "./tree"
 
 function session(xml: string): DocumentSession {
@@ -1470,6 +1471,82 @@ describe("Turbo Stream dispatcher", () => {
     expect(report).toMatchObject({ interrupted: true })
     expect(report.actions.map((entry) => entry.status)).toEqual(["canceled"])
     expect(document.tree.getElementById("victim")).toBeDefined()
+  })
+
+  test("skips a matched action whose vocabulary fallback renders nothing", async () => {
+    const document = session('<Gallery><Panel id="panel"><Kept id="kept"/></Panel></Gallery>')
+    const actionErrors: StreamActionReport[] = []
+    let reports = 0
+    const release = registerStructuralOutputAdmission(document, ({ nodes }) => {
+      const blank = nodes.every((node) => isElement(node) && node.tagName === "Unknown")
+      return {
+        hasOutput: !blank,
+        hasVocabularyIssues: blank,
+        report: () => {
+          reports += 1
+        },
+      }
+    })
+    const revision = document.revision
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      `<turbo-stream action="update" target="panel"><template><Unknown /></template></turbo-stream>
+       <turbo-stream action="append" target="panel"><template><Later id="later"/></template></turbo-stream>`,
+      { onActionError: (entry) => actionErrors.push(entry) },
+    )
+    release()
+
+    expect(report.actions[0]).toMatchObject({
+      appliedTargets: 0,
+      matchedTargets: 1,
+      status: "noop",
+    })
+    expect(report.actions[1]?.status).toBe("applied")
+    expect(reports).toBe(1)
+    expect(actionErrors).toEqual([])
+    expect(childIds(document.tree.getElementById("panel"))).toEqual(["kept", "later"])
+    expect(document.revision).toBe(revision + 1)
+  })
+
+  test("keeps native empty-template semantics when no vocabulary issue exists", async () => {
+    const document = session('<Gallery><Panel id="panel"><Old id="old"/></Panel></Gallery>')
+    let reports = 0
+    const release = registerStructuralOutputAdmission(document, () => ({
+      hasOutput: false,
+      hasVocabularyIssues: false,
+      report: () => {
+        reports += 1
+      },
+    }))
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="panel"><template /></turbo-stream>',
+    )
+    release()
+
+    expect(report.actions[0]).toMatchObject({ appliedTargets: 1, status: "applied" })
+    expect(reports).toBe(0)
+    expect(childIds(document.tree.getElementById("panel"))).toEqual([])
+  })
+
+  test("does not consult structural admission without a matched target", async () => {
+    const document = session('<Gallery><Panel id="panel"/></Gallery>')
+    let admissions = 0
+    const release = registerStructuralOutputAdmission(document, () => {
+      admissions += 1
+      return { hasOutput: false, hasVocabularyIssues: true, report: () => undefined }
+    })
+
+    const report = await dispatchTurboStreamFragment(
+      document,
+      '<turbo-stream action="update" target="missing"><template><Unknown /></template></turbo-stream>',
+    )
+    release()
+
+    expect(report.actions[0]).toMatchObject({ matchedTargets: 0, status: "noop" })
+    expect(admissions).toBe(0)
   })
 
   test("rejects reserved and duplicate custom action ownership", async () => {

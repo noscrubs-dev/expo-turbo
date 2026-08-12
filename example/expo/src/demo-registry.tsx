@@ -413,19 +413,11 @@ const formLegend = defineComponent({
 });
 
 const form = defineComponent({
-  attributes: {
-    action: { codec: stringCodec, prop: "action" },
-    enctype: { codec: stringCodec, prop: "enctype" },
-    method: { codec: stringCodec, prop: "method" },
-  },
+  attributes: {},
   children: "nodes",
   component: DemoFormComponent,
   formOwner: true,
-  schema: z.object({
-    action: z.string().optional(),
-    enctype: z.string().optional(),
-    method: z.string().optional(),
-  }),
+  schema: z.object({}),
   tag: "DemoForm",
 });
 

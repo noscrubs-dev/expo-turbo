@@ -143,12 +143,15 @@ import {
   streamAutofocusLifecycleRevision,
   subscribeStreamAutofocusLifecycle,
 } from "../core/stream-autofocus-internal.js"
+import { registerStructuralOutputAdmission } from "../core/structural-output-admission-internal.js"
+import { consumeThenableResult } from "../core/thenable-result.js"
 import {
   attributeValue,
   isElement,
   type ProtocolDocument,
   type ProtocolElement,
   type ProtocolNode,
+  type ProtocolParentNode,
   renderedTextValue,
 } from "../core/tree.js"
 import { classifyTopLevelLocation } from "../core/visitability.js"
@@ -163,9 +166,44 @@ import type {
   ComponentRegistry,
   DecodedComponent,
   RegistryComponent,
+  RegistryRenderDecodeResult,
+  RegistryVocabularyIssue,
 } from "../registry/registry.js"
+import {
+  analyzeRegistryStructuralOutput,
+  type RegistryStructuralOutputAnalysis,
+  type RegistryStructuralOutputDiagnostic,
+} from "../registry/registry-structural-output-internal.js"
 
-type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode">
+type RenderRegistry = Pick<ComponentRegistry<RegistryComponent>, "decode" | "decodeForRender"> &
+  Partial<Pick<ComponentRegistry<RegistryComponent>, "resolve">>
+
+export type ExpoTurboUnknownVocabularyKind = RegistryVocabularyIssue["kind"]
+
+export interface ExpoTurboUnknownVocabularyEvent {
+  readonly attribute?: string
+  readonly documentUrl: string
+  /**
+   * Present when this vocabulary is reported because a form association on
+   * another node failed. It holds that node's key, which is also the key the
+   * matching `onError` carries, so the two can be correlated.
+   *
+   * It states only that unknown or undecodable vocabulary was unwrapped above
+   * that node. It is not a claim that the element in `nodeKey` was its form
+   * owner: an installed client cannot know what a tag it does not have means,
+   * so an unwrapped layout wrapper and an unwrapped form owner are
+   * indistinguishable here.
+   */
+  readonly failureNodeKey?: string
+  readonly kind: ExpoTurboUnknownVocabularyKind
+  /** Always the element the vocabulary issue was found on, with `tag`. */
+  readonly nodeKey: string
+  readonly tag: string
+}
+
+export type ExpoTurboUnknownVocabularyHandler = (
+  event: ExpoTurboUnknownVocabularyEvent,
+) => void | Promise<void>
 
 export interface ExpoTurboRenderError {
   readonly error: Error
@@ -284,6 +322,7 @@ interface RendererContextValue {
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  readonly onUnknownVocabulary: ExpoTurboUnknownVocabularyHandler | undefined
   readonly registry: RenderRegistry
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
   readonly session: DocumentSession
@@ -299,6 +338,7 @@ const FrameContext = createContext<ExpoTurboFrameBinding | undefined>(undefined)
 const FormContext = createContext<ExpoTurboFormContextValue | undefined>(undefined)
 const NavigationContext = createContext<NavigationAdapter | undefined>(undefined)
 const ProtocolNodeContext = createContext<string | undefined>(undefined)
+const ComponentDefinitionContext = createContext<RegistryComponent | undefined>(undefined)
 const ComponentTagContext = createContext<string | undefined>(undefined)
 const StateScopeContext = createContext<DocumentStateStore | undefined>(undefined)
 const DirectionContext = createContext<ProtocolDirection | undefined>(undefined)
@@ -321,6 +361,14 @@ const announcedFormTerminalRevisions = new WeakMap<
 const announcedDocumentVisitStates = new WeakMap<
   DocumentVisitController,
   Readonly<{ revision: number; status: DocumentVisitAnnouncementEvent["status"] }>
+>()
+interface UnknownVocabularyClaim {
+  readonly fingerprints: Set<string>
+  generation: number
+}
+const unknownVocabularyClaims = new WeakMap<
+  DocumentSession,
+  WeakMap<ProtocolElement, UnknownVocabularyClaim>
 >()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = ["action", "confirm", "method", "stream"] as const
 const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
@@ -652,6 +700,7 @@ export interface ExpoTurboProviderProps {
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
+  readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
   readonly scopes?: DocumentStateScopes
@@ -677,9 +726,36 @@ function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefin
   }, [resource])
 }
 
+const EMPTY_DOCUMENT_OUTPUT_LEDGER: DocumentOutputLedger = createDocumentOutputLedger()
+
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
+  const outputLedger = useRef<DocumentOutputLedger | undefined>(undefined)
+  outputLedger.current ??= createDocumentOutputLedger()
   useProviderDisposable(props.scopes)
   useProviderDisposable(props.state)
+  useInsertionEffect(
+    () =>
+      registerStructuralOutputAdmission(props.session, (request) => {
+        const analysis = analyzeRegistryStructuralOutput(props.registry, request.nodes)
+        const generation = props.session.treeGeneration
+        return Object.freeze({
+          hasOutput: analysis.hasOutput,
+          hasVocabularyIssues: analysis.hasVocabularyIssues,
+          report() {
+            for (const diagnostic of analysis.diagnostics) {
+              deliverUnknownVocabularyIssues(
+                props.session,
+                diagnostic.node,
+                generation,
+                diagnostic.issues,
+                props.onUnknownVocabulary,
+              )
+            }
+          },
+        })
+      }),
+    [props.onUnknownVocabulary, props.registry, props.session],
+  )
   const value = useMemo<RendererContextValue>(
     () => ({
       actions: props.actions,
@@ -704,6 +780,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       frames: props.frames,
       forms: props.forms,
       onError: props.onError,
+      onUnknownVocabulary: props.onUnknownVocabulary,
       registry: props.registry,
       renderError: props.renderError,
       scopes: props.scopes,
@@ -735,6 +812,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.frames,
       props.forms,
       props.onError,
+      props.onUnknownVocabulary,
       props.registry,
       props.renderError,
       props.scopes,
@@ -745,12 +823,16 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
     ],
   )
   return createElement(
-    RendererContext.Provider,
-    { value },
+    DocumentOutputContext.Provider,
+    { value: outputLedger.current },
     createElement(
-      DirectionFallbackContext.Provider,
-      { value: props.defaultDirection ?? "ltr" },
-      createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+      RendererContext.Provider,
+      { value },
+      createElement(
+        DirectionFallbackContext.Provider,
+        { value: props.defaultDirection ?? "ltr" },
+        createElement(NavigationContext.Provider, { value: props.navigation }, props.children),
+      ),
     ),
   )
 }
@@ -925,7 +1007,44 @@ function formSubmitAfterCommit(options: ExpoTurboFormSubmitOptions): boolean {
   return afterCommit === true
 }
 
-function useFormBinding(registry: FormControlRegistry, formNodeKey: string): ExpoTurboFormBinding {
+/**
+ * A form association whose owner tag is unknown must never reach the network:
+ * `action`, `method`, and `enctype` on that element are vocabulary this client
+ * cannot interpret. The binding keeps its read-only surface and refuses every
+ * operation that would build or dispatch a request, the way a browser gives a
+ * control no form owner when `form` points at a non-form element.
+ */
+/**
+ * The node whose form association failed, when that is not the node the issues
+ * were found on. The key is what the payload carries; the identity is what
+ * deduplication compares, because a replacement node reuses its predecessor's
+ * key and a second failure on the same key is still a second failure.
+ */
+interface VocabularyFailureSource {
+  readonly identity: string
+  readonly nodeKey: string
+}
+
+interface FormOwnerVocabularyMetadata {
+  readonly failure?: VocabularyFailureSource
+  readonly generation: number
+  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly issues: readonly RegistryVocabularyIssue[]
+  readonly node: ProtocolElement
+  readonly registry: unknown
+  readonly session: DocumentSession
+}
+
+function refuseInertFormOwner(operation: string, metadata: FormOwnerVocabularyMetadata): never {
+  throw new InertFormOwnerError(operation, metadata)
+}
+
+function useFormBinding(
+  registry: FormControlRegistry,
+  formNodeKey: string,
+  inert?: FormOwnerVocabularyMetadata,
+): ExpoTurboFormBinding {
+  const committedInert = useRef(inert)
   const committedRegistry = useRef(registry)
   const deferredSubmissions = useRef<DeferredFormSubmission[]>([])
   const mounted = useRef(false)
@@ -955,6 +1074,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
     }
   }, [])
   useLayoutEffect(() => {
+    committedInert.current = inert
     committedRegistry.current = registry
   })
   useLayoutEffect(() => {
@@ -977,6 +1097,13 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
           submission.reject(new StateError("Deferred form submission changed its React binding"))
           continue
         }
+        // The owner tag can stop being known between queueing and execution
+        // while the node and its form registry both stay active, so inertness
+        // is rechecked here rather than trusted from the queueing render.
+        if (committedInert.current) {
+          submission.reject(new InertFormOwnerError("submission", committedInert.current))
+          continue
+        }
         try {
           void submission.registry
             .submit(submission.options, submission.controllerOptions)
@@ -992,6 +1119,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
       options: ExpoTurboFormSubmitOptions,
       controllerOptions?: FormSubmissionControllerSubmitOptions,
     ): Promise<ActiveFormSubmissionReport> => {
+      if (inert) refuseInertFormOwner("submission", inert)
       if (!formSubmitAfterCommit(options)) return registry.submit(options, controllerOptions)
       if (!mounted.current) {
         return Promise.reject(new StateError("Deferred form submission lost its React binding"))
@@ -1015,7 +1143,7 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
         })
       })
     },
-    [registry],
+    [inert, registry],
   )
   return useMemo<ExpoTurboFormBinding>(
     () =>
@@ -1025,31 +1153,106 @@ function useFormBinding(registry: FormControlRegistry, formNodeKey: string): Exp
         checkValidity: () => registry.checkValidity(),
         dismissTerminal: () => registry.dismissSubmissionTerminal(),
         formNodeKey,
-        requestPlan: (options: ActiveFormRequestPlanOptions) => registry.requestPlan(options),
+        requestPlan: (options: ActiveFormRequestPlanOptions) =>
+          inert ? refuseInertFormOwner("request planning", inert) : registry.requestPlan(options),
         retryFailure: (
           options: ActiveFormRetryOptions,
           controllerOptions?: FormSubmissionControllerSubmitOptions,
-        ) => registry.retryFailure(options, controllerOptions),
+        ) =>
+          inert
+            ? refuseInertFormOwner("retry", inert)
+            : registry.retryFailure(options, controllerOptions),
         reportValidity: () => registry.reportValidity(),
         state,
+        // An unknown owner is never an Expo Turbo submission to intercept,
+        // matching how `data-turbo="false"` and an off form mode answer.
         shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
-          registry.shouldInterceptSubmission(options),
+          inert ? false : registry.shouldInterceptSubmission(options),
         submit,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
-          registry.submissionProposal(options),
+          inert
+            ? refuseInertFormOwner("submission proposal", inert)
+            : registry.submissionProposal(options),
         successfulEntries: (options?: SuccessfulFormEntriesOptions) =>
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, registry, state, submit, terminalState],
+    [formNodeKey, inert, registry, state, submit, terminalState],
   )
+}
+
+type FormOwnerLookup = Readonly<{
+  issues: readonly RegistryVocabularyIssue[]
+  status: "declared" | "undeclared" | "unknown"
+}>
+
+/**
+ * Classifies a form-association target the same way the render decode path
+ * classifies any element: a tag this client does not know is deployment skew
+ * reported as unknown vocabulary, not a failed association.
+ *
+ * The decode runs even when `resolve` knows the tag, because an owner that the
+ * document never renders has no other reporter for its unknown attributes.
+ */
+function lookupFormOwner(registry: RenderRegistry, element: ProtocolElement): FormOwnerLookup {
+  const result = registry.decodeForRender(element)
+  const decoded = result.status === "decoded" ? result.decoded.definition : result.definition
+  const definition = decoded ?? registry.resolve?.(element.tagName)
+  return Object.freeze({
+    issues: result.issues,
+    status: !definition ? "unknown" : definition.formOwner ? "declared" : "undeclared",
+  })
+}
+
+const MISSING_FORM_SCOPE_MESSAGE =
+  "Expo Turbo form binding requires a form scope or explicit form association"
+
+/**
+ * Finds the nearest ancestor the render path unwrapped because of vocabulary:
+ * a tag this client does not have, or one whose required attributes or child
+ * shape it could not decode. Both are installed-client skew, and either can
+ * remove an element that carried a form scope in the build that served the
+ * document.
+ *
+ * This is evidence that vocabulary was unwrapped above a failed association,
+ * and nothing more. It cannot show that the unwrapped element was the form
+ * owner: the client does not have the tag, so a new layout wrapper and a new
+ * form owner look identical from here. Unwrapping never breaks a real
+ * ownership chain — a control under a declared owner still resolves through an
+ * unwrapped ancestor, and a declared owner that unwraps keeps its form scope —
+ * so this only runs once the association has already failed.
+ */
+function unwrappedAncestorVocabulary(
+  registry: RenderRegistry,
+  element: ProtocolElement,
+): Readonly<{ issues: readonly RegistryVocabularyIssue[]; node: ProtocolElement }> | undefined {
+  let ancestor: ProtocolParentNode | null = element.parent
+  while (ancestor) {
+    if (isElement(ancestor)) {
+      let result: RegistryRenderDecodeResult<RegistryComponent>
+      try {
+        result = registry.decodeForRender(ancestor)
+      } catch {
+        // A malformed ancestor is a fatal document problem that the render path
+        // raises on its own. It is not evidence of installed-client skew, so the
+        // walk stops rather than attributing this failure to vocabulary.
+        return undefined
+      }
+      if (result.status === "transparent" && result.issues.length > 0) {
+        return Object.freeze({ issues: result.issues, node: ancestor })
+      }
+    }
+    ancestor = ancestor.parent
+  }
+  return undefined
 }
 
 function useResolvedFormRegistry(): Readonly<{
   formNodeKey: string
+  inert?: FormOwnerVocabularyMetadata
   registry: FormControlRegistry
 }> {
-  const { forms, registry: componentRegistry, session } = useRenderer()
+  const { forms, onUnknownVocabulary, registry: componentRegistry, session } = useRenderer()
   const context = useContext(FormContext)
   const nodeKey = useContext(ProtocolNodeContext)
   const nodeSnapshot = useProtocolNode(nodeKey ?? MISSING_FORM_OWNER_KEY)
@@ -1060,6 +1263,10 @@ function useResolvedFormRegistry(): Readonly<{
       ? `id:${formId}`
       : (context?.binding.formNodeKey ?? MISSING_FORM_OWNER_KEY)
   const formSnapshot = useProtocolNode(formNodeKey)
+  const form = formId ? session.tree.getElementById(formId) : undefined
+  const owner =
+    form && formSnapshot?.node === form ? lookupFormOwner(componentRegistry, form) : undefined
+  useUnknownVocabularyReport(owner ? form : undefined, owner?.issues ?? NO_VOCABULARY_ISSUES)
 
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey || !node || !isElement(node)) {
@@ -1070,21 +1277,62 @@ function useResolvedFormRegistry(): Readonly<{
   }
   if (formId === undefined) {
     if (!context) {
-      throw new RegistryError(
-        "Expo Turbo form binding requires a form scope or explicit form association",
-      )
+      // A control orphaned in a fully known document keeps the bare throw: the
+      // signal below must stay rare enough that it means skew, not noise on
+      // every ownerless control.
+      const unwrapped = unwrappedAncestorVocabulary(componentRegistry, node)
+      throw unwrapped
+        ? new AttributedFormOwnerError(MISSING_FORM_SCOPE_MESSAGE, {
+            // `nodeKey` and `tag` keep describing one element, the unwrapped
+            // ancestor the issues belong to. The control this failed on travels
+            // separately, so a host can correlate without the pair ever
+            // describing two different elements.
+            ...(nodeSnapshot ? { failure: { identity: nodeSnapshot.identity, nodeKey } } : {}),
+            generation: session.treeGeneration,
+            handler: onUnknownVocabulary,
+            issues: unwrapped.issues,
+            node: unwrapped.node,
+            registry: componentRegistry,
+            session,
+          })
+        : new RegistryError(MISSING_FORM_SCOPE_MESSAGE)
     }
-    return Object.freeze({ formNodeKey: context.binding.formNodeKey, registry: context.registry })
+    return Object.freeze({
+      formNodeKey: context.binding.formNodeKey,
+      registry: context.registry,
+    })
   }
 
-  const form = session.tree.getElementById(formId)
   if (!form || formSnapshot?.node !== form) {
     throw new RegistryError("Expo Turbo form association references a missing form owner")
   }
-  if (!componentRegistry.decode(form).definition.formOwner) {
-    throw new RegistryError("Expo Turbo form association target is not a declared form owner")
+  const vocabulary = form
+    ? Object.freeze({
+        generation: session.treeGeneration,
+        handler: onUnknownVocabulary,
+        issues: owner?.issues ?? NO_VOCABULARY_ISSUES,
+        node: form,
+        registry: componentRegistry,
+        session,
+      })
+    : undefined
+  if (owner?.status === "undeclared" && vocabulary) {
+    // The throw preempts the reporting effect, so the owner's issues ride along
+    // and the boundary delivers them once this render commits.
+    throw new AttributedFormOwnerError(
+      "Expo Turbo form association target is not a declared form owner",
+      vocabulary,
+    )
   }
-  return Object.freeze({ formNodeKey: form.key, registry: forms.controlsFor(form.key) })
+  // An unknown owner tag keeps the control bound to the owner's node key so its
+  // disabled and pending state stay coherent and the association becomes live
+  // as soon as a known form owner occupies that key. Until then the binding is
+  // inert: nothing it exposes can build or dispatch a request.
+  return Object.freeze({
+    formNodeKey: form.key,
+    ...(owner?.status === "unknown" && vocabulary ? { inert: vocabulary } : {}),
+    registry: forms.controlsFor(form.key),
+  })
 }
 
 function reportFormAnnouncementError(
@@ -1172,14 +1420,8 @@ function claimDocumentVisitAnnouncement(
  * effect replay; exact tree replacement remains its disposal boundary.
  */
 export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
-  const {
-    formAnnouncements,
-    formComponent: FormComponent,
-    forms,
-    onError,
-    registry: componentRegistry,
-    session,
-  } = useRenderer()
+  const { formAnnouncements, formComponent: FormComponent, forms, onError, session } = useRenderer()
+  const definition = useContext(ComponentDefinitionContext)
   const nodeKey = useContext(ProtocolNodeContext)
   if (!forms) throw new RegistryError("Expo Turbo forms require provider form controls")
   if (!nodeKey) throw new RegistryError("Expo Turbo forms require a component node")
@@ -1187,7 +1429,7 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
   if (!formNode || !isElement(formNode)) {
     throw new RegistryError("Expo Turbo forms require an active component element")
   }
-  if (!componentRegistry.decode(formNode).definition.formOwner) {
+  if (!definition?.formOwner) {
     throw new RegistryError("Expo Turbo form scope requires a declared form-owner component")
   }
   const registry = useMemo(() => forms.controlsFor(nodeKey), [forms, nodeKey])
@@ -1232,8 +1474,15 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
     () => Object.freeze({ binding, registry }),
     [binding, registry],
   )
+  // Host form chrome is visible output. A declared owner that unwraps still
+  // mounts this scope, and the unwrapped node itself is never counted, so
+  // without this the chrome would be output that nothing reports.
   const contents = FormComponent
-    ? createElement(FormComponent, { ...binding }, props.children)
+    ? createElement(
+        DocumentOutputMarker,
+        { kind: "output" },
+        createElement(FormComponent, { ...binding }, props.children),
+      )
     : props.children
   return createElement(
     StateScopeBoundary,
@@ -1243,8 +1492,8 @@ export function ExpoTurboFormScope(props: ExpoTurboFormScopeProps): ReactNode {
 }
 
 export function useExpoTurboForm(): ExpoTurboFormBinding {
-  const { formNodeKey, registry } = useResolvedFormRegistry()
-  return useFormBinding(registry, formNodeKey)
+  const { formNodeKey, inert, registry } = useResolvedFormRegistry()
+  return useFormBinding(registry, formNodeKey, inert)
 }
 
 export function useExpoTurboFormControl(
@@ -2358,6 +2607,151 @@ export function useExpoTurboFrame(): ExpoTurboFrameBinding | undefined {
   return useContext(FrameContext)
 }
 
+interface VocabularyRenderMetadata extends FormOwnerVocabularyMetadata {
+  readonly tolerated: boolean
+}
+
+const vocabularyRenderMetadata = new WeakMap<Error, VocabularyRenderMetadata>()
+
+/**
+ * Refusal from an inert form owner. Handlers see an ordinary `RegistryError`,
+ * so a caller can never mistake a refusal for a usable request. A component
+ * that calls a guarded method while rendering instead degrades to nothing and
+ * reports through `onUnknownVocabulary`, because a vocabulary gap must never
+ * raise the document error surface.
+ *
+ * Metadata is a construction invariant: every instance of this class carries
+ * what the boundary needs, so two refusals can never be handled differently.
+ */
+class InertFormOwnerError extends RegistryError {
+  constructor(operation: string, metadata: FormOwnerVocabularyMetadata) {
+    super(`Expo Turbo form ${operation} requires a known form owner`, {
+      target: metadata.node.key,
+    })
+    vocabularyRenderMetadata.set(this, Object.freeze({ ...metadata, tolerated: true }))
+  }
+}
+
+/**
+ * An association failure that carries vocabulary to report. The failure itself
+ * is unchanged — form ownership stays declared, and missing, blank, and
+ * undeclared targets still fail closed — but the issues travel with the error
+ * so the boundary reports them once the render commits. That is what lets a
+ * host tell installed-client skew from a document that was simply written
+ * wrong; both used to arrive as a bare `onError`.
+ */
+class AttributedFormOwnerError extends RegistryError {
+  constructor(message: string, metadata: FormOwnerVocabularyMetadata) {
+    super(message, { target: metadata.node.key })
+    vocabularyRenderMetadata.set(this, Object.freeze({ ...metadata, tolerated: false }))
+  }
+}
+
+/**
+ * What a node actually rendered, observed rather than predicted.
+ *
+ * The blank-root guard has to know whether a document produced output. Deriving
+ * that from the protocol tree means predicting what components will do, and a
+ * prediction has to be reconciled with the boundary lifecycles it models --
+ * which is an open-ended set, not expressible in tree state. Counting what
+ * mounted has nothing to keep in sync: registration follows mount and unmount,
+ * so it cannot drift from what it describes.
+ *
+ * Output has exactly five kinds, all of them rendered by this file: a text node
+ * with content, a Frame, a Cable stream source, a decoded component, and an
+ * error surface. Drops are counted separately, because "nothing rendered here
+ * because of vocabulary" and "nothing has rendered here yet" must not look
+ * alike -- a suspended subtree registers neither.
+ */
+type DocumentOutputKind = "drop" | "output"
+
+interface DocumentOutputLedger {
+  drops: number
+  readonly listeners: Set<() => void>
+  output: number
+  version: number
+}
+
+const DocumentOutputContext = createContext<DocumentOutputLedger | undefined>(undefined)
+
+function createDocumentOutputLedger(): DocumentOutputLedger {
+  return { drops: 0, listeners: new Set(), output: 0, version: 0 }
+}
+
+function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
+  return ledger.output === 0 && ledger.drops > 0
+}
+
+/**
+ * Only a change in the blank verdict is worth a notification. Registering the
+ * second component in a healthy document cannot change it, and waking the root
+ * for that would re-render every node on every mount.
+ */
+function updateDocumentOutput(ledger: DocumentOutputLedger, apply: () => void): void {
+  const before = documentOutputIsBlank(ledger)
+  apply()
+  if (documentOutputIsBlank(ledger) === before) return
+  ledger.version += 1
+  for (const listener of [...ledger.listeners]) listener()
+}
+
+function DocumentOutputMarker(
+  props: Readonly<{ children?: ReactNode; kind: DocumentOutputKind }>,
+): ReactNode {
+  const ledger = useContext(DocumentOutputContext)
+  const kind = props.kind
+  useLayoutEffect(() => {
+    if (!ledger) return
+    updateDocumentOutput(ledger, () => {
+      if (kind === "output") ledger.output += 1
+      else ledger.drops += 1
+    })
+    return () => {
+      updateDocumentOutput(ledger, () => {
+        if (kind === "output") ledger.output -= 1
+        else ledger.drops -= 1
+      })
+    }
+  }, [kind, ledger])
+  return props.children ?? null
+}
+
+function useDocumentOutputVersion(ledger: DocumentOutputLedger): number {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      ledger.listeners.add(listener)
+      return () => {
+        ledger.listeners.delete(listener)
+      }
+    },
+    [ledger],
+  )
+  const version = useCallback(() => ledger.version, [ledger])
+  return useSyncExternalStore(subscribe, version, version)
+}
+
+interface UnknownVocabularyStructuralMetadata {
+  readonly diagnostics: readonly RegistryStructuralOutputDiagnostic[]
+  readonly generation: number
+  readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly root: ProtocolElement
+  readonly session: DocumentSession
+}
+
+const unknownVocabularyStructuralMetadata = new WeakMap<
+  UnknownVocabularyStructuralError,
+  UnknownVocabularyStructuralMetadata
+>()
+
+class UnknownVocabularyStructuralError extends StateError {
+  constructor(metadata: UnknownVocabularyStructuralMetadata) {
+    super("Expo Turbo document root has no renderable fallback", {
+      target: metadata.root.key,
+    })
+    unknownVocabularyStructuralMetadata.set(this, metadata)
+  }
+}
+
 interface ErrorBoundaryProps {
   readonly children?: ReactNode
   readonly nodeKey: string
@@ -2401,14 +2795,101 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   componentDidCatch(error: Error): void {
     if (alreadyReportedRenderErrors.has(error)) return
+    const vocabulary = vocabularyRenderMetadata.get(error)
+    if (vocabulary) {
+      // Reporting happens here rather than during render so an abandoned
+      // concurrent render cannot emit telemetry for state that never commits.
+      if (
+        vocabulary.session.treeGeneration === vocabulary.generation &&
+        vocabulary.session.getNodeSnapshot(vocabulary.node.key)?.node === vocabulary.node
+      ) {
+        deliverUnknownVocabularyIssues(
+          vocabulary.session,
+          vocabulary.node,
+          vocabulary.generation,
+          vocabulary.issues,
+          vocabulary.handler,
+          vocabulary.failure,
+        )
+      }
+      // A refusal raised while rendering is a tolerated vocabulary gap, not a
+      // document error: the node degrades to nothing, and the blank-root guard
+      // is told so its accounting matches what actually rendered.
+      // The node this boundary now renders nothing for reports that through
+      // the output ledger while it stays in this state, so the guard never has
+      // to infer this boundary's lifetime from anywhere else.
+      if (vocabulary.tolerated) return
+    }
+    const structuralMetadata =
+      error instanceof UnknownVocabularyStructuralError
+        ? unknownVocabularyStructuralMetadata.get(error)
+        : undefined
+    if (error instanceof UnknownVocabularyStructuralError) {
+      unknownVocabularyStructuralMetadata.delete(error)
+    }
+    if (
+      structuralMetadata &&
+      structuralMetadata.session.treeGeneration === structuralMetadata.generation &&
+      structuralMetadata.session.getNodeSnapshot(structuralMetadata.root.key)?.node ===
+        structuralMetadata.root
+    ) {
+      for (const diagnostic of structuralMetadata.diagnostics) {
+        if (
+          structuralMetadata.session.getNodeSnapshot(diagnostic.node.key)?.node !== diagnostic.node
+        ) {
+          continue
+        }
+        deliverUnknownVocabularyIssues(
+          structuralMetadata.session,
+          diagnostic.node,
+          structuralMetadata.generation,
+          diagnostic.issues,
+          structuralMetadata.handler,
+        )
+      }
+    }
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
   }
 
   render(): ReactNode {
     if (!this.state.error) return this.props.children
-    return (
+    // A tolerated inert-owner refusal drops the node the way an unknown tag
+    // with no children does, instead of raising the error surface.
+    if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) {
+      return createElement(DocumentOutputMarker, { kind: "drop" })
+    }
+    const rendered =
       this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
-    )
+    // A node-level error surface is real output: a document showing one is not
+    // blank, and replacing it with the blank-root surface would hide the error
+    // the host is already reporting.
+    if (rendered === null || !this.countsRenderedErrorAsOutput(this.state.error)) return rendered
+    return createElement(DocumentOutputMarker, { kind: "output" }, rendered)
+  }
+
+  protected countsRenderedErrorAsOutput(_error: Error): boolean {
+    return true
+  }
+}
+
+/**
+ * The boundary at the single position where the blank-root guard raises its own
+ * surface. That surface must not count as output, or the guard would observe
+ * itself and never clear.
+ *
+ * The exclusion is positional rather than a property of the error, because an
+ * error is a value: the guard hands the very same instance to `onError` and
+ * `renderError`, so a host can keep it and throw it again from anywhere, and a
+ * check on its class or identity would follow it there. Which component renders
+ * a surface is chosen by this file at one call site. Host code is never given
+ * this class or an element of it -- the only elements it receives are the
+ * document, Frame and form children rendered below this boundary -- so the
+ * strongest forgery available is re-rendering the base boundary, which counts
+ * its surface as output. Every reachable mistake lands on the safe side.
+ */
+class DocumentBlankGuardBoundary extends NodeErrorBoundary {
+  protected override countsRenderedErrorAsOutput(error: Error): boolean {
+    return !(error instanceof UnknownVocabularyStructuralError)
   }
 }
 
@@ -2419,6 +2900,129 @@ function renderChildren(nodes: readonly ProtocolNode[]): ReactNode[] {
       nodeKey: node.key,
     }),
   )
+}
+
+function developmentVocabularyWarningsEnabled(): boolean {
+  const globalDevelopment = (globalThis as Readonly<{ __DEV__?: unknown }>).__DEV__
+  if (typeof globalDevelopment === "boolean") return globalDevelopment
+  const nodeEnvironment = (
+    globalThis as Readonly<{
+      process?: Readonly<{ env?: Readonly<{ NODE_ENV?: string }> }>
+    }>
+  ).process?.env?.NODE_ENV
+  return nodeEnvironment !== "production"
+}
+
+function unknownVocabularyFingerprint(
+  issue: RegistryVocabularyIssue,
+  failure: VocabularyFailureSource | undefined,
+): string {
+  // The failing node participates so an element's own report and a report of
+  // the same issue as the cause of a failed association stay separate
+  // deliveries. It participates by identity rather than key: a replaced control
+  // carries its predecessor's key, and its failure is a new one.
+  return JSON.stringify([
+    issue.kind,
+    "attribute" in issue ? issue.attribute : "",
+    failure?.identity ?? "",
+  ])
+}
+
+function claimUnknownVocabularyDelivery(
+  session: DocumentSession,
+  node: ProtocolElement,
+  generation: number,
+  fingerprint: string,
+  sink: "callback" | "warning",
+): boolean {
+  let sessionClaims = unknownVocabularyClaims.get(session)
+  if (!sessionClaims) {
+    sessionClaims = new WeakMap()
+    unknownVocabularyClaims.set(session, sessionClaims)
+  }
+  let claim = sessionClaims.get(node)
+  if (!claim || claim.generation !== generation) {
+    claim = { fingerprints: new Set(), generation }
+    sessionClaims.set(node, claim)
+  }
+  const sinkFingerprint = `${sink}:${fingerprint}`
+  if (claim.fingerprints.has(sinkFingerprint)) return false
+  claim.fingerprints.add(sinkFingerprint)
+  return true
+}
+
+function deliverUnknownVocabularyIssues(
+  session: DocumentSession,
+  node: ProtocolElement,
+  generation: number,
+  issues: readonly RegistryVocabularyIssue[],
+  handler: ExpoTurboUnknownVocabularyHandler | undefined,
+  failure?: VocabularyFailureSource,
+): void {
+  const warn = developmentVocabularyWarningsEnabled()
+  if (!handler && !warn) return
+  for (const issue of issues) {
+    const fingerprint = unknownVocabularyFingerprint(issue, failure)
+    const event = Object.freeze({
+      ...("attribute" in issue ? { attribute: issue.attribute } : {}),
+      documentUrl: session.tree.document.url ?? "about:blank",
+      ...(failure ? { failureNodeKey: failure.nodeKey } : {}),
+      kind: issue.kind,
+      nodeKey: node.key,
+      tag: issue.tag,
+    }) satisfies ExpoTurboUnknownVocabularyEvent
+    if (
+      handler &&
+      claimUnknownVocabularyDelivery(session, node, generation, fingerprint, "callback")
+    ) {
+      try {
+        const delivery = handler(event)
+        if (delivery !== undefined) consumeThenableResult(delivery)
+      } catch {
+        // Telemetry must not change rendered document state.
+      }
+    }
+    if (warn && claimUnknownVocabularyDelivery(session, node, generation, fingerprint, "warning")) {
+      try {
+        console.warn("Expo Turbo ignored unknown vocabulary", event)
+      } catch {
+        // Development warnings must not change rendered document state.
+      }
+    }
+  }
+}
+
+function decodeRegisteredElement(
+  registry: RenderRegistry,
+  node: ProtocolElement,
+): RegistryRenderDecodeResult<RegistryComponent> {
+  return registry.decodeForRender(node)
+}
+
+const NO_VOCABULARY_ISSUES: readonly RegistryVocabularyIssue[] = Object.freeze([])
+
+function useUnknownVocabularyReport(
+  node: ProtocolElement | undefined,
+  issues: readonly RegistryVocabularyIssue[],
+): void {
+  const { onUnknownVocabulary, session } = useRenderer()
+  const generation = session.treeGeneration
+  useEffect(() => {
+    if (!node || issues.length === 0) return
+    if (session.treeGeneration !== generation) return
+    if (session.getNodeSnapshot(node.key)?.node !== node) return
+    deliverUnknownVocabularyIssues(session, node, generation, issues, onUnknownVocabulary)
+  }, [generation, issues, node, onUnknownVocabulary, session])
+}
+
+function UnknownVocabularyReporter(
+  props: Readonly<{
+    issues: readonly RegistryVocabularyIssue[]
+    node: ProtocolElement
+  }>,
+): ReactNode {
+  useUnknownVocabularyReport(props.node, props.issues)
+  return null
 }
 
 function readMorphFocusedId(adapter: AutofocusAdapter, nodeKey: string): string | undefined {
@@ -2498,36 +3102,42 @@ function useComponentMorphFocus(
   }, [adapter, enabled, morphRevision, nodeKey, scrollAdapter])
 }
 
-function RegisteredElement(
-  props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
+function DecodedRegisteredElement(
+  props: Readonly<{
+    decoded: DecodedComponent
+    issues: readonly RegistryVocabularyIssue[]
+    morphRevision: number
+    node: ProtocolElement
+  }>,
 ): ReactNode {
-  const { autofocus, autofocusScroll, registry } = useRenderer()
+  const { autofocus, autofocusScroll } = useRenderer()
   const inheritedDirection = useContext(DirectionContext)
   const inheritedFallback = useContext(DirectionFallbackContext)
-  const decoded: DecodedComponent = registry.decode(props.node)
-  const direction = decoded.protocol.direction ?? inheritedDirection
+  const direction = props.decoded.protocol.direction ?? inheritedDirection
   const directionFallback =
     direction === "ltr" || direction === "rtl" ? direction : inheritedFallback
   let children: ReactNode
-  if (decoded.definition.children === "text") children = decoded.text ?? ""
-  else if (decoded.definition.children === "nodes") children = renderChildren(decoded.children)
-  const component = decoded.definition.component as ComponentType<
+  if (props.decoded.definition.children === "text") children = props.decoded.text ?? ""
+  else if (props.decoded.definition.children === "nodes") {
+    children = renderChildren(props.decoded.children)
+  }
+  const component = props.decoded.definition.component as ComponentType<
     Readonly<Record<string, unknown> & { children?: ReactNode }>
   >
-  const componentProps = decoded.props as Readonly<Record<string, unknown>>
+  const componentProps = props.decoded.props as Readonly<Record<string, unknown>>
   useComponentMorphFocus(
     autofocus,
     autofocusScroll,
-    decoded.definition.morphState === "reset",
+    props.decoded.definition.morphState === "reset",
     props.morphRevision,
     props.node.key,
   )
-  const key = decoded.definition.morphState === "reset" ? props.morphRevision : undefined
+  const key = props.decoded.definition.morphState === "reset" ? props.morphRevision : undefined
   const rendered =
     children === undefined
       ? createElement(component, { ...componentProps, key })
       : createElement(component, { ...componentProps, key }, children)
-  return createElement(
+  const contents = createElement(
     DirectionFallbackContext.Provider,
     { value: directionFallback },
     createElement(
@@ -2536,10 +3146,86 @@ function RegisteredElement(
       createElement(
         ProtocolNodeContext.Provider,
         { value: props.node.key },
-        createElement(ComponentTagContext.Provider, { value: decoded.definition.tag }, rendered),
+        createElement(
+          ComponentDefinitionContext.Provider,
+          { value: props.decoded.definition },
+          createElement(
+            ComponentTagContext.Provider,
+            { value: props.decoded.definition.tag },
+            rendered,
+          ),
+        ),
       ),
     ),
   )
+  return createElement(
+    Fragment,
+    null,
+    props.issues.length > 0
+      ? createElement(UnknownVocabularyReporter, {
+          issues: props.issues,
+          node: props.node,
+        })
+      : null,
+    createElement(DocumentOutputMarker, { kind: "output" }, contents),
+  )
+}
+
+function TransparentRegisteredElement(
+  props: Readonly<{
+    definition?: RegistryComponent
+    issues: readonly RegistryVocabularyIssue[]
+    node: ProtocolElement
+  }>,
+): ReactNode {
+  const children = createElement(Fragment, null, renderChildren(props.node.children))
+  const fallback = props.definition?.formOwner
+    ? createElement(
+        ProtocolNodeContext.Provider,
+        { value: props.node.key },
+        createElement(
+          ComponentDefinitionContext.Provider,
+          { value: props.definition },
+          createElement(
+            ComponentTagContext.Provider,
+            { value: props.definition.tag },
+            createElement(ExpoTurboFormScope, null, children),
+          ),
+        ),
+      )
+    : children
+  return createElement(
+    ProtocolDirectionBoundary,
+    { node: props.node },
+    createElement(
+      Fragment,
+      null,
+      createElement(UnknownVocabularyReporter, {
+        issues: props.issues,
+        node: props.node,
+      }),
+      fallback,
+    ),
+  )
+}
+
+function RegisteredElement(
+  props: Readonly<{ morphRevision: number; node: ProtocolElement }>,
+): ReactNode {
+  const { registry } = useRenderer()
+  const result = decodeRegisteredElement(registry, props.node)
+  return result.status === "transparent"
+    ? createElement(TransparentRegisteredElement, {
+        ...(result.definition ? { definition: result.definition } : {}),
+        issues: result.issues,
+        node: props.node,
+      })
+    : createElement(DecodedRegisteredElement, {
+        decoded: result.decoded,
+        issues: result.issues,
+        morphRevision: props.morphRevision,
+        node: props.node,
+      })
 }
 
 function ProtocolDirectionBoundary(
@@ -2568,6 +3254,7 @@ interface RegisteredElementBoundaryProps {
   readonly node: ProtocolElement
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
+  readonly resetIdentity?: unknown
   readonly revision: number | string
 }
 
@@ -2578,6 +3265,7 @@ function RegisteredElementBoundary(props: RegisteredElementBoundaryProps): React
       nodeKey: props.node.key,
       onError: props.onError,
       renderError: props.renderError,
+      resetIdentity: props.resetIdentity,
       revision: props.revision,
     },
     createElement(RegisteredElement, {
@@ -3311,7 +3999,13 @@ function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
           renderError: props.renderError,
           revision: state.revision,
         },
-        createElement(props.documentComponent, binding, props.children),
+        // Host document chrome is visible output that belongs to no protocol
+        // node, so nothing else would count it.
+        createElement(
+          DocumentOutputMarker,
+          { kind: "output" },
+          createElement(props.documentComponent, binding, props.children),
+        ),
       )
     : props.children
   return createElement(DocumentContext.Provider, { value: binding }, rendered)
@@ -3351,10 +4045,14 @@ function ProtocolElementView(
             resetIdentity: context.streamSources,
             revision: props.revision,
           },
-          createElement(ConnectedCableStreamSource, {
-            node: props.node,
-            streamSources: context.streamSources,
-          }),
+          createElement(
+            DocumentOutputMarker,
+            { kind: "output" },
+            createElement(ConnectedCableStreamSource, {
+              node: props.node,
+              streamSources: context.streamSources,
+            }),
+          ),
         )
       : null
   }
@@ -3396,7 +4094,9 @@ function ProtocolElementView(
             kind: "frame",
             nodeKey: props.node.key,
           },
-          rendered,
+          // A Frame is a runtime-managed region that can produce output after
+          // this commit, so it counts as output the moment it mounts.
+          createElement(DocumentOutputMarker, { kind: "output" }, rendered),
         ),
       ),
     )
@@ -3408,6 +4108,7 @@ function ProtocolElementView(
     node: props.node,
     onError: context.onError,
     renderError: context.renderError,
+    resetIdentity: context.registry,
     revision: props.revision,
   }
   return formId !== undefined && formId !== ""
@@ -3420,7 +4121,10 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   if (!snapshot) return null
   const node = snapshot.node
   if (node.kind === "comment") return null
-  if (node.kind === "text") return renderedTextValue(node) || null
+  if (node.kind === "text") {
+    const text = renderedTextValue(node)
+    return text ? createElement(DocumentOutputMarker, { kind: "output" }, text) : null
+  }
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
   return createElement(ProtocolElementView, {
     key: snapshot.identity,
@@ -3430,13 +4134,74 @@ function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   })
 }
 
+function DocumentStructuralOutputGuard(
+  props: Readonly<{
+    analysis: RegistryStructuralOutputAnalysis
+    blank: boolean
+    children?: ReactNode
+    generation: number
+    handler: ExpoTurboUnknownVocabularyHandler | undefined
+    root: ProtocolElement
+    session: DocumentSession
+  }>,
+): ReactNode {
+  if (props.blank) {
+    throw new UnknownVocabularyStructuralError(
+      Object.freeze({
+        diagnostics: props.analysis.diagnostics,
+        generation: props.generation,
+        handler: props.handler,
+        root: props.root,
+        session: props.session,
+      }),
+    )
+  }
+  return props.children
+}
+
+interface DocumentBlankVerdict {
+  readonly blank: boolean
+  readonly generation: number
+  readonly registry: unknown
+  readonly revision: number
+}
+
 export function ExpoTurboRoot(): ReactNode {
   const context = useRenderer()
   const { session } = context
+  const outputLedger = useContext(DocumentOutputContext) ?? EMPTY_DOCUMENT_OUTPUT_LEDGER
+  useDocumentOutputVersion(outputLedger)
+  const [verdict, setVerdict] = useState<DocumentBlankVerdict | undefined>(undefined)
   const root = useProtocolNode(session.tree.document.key)
   const rootElement =
     root?.node.kind === "document" ? root.node.children.find(isElement) : undefined
   const rootElementSnapshot = useProtocolNode(rootElement?.key ?? session.tree.document.key)
+  const generation = session.treeGeneration
+  // Any tree mutation retries the verdict. The token can be broader than the
+  // cause without harm: a retry that changes nothing costs one render, and the
+  // commit it retries into is observed rather than predicted.
+  const revision = session.revision
+  const settled =
+    verdict &&
+    verdict.generation === generation &&
+    verdict.registry === context.registry &&
+    verdict.revision === revision
+      ? verdict
+      : undefined
+  // Runs after every descendant effect in the commit, so it reads what this
+  // commit produced rather than predicting it. The verdict is sticky for its
+  // token: once the guard is up the subtree is gone and would observe as empty
+  // forever, so only a new tree revision, generation or registry retries it. A
+  // stale retry costs one render and cannot produce a wrong verdict, because
+  // the commit it retries into is observed too.
+  useLayoutEffect(() => {
+    // Sticky for its token: once the guard is up the subtree is unmounted and
+    // would observe as empty forever, so only a new revision, generation or
+    // registry retries it. Nothing is stored for a healthy document, so the
+    // common case never schedules a render from here.
+    if (settled || !documentOutputIsBlank(outputLedger)) return
+    setVerdict({ blank: true, generation, registry: context.registry, revision })
+  })
   if (root?.node.kind !== "document" || !rootElement) return null
   const rootDirectionElement =
     rootElementSnapshot && isElement(rootElementSnapshot.node)
@@ -3456,12 +4221,33 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
+  const structuralOutput = analyzeRegistryStructuralOutput(context.registry, root.node.children)
+  // A tree that cannot render anything is decided from the tree, which involves
+  // no component lifetime at all. Everything else is decided from what the last
+  // commit actually produced.
+  const blankByTree = !structuralOutput.hasOutput && structuralOutput.hasVocabularyIssues
+  const blank = blankByTree || settled !== undefined
+  const guardedRendered = !blank
+    ? rendered
+    : createElement(
+        DocumentStructuralOutputGuard,
+        {
+          analysis: structuralOutput,
+          blank,
+          generation: session.treeGeneration,
+          handler: context.onUnknownVocabulary,
+          root: rootDirectionElement,
+          session,
+        },
+        rendered,
+      )
   return createElement(
     NodeErrorBoundary,
     {
       nodeKey: root.node.key,
       onError: context.onError,
       renderError: context.renderError,
+      resetIdentity: context.registry,
       revision: `${root.revision}:${rootElementSnapshot?.revision ?? "missing"}`,
     },
     createElement(
@@ -3474,14 +4260,20 @@ export function ExpoTurboRoot(): ReactNode {
           generation: session.treeGeneration,
         },
         createElement(
-          NodeErrorBoundary,
+          DocumentBlankGuardBoundary,
           {
             nodeKey: root.node.key,
             onError: context.onError,
             renderError: context.renderError,
-            revision: root.revision,
+            resetIdentity: context.registry,
+            // The blank verdict participates in the reset key so restoring
+            // renderable content clears the blank-output error. It has to be
+            // the verdict rather than the tree analysis: the analysis cannot
+            // see that a node rendered nothing, which is the whole reason the
+            // verdict is observed.
+            revision: `${root.revision}:${blank}`,
           },
-          rendered,
+          guardedRendered,
         ),
       ),
     ),
