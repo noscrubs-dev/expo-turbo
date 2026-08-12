@@ -37,6 +37,10 @@ readonly artifacts="$PWD/artifacts/android-device"
 readonly rails_log="$artifacts/rails.log"
 readonly emulator_log="$artifacts/emulator.log"
 readonly resource_log="$artifacts/resources.log"
+readonly reverse_response_log="$artifacts/reverse-probe-response.txt"
+readonly reverse_probe_err_log="$artifacts/reverse-probe-stderr.txt"
+readonly reverse_listeners_log="$artifacts/reverse-probe-listeners.txt"
+readonly reverse_binding_log="$artifacts/reverse-probe-binding.txt"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
 
 wait_for_stable_device() {
@@ -60,20 +64,89 @@ wait_for_stable_device() {
   return 1
 }
 
+report_rails_reverse_failure() {
+  local reason="$1"
+
+  {
+    echo "Android could not reach Rails through the ADB reverse tunnel."
+    echo "Which check failed: $reason"
+    echo
+    echo "--- host listeners (ss -ltn), 3001 rows ---"
+    grep -E 'State|:3001' "$reverse_listeners_log" || echo "(nothing listening on 3001)"
+    echo "--- host reaches Rails directly? (curl $rails_origin/up) ---"
+    curl --silent --show-error --max-time 5 -o /dev/null \
+      -w 'http_code=%{http_code}\n' "$rails_origin/up" 2>&1 || true
+    echo "--- adb reverse --list ---"
+    cat "$reverse_binding_log" 2>/dev/null || echo "(not captured)"
+    echo "--- device response, raw bytes (od -c) ---"
+    if [ -s "$reverse_response_log" ]; then
+      od -c "$reverse_response_log" | head -20
+    else
+      echo "(ZERO BYTES - the device sent nothing back)"
+    fi
+    echo "--- device probe stderr ---"
+    cat "$reverse_probe_err_log" 2>/dev/null || echo "(none)"
+    echo "--- tail -20 $rails_log ---"
+    tail -20 "$rails_log" 2>/dev/null || echo "(no Rails log)"
+  } >&2
+}
+
 prepare_rails_reverse() {
+  local reason="the probe never ran"
+  local first_line=""
+  local ok_status='^HTTP/[0-9.]+ 200 '
+
   for _ in 1 2; do
+    : >"$reverse_response_log"
+    : >"$reverse_probe_err_log"
+    : >"$reverse_binding_log"
+    ss -ltn >"$reverse_listeners_log" 2>/dev/null || true
+
+    if ! curl --fail --silent --max-time 5 "$rails_origin/up" >/dev/null 2>&1; then
+      reason="HOST NOT LISTENING - Rails is not serving $rails_origin, so the tunnel has nothing to forward to."
+      sleep 2
+      continue
+    fi
+
     adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
-    if adb -s "$adb_serial" reverse tcp:3001 tcp:3001 &&
-      printf 'GET /up HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' |
-        timeout 10 adb -s "$adb_serial" shell 'toybox nc -w 5 127.0.0.1 3001' |
-        tr -d '\r' |
-        grep -Eq '^HTTP/[0-9.]+ 200 '; then
+    if ! adb -s "$adb_serial" reverse tcp:3001 tcp:3001 >/dev/null 2>&1; then
+      reason="REVERSE BINDING ABSENT - 'adb reverse tcp:3001 tcp:3001' did not bind."
+      sleep 2
+      continue
+    fi
+
+    adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
+    if ! grep -q 'tcp:3001 tcp:3001' "$reverse_binding_log"; then
+      reason="REVERSE BINDING ABSENT - the bind call succeeded but 'adb reverse --list' does not show tcp:3001."
+      sleep 2
+      continue
+    fi
+
+    # stdin must stay open past the request. adb tears the shell session down as
+    # soon as host stdin hits EOF, which kills nc before it delivers the request
+    # and yields zero bytes back with the tunnel perfectly healthy.
+    { printf 'GET /up HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n'; sleep 2; } |
+      timeout 15 adb -s "$adb_serial" shell 'toybox nc -w 5 127.0.0.1 3001' \
+        >"$reverse_response_log" 2>"$reverse_probe_err_log" || true
+
+    if [ ! -s "$reverse_response_log" ]; then
+      reason="ZERO BYTES FROM DEVICE - Rails is up and the tunnel is bound, but the device returned nothing. The request never reached Rails; this is a probe/transport fault, not a Rails fault."
+      sleep 2
+      continue
+    fi
+
+    IFS= read -r first_line <"$reverse_response_log" || true
+    first_line="${first_line%$'\r'}"
+
+    if [[ "$first_line" =~ $ok_status ]]; then
       return
     fi
+
+    reason="NON-200 FROM RAILS - the device reached Rails but the status line was: ${first_line}"
     sleep 2
   done
 
-  echo "Android could not reach Rails through the ADB reverse tunnel." >&2
+  report_rails_reverse_failure "$reason"
   return 1
 }
 
