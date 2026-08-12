@@ -1,21 +1,17 @@
 import type { ComponentType, ReactNode } from "react"
 import { z } from "zod"
 
-import { PropsError, RegistryError } from "../core/errors.js"
+import { RegistryError } from "../core/errors.js"
 import type { FormContainerRole } from "../core/forms.js"
-import { protocolDirection } from "../core/protocol-direction.js"
 import { isExpoTurboModuleName, isExpoTurboModuleVersion } from "../core/protocol-request.js"
-import {
-  attributeValue,
-  isElement,
-  type ProtocolElement,
-  type ProtocolNode,
-  renderedNodeTextContent,
-  renderedTextValue,
-} from "../core/tree.js"
+import type { ProtocolElement, ProtocolNode } from "../core/tree.js"
 import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions.js"
 import { type AttributeDefinition, attributeDefinitionParts } from "./attributes.js"
 import type { AttributeCodec } from "./codecs.js"
+import {
+  decodeRegistryElementForRender,
+  decodeRegistryElementStrict,
+} from "./registry-decode-internal.js"
 
 const RESERVED_TAGS = new Set([
   "expo-turbo-fragment",
@@ -183,10 +179,30 @@ function attributeIsRequired(schema: z.ZodType, name: string, tag: string): bool
   }
 }
 
+function preparedPropsDecoder(
+  schema: z.ZodObject,
+): (attributes: Readonly<Record<string, unknown>>) => unknown {
+  const shapeEntries = Object.entries(schema.shape)
+  const outputShape = Object.fromEntries(
+    shapeEntries.map(([prop]) => [prop, z.unknown().optional()]),
+  )
+  const outputSchema = schema.safeExtend(outputShape)
+  return (attributes) => {
+    const prepared = Object.assign(Object.create(null), attributes) as Record<string, unknown>
+    for (const [prop, propSchema] of shapeEntries) {
+      if (Object.hasOwn(attributes, prop)) continue
+      const value = propSchema.parse(undefined)
+      if (value !== undefined) prepared[prop] = value
+    }
+    return outputSchema.parse(prepared)
+  }
+}
+
 function deriveComponentSchemaAndBindings(
   config: RuntimeDefineComponentDefinitionConfig,
 ): Readonly<{
   attributeBindings: Readonly<Record<string, ErasedAttributeBinding>>
+  decodeProps(attributes: Readonly<Record<string, unknown>>): unknown
   schema: z.ZodObject
 }> {
   const bindingEntries: [string, ErasedAttributeBinding][] = []
@@ -208,16 +224,22 @@ function deriveComponentSchemaAndBindings(
         )
       }
       const propSchema = config.schema.shape[binding.prop]
+      const decodeInput = (value: string) =>
+        binding.decode ? binding.decode(value) : binding.codec.decode(value)
       bindingEntries.push([
         name,
         Object.freeze({
           ...binding,
+          decode: propSchema
+            ? (value: string) => propSchema.parse(decodeInput(value))
+            : decodeInput,
           required: propSchema ? attributeIsRequired(propSchema, name, config.tag) : false,
         }),
       ])
     }
     return Object.freeze({
       attributeBindings: Object.freeze(Object.fromEntries(bindingEntries)),
+      decodeProps: preparedPropsDecoder(config.schema),
       schema: config.schema,
     })
   }
@@ -261,7 +283,7 @@ function deriveComponentSchemaAndBindings(
       name,
       Object.freeze({
         codec: definition.codec,
-        decode: definition.decode,
+        decode: (value: string) => definition.schema.parse(definition.decode(value)),
         ...(definition.deprecatedMessage !== undefined
           ? { deprecated: definition.deprecatedMessage }
           : {}),
@@ -271,9 +293,11 @@ function deriveComponentSchemaAndBindings(
     ])
   }
 
+  const schema = z.object(Object.fromEntries(shapeEntries))
   return Object.freeze({
     attributeBindings: Object.freeze(Object.fromEntries(bindingEntries)),
-    schema: z.object(Object.fromEntries(shapeEntries)),
+    decodeProps: preparedPropsDecoder(schema),
+    schema,
   })
 }
 
@@ -308,15 +332,13 @@ function createComponentDefinition(
     })
   }
 
-  const { attributeBindings, schema } = deriveComponentSchemaAndBindings(config)
+  const { attributeBindings, decodeProps, schema } = deriveComponentSchemaAndBindings(config)
 
   return Object.freeze({
     aliases: Object.freeze(aliases),
     attributeBindings,
     children: config.children,
-    decodeProps(attributes: Readonly<Record<string, unknown>>): unknown {
-      return schema.parse(attributes)
-    },
+    decodeProps,
     ...(config.formContainer !== undefined ? { formContainer: config.formContainer } : {}),
     formOwner: config.formOwner === true,
     morphState: config.morphState ?? "preserve",
@@ -435,6 +457,31 @@ export interface DecodedComponent<Component extends RegistryComponent = Registry
   readonly warnings: readonly string[]
 }
 
+export type RegistryVocabularyIssue =
+  | Readonly<{
+      kind: "component"
+      tag: string
+    }>
+  | Readonly<{
+      attribute: string
+      kind: "attribute" | "attribute-decode"
+      tag: string
+    }>
+
+export type RegistryRenderDecodeResult<Component extends RegistryComponent> =
+  | Readonly<{
+      decoded: DecodedComponent<Component>
+      issues: readonly RegistryVocabularyIssue[]
+      status: "decoded"
+    }>
+  | Readonly<{
+      children: readonly ProtocolNode[]
+      definition?: Component
+      issues: readonly RegistryVocabularyIssue[]
+      protocol: ProtocolAttributes
+      status: "transparent"
+    }>
+
 export interface ComponentCapability {
   readonly aliases: readonly string[]
   readonly attributes: readonly Readonly<{
@@ -475,86 +522,6 @@ function capabilityHash(value: string): string {
     hash = Math.imul(hash, 0x01000193)
   }
   return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`
-}
-
-function protocolAttributes(element: ProtocolElement): ProtocolAttributes {
-  const classes = (attributeValue(element, "class") ?? "").split(/\s+/).filter(Boolean)
-  const data = Object.fromEntries(
-    element.attributes
-      .filter((attribute) => attribute.name.startsWith("data-"))
-      .map((attribute) => [attribute.name.slice(5), attribute.value]),
-  )
-  const direction = protocolDirection(element)
-  const dirname = attributeValue(element, "dirname")
-  const form = attributeValue(element, "form")
-  const xmlSpace = attributeValue(element, "xml:space")
-  if (xmlSpace && !["default", "preserve"].includes(xmlSpace)) {
-    throw new PropsError(
-      `Invalid shared xml:space attribute on ${JSON.stringify(element.tagName)}`,
-      {
-        target: element.tagName,
-      },
-    )
-  }
-  const id = attributeValue(element, "id")
-
-  return Object.freeze({
-    autofocus: attributeValue(element, "autofocus") !== undefined,
-    classNames: Object.freeze(classes),
-    data: Object.freeze(data),
-    ...(direction ? { direction } : {}),
-    ...(dirname !== undefined ? { dirname } : {}),
-    ...(form !== undefined ? { form } : {}),
-    ...(id ? { id } : {}),
-    ...(xmlSpace === "default" || xmlSpace === "preserve" ? { xmlSpace } : {}),
-  })
-}
-
-function isSharedAttribute(name: string): boolean {
-  return (
-    name === "class" ||
-    name === "autofocus" ||
-    name === "dir" ||
-    name === "dirname" ||
-    name === "form" ||
-    name === "id" ||
-    name === "xml:space" ||
-    name === "xmlns" ||
-    name.startsWith("data-") ||
-    name.startsWith("xmlns:")
-  )
-}
-
-function decodeChildren(
-  definition: RegistryComponent,
-  element: ProtocolElement,
-): Readonly<{ children: readonly ProtocolNode[]; text?: string }> {
-  if (definition.children === "nodes") return { children: element.children }
-
-  const meaningful = element.children.filter(
-    (node) => node.kind !== "comment" && (node.kind !== "text" || renderedTextValue(node) !== ""),
-  )
-  if (definition.children === "none") {
-    if (meaningful.length > 0) {
-      throw new PropsError(
-        `Component ${JSON.stringify(element.tagName)} does not accept children`,
-        {
-          target: element.tagName,
-        },
-      )
-    }
-    return { children: Object.freeze([]) }
-  }
-
-  if (meaningful.some(isElement)) {
-    throw new PropsError(
-      `Component ${JSON.stringify(element.tagName)} accepts text children only`,
-      {
-        target: element.tagName,
-      },
-    )
-  }
-  return { children: element.children, text: renderedNodeTextContent(element) }
 }
 
 export function createCapabilityManifest(
@@ -639,6 +606,7 @@ export function capabilityManifestJSON(...modules: readonly CapabilityModule[]):
 export interface ComponentRegistry<Component extends RegistryComponent = never> {
   readonly capabilities: RegistryCapabilityManifest
   decode(element: ProtocolElement): DecodedComponent<Component>
+  decodeForRender(element: ProtocolElement): RegistryRenderDecodeResult<Component>
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
   get<Tag extends Component["tag"]>(tag: Tag): Extract<Component, { readonly tag: Tag }> | undefined
   resolve(tagOrAlias: string): Component | undefined
@@ -651,6 +619,7 @@ export interface ManifestComponentRegistry<Component extends RegistryComponent =
   extends ComponentRegistry<Component> {
   readonly capabilities: VersionedRegistryCapabilityManifest
   capabilityManifestJSON(): string
+  decodeForRender(element: ProtocolElement): RegistryRenderDecodeResult<Component>
   use<Next extends readonly RegistryComponent[]>(
     module: ComponentModule<string, Next>,
   ): ManifestComponentRegistry<Component | Next[number]>
@@ -678,54 +647,11 @@ class Registry<Component extends RegistryComponent>
   }
 
   decode(element: ProtocolElement): DecodedComponent<Component> {
-    const definition = this.resolve(element.tagName)
-    if (!definition) {
-      throw new RegistryError(`Unknown component ${JSON.stringify(element.tagName)}`, {
-        target: element.tagName,
-      })
-    }
+    return decodeRegistryElementStrict((tagOrAlias) => this.resolve(tagOrAlias), element)
+  }
 
-    const attributes: Record<string, unknown> = {}
-    const warnings: string[] = []
-    for (const attribute of element.attributes) {
-      const binding = definition.attributeBindings[attribute.name]
-      if (isSharedAttribute(attribute.name) && !binding) continue
-      if (!binding) {
-        throw new PropsError(
-          `Unknown attribute ${JSON.stringify(attribute.name)} on ${JSON.stringify(element.tagName)}`,
-          { target: element.tagName },
-        )
-      }
-      try {
-        attributes[binding.prop] = binding.decode
-          ? binding.decode(attribute.value)
-          : binding.codec.decode(attribute.value)
-      } catch {
-        throw new PropsError(
-          `Invalid attribute ${JSON.stringify(attribute.name)} on ${JSON.stringify(element.tagName)}`,
-          { target: element.tagName },
-        )
-      }
-      if (binding.deprecated) warnings.push(binding.deprecated)
-    }
-
-    let props: unknown
-    try {
-      props = definition.decodeProps(attributes)
-    } catch {
-      throw new PropsError(`Props failed validation for ${JSON.stringify(element.tagName)}`, {
-        target: element.tagName,
-      })
-    }
-    const decodedChildren = decodeChildren(definition, element)
-    return Object.freeze({
-      ...decodedChildren,
-      children: Object.freeze([...decodedChildren.children]),
-      definition: definition as Component,
-      props,
-      protocol: protocolAttributes(element),
-      warnings: Object.freeze(warnings),
-    })
+  decodeForRender(element: ProtocolElement): RegistryRenderDecodeResult<Component> {
+    return decodeRegistryElementForRender((tagOrAlias) => this.resolve(tagOrAlias), element)
   }
 
   get<Tag extends Component["tag"]>(

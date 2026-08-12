@@ -221,9 +221,108 @@ disposal wiring:
   history={historyAdapter}
   navigation={navigationAdapter}
   loading={<Loading />}
+  onUnknownVocabulary={(event) => telemetry.capture("expo_turbo_vocabulary", event)}
   renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
 />
 ```
+
+Installed clients can have an older component vocabulary than the server. An
+unknown component becomes a transparent wrapper, so its children still render.
+An unknown attribute is ignored while known attributes continue to decode. If
+an optional attribute value cannot decode, its default or optional value is
+used. If a required value cannot decode, the component also becomes a
+transparent wrapper.
+
+Each tolerated case calls `onUnknownVocabulary` after the fallback commits. The
+frozen event identifies the tag, optional attribute, node key, document URL,
+and failure kind. `nodeKey` and `tag` always describe the same element: the one
+the issue was found on. Development builds also write one warning. Production builds
+stay silent apart from the callback. Callback failures do not change document
+state.
+
+`data-*` attributes are shared protocol metadata, not component vocabulary.
+They stay available through `protocol.data` and never report as unknown.
+
+A `form` association whose owner tag is unknown reports the owner as an unknown
+component instead of failing the control. The association is inert: the control
+still renders, and its binding still answers state, validity, and
+`successfulEntries()`, but `submit()`, `requestPlan()`, `submissionProposal()`,
+and `retryFailure()` raise a `RegistryError` and `shouldInterceptSubmission()`
+answers `false`. `action`, `method`, and `enctype` on a tag this client cannot
+interpret must never become a request, so a submission deferred with
+`afterCommit` is also rejected when the owner tag stops being known before the
+queued submission runs. The association becomes live as soon as a known form
+owner occupies that node key.
+
+A component that calls one of the refused methods *while rendering* does not
+raise the document error surface. That node renders nothing, the way an unknown
+tag with no children does, and the gap reports through `onUnknownVocabulary`.
+The node renders again once a known form owner occupies the node key. A dropped
+node counts as no output for the blank-root guard above, so a refusal that
+empties a document root still reaches the error surface rather than showing a
+silent blank screen. That case is detected from what the commit produced rather
+than predicted from the tree, so its error surface appears one commit after the
+refusal; a root that cannot render anything at all is still decided while
+rendering and never shows an empty frame.
+
+A `form` value that points at a known component which is not a declared form
+owner remains an error, because that is a document defect rather than a
+vocabulary gap. Unknown attributes on the owner are still reported first, and
+an unknown attribute on a form owner is reported even when the document never
+renders that owner.
+
+Form ownership stays declared, so an association failure is still a failure: a
+missing, blank, or undeclared target fails closed exactly as before. What
+changed is that a failure a host could previously only see as a bare `onError`
+now carries evidence when vocabulary was involved.
+
+When a control has no form scope and the render path unwrapped an ancestor
+because of vocabulary — a tag this build does not have, or one whose required
+attributes or child shape it could not decode — the failure also reports
+through `onUnknownVocabulary`. The event describes the **unwrapped element** in
+`nodeKey` and `tag`, exactly like every other vocabulary event, and carries the
+control's key in `failureNodeKey`. That key is the one `onError` receives, so
+the two can be correlated.
+
+Read the event as exactly this and no more:
+
+> this control's form association failed, **and** unknown or undecodable
+> vocabulary was unwrapped above it
+
+It is **not** a claim that the unwrapped element was the control's form owner.
+An installed client does not have the tag, so a new layout wrapper and a new
+form owner are indistinguishable to it; a document with a genuine orphan under
+a new wrapper reports the same event. `kind` still separates the causes.
+`component` means this build could not construct the element at all: either it
+does not have the tag, or the props and children it received did not match the
+component it does have. `attribute-decode` means an attribute value it could not
+read.
+
+What the signal does guarantee is silence when there is no vocabulary involved.
+A control orphaned in a fully known document reports nothing, and neither does
+a `form` value naming an id that does not exist — even when the document
+contains unknown vocabulary elsewhere, because the rule reads the association's
+own ancestry rather than the document at large. Unwrapping never breaks a real
+ownership chain either: a control under a declared owner resolves through an
+unwrapped ancestor, and a declared owner that unwraps keeps its form scope, so
+both render and report nothing.
+
+Tolerance must not silently show an empty screen. When a tolerated fallback
+leaves no structurally renderable content, Expo Turbo protects each root kind:
+
+| Root | Behavior |
+| --- | --- |
+| Document | The document error surface receives a `StateError` |
+| Frame | The response is rejected, and the mounted Frame keeps its content |
+| Stream | The action becomes a no-op, and later actions still apply |
+
+A registered component always counts as renderable output, even when its own
+component returns `null`. An empty response that carries no vocabulary
+diagnostic keeps its existing native behavior.
+
+`createRegistry()` supplies this behavior. A custom registry passed to
+`ExpoTurboProvider` must implement `decodeForRender()`; `resolve()` stays
+optional, and direct `decode()` calls stay strict.
 
 Changing `url` performs a visit on the existing runtime. Without `history`, it
 uses an ordinary visit; with `history`, it uses a replace visit so the host
@@ -319,6 +418,8 @@ The complete Rails API and examples are in the
   presentation explicitly.
 - Exercise the host's exact release build and real Rails origin on both
   platforms.
-- Treat missing targets as ordinary no-ops, but surface malformed XML, unknown
-  components/actions, missing Frames, and rejected required subscriptions.
+- Treat missing targets as ordinary no-ops. Report tolerated unknown components
+  and attributes through `onUnknownVocabulary`. Surface malformed XML, unknown
+  actions, invalid shared protocol values, missing Frames, and rejected required
+  subscriptions through the normal error path.
 - Keep legacy runtimes separate; Expo Turbo does not define a JSON fallback.

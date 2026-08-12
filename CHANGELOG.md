@@ -12,6 +12,58 @@ All notable public package, gem, and protocol changes will be recorded here.
   Module names must also be trimmed and free of protocol control characters
   before upgrading
   ([#393](https://github.com/noscrubs-dev/expo-turbo/issues/393)).
+- Let the React renderer tolerate installed-client vocabulary skew. Unknown
+  components now unwrap to their children, unknown attributes are ignored,
+  optional attribute decode failures use their schema fallback, and required
+  failures unwrap the component. Add commit-safe `onUnknownVocabulary`
+  diagnostics with development warnings, and protect blank output: document
+  roots and Frame responses raise their error surface, while a Stream action
+  becomes a no-op that leaves the rendered screen intact. `data-*` attributes
+  stay shared protocol metadata and never report as unknown vocabulary. A
+  `form` association whose owner tag is unknown reports the owner through
+  `onUnknownVocabulary` instead of failing the control, and stays inert until a
+  known form owner occupies that node key: its binding keeps state, validity,
+  and entries, refuses `submit()`, `requestPlan()`, `submissionProposal()`, and
+  `retryFailure()`, rejects a submission deferred with `afterCommit` whose owner
+  tag stops being known before it runs, and never turns `action` or `method`
+  from an uninterpretable tag into a request. A refusal raised while rendering
+  drops that node and reports instead of raising the document error surface, and
+  a dropped node counts as no output, so a refusal that empties a document root
+  still reaches the blank-root error rather than a silent blank screen. That
+  accounting is observed from what each commit rendered rather than predicted
+  from the tree, so its error surface appears one commit after the refusal. A
+  root that cannot render anything at all is still decided while rendering and
+  never shows an empty frame.
+  Unknown attributes on a form owner report even when the document never renders
+  that owner, and an owner rejected as undeclared reports them before it fails.
+  Native form-owner protocol attributes no longer require duplicate component
+  props
+  ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
+- Report vocabulary evidence for a failed form association. The throws are
+  unchanged and form ownership stays declared, but a control left without a form
+  scope by an ancestor the render path unwrapped — a tag this build does not
+  have, or one whose required attributes or child shape it could not decode —
+  now also reports through `onUnknownVocabulary`. The event describes the
+  unwrapped element in `nodeKey` and `tag` as every vocabulary event does, and
+  adds `failureNodeKey` holding the control's key, which is the key `onError`
+  carries. The event states that vocabulary was unwrapped above a failed
+  association; it does not claim the unwrapped element was the form owner, which
+  an installed client cannot know. A control orphaned in a fully known document,
+  and a `form` value naming an id that never existed, stay silent
+  ([#392](https://github.com/noscrubs-dev/expo-turbo/issues/392)).
+- **Breaking:** `ComponentRegistry` and `ExpoTurboProvider` registries now
+  require `decodeForRender()`. Registries from `createRegistry()` already
+  supply it. A custom `{ decode }` or `{ decode, resolve }` registry must add
+  `decodeForRender()`; `decode()` remains the strict entry point and
+  `resolve()` remains optional for provider rendering.
+- Strict `decode()` now attributes a prop-schema rejection to its source
+  attribute, so the message reads `Invalid attribute "heading" on "Card"`
+  instead of `Props failed validation for "Card"`. It also skips undeclared
+  native form protocol attributes on `formOwner` components, matching the
+  Rails validator. The error class is unchanged.
+- Render-time form scopes read the decoded component definition instead of
+  decoding the form node again, and render error boundaries now also reset when
+  the provider registry identity changes.
 
 ## 0.1.7 - 2026-07-31
 
