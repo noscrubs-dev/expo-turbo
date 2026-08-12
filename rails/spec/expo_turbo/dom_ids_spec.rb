@@ -85,6 +85,7 @@ RSpec.describe ExpoTurbo::Rails::DomIds do
     end
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
     context = controller.view_context
     id = context.dom_id(record, :frame)
     rendered = context.turbo_frame_tag(id) { '<Room id="room_7"/>'.html_safe }

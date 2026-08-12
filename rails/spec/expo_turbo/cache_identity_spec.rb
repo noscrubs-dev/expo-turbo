@@ -28,6 +28,46 @@ RSpec.describe "Expo Turbo cache identity" do
     end
   end
 
+  # after_action does not run when a filter halts the chain, and an
+  # authentication redirect, a rate limit, and a rejected header all halt it.
+  # Those responses reach a shared cache too.
+  it "varies a response that a halted Expo Turbo filter produced" do
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => "<Screen/>") do
+      status, headers, = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "details\ninvalid"})
+
+      expect(status).to eq(400)
+      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    end
+  end
+
+  it "varies a response that a host filter halted" do
+    guarded = Class.new(controller_class) do
+      before_action { head :unauthorized }
+    end
+
+    with_templates(guarded, "specs/show.expo_turbo.erb" => "<Screen/>") do
+      status, headers, = dispatch(guarded)
+
+      expect(status).to eq(401)
+      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    end
+  end
+
+  it "varies a response that a rescued action error produced" do
+    failing = Class.new(controller_class) do
+      rescue_from(ArgumentError) { head :unprocessable_content }
+
+      def show
+        raise ArgumentError, "boom"
+      end
+    end
+
+    status, headers, = dispatch(failing)
+
+    expect(status).to eq(422)
+    expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+  end
+
   it "varies on Accept even when the route forced the response format" do
     controller = controller_with_request
 
@@ -77,6 +117,9 @@ RSpec.describe "Expo Turbo cache identity" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create(headers)
     controller.response = ActionDispatch::TestResponse.new
+    # ActionController::Rendering#process_action does exactly this, so the view
+    # context sees the format Rails selected for the request.
+    controller.formats = controller.request.formats.filter_map(&:ref)
     controller
   end
 

@@ -32,6 +32,13 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
         helper ExpoTurbo::Rails::Caching::Helper
+        # Vary is applied before any other filter runs, because an after_action
+        # never runs when a filter halts the chain or the action raises, and an
+        # authentication redirect, a rate limit, a rejected header, and a
+        # rescued error all reach a shared cache. The after_action repeats it
+        # for an action that replaced the header itself; the merge is
+        # idempotent.
+        prepend_before_action :expo_turbo_vary!
         before_action :expo_turbo_reject_invalid_frame_request!
         after_action :expo_turbo_validate_response!
         after_action :expo_turbo_vary!

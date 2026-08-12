@@ -6,6 +6,7 @@ module ExpoTurbo
     MIME_TYPE = "application/vnd.expo-turbo+xml"
     MIME_SYMBOL = :expo_turbo
     TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html"
+    TURBO_STREAM_MIME_SYMBOL = :turbo_stream
     TURBO_BASELINE_VERSION = "8.0.23"
     TURBO_RAILS_BASELINE_VERSION = "2.0.23"
     TURBO_RAILS_MINIMUM_VERSION = "2.0.10"

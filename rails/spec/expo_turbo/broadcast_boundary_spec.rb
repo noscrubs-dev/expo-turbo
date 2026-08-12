@@ -38,6 +38,7 @@ RSpec.describe "Expo Turbo broadcast boundary" do
   it "uses the Expo Turbo builder for a request that accepts Expo Turbo" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
 
     expect(controller.turbo_stream).to be_a(ExpoTurbo::Rails::Streams::TagBuilder)
   end

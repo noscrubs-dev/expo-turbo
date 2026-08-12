@@ -361,10 +361,17 @@ feeds as `&#9;`, `&#13;`, and `&#10;`, which survive XML parsing unchanged. Use
 This shim stays opt-in. Encoding it automatically would mean replacing Rails'
 own escaping (`ActionView::OutputBuffer` and `ERB::Util.unwrapped_html_escape`)
 for every render, and even then it would miss attributes built by `tag.*`
-helpers, which escape their own values. A response validator cannot recover the
-original either: once an XML parser applies attribute-value normalization, the
-raw whitespace is gone, so the server cannot even detect that it happened. The
-complete fix belongs to the client parser or the protocol, not to Rails.
+helpers, which escape their own values. A response validator cannot *recover*
+the original either: once an XML parser applies attribute-value normalization,
+the raw whitespace is gone.
+
+One angle remains open for a future release. The raw response body still exists
+before it is parsed, so a validator that reads those bytes could reject a
+literal tab, carriage return, or line feed inside an attribute value and fail
+the response loudly, instead of letting the client silently collapse it. That
+turns a silent data change into a server error, though it still does not encode
+the value for the host. The complete fix belongs to the client parser or the
+protocol.
 
 ## Protected Cable streams
 

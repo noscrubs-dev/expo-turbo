@@ -171,6 +171,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   it "delegates literal Frame tags to turbo-rails from API view contexts" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
     rendered = controller.view_context.turbo_frame_tag(
       "details",
       src: "/frames/details",
@@ -190,6 +191,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   it "normalizes model classes to Turbo Frame IDs from API view contexts" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
     rendered = controller.view_context.turbo_frame_tag(ExpoTurboFrameHelperSpecRecord)
     frame = Nokogiri::XML(rendered.to_s) { |config| config.strict }.root
 
@@ -199,6 +201,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   it "requires self-contained XML Frame fragments without changing preserved text" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
     calls = 0
     rendered = controller.view_context.turbo_frame_tag("details") do
       calls += 1
@@ -215,6 +218,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   it "rejects malformed Frame markup without exposing its source" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
 
     [
       "<Demo:Text/>",
@@ -231,6 +235,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
   it "allows unprefixed Frame tags in a default namespace" do
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
     rendered = controller.view_context.turbo_frame_tag("details", xmlns: "urn:expo-test")
     frame = ExpoTurbo::Rails::Testing.parse_document(rendered.to_s).root
 

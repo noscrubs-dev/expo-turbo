@@ -6,11 +6,19 @@ module ExpoTurbo
   module Rails
     # Recognizes a verified native request from its Accept header.
     #
-    # A native client always names the Expo Turbo media type exactly. A browser
-    # names it only through a wildcard, so wildcards deliberately do not match:
-    # the result decides whether module negotiation may fail open.
+    # A native client names the Expo Turbo media type exactly and prefers it:
+    # it sends the type alone, or beside the Turbo Stream type at equal
+    # quality. Three values therefore do not qualify, because getting this
+    # wrong denies service to a client that is not native:
+    #
+    # - a wildcard, which every browser sends
+    # - the type at a lower quality than another media range, which means the
+    #   client prefers that other range
+    # - a malformed quality value, which the server cannot interpret at all
     module MediaType
       ACCEPT_ENTRY = /[^,\s"](?:[^,"]|"[^"]*")*/
+      # RFC 9110 qvalue: 0[.0-3 digits] or 1[.up to three zeros].
+      QUALITY = /\A(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?)\z/
 
       module_function
 
@@ -20,13 +28,32 @@ module ExpoTurbo
         accept = accept.dup.force_encoding(Encoding::UTF_8)
         return false unless accept.valid_encoding? && !accept.strip.empty?
 
-        accept.scan(ACCEPT_ENTRY).any? { |entry| expo_turbo_entry?(entry) }
+        preferred = 0.0
+        expo_turbo = nil
+        accept.scan(ACCEPT_ENTRY).each do |entry|
+          quality = entry_quality(entry)
+          next unless quality
+
+          preferred = quality if quality > preferred
+          expo_turbo = quality if expo_turbo_entry?(entry) && (expo_turbo.nil? || quality > expo_turbo)
+        end
+
+        !expo_turbo.nil? && expo_turbo.positive? && expo_turbo >= preferred
       end
 
-      def expo_turbo_entry?(entry)
-        return false unless Rack::MediaType.type(entry)&.casecmp?(MIME_TYPE)
+      # An entry whose quality cannot be parsed is ignored: it neither matches
+      # nor competes, so unreadable syntax on one range cannot change how the
+      # server reads another.
+      def entry_quality(entry)
+        quality = Rack::MediaType.params(entry).fetch("q", "1").to_s
+        QUALITY.match?(quality) ? quality.to_f : nil
+      rescue ArgumentError, TypeError
+        nil
+      end
+      private_class_method :entry_quality
 
-        Rack::MediaType.params(entry).fetch("q", 1).to_f.positive?
+      def expo_turbo_entry?(entry)
+        Rack::MediaType.type(entry)&.casecmp?(MIME_TYPE) || false
       rescue ArgumentError, TypeError
         false
       end

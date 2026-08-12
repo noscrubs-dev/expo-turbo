@@ -20,15 +20,22 @@ module ExpoTurboSpecRendering
     end
   end
 
-  # A view context whose request accepts Expo Turbo, so every standard helper
-  # takes its Expo Turbo branch rather than calling `super`.
-  def expo_turbo_view_context(controller_class, headers = {})
+  # A controller whose request accepts Expo Turbo and whose lookup formats are
+  # the ones Rails would select for it. ActionController::Rendering sets those
+  # formats in process_action, and the standard helpers read them to decide
+  # between Expo Turbo behavior and `super`.
+  def expo_turbo_controller(controller_class, headers = {})
     controller = controller_class.new
     controller.request = ActionDispatch::TestRequest.create(
       {"HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE}.merge(headers)
     )
     controller.response = ActionDispatch::TestResponse.new
-    controller.view_context
+    controller.formats = controller.request.formats.filter_map(&:ref)
+    controller
+  end
+
+  def expo_turbo_view_context(controller_class, headers = {})
+    expo_turbo_controller(controller_class, headers).view_context
   end
 
   def dispatch(controller_class, action = :show, headers: {})
