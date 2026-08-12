@@ -6,7 +6,6 @@ import type {
   FocusAdapter,
   NavigationAdapter,
 } from "../adapters/index.js"
-import type { ExpoTurboError } from "../core/errors.js"
 import {
   CableStreamSourceRegistry,
   DocumentFormControls,
@@ -29,6 +28,7 @@ import {
 } from "../core/index.js"
 import { serializeModuleVersionsHeader } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
+import { CableDocumentRecovery } from "./cable-recovery-internal.js"
 
 const clock: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -68,11 +68,13 @@ export interface CreateExpoTurboRuntimeOptions {
   readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
   /**
-   * Receives Cable subscription and dispatch failures. These are Stream
-   * transport faults, not document faults, so they are reported rather than
-   * replacing the mounted document with an error surface.
+   * Receives faults from background work: Cable subscription and dispatch,
+   * document refresh, and Cable reconnect recovery. These are not document
+   * faults, so they are reported rather than replacing the mounted document
+   * with an error surface — but they must be reported, because the alternative
+   * is an uncaught microtask throw the host can neither see nor catch.
    */
-  readonly onCableError?: (error: ExpoTurboError) => void
+  readonly onBackgroundError?: (error: Error) => void
   readonly registry: ComponentRegistry<RegistryComponent>
   readonly url: string
 }
@@ -103,7 +105,12 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     snapshotCache: snapshots,
     visitLifecycle,
   })
-  const refresh = new DocumentRefreshController(session, controller, clock)
+  const onBackgroundError = options.onBackgroundError
+  // Without an observer, a failed refresh queues an uncaught microtask throw:
+  // silent to the host and uncatchable by it at the same time.
+  const refresh = new DocumentRefreshController(session, controller, clock, {
+    onError: (error) => onBackgroundError?.(error),
+  })
   const frameHistory = history
     ? new FrameHistoryCoordinator(session, {
         history,
@@ -138,20 +145,26 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     moduleVersions,
     submissionController: submission,
   })
-  const onCableError = options.onCableError
-  // A Cable adapter that reconnects has to reconcile the document it was
+  // A Cable adapter that reconnects has to recover the document it was
   // disconnected from, or messages missed during the gap leave the screen
-  // silently stale. The reconciler defers that refresh until the active visit
-  // settles and drops it if the document changed meanwhile.
-  const reconnectRefresh = options.cable
-    ? new DocumentReconnectReconciler(refresh, controller, {
-        onError: (error) => onCableError?.(error as ExpoTurboError),
+  // silently stale. The reconciler defers the handoff until the active visit
+  // settles; the recovery scheduler then owns the debounce and, crucially,
+  // survives a navigation that starts inside it and does not complete.
+  const cableRecovery = options.cable
+    ? new CableDocumentRecovery(controller, clock, {
+        onError: (error) => onBackgroundError?.(error),
       })
     : undefined
+  const reconnectRefresh =
+    options.cable && cableRecovery
+      ? new DocumentReconnectReconciler(cableRecovery, controller, {
+          onError: (error) => onBackgroundError?.(error),
+        })
+      : undefined
   const streamSources =
     options.cable && reconnectRefresh
       ? new CableStreamSourceRegistry(session, options.cable, {
-          onError: (error) => onCableError?.(error),
+          onError: (error) => onBackgroundError?.(error),
           reconnectRefresh,
         })
       : undefined
@@ -172,6 +185,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
       frames.dispose()
       streamSources?.dispose()
       reconnectRefresh?.dispose()
+      cableRecovery?.dispose()
       refresh.dispose()
       controller.cancel()
       loader.cancel()

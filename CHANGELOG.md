@@ -32,8 +32,16 @@ All notable public package, gem, and protocol changes will be recorded here.
   It is a private Expo Router export, and a static named import of a missing
   export is a module-level `SyntaxError` that would take the whole
   `expo-turbo/expo` entrypoint down at import time. The bridge now binds it
-  through a namespace import and selects it once at module load, falling back
-  to `usePathname` — which costs only the query string — when it is absent.
+  through a namespace import and selects it once at module load. When it is
+  absent, `useExpoRouterDocumentPath()` returns `undefined` and `ExpoTurboApp`
+  renders its error surface asking for an explicit `path`, rather than falling
+  back to the bare pathname: `/orders` and `/orders?customer=42` are different
+  documents, and no remaining public hook can rebuild a query without inventing
+  one, since `useGlobalSearchParams()` merges route and query parameters.
+- `ExpoTurboApp` no longer throws during render for a bad `origin`, an
+  unresolvable path, or a missing transport. Each renders the error surface and
+  reports through `onError`, because an unhandled render throw is fatal on both
+  React Native platforms.
 - Fix `ExpoTurboProvider` and a runtime-owning `ExpoTurbo` both disposing
   `scopes` and `state`. The runtime created them and disposes them itself, so
   the provider now takes `ownsStateDisposal: false` from `ExpoTurbo` and skips

@@ -183,7 +183,7 @@ export function ExpoTurbo({
       ...(focus ? { focus } : {}),
       ...(history ? { history } : {}),
       ...(navigation ? { navigation } : {}),
-      onCableError: (error) => onErrorRef.current?.(error),
+      onBackgroundError: (error) => onErrorRef.current?.(error),
       registry,
       url,
     })

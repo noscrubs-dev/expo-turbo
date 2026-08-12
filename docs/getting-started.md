@@ -90,6 +90,13 @@ The document path follows the mounted route, search parameters included, so
 `/orders?page=2` requests `/orders?page=2`. Pass `path` when the document is not
 the mounted route, such as `path="/orders"`.
 
+Search parameters come from a private Expo Router hook. If a future Expo Router
+stops exposing it, `ExpoTurboApp` renders its error surface and asks for an
+explicit `path` rather than falling back to the bare pathname: `/orders` and
+`/orders?customer=42` are different documents, and nothing can tell a route that
+has no query from one whose query it cannot see. Quietly serving the wrong
+content is the one outcome worth failing over.
+
 ### Adapters
 
 Everything else is an adapter, and `adapters` is the single escape hatch. Each

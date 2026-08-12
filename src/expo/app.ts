@@ -1,4 +1,4 @@
-import { createElement, type ReactNode, useMemo } from "react"
+import { createElement, type ReactNode, useEffect, useMemo, useRef } from "react"
 import { AccessibilityInfo, I18nManager, Linking } from "react-native"
 
 import { createDefaultFetchAdapter } from "../adapters/fetch.js"
@@ -115,6 +115,8 @@ export interface ExpoTurboAppProps {
 const NO_ADAPTERS: ExpoTurboAppAdapters = Object.freeze({})
 const DEFAULT_FETCH: FetchAdapter = createDefaultFetchAdapter()
 const DEFAULT_LOADING: ReactNode = createElement(ExpoTurboLoadingSurface)
+/** A configuration failure has nothing to retry; the host must change the code. */
+const NO_RETRY = () => undefined
 
 const DOCUMENT_ANNOUNCEMENTS: Readonly<Record<string, string>> = Object.freeze({
   canceled: "Navigation canceled",
@@ -183,17 +185,39 @@ function isAutofocusAdapter(
   )
 }
 
-function documentUrl(origin: string, path: string): string {
+type DocumentTarget = Readonly<{ error: StateError }> | Readonly<{ url: string }>
+
+/**
+ * Resolves the document URL, returning a failure rather than throwing. Nothing
+ * in this component may throw during render: React Native turns an unhandled
+ * render throw into a fatal, and a misconfigured origin is a mistake to show,
+ * not one to crash on.
+ */
+function documentTarget(
+  origin: string,
+  path: string | undefined,
+  routerPath: string | undefined,
+): DocumentTarget {
+  const resolvedPath = path ?? routerPath
+  if (resolvedPath === undefined) {
+    return {
+      error: new StateError(
+        "Expo Turbo cannot infer the document path: this Expo Router build does not report " +
+          "route search parameters, so a route carrying a query would silently request a " +
+          "different document. Pass an explicit `path` to ExpoTurboApp.",
+      ),
+    }
+  }
   let resolved: URL
   try {
-    resolved = new URL(path, origin)
+    resolved = new URL(resolvedPath, origin)
   } catch {
-    throw new StateError("Expo Turbo app origin and path must form a valid URL")
+    return { error: new StateError("Expo Turbo app origin and path must form a valid URL") }
   }
   if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
-    throw new StateError("Expo Turbo app origin must be HTTP(S)")
+    return { error: new StateError("Expo Turbo app origin must be HTTP(S)") }
   }
-  return resolved.toString()
+  return { url: resolved.toString() }
 }
 
 /**
@@ -222,7 +246,15 @@ export function ExpoTurboApp({
 }: ExpoTurboAppProps): ReactNode {
   const routerPath = useExpoRouterDocumentPath()
   const routerAdapters = useExpoRouterAdapters()
-  const url = documentUrl(origin, path ?? routerPath)
+  const target = useMemo(() => documentTarget(origin, path, routerPath), [origin, path, routerPath])
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
+
+  // A configuration failure still has to reach the host's telemetry, and it has
+  // to do so without a render-time side effect.
+  useEffect(() => {
+    if ("error" in target) onErrorRef.current?.(target.error)
+  }, [target])
 
   const cable = resolveAdapter(adapters.cable, undefined)
   const fetchAdapter = resolveAdapter(adapters.fetch, DEFAULT_FETCH)
@@ -306,7 +338,9 @@ export function ExpoTurboApp({
     [renderError],
   )
 
-  if (!fetchAdapter) throw new StateError("Expo Turbo app requires a fetch adapter")
+  if ("error" in target) return surface(target.error, NO_RETRY)
+  if (!fetchAdapter)
+    return surface(new StateError("Expo Turbo app requires a fetch adapter"), NO_RETRY)
 
   return createElement(ExpoTurbo, {
     adapters: renderAdapters,
@@ -321,6 +355,6 @@ export function ExpoTurboApp({
     ...(onUnknownVocabulary ? { onUnknownVocabulary } : {}),
     registry,
     renderError: surface,
-    url,
+    url: target.url,
   })
 }

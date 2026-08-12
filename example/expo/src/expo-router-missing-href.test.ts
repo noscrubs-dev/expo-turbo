@@ -81,34 +81,80 @@ async function mount(element: ReactElement): Promise<ReactTestRenderer> {
   return renderer
 }
 
-test("loads and falls back to the pathname when the private href hook is absent", async () => {
+function transport(urls: string[]) {
+  return {
+    fetch: async (request: Readonly<{ url: string }>) => {
+      urls.push(request.url)
+      return {
+        headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+        redirected: false,
+        status: 200,
+        text: async () => "<AppDoc />",
+        url: request.url,
+      }
+    },
+  }
+}
+
+function findByTestID(node: unknown, testID: string): Record<string, unknown> | undefined {
+  if (!node || typeof node !== "object") return undefined
+  const candidate = node as Record<string, unknown>
+  if ((candidate.props as Record<string, unknown> | undefined)?.testID === testID) return candidate
+  const children = candidate.children
+  if (!Array.isArray(children)) return undefined
+  for (const child of children) {
+    const found = findByTestID(child, testID)
+    if (found) return found
+  }
+  return undefined
+}
+
+test("refuses to infer a path rather than silently requesting the wrong document", async () => {
   const urls: string[] = []
+  const reported: Error[] = []
 
   const renderer = await mount(
     createElement(ExpoTurboApp, {
-      adapters: {
-        fetch: {
-          fetch: async (request: Readonly<{ url: string }>) => {
-            urls.push(request.url)
-            return {
-              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
-              redirected: false,
-              status: 200,
-              text: async () => "<AppDoc />",
-              url: request.url,
-            }
-          },
-        },
-      },
+      adapters: { fetch: transport(urls) },
+      onError: (error: Error) => reported.push(error),
       origin: ORIGIN,
       registry,
     }),
   )
 
-  // The app still works. It loses only the query the private hook would have
-  // carried, which is the documented degradation.
-  expect(urls).toEqual([`${ORIGIN}/catalog/shoes`])
+  // `/catalog/shoes?customer=42` and `/catalog/shoes` are different documents,
+  // and without the private hook nothing here can tell a route that has no
+  // query from one whose query it cannot see. Guessing would quietly serve the
+  // wrong content, so no request is made at all.
+  expect(urls).toEqual([])
+  expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeDefined()
+  expect(reported).toHaveLength(1)
+  expect(reported[0]?.message).toContain("Pass an explicit `path`")
+
+  await act(async () => {
+    renderer.unmount()
+  })
+})
+
+test("works normally on this same Expo Router once an explicit path is supplied", async () => {
+  const urls: string[] = []
+  const reported: Error[] = []
+
+  const renderer = await mount(
+    createElement(ExpoTurboApp, {
+      adapters: { fetch: transport(urls) },
+      onError: (error: Error) => reported.push(error),
+      origin: ORIGIN,
+      path: "/catalog/shoes?customer=42",
+      registry,
+    }),
+  )
+
+  // The documented remedy, and the proof that the refusal above is about the
+  // missing hook rather than anything else being broken in this environment.
+  expect(urls).toEqual([`${ORIGIN}/catalog/shoes?customer=42`])
   expect(renderer.toJSON()).toMatchObject({ type: "doc" })
+  expect(reported).toEqual([])
 
   await act(async () => {
     renderer.unmount()

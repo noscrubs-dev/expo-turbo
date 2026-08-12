@@ -56,22 +56,36 @@ export function expoRouterDocumentPath(href: unknown, pathname: string): string 
 }
 
 /**
- * The mounted Expo Router path, including search parameters.
+ * The mounted Expo Router path including search parameters, or `undefined` when
+ * this Expo Router build cannot report them.
  *
- * `usePathname()` drops the query, which would silently fetch the wrong
- * document for any route carrying one. `useUnstableGlobalHref()` keeps it, at
- * the cost of being a private Expo Router API that reserves the right to start
- * returning an absolute URL with a hostname. Taking only the path portion makes
- * that change a no-op here and keeps a router-supplied hostname from ever
- * redirecting a document request away from the host's own origin. If it yields
- * nothing usable, the pathname is still correct, just query-free.
+ * `usePathname()` drops the query. `useUnstableGlobalHref()` keeps it, at the
+ * cost of being a private Expo Router API that reserves the right to start
+ * returning an absolute URL with a hostname; taking only the path portion makes
+ * that change a no-op and stops a router-supplied hostname from ever
+ * redirecting a document request away from the host's own origin.
+ *
+ * When the private hook is gone this returns `undefined` rather than falling
+ * back to the bare pathname. The pathname cannot be trusted as a document path
+ * on its own: `/orders?customer=42` would become `/orders`, which is a
+ * different document rather than the same one with less detail, and nothing
+ * here can tell a route that has no query from one whose query it cannot see.
+ * The remaining public hooks do not help — `useGlobalSearchParams()` and
+ * `useLocalSearchParams()` merge route parameters with query parameters, so
+ * rebuilding a query from them invents one. Callers must ask for an explicit
+ * path instead.
  *
  * This module is the package's only permitted importer of `expo-router`, so
  * every other entrypoint reaches the router through here.
  */
-export function useExpoRouterDocumentPath(): string {
+export const expoRouterDocumentPathIsInferable: boolean =
+  typeof ExpoRouter.useUnstableGlobalHref === "function"
+
+export function useExpoRouterDocumentPath(): string | undefined {
   const pathname = ExpoRouter.usePathname()
   const href = useRouterHref()
+  // Always called, both branches, so hook order never depends on this.
+  if (!expoRouterDocumentPathIsInferable) return undefined
   return expoRouterDocumentPath(href, pathname)
 }
 
