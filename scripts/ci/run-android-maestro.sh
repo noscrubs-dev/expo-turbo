@@ -66,20 +66,37 @@ wait_for_stable_device() {
   return 1
 }
 
-capture_reverse_evidence() {
-  local attempt="$1"
+probe_host_reach() {
+  # Makes exactly one request. Prints either the HTTP status or an unreachable
+  # description - never both, and never the two concatenated. Returns non-zero
+  # when Rails is not serving, matching what curl --fail used to decide.
+  local code=""
+  local status=0
 
+  set +e
+  code="$(curl --silent --max-time 5 -o /dev/null \
+    -w '%{http_code}' "$rails_origin/up" 2>/dev/null)"
+  status=$?
+  set -e
+
+  if [ "$status" -ne 0 ] || [ -z "$code" ] || [ "$code" = "000" ]; then
+    echo "unreachable (curl exit ${status}, http_code ${code:-none})"
+    return 1
+  fi
+
+  echo "$code"
+  case "$code" in
+  [123]??) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+capture_reverse_evidence() {
   if command -v ss >/dev/null 2>&1; then
     ss -ltn >"$reverse_listeners_log" 2>&1 || true
   else
     echo "$ss_missing_marker" >"$reverse_listeners_log"
   fi
-
-  {
-    echo "attempt=$attempt"
-    echo "host_curl_http_code=$(curl --silent --max-time 5 -o /dev/null \
-      -w '%{http_code}' "$rails_origin/up" 2>/dev/null || echo unreachable)"
-  } >"$reverse_attempt_log" 2>&1
 
   adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
 }
@@ -113,8 +130,9 @@ report_rails_reverse_failure() {
   local reason="$1"
 
   # Runs in a subshell with errexit off so a failure inside the report can never
-  # truncate it. Everything below is evidence captured at the failing attempt,
-  # not re-probed now: the host can recover between the failure and this report.
+  # truncate it. Everything below was recorded during the failing attempt and is
+  # only replayed here; nothing is measured again at report time, so the report
+  # cannot contradict itself if the host recovers in between.
   (
     set +e
     echo "Android could not reach Rails through the ADB reverse tunnel."
@@ -129,7 +147,7 @@ report_rails_reverse_failure() {
         echo "(ss ran and found no listener on 3001)"
       fi
     fi
-    echo "--- host reach of Rails, at the failing attempt ---"
+    echo "--- host reach of Rails, from this attempt's own host check ---"
     if [ -s "$reverse_attempt_log" ]; then
       cat "$reverse_attempt_log"
     else
@@ -165,15 +183,29 @@ prepare_rails_reverse() {
   local ok_status='^HTTP/[0-9.]+ 200 '
   local attempt=0
   local probe_status=0
+  local host_reach=""
+  local host_reach_ok=0
 
   for attempt in 1 2; do
     : >"$reverse_response_log"
     : >"$reverse_probe_err_log"
     : >"$reverse_binding_log"
 
-    if ! curl --fail --silent --max-time 5 "$rails_origin/up" >/dev/null 2>&1; then
-      reason="HOST NOT LISTENING - Rails is not serving $rails_origin, so the tunnel has nothing to forward to."
-      capture_reverse_evidence "$attempt"
+    # One request per attempt. Its result is both the gate and the evidence
+    # reported later, so nothing re-queries Rails after the failure.
+    set +e
+    host_reach="$(probe_host_reach)"
+    host_reach_ok=$?
+    set -e
+
+    {
+      echo "attempt=$attempt"
+      echo "host_curl_http_code=$host_reach"
+    } >"$reverse_attempt_log" 2>&1
+
+    if [ "$host_reach_ok" -ne 0 ]; then
+      reason="HOST CHECK FAILED - the host's own request to $rails_origin/up did not succeed (${host_reach}), so the tunnel has nothing healthy to forward to."
+      capture_reverse_evidence
       sleep 2
       continue
     fi
@@ -181,7 +213,7 @@ prepare_rails_reverse() {
     adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
     if ! adb -s "$adb_serial" reverse tcp:3001 tcp:3001 >/dev/null 2>&1; then
       reason="REVERSE BINDING ABSENT - 'adb reverse tcp:3001 tcp:3001' did not bind."
-      capture_reverse_evidence "$attempt"
+      capture_reverse_evidence
       sleep 2
       continue
     fi
@@ -189,7 +221,7 @@ prepare_rails_reverse() {
     adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
     if ! grep -q 'tcp:3001 tcp:3001' "$reverse_binding_log"; then
       reason="REVERSE BINDING ABSENT - the bind call succeeded but 'adb reverse --list' does not show tcp:3001."
-      capture_reverse_evidence "$attempt"
+      capture_reverse_evidence
       sleep 2
       continue
     fi
@@ -206,7 +238,7 @@ prepare_rails_reverse() {
 
     if [ ! -s "$reverse_response_log" ]; then
       reason="$(describe_empty_probe "$probe_status")"
-      capture_reverse_evidence "$attempt"
+      capture_reverse_evidence
       sleep 2
       continue
     fi
@@ -219,7 +251,7 @@ prepare_rails_reverse() {
     fi
 
     reason="NON-200 FROM RAILS - the device reached Rails but the status line was: ${first_line}"
-    capture_reverse_evidence "$attempt"
+    capture_reverse_evidence
     sleep 2
   done
 
