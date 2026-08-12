@@ -37,6 +37,16 @@ export type ComponentChildren = "nodes" | "none" | "text"
 export type ComponentMorphState = "preserve" | "reset"
 export type ComponentRenderer<Props> = ComponentType<Props & Readonly<{ children?: ReactNode }>>
 
+export const nodes = "nodes" as const
+export const none = "none" as const
+export const text = "text" as const
+export const formOwner = "form-owner" as const
+export const datalist = "datalist" as const
+export const fieldset = "fieldset" as const
+export const legend = "legend" as const
+
+export type ComponentRole = typeof datalist | typeof fieldset | typeof formOwner | typeof legend
+
 type CamelCaseAttribute<Name extends string> = Name extends `${infer Head}-${infer Tail}`
   ? Tail extends `${infer Next}${infer Rest}`
     ? `${Head}${Uppercase<Next>}${CamelCaseAttribute<Rest>}`
@@ -108,6 +118,110 @@ export type DefineDerivedComponentDefinitionConfig<
   Tag extends string,
   Attributes extends AttributeDefinitionMap,
 > = Omit<DefineDerivedComponentConfig<Tag, Attributes>, "component">
+
+type DeclaredChildrenProps<Children extends ComponentChildren> = Children extends "none"
+  ? Readonly<Record<never, never>>
+  : Children extends "text"
+    ? Readonly<{ children?: string }>
+    : Readonly<{ children?: ReactNode }>
+
+const COMPONENT_DECLARATION = Symbol("expo-turbo.component-declaration")
+
+export interface ComponentDeclaration<Schema extends z.ZodObject = z.ZodObject> {
+  readonly [COMPONENT_DECLARATION]: true
+  readonly aliases: readonly string[]
+  readonly attributes: Readonly<Record<string, unknown>>
+  readonly children: ComponentChildren
+  readonly formContainer?: FormContainerRole
+  readonly formOwner: boolean
+  readonly morphState: ComponentMorphState
+  readonly render: ComponentType<z.output<Schema> & Readonly<{ children?: ReactNode }>>
+  readonly schema?: Schema
+}
+
+type StyleAttributeMap<Style extends AttributeDefinition | undefined> =
+  Style extends AttributeDefinition<infer Schema>
+    ? Readonly<{
+        "style-tokens": AttributeDefinition<Schema, "styleTokens">
+      }>
+    : Readonly<Record<never, never>>
+
+type DeclaredAttributeMap<
+  Attributes extends AttributeDefinitionMap,
+  Style extends AttributeDefinition | undefined,
+> = Attributes & StyleAttributeMap<Style>
+
+export interface DeclareComponentConfig<
+  Attributes extends AttributeDefinitionMap,
+  Children extends ComponentChildren,
+  Style extends AttributeDefinition | undefined,
+> {
+  readonly aliases?: readonly string[]
+  readonly attributes?: Attributes
+  readonly children: Children
+  readonly morphState?: ComponentMorphState
+  readonly render: ComponentType<
+    z.output<DerivedComponentSchema<DeclaredAttributeMap<Attributes, Style>>> &
+      DeclaredChildrenProps<Children>
+  >
+  readonly role?: ComponentRole
+  readonly styles?: Style
+}
+
+export interface DeclareExplicitComponentConfig<
+  Schema extends z.ZodObject,
+  Children extends ComponentChildren,
+> {
+  readonly aliases?: readonly string[]
+  readonly attributes: Readonly<Record<string, AttributeBinding<z.input<Schema>>>>
+  readonly children: Children
+  readonly morphState?: ComponentMorphState
+  readonly render: ComponentType<z.output<Schema> & DeclaredChildrenProps<Children>>
+  readonly role?: ComponentRole
+  readonly schema: Schema
+  readonly styles?: never
+}
+
+export function component<
+  const Attributes extends AttributeDefinitionMap = Record<never, never>,
+  const Children extends ComponentChildren = ComponentChildren,
+  const Style extends AttributeDefinition | undefined = undefined,
+>(
+  config: DeclareComponentConfig<Attributes, Children, Style>,
+): ComponentDeclaration<DerivedComponentSchema<DeclaredAttributeMap<Attributes, Style>>>
+export function component<Schema extends z.ZodObject, const Children extends ComponentChildren>(
+  config: DeclareExplicitComponentConfig<Schema, Children>,
+): ComponentDeclaration<Schema>
+export function component(
+  config:
+    | DeclareComponentConfig<
+        AttributeDefinitionMap,
+        ComponentChildren,
+        AttributeDefinition | undefined
+      >
+    | DeclareExplicitComponentConfig<z.ZodObject, ComponentChildren>,
+): ComponentDeclaration {
+  if (config.styles !== undefined && Object.hasOwn(config.attributes ?? {}, "style-tokens")) {
+    throw new RegistryError('Component style acceptance must use only the "styles" field')
+  }
+  const attributes = {
+    ...(config.attributes ?? {}),
+    ...(config.styles !== undefined ? { "style-tokens": config.styles.prop("styleTokens") } : {}),
+  }
+  return Object.freeze({
+    [COMPONENT_DECLARATION]: true as const,
+    aliases: Object.freeze([...(config.aliases ?? [])]),
+    attributes: Object.freeze(attributes),
+    children: config.children,
+    ...(config.role !== undefined && config.role !== formOwner
+      ? { formContainer: config.role }
+      : {}),
+    formOwner: config.role === formOwner,
+    morphState: config.morphState ?? "preserve",
+    render: config.render as ComponentType<Readonly<Record<string, unknown>>>,
+    ...("schema" in config ? { schema: config.schema } : {}),
+  })
+}
 
 interface ErasedAttributeBinding {
   readonly codec: AttributeCodec<unknown>
@@ -406,17 +520,28 @@ export interface ComponentModule<
   Components extends readonly RegistryComponent[] = readonly RegistryComponent[],
 > extends CapabilityModule<Name, Components> {}
 
+const QUARANTINED_MODULE = Symbol("expo-turbo.quarantined-module")
+
+type QuarantinedCapabilityModule = CapabilityModule & {
+  readonly [QUARANTINED_MODULE]: true
+}
+
+function moduleIsQuarantined(module: CapabilityModule): module is QuarantinedCapabilityModule {
+  return (
+    (QUARANTINED_MODULE in module && module[QUARANTINED_MODULE] === true) ||
+    !isExpoTurboModuleName(module.name) ||
+    !isExpoTurboModuleVersion(module.version)
+  )
+}
+
 function freezeCapabilityModule<
   const Name extends string,
   const Definitions extends readonly RegistryComponentDefinition[],
 >(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
-  if (!isExpoTurboModuleName(config.name)) {
-    throw new RegistryError("Component modules require a valid name")
-  }
-  if (!isExpoTurboModuleVersion(config.version)) {
-    throw new RegistryError("Component module versions must use RubyGems version syntax")
-  }
+  const quarantined =
+    !isExpoTurboModuleName(config.name) || !isExpoTurboModuleVersion(config.version)
   return Object.freeze({
+    ...(quarantined ? { [QUARANTINED_MODULE]: true as const } : {}),
     components: Object.freeze([...config.components]) as unknown as Definitions,
     name: config.name,
     version: config.version,
@@ -527,11 +652,32 @@ function capabilityHash(value: string): string {
 export function createCapabilityManifest(
   ...modules: readonly CapabilityModule[]
 ): VersionedRegistryCapabilityManifest {
+  return createCapabilityManifestWithComponents(modules, [])
+}
+
+function createCapabilityManifestWithComponents(
+  modules: readonly CapabilityModule[],
+  declaredComponents: readonly RegistryComponentDefinition[],
+): VersionedRegistryCapabilityManifest {
   const moduleNames = new Set<string>()
   const owners = new Map<string, string>()
-  const definitions: RegistryComponentDefinition[] = []
+  const definitions: RegistryComponentDefinition[] = [...declaredComponents]
+
+  for (const definition of declaredComponents) {
+    for (const name of [definition.tag, ...definition.aliases]) {
+      const owner = owners.get(name)
+      if (owner) {
+        throw new RegistryError(
+          `Component name ${JSON.stringify(name)} is declared more than once`,
+          { target: name },
+        )
+      }
+      owners.set(name, "registry")
+    }
+  }
 
   for (const module of modules) {
+    if (moduleIsQuarantined(module)) continue
     if (moduleNames.has(module.name)) {
       throw new RegistryError(`Duplicate component module ${JSON.stringify(module.name)}`)
     }
@@ -578,6 +724,7 @@ export function createCapabilityManifest(
     })
     .sort((left, right) => compareCodeUnits(left.tag, right.tag))
   const moduleCapabilities = modules
+    .filter((module) => !moduleIsQuarantined(module))
     .map((module) => Object.freeze({ name: module.name, version: module.version }))
     .sort((left, right) => compareCodeUnits(left.name, right.name))
   const serializable = {
@@ -597,6 +744,17 @@ export function createCapabilityManifest(
 
 function serializeCapabilityManifest(manifest: VersionedRegistryCapabilityManifest): string {
   return `${JSON.stringify(manifest, null, 2)}\n`
+}
+
+function registryDevelopmentMode(): boolean {
+  const globalDevelopment = (globalThis as Readonly<{ __DEV__?: unknown }>).__DEV__
+  if (typeof globalDevelopment === "boolean") return globalDevelopment
+  const nodeEnvironment = (
+    globalThis as Readonly<{
+      process?: Readonly<{ env?: Readonly<{ NODE_ENV?: string }> }>
+    }>
+  ).process?.env?.NODE_ENV
+  return nodeEnvironment === "development"
 }
 
 export function capabilityManifestJSON(...modules: readonly CapabilityModule[]): string {
@@ -630,10 +788,21 @@ class Registry<Component extends RegistryComponent>
 {
   readonly capabilities: VersionedRegistryCapabilityManifest
   private readonly components = new Map<string, RegistryComponent>()
+  private readonly reportedFallbacks = new Set<string>()
 
-  constructor(private readonly modules: readonly ComponentModule[]) {
-    this.capabilities = createCapabilityManifest(...modules)
+  constructor(
+    private readonly modules: readonly ComponentModule[],
+    private readonly declaredComponents: readonly RegistryComponent[] = [],
+    private readonly invertedStrictness = false,
+  ) {
+    this.capabilities = createCapabilityManifestWithComponents(modules, declaredComponents)
+    for (const component of declaredComponents) {
+      for (const name of [component.tag, ...component.aliases]) {
+        this.components.set(name, component)
+      }
+    }
     for (const module of modules) {
+      if (moduleIsQuarantined(module)) continue
       for (const component of module.components) {
         for (const name of [component.tag, ...component.aliases]) {
           this.components.set(name, component)
@@ -651,7 +820,34 @@ class Registry<Component extends RegistryComponent>
   }
 
   decodeForRender(element: ProtocolElement): RegistryRenderDecodeResult<Component> {
-    return decodeRegistryElementForRender((tagOrAlias) => this.resolve(tagOrAlias), element)
+    const result = decodeRegistryElementForRender((tagOrAlias) => this.resolve(tagOrAlias), element)
+    if (
+      this.invertedStrictness &&
+      result.status === "transparent" &&
+      result.definition === undefined
+    ) {
+      const issue = result.issues.find(
+        (candidate): candidate is Extract<RegistryVocabularyIssue, { kind: "component" }> =>
+          candidate.kind === "component",
+      )
+      if (issue) {
+        if (registryDevelopmentMode()) {
+          throw new RegistryError(`Unknown component ${JSON.stringify(issue.tag)}`, {
+            target: issue.tag,
+          })
+        }
+        const fingerprint = `${issue.kind}:${issue.tag}`
+        if (!this.reportedFallbacks.has(fingerprint)) {
+          this.reportedFallbacks.add(fingerprint)
+          try {
+            console.error("Expo Turbo registry contract fallback", issue)
+          } catch {
+            // A diagnostic sink must not turn production skew into a render failure.
+          }
+        }
+      }
+    }
+    return result
   }
 
   get<Tag extends Component["tag"]>(
@@ -674,7 +870,11 @@ class Registry<Component extends RegistryComponent>
   use<Next extends readonly RegistryComponent[]>(
     module: ComponentModule<string, Next>,
   ): ManifestComponentRegistry<Component | Next[number]> {
-    return new Registry<Component | Next[number]>([...this.modules, module])
+    return new Registry<Component | Next[number]>(
+      [...this.modules, module],
+      this.declaredComponents,
+      this.invertedStrictness,
+    )
   }
 }
 
@@ -685,4 +885,45 @@ export function createRegistry<const Modules extends readonly ComponentModule[]>
   ...modules: Modules
 ): ManifestComponentRegistry<ComponentsFromModules<Modules>> {
   return new Registry<ComponentsFromModules<Modules>>(modules)
+}
+
+type ComponentsFromDeclarations<
+  Declarations extends Readonly<Record<string, ComponentDeclaration>>,
+> = {
+  [Tag in keyof Declarations & string]: Declarations[Tag] extends ComponentDeclaration<infer Schema>
+    ? DefinedComponent<Tag, Schema>
+    : never
+}[keyof Declarations & string]
+
+export interface DefineRegistryConfig<
+  Declarations extends Readonly<Record<string, ComponentDeclaration>>,
+> {
+  readonly components: Declarations
+}
+
+export function defineRegistry<
+  const Declarations extends Readonly<Record<string, ComponentDeclaration>>,
+>(
+  config: DefineRegistryConfig<Declarations>,
+): ManifestComponentRegistry<ComponentsFromDeclarations<Declarations>> {
+  const components = Object.entries(config.components).map(([tag, declaration]) => {
+    const definition = createComponentDefinition({
+      aliases: declaration.aliases,
+      attributes: declaration.attributes,
+      children: declaration.children,
+      ...(declaration.formContainer !== undefined
+        ? { formContainer: declaration.formContainer }
+        : {}),
+      formOwner: declaration.formOwner,
+      morphState: declaration.morphState,
+      ...(declaration.schema !== undefined ? { schema: declaration.schema } : {}),
+      tag,
+    })
+    return Object.freeze({ ...definition, component: declaration.render })
+  })
+  return new Registry<ComponentsFromDeclarations<Declarations>>(
+    [],
+    components as ComponentsFromDeclarations<Declarations>[],
+    true,
+  )
 }
