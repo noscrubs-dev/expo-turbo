@@ -21,16 +21,7 @@ appId: dev.noscrubs.expoturbo.example
     timeout: 30000
 - assertVisible: Form ready
 - eraseText
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - pressKey: BACK
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - hideKeyboard
+- hideKeyboard
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
@@ -60,16 +51,7 @@ appId: dev.noscrubs.expoturbo.example
           id: demo-form-input-id-first-name
       - assertVisible: First name is required
 - inputText: Ada
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - pressKey: BACK
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - hideKeyboard
+- hideKeyboard
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
