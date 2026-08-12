@@ -52,7 +52,6 @@ module Api
         private
 
         def require_form_frame!
-          expo_turbo_vary_by_frame!
           head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
         end
 
@@ -73,7 +72,6 @@ module Api
         end
 
         def render_bad_form_request
-          expo_turbo_vary_by_frame!
           head :bad_request
         end
 

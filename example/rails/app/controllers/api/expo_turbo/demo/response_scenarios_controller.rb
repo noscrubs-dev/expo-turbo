@@ -55,7 +55,6 @@ module Api
         end
 
         def render_frame(id: FRAME_ID)
-          expo_turbo_vary_by_frame!
           return head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
 
           render_expo_turbo "demo/response_scenarios/frame", locals: {id:}

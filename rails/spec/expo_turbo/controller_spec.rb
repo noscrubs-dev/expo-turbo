@@ -418,7 +418,7 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(details.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "details", :modules, :latest])
     expect(sidebar.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :frame, "sidebar", :modules, :latest])
     expect(invalid.expo_turbo_cache_key("account")).to eq(["account", :expo_turbo, :document, :modules, :latest])
-    expect(document.response.headers["Vary"]).to eq("Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(document.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
   end
 
   it "keeps document and Frame ETags distinct through Rails conditional GET" do
@@ -475,22 +475,22 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     expect(padded.expo_turbo_cache_variant).to eq(canonical.expo_turbo_cache_variant)
   end
 
-  it "merges the Frame cache variation without replacing existing Vary values" do
+  it "merges the Expo Turbo cache variation without replacing existing Vary values" do
     controller = controller_with_request
     controller.response.set_header "Vary", "Accept-Encoding, turbo-frame"
 
-    expect(controller.expo_turbo_vary_by_frame!).to eq("Accept-Encoding, turbo-frame, X-Expo-Turbo-Modules")
-    expect(controller.response.headers["Vary"]).to eq("Accept-Encoding, turbo-frame, X-Expo-Turbo-Modules")
+    expect(controller.expo_turbo_vary!).to eq("Accept-Encoding, turbo-frame, Accept, X-Expo-Turbo-Modules")
+    expect(controller.response.headers["Vary"]).to eq("Accept-Encoding, turbo-frame, Accept, X-Expo-Turbo-Modules")
 
     controller.response.set_header "Vary", "*"
 
-    expect(controller.expo_turbo_vary_by_frame!).to eq("*")
+    expect(controller.expo_turbo_vary!).to eq("*")
   end
 
   it "retains Rails' Accept cache variation when the request negotiated a format" do
     controller = controller_with_request("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
 
-    controller.expo_turbo_vary_by_frame!
+    controller.expo_turbo_vary!
 
     expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
   end

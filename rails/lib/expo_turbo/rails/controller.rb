@@ -21,6 +21,9 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::Frames::Helper
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
+        helper ExpoTurbo::Rails::Caching::Helper
+        after_action :expo_turbo_vary!
+        after_action :expo_turbo_report_response_vocabulary
         helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
           :expo_turbo_frame_request_id, :expo_turbo_request?
       end
@@ -114,18 +117,24 @@ module ExpoTurbo
         ]
       end
 
-      def expo_turbo_vary_by_frame!
+      VARY_DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"].freeze
+
+      # Applied to every response, not only to a request that already carries a
+      # Frame header: a shared cache can receive a Frame request for the same
+      # URL later. Accept is included even when the route forced the format,
+      # because the vocabulary decision reads Accept.
+      def expo_turbo_vary!
         values = response.headers["Vary"].to_s.split(",").map(&:strip).reject(&:blank?)
         return response.headers["Vary"] if values.include?("*")
 
-        values << "Accept" if request.should_apply_vary_header? && values.none? { |value| value.casecmp?("Accept") }
-        values << "Turbo-Frame" if values.none? { |value| value.casecmp?("Turbo-Frame") }
-        values << "X-Expo-Turbo-Modules" if values.none? { |value| value.casecmp?("X-Expo-Turbo-Modules") }
+        VARY_DIMENSIONS.each do |dimension|
+          values << dimension if values.none? { |value| value.casecmp?(dimension) }
+        end
         response.set_header "Vary", values.join(", ")
       end
 
       def expo_turbo_cache_key(*keys)
-        expo_turbo_vary_by_frame!
+        expo_turbo_vary!
         [*keys, *expo_turbo_cache_variant]
       end
 
@@ -185,6 +194,15 @@ module ExpoTurbo
       def assumed_or_report(assumed)
         expo_turbo_report_malformed_module_header
         assumed
+      end
+
+      def expo_turbo_response?
+        media_type = response&.media_type
+        media_type == MIME_TYPE || media_type == TURBO_STREAM_MIME_TYPE
+      end
+
+      def expo_turbo_report_response_vocabulary
+        expo_turbo_module_negotiation if expo_turbo_request? || expo_turbo_response?
       end
 
       def expo_turbo_report_vocabulary(value)

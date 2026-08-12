@@ -18,7 +18,6 @@ module Api
         private
 
         def render_frame(frame_id, template)
-          expo_turbo_vary_by_frame!
           return head :bad_request unless expo_turbo_frame_request_id == frame_id
 
           render_expo_turbo template
