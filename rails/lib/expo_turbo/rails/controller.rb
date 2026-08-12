@@ -22,6 +22,7 @@ module ExpoTurbo
         helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
         helper ExpoTurbo::Rails::Caching::Helper
+        before_action :expo_turbo_reject_invalid_frame_request!
         after_action :expo_turbo_vary!
         after_action :expo_turbo_report_response_vocabulary
         helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
@@ -69,9 +70,18 @@ module ExpoTurbo
       end
 
       def expo_turbo_frame_request_id
-        frame_id = request.get_header("HTTP_TURBO_FRAME")
-        frame_id = frame_id.dup.force_encoding(Encoding::UTF_8) if frame_id.is_a?(String)
+        frame_id = expo_turbo_frame_header
         Frames.valid_id?(frame_id) ? frame_id : nil
+      end
+
+      # A malformed Frame id must not become a document request. That failure
+      # is silent: the client asked for one representation and receives
+      # another one.
+      def expo_turbo_reject_invalid_frame_request!
+        frame_id = expo_turbo_frame_header
+        return if frame_id.nil? || Frames.valid_id?(frame_id)
+
+        head :bad_request
       end
 
       # True only when the request names the Expo Turbo media type exactly.
@@ -143,6 +153,11 @@ module ExpoTurbo
       end
 
       private
+
+      def expo_turbo_frame_header
+        frame_id = request.get_header("HTTP_TURBO_FRAME")
+        frame_id.is_a?(String) ? frame_id.dup.force_encoding(Encoding::UTF_8) : frame_id
+      end
 
       MODULE_HEADER_PART = /\A(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+\z/
       MODULE_VERSION_PATTERN = /\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z/
