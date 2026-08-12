@@ -166,7 +166,7 @@ describe("document preloader", () => {
         "X-Expo-Turbo-Capabilities": "sha256:capabilities",
         "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.1.7",
+        "X-Expo-Turbo-Runtime": "0.2.0",
         "X-Sec-Purpose": "prefetch",
         "X-Turbo-Request-Id": "preload-1",
       },
