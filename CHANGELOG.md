@@ -2,7 +2,7 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
-## Unreleased
+## 0.2.0 - 2026-08-12
 
 - **Breaking:** Send decodable live registry module versions on document,
   Frame, form, and preload requests, and add Rails helpers for version
