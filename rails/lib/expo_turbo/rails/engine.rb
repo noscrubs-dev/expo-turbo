@@ -15,6 +15,14 @@ module ExpoTurbo
         end
       end
 
+      # Outside ActionDispatch::ShowExceptions, so a response that no controller
+      # callback can reach still carries the cache dimensions.
+      initializer "expo_turbo.rails.vary" do |app|
+        next if app.config.expo_turbo.vary_middleware == false
+
+        app.middleware.insert_before ActionDispatch::ShowExceptions, ExpoTurbo::Rails::VaryHeaders
+      end
+
       # Installed after "turbo.helpers" so that every Expo Turbo helper module
       # enters the helper chain behind its turbo-rails namesake. `super` in a
       # helper then reaches the HTML implementation.

@@ -243,10 +243,34 @@ logged, and that warning is not swallowed.
 
 ## Caching
 
-Every response varies on `Accept`, `Turbo-Frame`, and `X-Expo-Turbo-Modules`.
-This is unconditional: a shared cache can receive a Frame request for a URL that
-was first fetched as a document, and `Accept` decides the vocabulary even when a
-route forced the format.
+Every response the Rails application produces varies on `Accept`,
+`Turbo-Frame`, and `X-Expo-Turbo-Modules`. This is unconditional: a shared cache
+can receive a Frame request for a URL that was first fetched as a document, and
+`Accept` decides the vocabulary even when a route forced the format.
+
+Two layers apply it, because one cannot reach every response:
+
+- A prepended `before_action` sets it before any host filter runs, so host code
+  can read and extend it during the action, and a conditional-GET `304` built
+  inside the controller carries it.
+- `ExpoTurbo::Rails::VaryHeaders`, Rack middleware installed immediately outside
+  `ActionDispatch::ShowExceptions`, stamps it on the way out. A controller
+  callback is skipped when a host filter halts the chain before the concern's
+  own filter, and a response that `ActionDispatch::ShowExceptions` renders for
+  an unrescued exception or an unknown route never passes through a controller
+  at all.
+
+**What is deliberately not covered.** The middleware sits inside
+`ActionDispatch::Static`, `Rack::Sendfile`, and `ActionDispatch::HostAuthorization`,
+so a static file, a sendfile response, a host-authorization rejection, and any
+response the web server writes without entering Rails do not carry these
+dimensions. That is intended: none of them is a representation of an Expo Turbo
+resource, so their bytes do not change with `Accept`, `Turbo-Frame`, or the
+client module versions, and adding the dimensions would only cost a shared cache
+its hit rate on assets. A host that serves Expo Turbo XML from middleware above
+this point must add `Vary` itself. Set
+`config.expo_turbo.vary_middleware = false` to remove the middleware layer; the
+controller layer then still applies, with the gaps described above.
 
 `Vary` does not protect `Rails.cache`. Fragment cache keys of an Expo Turbo
 render therefore include the same Frame and module identity, so a module-gated

@@ -27,10 +27,17 @@ All notable public package, gem, and protocol changes will be recorded here.
   could reach a shared cache without it and then answer a later Frame request
   for the same URL, and `Accept` was omitted whenever a route forced the format.
   Migration: rename `expo_turbo_vary_by_frame!` to `expo_turbo_vary!`, and
-  delete the call unless another cache API needs it; the gem now applies it from
-  a prepended `before_action`, so a rejected header, an authentication
-  redirect, a rate limit, and a rescued error all carry it. Hosts that cache
-  aggressively will see a lower hit rate on routes that do not vary by Frame.
+  delete the call unless another cache API needs it. Two layers now apply it: a
+  prepended `before_action`, so host code can read and extend it during the
+  action, and `ExpoTurbo::Rails::VaryHeaders`, Rack middleware installed
+  immediately outside `ActionDispatch::ShowExceptions`, which reaches responses
+  no controller callback can: a host filter that halts before the concern's own
+  filter, an unrescued exception, and an unknown route. Responses produced above
+  that point, static files, sendfile, and host authorization, are deliberately
+  excluded and documented, because they are not representations of an Expo Turbo
+  resource. Set `config.expo_turbo.vary_middleware = false` to remove the
+  middleware layer. Hosts that cache aggressively will see a lower hit rate on
+  routes that do not vary by Frame.
 - **Breaking:** Key `Rails.cache` fragments of an Expo Turbo render by the same
   Frame and module identity. `Vary` protects a shared HTTP cache and does not
   protect `Rails.cache`, so a fragment gated on a module version could be read

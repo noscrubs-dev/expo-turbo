@@ -103,6 +103,36 @@ RSpec.describe "Expo Turbo format selection" do
     end
   end
 
+  # Last-wins on a repeated q would let a crafted Accept value flip the
+  # classification by appending one parameter.
+  it "rejects an entry that repeats its quality parameter" do
+    [
+      "text/html;q=0.5, application/vnd.expo-turbo+xml;q=0.1;q=0.9",
+      "text/html;q=0.5, application/vnd.expo-turbo+xml;q=0.9;q=0.1",
+      "application/vnd.expo-turbo+xml;q=1;q=1",
+      "application/vnd.expo-turbo+xml;Q=0.9;q=0.9"
+    ].each do |accept|
+      expect(controller_with_accept(accept)).not_to be_expo_turbo_request
+    end
+  end
+
+  it "keeps a single quality parameter beside other parameters" do
+    [
+      "application/vnd.expo-turbo+xml;q=0.9;charset=utf-8",
+      "application/vnd.expo-turbo+xml;charset=utf-8;q=0.9"
+    ].each do |accept|
+      expect(controller_with_accept(accept)).to be_expo_turbo_request
+    end
+  end
+
+  # A quoted parameter value that contains a semicolon is legal and no client
+  # sends one. The server reads it as unusable rather than guessing, which
+  # leaves the request non-native: the safe direction for syntax it cannot read.
+  it "treats an unreadable quoted parameter as not native" do
+    expect(controller_with_accept('application/vnd.expo-turbo+xml;profile="a;q=9"'))
+      .not_to be_expo_turbo_request
+  end
+
   it "ignores a malformed quality value on an unrelated media range" do
     controller = controller_with_accept("text/html;q=junk, #{ExpoTurbo::Rails::MIME_TYPE}")
 

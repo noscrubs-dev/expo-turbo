@@ -19,6 +19,9 @@ module ExpoTurbo
       ACCEPT_ENTRY = /[^,\s"](?:[^,"]|"[^"]*")*/
       # RFC 9110 qvalue: 0[.0-3 digits] or 1[.up to three zeros].
       QUALITY = /\A(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?)\z/
+      # Parameter names of one media range. A quoted value is consumed whole, so
+      # a semicolon inside it does not read as another parameter.
+      PARAMETER_NAME = /;\s*([^;=\s"]+)\s*=\s*(?:"(?:[^"\\]|\\.)*"|[^;]*)/
 
       module_function
 
@@ -44,13 +47,24 @@ module ExpoTurbo
       # An entry whose quality cannot be parsed is ignored: it neither matches
       # nor competes, so unreadable syntax on one range cannot change how the
       # server reads another.
+      #
+      # A repeated quality parameter is unreadable rather than last-wins.
+      # Last-wins would let one appended parameter flip the classification of a
+      # request.
       def entry_quality(entry)
+        return nil if repeated_quality?(entry)
+
         quality = Rack::MediaType.params(entry).fetch("q", "1").to_s
         QUALITY.match?(quality) ? quality.to_f : nil
       rescue ArgumentError, TypeError
         nil
       end
       private_class_method :entry_quality
+
+      def repeated_quality?(entry)
+        entry.scan(PARAMETER_NAME).count { |name| name.first.casecmp?("q") } > 1
+      end
+      private_class_method :repeated_quality?
 
       def expo_turbo_entry?(entry)
         Rack::MediaType.type(entry)&.casecmp?(MIME_TYPE) || false
