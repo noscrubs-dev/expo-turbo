@@ -41,6 +41,8 @@ readonly reverse_response_log="$artifacts/reverse-probe-response.txt"
 readonly reverse_probe_err_log="$artifacts/reverse-probe-stderr.txt"
 readonly reverse_listeners_log="$artifacts/reverse-probe-listeners.txt"
 readonly reverse_binding_log="$artifacts/reverse-probe-binding.txt"
+readonly reverse_attempt_log="$artifacts/reverse-probe-attempt.txt"
+readonly ss_missing_marker="(ss is not installed here - listener state unknown)"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
 
 wait_for_stable_device() {
@@ -64,46 +66,114 @@ wait_for_stable_device() {
   return 1
 }
 
+capture_reverse_evidence() {
+  local attempt="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn >"$reverse_listeners_log" 2>&1 || true
+  else
+    echo "$ss_missing_marker" >"$reverse_listeners_log"
+  fi
+
+  {
+    echo "attempt=$attempt"
+    echo "host_curl_http_code=$(curl --silent --max-time 5 -o /dev/null \
+      -w '%{http_code}' "$rails_origin/up" 2>/dev/null || echo unreachable)"
+  } >"$reverse_attempt_log" 2>&1
+
+  adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
+}
+
+describe_empty_probe() {
+  local status="$1"
+
+  if grep -qiE 'device .*(offline|not found|unauthorized)|^error:|^adb: ' \
+    "$reverse_probe_err_log" 2>/dev/null; then
+    echo "NO RESPONSE - zero bytes, and adb reported a transport error (see probe stderr below). ADB/device fault, not a Rails fault."
+    return
+  fi
+
+  case "$status" in
+  124)
+    echo "NO RESPONSE - zero bytes because the probe hit its 15s timeout. Nothing came back in time."
+    ;;
+  127)
+    echo "NO RESPONSE - zero bytes and the device reported command-not-found (127); 'toybox nc' is missing or not executable on this image."
+    ;;
+  0)
+    echo "NO RESPONSE - zero bytes with a clean exit. CAUSE UNDETERMINED. Candidates: the adb shell session closed on host stdin EOF before nc delivered the request (the fault 47ae723 shipped), an adb transport drop that adb did not report, or Rails accepting the connection and closing it without replying. Use the probe stderr and Rails log below to tell them apart."
+    ;;
+  *)
+    echo "NO RESPONSE - zero bytes and the device command exited ${status}. CAUSE UNDETERMINED. Candidates: nc failing on the device, adb transport loss, or the shell session closing early. Use the probe stderr below to tell them apart."
+    ;;
+  esac
+}
+
 report_rails_reverse_failure() {
   local reason="$1"
 
-  {
+  # Runs in a subshell with errexit off so a failure inside the report can never
+  # truncate it. Everything below is evidence captured at the failing attempt,
+  # not re-probed now: the host can recover between the failure and this report.
+  (
+    set +e
     echo "Android could not reach Rails through the ADB reverse tunnel."
     echo "Which check failed: $reason"
     echo
-    echo "--- host listeners (ss -ltn), 3001 rows ---"
-    grep -E 'State|:3001' "$reverse_listeners_log" || echo "(nothing listening on 3001)"
-    echo "--- host reaches Rails directly? (curl $rails_origin/up) ---"
-    curl --silent --show-error --max-time 5 -o /dev/null \
-      -w 'http_code=%{http_code}\n' "$rails_origin/up" 2>&1 || true
-    echo "--- adb reverse --list ---"
-    cat "$reverse_binding_log" 2>/dev/null || echo "(not captured)"
-    echo "--- device response, raw bytes (od -c) ---"
+    echo "--- host listeners (ss -ltn), at the failing attempt ---"
+    if grep -qF "$ss_missing_marker" "$reverse_listeners_log"; then
+      cat "$reverse_listeners_log"
+    else
+      grep -E 'State|:3001' "$reverse_listeners_log"
+      if ! grep -q ':3001' "$reverse_listeners_log"; then
+        echo "(ss ran and found no listener on 3001)"
+      fi
+    fi
+    echo "--- host reach of Rails, at the failing attempt ---"
+    if [ -s "$reverse_attempt_log" ]; then
+      cat "$reverse_attempt_log"
+    else
+      echo "(not captured)"
+    fi
+    echo "--- adb reverse --list, at the failing attempt ---"
+    if [ -s "$reverse_binding_log" ]; then
+      cat "$reverse_binding_log"
+    else
+      echo "(no binding listed)"
+    fi
+    echo "--- device response, first 512 raw bytes (od -c -N 512) ---"
     if [ -s "$reverse_response_log" ]; then
-      od -c "$reverse_response_log" | head -20
+      od -c -N 512 "$reverse_response_log"
+      echo "(total response size: $(wc -c <"$reverse_response_log" 2>/dev/null) bytes)"
     else
       echo "(ZERO BYTES - the device sent nothing back)"
     fi
     echo "--- device probe stderr ---"
-    cat "$reverse_probe_err_log" 2>/dev/null || echo "(none)"
+    if [ -s "$reverse_probe_err_log" ]; then
+      cat "$reverse_probe_err_log"
+    else
+      echo "(empty)"
+    fi
     echo "--- tail -20 $rails_log ---"
     tail -20 "$rails_log" 2>/dev/null || echo "(no Rails log)"
-  } >&2
+  ) >&2
 }
 
 prepare_rails_reverse() {
   local reason="the probe never ran"
   local first_line=""
   local ok_status='^HTTP/[0-9.]+ 200 '
+  local attempt=0
+  local probe_status=0
 
-  for _ in 1 2; do
+  for attempt in 1 2; do
     : >"$reverse_response_log"
     : >"$reverse_probe_err_log"
     : >"$reverse_binding_log"
-    ss -ltn >"$reverse_listeners_log" 2>/dev/null || true
 
     if ! curl --fail --silent --max-time 5 "$rails_origin/up" >/dev/null 2>&1; then
       reason="HOST NOT LISTENING - Rails is not serving $rails_origin, so the tunnel has nothing to forward to."
+      capture_reverse_evidence "$attempt"
       sleep 2
       continue
     fi
@@ -111,6 +181,7 @@ prepare_rails_reverse() {
     adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
     if ! adb -s "$adb_serial" reverse tcp:3001 tcp:3001 >/dev/null 2>&1; then
       reason="REVERSE BINDING ABSENT - 'adb reverse tcp:3001 tcp:3001' did not bind."
+      capture_reverse_evidence "$attempt"
       sleep 2
       continue
     fi
@@ -118,6 +189,7 @@ prepare_rails_reverse() {
     adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
     if ! grep -q 'tcp:3001 tcp:3001' "$reverse_binding_log"; then
       reason="REVERSE BINDING ABSENT - the bind call succeeded but 'adb reverse --list' does not show tcp:3001."
+      capture_reverse_evidence "$attempt"
       sleep 2
       continue
     fi
@@ -125,12 +197,16 @@ prepare_rails_reverse() {
     # stdin must stay open past the request. adb tears the shell session down as
     # soon as host stdin hits EOF, which kills nc before it delivers the request
     # and yields zero bytes back with the tunnel perfectly healthy.
+    set +e
     { printf 'GET /up HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n'; sleep 2; } |
       timeout 15 adb -s "$adb_serial" shell 'toybox nc -w 5 127.0.0.1 3001' \
-        >"$reverse_response_log" 2>"$reverse_probe_err_log" || true
+        >"$reverse_response_log" 2>"$reverse_probe_err_log"
+    probe_status="${PIPESTATUS[1]}"
+    set -e
 
     if [ ! -s "$reverse_response_log" ]; then
-      reason="ZERO BYTES FROM DEVICE - Rails is up and the tunnel is bound, but the device returned nothing. The request never reached Rails; this is a probe/transport fault, not a Rails fault."
+      reason="$(describe_empty_probe "$probe_status")"
+      capture_reverse_evidence "$attempt"
       sleep 2
       continue
     fi
@@ -143,6 +219,7 @@ prepare_rails_reverse() {
     fi
 
     reason="NON-200 FROM RAILS - the device reached Rails but the status line was: ${first_line}"
+    capture_reverse_evidence "$attempt"
     sleep 2
   done
 
