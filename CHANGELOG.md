@@ -23,7 +23,17 @@ All notable public package, gem, and protocol changes will be recorded here.
   serves `turbo-cable-stream-source`, and the runtime owns its disposal.
   Subscription and dispatch faults reach `onError` without replacing the
   mounted document, because they are Stream transport faults rather than
-  document faults.
+  document faults. The runtime also wires a `DocumentReconnectReconciler`, so a
+  server-directed reconnect reconciles the document it was disconnected from
+  instead of leaving anything broadcast during the gap silently missing. The
+  reconciliation is deferred until the active visit settles and dropped if the
+  document changed meanwhile.
+- The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
+  It is a private Expo Router export, and a static named import of a missing
+  export is a module-level `SyntaxError` that would take the whole
+  `expo-turbo/expo` entrypoint down at import time. The bridge now binds it
+  through a namespace import and selects it once at module load, falling back
+  to `usePathname` — which costs only the query string — when it is absent.
 - Fix `ExpoTurboProvider` and a runtime-owning `ExpoTurbo` both disposing
   `scopes` and `state`. The runtime created them and disposes them itself, so
   the provider now takes `ownsStateDisposal: false` from `ExpoTurbo` and skips

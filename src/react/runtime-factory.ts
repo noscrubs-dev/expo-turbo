@@ -11,6 +11,7 @@ import {
   CableStreamSourceRegistry,
   DocumentFormControls,
   DocumentHistory,
+  DocumentReconnectReconciler,
   DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
@@ -138,11 +139,22 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     submissionController: submission,
   })
   const onCableError = options.onCableError
-  const streamSources = options.cable
-    ? new CableStreamSourceRegistry(session, options.cable, {
-        onError: (error) => onCableError?.(error),
+  // A Cable adapter that reconnects has to reconcile the document it was
+  // disconnected from, or messages missed during the gap leave the screen
+  // silently stale. The reconciler defers that refresh until the active visit
+  // settles and drops it if the document changed meanwhile.
+  const reconnectRefresh = options.cable
+    ? new DocumentReconnectReconciler(refresh, controller, {
+        onError: (error) => onCableError?.(error as ExpoTurboError),
       })
     : undefined
+  const streamSources =
+    options.cable && reconnectRefresh
+      ? new CableStreamSourceRegistry(session, options.cable, {
+          onError: (error) => onCableError?.(error),
+          reconnectRefresh,
+        })
+      : undefined
   let disposed = false
 
   return Object.freeze({
@@ -159,6 +171,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
       forms.dispose()
       frames.dispose()
       streamSources?.dispose()
+      reconnectRefresh?.dispose()
       refresh.dispose()
       controller.cancel()
       loader.cancel()

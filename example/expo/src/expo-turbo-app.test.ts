@@ -3,6 +3,7 @@
 import { describe, expect, mock, test } from "bun:test"
 import type { DocumentLinkAdapter, TurboResponse } from "expo-turbo/adapters"
 import {
+  CableStreamSourceRegistry,
   DocumentStateScopes,
   DocumentStateStore,
   EXPO_TURBO_MIME_TYPE,
@@ -552,28 +553,45 @@ describe("ExpoTurboApp cable adapter", () => {
     }
   }
 
-  test("subscribes a Stream source and unsubscribes on unmount", async () => {
+  test("subscribes a Stream source and disposes the registry on unmount", async () => {
     routerPath = "/cable"
     const cable = recordingCable()
     const transport = stubTransport(CABLE_XML)
 
-    const renderer = await mount(
-      createElement(ExpoTurboApp, {
-        adapters: { cable: cable.adapter, fetch: transport.fetch },
-        origin: ORIGIN,
-        registry,
-      }),
-    )
+    // Unsubscribing alone does not prove the runtime disposed the registry:
+    // releasing the mounted source node unsubscribes by itself, so that
+    // assertion stays green even with `streamSources?.dispose()` deleted.
+    // Count the registry's own disposal instead.
+    const disposals = new Map<object, number>()
+    const originalDispose = CableStreamSourceRegistry.prototype.dispose
+    CableStreamSourceRegistry.prototype.dispose = function patched(this: object) {
+      disposals.set(this, (disposals.get(this) ?? 0) + 1)
+      return originalDispose.call(this)
+    }
 
-    expect(cable.identifiers).toHaveLength(1)
-    expect(cable.identifiers[0]).toContain("ClientChannel")
+    try {
+      const renderer = await mount(
+        createElement(ExpoTurboApp, {
+          adapters: { cable: cable.adapter, fetch: transport.fetch },
+          origin: ORIGIN,
+          registry,
+        }),
+      )
 
-    await act(async () => {
-      renderer.unmount()
-      await nextTurn()
-    })
-    // The runtime owns the registry, so its disposal releases the socket.
-    expect(cable.unsubscribes).toBe(1)
+      expect(cable.identifiers).toHaveLength(1)
+      expect(cable.identifiers[0]).toContain("ClientChannel")
+      expect([...disposals.values()]).toEqual([])
+
+      await act(async () => {
+        renderer.unmount()
+        await nextTurn()
+      })
+
+      expect([...disposals.values()]).toEqual([1])
+      expect(cable.unsubscribes).toBe(1)
+    } finally {
+      CableStreamSourceRegistry.prototype.dispose = originalDispose
+    }
   })
 
   test("does not subscribe when the key is absent or null", async () => {
@@ -732,7 +750,7 @@ describe("ExpoTurboApp runtime disposal", () => {
     expect(counts.state).toEqual([1, 1])
   })
 
-  test("survives a same-registry remount the way Fast Refresh replays it", async () => {
+  test("survives repeated mount and unmount cycles against one registry", async () => {
     routerPath = "/disposal"
     const transport = stubTransport("<AppDoc />")
 
@@ -753,10 +771,10 @@ describe("ExpoTurboApp runtime disposal", () => {
       }
     })
 
-    // One runtime per cycle, each disposed once, none disposed twice.
-    expect(counts.scopes.length).toBeGreaterThanOrEqual(3)
-    expect(counts.scopes.every((count) => count === 1)).toBe(true)
-    expect(counts.state.every((count) => count === 1)).toBe(true)
+    // One runtime per cycle, each disposed exactly once. These are separate
+    // commits, not a same-commit refresh; that window is covered below.
+    expect(counts.scopes).toEqual([1, 1, 1])
+    expect(counts.state).toEqual([1, 1, 1])
   })
 
   test("survives a StrictMode double mount", async () => {
@@ -782,8 +800,50 @@ describe("ExpoTurboApp runtime disposal", () => {
       })
     })
 
-    expect(counts.scopes.every((count) => count === 1)).toBe(true)
-    expect(counts.state.every((count) => count === 1)).toBe(true)
+    // StrictMode's double invocation builds two runtimes. Assert the exact
+    // shape: `every()` alone is satisfied by an empty array, so it would pass
+    // even if the instrumentation observed nothing at all.
+    expect(counts.scopes).toEqual([1, 1])
+    expect(counts.state).toEqual([1, 1])
+  })
+
+  test("hands over rather than tearing down across a same-commit remount", async () => {
+    routerPath = "/disposal"
+    const transport = stubTransport("<AppDoc />")
+
+    const counts = await withDisposalCounts(async () => {
+      const app = (generation: number) =>
+        createElement(ExpoTurboApp, {
+          adapters: { fetch: transport.fetch },
+          // A changed key unmounts and remounts within a single commit, which
+          // is the window Fast Refresh and a route swap both go through.
+          key: `generation-${generation}`,
+          origin: ORIGIN,
+          registry,
+        })
+
+      const renderer = await mount(app(0))
+      expect(renderer.toJSON()).toMatchObject({ type: "doc" })
+
+      await act(async () => {
+        renderer.update(app(1))
+      })
+      await act(async () => {
+        await nextTurn()
+      })
+
+      // The replacement is live, not holding a disposed store.
+      expect(renderer.toJSON()).toMatchObject({ type: "doc" })
+      expect(transport.urls).toHaveLength(2)
+
+      await act(async () => {
+        renderer.unmount()
+        await nextTurn()
+      })
+    })
+
+    expect(counts.scopes).toEqual([1, 1])
+    expect(counts.state).toEqual([1, 1])
   })
 })
 

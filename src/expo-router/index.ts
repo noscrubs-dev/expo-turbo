@@ -1,4 +1,4 @@
-import { usePathname, useRouter, useUnstableGlobalHref } from "expo-router"
+import * as ExpoRouter from "expo-router"
 import { useMemo, useRef } from "react"
 import {
   assertExpoRouterAdapterHost,
@@ -27,6 +27,24 @@ export {
  */
 const HREF_PARSE_BASE = "https://expo-turbo-router.invalid"
 
+/**
+ * Selected once, at module load.
+ *
+ * `useUnstableGlobalHref` is a private Expo Router export, so a rename or a
+ * removal is a live possibility — and a static named import of a missing export
+ * is a module-level `SyntaxError`, which takes the whole `expo-turbo/expo`
+ * entrypoint down at import time and never lets a runtime fallback run. Binding
+ * it through the namespace turns that into an ordinary absent value.
+ *
+ * Resolving it once rather than per render is what keeps the hook call order
+ * fixed for the life of the process: the selected function is always called,
+ * and the fallback consumes no hook slots either.
+ */
+const useRouterHref: () => string | undefined =
+  typeof ExpoRouter.useUnstableGlobalHref === "function"
+    ? ExpoRouter.useUnstableGlobalHref
+    : () => undefined
+
 export function expoRouterDocumentPath(href: unknown, pathname: string): string {
   if (typeof href !== "string" || href.trim() === "") return pathname
   try {
@@ -52,8 +70,8 @@ export function expoRouterDocumentPath(href: unknown, pathname: string): string 
  * every other entrypoint reaches the router through here.
  */
 export function useExpoRouterDocumentPath(): string {
-  const pathname = usePathname()
-  const href = useUnstableGlobalHref()
+  const pathname = ExpoRouter.usePathname()
+  const href = useRouterHref()
   return expoRouterDocumentPath(href, pathname)
 }
 
@@ -70,7 +88,7 @@ export function useExpoRouterDocumentPath(): string {
  * push fallback for external URLs.
  */
 export function useExpoRouterAdapters(options: ExpoRouterAdapterOptions = {}): ExpoRouterAdapters {
-  const router = useRouter()
+  const router = ExpoRouter.useRouter()
   const latestOptions = useRef(options)
   latestOptions.current = options
   const latestRouter = useRef(router)

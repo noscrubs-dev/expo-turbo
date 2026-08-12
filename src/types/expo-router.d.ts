@@ -29,8 +29,11 @@ declare module "expo-router" {
   export function usePathname(): string
 
   /**
-   * Expo Router marks this private and reserves the right to start returning an
-   * absolute URL with a hostname. Callers must keep only the path portion.
+   * Expo Router marks this private. It reserves the right to start returning an
+   * absolute URL with a hostname, so callers must keep only the path portion,
+   * and it may be renamed or removed outright — hence the optional type, which
+   * forces every caller to select it defensively rather than import it
+   * statically.
    */
-  export function useUnstableGlobalHref(): string
+  export const useUnstableGlobalHref: (() => string) | undefined
 }

@@ -2,8 +2,13 @@ import { describe, expect, test } from "bun:test"
 import type { ComponentType } from "react"
 import { z } from "zod"
 
-import type { TurboResponse } from "../adapters/index.js"
-import { attributeValue, EXPO_TURBO_MIME_TYPE, isElement } from "../core/index.js"
+import type { CableCallbacks, TurboResponse } from "../adapters/index.js"
+import {
+  attributeValue,
+  DOCUMENT_REFRESH_DEBOUNCE_MS,
+  EXPO_TURBO_MIME_TYPE,
+  isElement,
+} from "../core/index.js"
 import { createRegistry, defineComponent, defineComponentModule } from "../registry/index.js"
 import { createExpoTurboRuntime } from "./runtime-factory.js"
 
@@ -181,6 +186,94 @@ describe("Expo Turbo runtime", () => {
     expect(() => controls.reportValidity()).toThrow(
       "Invalid form submission requires a configured focus adapter",
     )
+
+    runtime.dispose()
+  })
+
+  test("reconciles the document after a Cable disconnect and reconnect", async () => {
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    let unsubscribes = 0
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return {
+            unsubscribe() {
+              unsubscribes += 1
+            },
+          }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    const handlers = callbacks[0]
+    if (!handlers) throw new Error("the Cable adapter was never subscribed")
+    expect(requests).toHaveLength(1)
+
+    // A server-directed reconnect: everything broadcast during the gap was
+    // missed, so the document has to be re-fetched or it stays silently stale.
+    handlers.connected(false)
+    handlers.disconnected(true)
+    handlers.connected(true)
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 100))
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toBe("https://example.test/document")
+
+    runtime.dispose()
+    expect(unsubscribes).toBe(1)
+  })
+
+  test("does not reconcile when the Cable adapter never reports a reconnect", async () => {
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    callbacks[0]?.connected(false)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 100))
+
+    // Asserts the absence of a second route: a first connect must not refresh,
+    // so the reconciliation above can only have come from the reconnect.
+    expect(requests).toHaveLength(1)
 
     runtime.dispose()
   })

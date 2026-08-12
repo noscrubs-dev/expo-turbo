@@ -19,10 +19,14 @@ const originalFetch = globalThis.fetch
 /**
  * The route file lives at `app/api/expo_turbo/demo/document.tsx`, so the
  * mounted Expo Router path is already the document path and the route passes
- * no `path` prop. That is what makes this exercise pathname inference rather
- * than an explicit override.
+ * no `path` prop.
+ *
+ * The query is the point. It is what the router reports and what an explicit
+ * `path` prop could not produce, so asserting on it is what makes this test
+ * prove *inference* rather than merely proving the final URL: reintroducing
+ * `path="/api/expo_turbo/demo/document"` drops the query and fails.
  */
-const ROUTE_PATH = "/api/expo_turbo/demo/document"
+const ROUTE_PATH = "/api/expo_turbo/demo/document?probe=inferred-from-router"
 
 process.env.EXPO_PUBLIC_EXPO_TURBO_DEMO_ORIGIN = "https://rails.example.test"
 
@@ -92,9 +96,11 @@ test("the example route renders a real document through ExpoTurboApp", async () 
   })
 
   // The shipped route, its shipped registry, and the packaged default fetch
-  // adapter — no test-only transport substituted anywhere in the path, and the
-  // URL came from origin plus inferred pathname, not from a `path` prop.
+  // adapter — no test-only transport substituted anywhere in the path.
   expect(requestedUrls).toEqual([`https://rails.example.test${ROUTE_PATH}`])
+  // Asserts the absence of the second route to this URL: only inference can
+  // have supplied the query, so a reintroduced `path` prop fails here.
+  expect(requestedUrls[0]).toContain("?probe=inferred-from-router")
   expect(containsText(renderer?.toJSON(), "Rendered by the zero-configuration host.")).toBe(true)
 
   await act(async () => {

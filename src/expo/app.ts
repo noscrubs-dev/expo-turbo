@@ -102,9 +102,9 @@ export interface ExpoTurboAppProps {
   /** Absolute origin of the Rails application, such as `https://example.com`. */
   readonly origin: string
   /**
-   * Document path. Defaults to the mounted Expo Router pathname, which is what
-   * makes a catch-all route zero-configuration. Search parameters are not
-   * inferred from the router: pass them here when a document needs them.
+   * Document path. Defaults to the mounted Expo Router path including its
+   * search parameters, which is what makes a catch-all route
+   * zero-configuration. Pass this when the document is not the mounted route.
    */
   readonly path?: string
   readonly registry: ComponentRegistry<RegistryComponent>

@@ -493,7 +493,7 @@ reloads the active document, so the component does not need a duplicated
 `reload-href` attribute.
 
 Use
-[`example/expo/src/app/turbo-app.tsx`](../example/expo/src/app/turbo-app.tsx)
+[`example/expo/src/app/api/expo_turbo/demo/document.tsx`](../example/expo/src/app/api/expo_turbo/demo/document.tsx)
 for the whole zero-configuration entrypoint,
 [`example/expo/src/demo-registry.tsx`](../example/expo/src/demo-registry.tsx)
 for registry and component patterns, and
