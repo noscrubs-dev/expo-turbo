@@ -61,25 +61,37 @@ module ExpoTurbo
         end
       end
 
-      # The format Rails selected for this response, and the one rule that
-      # answers "is this an Expo Turbo render". It is not the same as
-      # lookup_context.formats.first during a render: ActionView prepends the
-      # format of the template that answered, so a shared .html template
-      # rewrites the lookup context to :html while still answering a native
-      # request. nil when Rails never assigned render formats, such as a
+      # The format this render answers in, and the one rule that decides both
+      # the media type and whether a helper takes its Expo Turbo branch. Two
+      # sources can name it, and they do not rank equally:
+      #
+      # - resolved: Rails worked it out, from the Accept header in
+      #   ActionController::Rendering#process_action or from the respond_to
+      #   branch that matched.
+      # - demanded: the caller wrote it, as `render ..., formats: [...]`.
+      #
+      # A demand wins. Naming a format is a decision, and answering `render
+      # formats: [:html]` with Expo Turbo XML because the client happened to
+      # send a native Accept header overrules the one party that said what it
+      # wanted. A demand lasts only for the render that carried it.
+      #
+      # Neither source is lookup_context.formats.first during a render.
+      # ActionView prepends the format of the template that answered, so a
+      # shared .html template rewrites the lookup context to :html while still
+      # answering a native request. nil when nothing named a format, such as a
       # broadcast rendered through ApplicationController.render.
-      attr_reader :expo_turbo_selected_format
+      def expo_turbo_selected_format
+        @expo_turbo_demanded_format || @expo_turbo_resolved_format
+      end
 
-      # Rails assigns those formats from the Accept header in
-      # ActionController::Rendering#process_action, and again from a respond_to
-      # branch. Both assignments arrive here, because ActionView::ViewPaths
+      # Both framework assignments arrive here, because ActionView::ViewPaths
       # delegates the writer to the lookup context and this concern sits above
       # it. Appending :html lets one template serve both audiences; the Expo
       # Turbo format stays first, so an .expo_turbo template always wins over
       # the .html template beside it.
       def formats=(values)
         values = expo_turbo_lookup_formats(values)
-        @expo_turbo_selected_format = Array(values).first
+        @expo_turbo_resolved_format = Array(values).first
         super
       end
 
@@ -191,6 +203,17 @@ module ExpoTurbo
       end
 
       private
+
+      # Every controller-level render passes through here, and a view rendering
+      # a partial does not, so this records the caller's own `formats:` and
+      # nothing else. Each render re-answers the question, so a demand cannot
+      # outlive the render that carried it.
+      def _normalize_options(options)
+        normalized = super
+        demanded = normalized.key?(:formats) ? Array(normalized[:formats]).first : nil
+        @expo_turbo_demanded_format = demanded.respond_to?(:to_sym) ? demanded.to_sym : nil
+        normalized
+      end
 
       def expo_turbo_lookup_formats(values)
         return values unless expo_turbo_html_template_fallback

@@ -209,6 +209,103 @@ RSpec.describe "Expo Turbo template fallback" do
     ActionView::Base.annotate_rendered_view_with_filenames = previous
   end
 
+  # A `formats:` argument is a demand, not a fallback. The caller named what
+  # they want, and the request's Accept header does not overrule them. Without
+  # this, the same explicit render answered a browser with text/html and a
+  # native client with Expo Turbo XML, so valid HTML failed protocol admission
+  # purely because of who asked for it.
+  describe "an explicit formats: argument" do
+    let(:explicit_controller) do
+      Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecExplicitController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render "specs/page", formats: [:html]
+        end
+      end
+    end
+
+    it "keeps an explicit HTML render on text/html for a native request" do
+      with_templates(explicit_controller, "specs/page.html.erb" => %(<div class="ok">plain HTML</div>)) do
+        status, headers, body = dispatch(explicit_controller)
+
+        expect(status).to eq(200)
+        expect(headers["Content-Type"]).to eq("text/html; charset=utf-8")
+        expect(body).to eq(%(<div class="ok">plain HTML</div>))
+      end
+    end
+
+    # The vocabulary header still reports who asked, so only what the render
+    # itself decides is compared: status, media type, and body.
+    it "answers a native and a browser request identically for an explicit HTML render" do
+      with_templates(explicit_controller, "specs/page.html.erb" => %(<div class="ok">plain HTML</div>)) do
+        native_status, native_headers, native_body = dispatch(explicit_controller)
+        browser_status, browser_headers, browser_body = dispatch(
+          explicit_controller, headers: {"HTTP_ACCEPT" => "text/html"}
+        )
+
+        expect(native_status).to eq(browser_status)
+        expect(native_headers["Content-Type"]).to eq(browser_headers["Content-Type"])
+        expect(native_body).to eq(browser_body)
+      end
+    end
+
+    it "leaves the helpers on their turbo-rails branch for an explicit HTML render" do
+      with_templates(explicit_controller, "specs/page.html.erb" => %(<%= turbo_frame_tag "" %>)) do
+        _status, _headers, body = dispatch(explicit_controller)
+
+        expect(body).to eq(%(<turbo-frame id=""></turbo-frame>))
+      end
+    end
+
+    it "honours an explicit Expo Turbo render from a browser request" do
+      native_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecExplicitNativeController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render "specs/page", formats: [ExpoTurbo::Rails::MIME_SYMBOL]
+        end
+      end
+
+      with_templates(native_controller, "specs/page.expo_turbo.erb" => %(<Screen id="a"/>)) do
+        _status, headers, body = dispatch(native_controller, headers: {"HTTP_ACCEPT" => "text/html"})
+
+        expect(headers["Content-Type"]).to eq("#{ExpoTurbo::Rails::MIME_TYPE}; charset=utf-8")
+        expect(body).to eq(%(<Screen id="a"/>))
+      end
+    end
+
+    # The demand lasts for the render that carried it. A later render with no
+    # formats: argument goes back to the format Rails resolved.
+    it "does not leak the demand into a later render without one" do
+      leak_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecLeakController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render_to_string "specs/page", formats: [:html]
+          render "specs/show"
+        end
+      end
+
+      with_templates(
+        leak_controller,
+        "specs/page.html.erb" => %(<div class="ok">plain HTML</div>),
+        "specs/show.html.erb" => %(<Screen id="a"/>)
+      ) do
+        _status, headers, body = dispatch(leak_controller)
+
+        expect(headers["Content-Type"]).to eq("#{ExpoTurbo::Rails::MIME_TYPE}; charset=utf-8")
+        expect(body).to eq(%(<Screen id="a"/>))
+      end
+    end
+  end
+
   it "keeps a separate view tree working through prepend_view_path" do
     Dir.mktmpdir do |directory|
       native_root = File.join(directory, "native_views")
