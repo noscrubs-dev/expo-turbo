@@ -20,12 +20,36 @@ appId: dev.noscrubs.expoturbo.example
     visible: Live native form controls
     timeout: 30000
 - assertVisible: Form ready
+# Android BACK is only safe when the soft keyboard is genuinely up: Maestro sends
+# `input keyevent 4` unconditionally for both pressKey: BACK and hideKeyboard, so
+# with the keyboard already down the same key left the app and every later step
+# reported a missing element instead of the navigation that caused it. This block
+# establishes that precondition instead of assuming it. Measured on this AVD:
+# keyboard up in 4/10 samples when left to the initial document autofocus, but
+# 8/8 after the two taps below. See issue #408.
+#
+# First tap: a non-interactive element, which puts the keyboard down whatever
+# autofocus did, so the field below is never hidden behind it.
+# Second tap: the field itself, so the keyboard is up and the untargeted
+# eraseText acts on a known control rather than on whatever happened to be
+# focused.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - tapOn: Live native form controls
+      - assertVisible: Form ready
+      - tapOn:
+          id: demo-form-input-id-first-name
 - eraseText
 - runFlow:
     when:
       platform: Android
     commands:
       - pressKey: BACK
+      # Fails in about a second, naming a real element, if BACK ever does leave
+      # the app, instead of the 53s misleading submitter timeout it used to give.
+      - assertVisible: Form ready
 - runFlow:
     when:
       platform: iOS
@@ -64,7 +88,10 @@ appId: dev.noscrubs.expoturbo.example
     when:
       platform: Android
     commands:
+      # Safe here for the same reason: the assertion above already established
+      # that this field holds focus, so inputText left the keyboard up.
       - pressKey: BACK
+      - assertVisible: Form ready
 - runFlow:
     when:
       platform: iOS
