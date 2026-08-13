@@ -4,6 +4,22 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.3.0
 
+- **Breaking:** Make `DocumentFormControls` fail closed when form-owner
+  vocabulary is unknown. The React renderer already refused an unknown owner,
+  but a direct `expo-turbo/core` caller could still read `action` and `method`
+  from that tag and send a real request, such as `POST /danger`. Core now
+  refuses request planning, proposals, submission, and retry before transport,
+  and it also refuses when no `formSemantics` resolver is supplied. Migration:
+  pass the component registry as `formSemantics` when constructing
+  `DocumentFormControls`, as the production runtime already does. A registered
+  submitter whose tag is unknown can no longer override a known owner's URL,
+  method, encoding, target, validation, or Turbo request metadata. Its
+  package-owned safety attributes still narrow the operation:
+  `data-turbo="false"` disables interception, and `data-turbo-confirm` requires
+  confirmation. This opt-out is silent in core because core has no vocabulary
+  reporting channel. Issue #400 stays open: `FormLinkSubmissionController`
+  still needs the same fail-closed resolver in `shouldInterceptSubmission`,
+  `submissionProposal`, and `submit`.
 - Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
   entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
   Expo Router history and navigation bridge, the credentialed transport, the

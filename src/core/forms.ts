@@ -197,6 +197,7 @@ export type FormContainerRole = "datalist" | "fieldset" | "legend"
 
 export interface FormControlSemantics {
   formContainerRole(element: ProtocolElement): FormContainerRole | undefined
+  resolve?(tagOrAlias: string): Readonly<{ readonly formOwner?: boolean }> | undefined
 }
 
 export interface FormControlRegistryOptions {
@@ -451,6 +452,7 @@ function normalizeValidity(validity: unknown, nodeKey: string): FormControlValid
 function assertNativeTargetAttributes(
   form: ProtocolElement,
   submitter: FormControlRecord | undefined,
+  readSubmitterAttributes: boolean,
 ): void {
   if (hasAttribute(form, "target")) {
     throw new TargetError(
@@ -458,7 +460,7 @@ function assertNativeTargetAttributes(
       { target: form.key },
     )
   }
-  if (submitter && hasAttribute(submitter.node, "formtarget")) {
+  if (submitter && readSubmitterAttributes && hasAttribute(submitter.node, "formtarget")) {
     throw new TargetError(
       "Native submitters do not support browsing-context formtarget; use data-turbo-frame",
       { target: submitter.node.key },
@@ -478,21 +480,21 @@ function formRequestAttributes(form: ProtocolElement) {
   })
 }
 
-function submitterRequestAttributes(record: FormControlRecord) {
+function submitterRequestAttributes(record: FormControlRecord, readAttributes: boolean) {
   if (record.descriptor.kind !== "submitter") {
     throw new TargetError(`Form control ${JSON.stringify(record.node.key)} is not a submitter`, {
       target: record.node.key,
     })
   }
-  const action = attributeValue(record.node, "formaction")
-  const enctype = attributeValue(record.node, "formenctype")
-  const method = attributeValue(record.node, "formmethod")
+  const action = readAttributes ? attributeValue(record.node, "formaction") : undefined
+  const enctype = readAttributes ? attributeValue(record.node, "formenctype") : undefined
+  const method = readAttributes ? attributeValue(record.node, "formmethod") : undefined
   return Object.freeze({
     ...(action !== undefined ? { action } : {}),
     ...(enctype !== undefined ? { enctype } : {}),
     ...(method !== undefined ? { method } : {}),
     ...(record.descriptor.name !== undefined ? { name: record.descriptor.name } : {}),
-    ...(hasAttribute(record.node, "data-turbo-stream")
+    ...(readAttributes && hasAttribute(record.node, "data-turbo-stream")
       ? { streamAttributePresent: true as const }
       : {}),
     ...(record.descriptor.value !== undefined ? { value: record.descriptor.value } : {}),
@@ -864,6 +866,7 @@ function normalizeDescriptor(
 export class FormControlRegistry {
   private disposed = false
   private readonly form: ProtocolElement
+  private readonly formOwnerKnown: boolean
   private readonly formSemantics: FormControlSemantics | undefined
   private readonly formMode: FormMode
   private readonly records = new Map<ProtocolNode, FormControlRecord>()
@@ -895,10 +898,14 @@ export class FormControlRegistry {
     this.formSemantics = options.formSemantics
     if (
       this.formSemantics !== undefined &&
-      (!this.formSemantics || typeof this.formSemantics.formContainerRole !== "function")
+      (!this.formSemantics ||
+        typeof this.formSemantics.formContainerRole !== "function" ||
+        (this.formSemantics.resolve !== undefined &&
+          typeof this.formSemantics.resolve !== "function"))
     ) {
-      throw new PropsError("Form semantics must provide formContainerRole")
+      throw new PropsError("Form semantics must provide formContainerRole and optional resolve")
     }
+    this.formOwnerKnown = this.classifyFormOwner()
     this.formMode = normalizeFormMode(options.formMode ?? "on")
     if (options.moduleVersions !== undefined && typeof options.moduleVersions !== "string") {
       throw new PropsError("Form module versions must be a string")
@@ -1026,10 +1033,15 @@ export class FormControlRegistry {
 
   shouldInterceptSubmission(options: SuccessfulFormEntriesOptions = {}): boolean {
     this.assertActive()
+    if (!this.formOwnerKnown) return false
     if (this.formMode === "off") return false
     const selection = submitterSelectionOption(options)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
-    if (submitter && closestTurboSetting(submitter.node) === "false") return false
+    // data-turbo is package-owned, tag-independent vocabulary. Core has no
+    // unknown-vocabulary reporting channel, so honoring this safety opt-out is silent.
+    if (submitter && closestTurboSetting(submitter.node) === "false") {
+      return false
+    }
     return this.formMode === "optin"
       ? formHasTurboOptIn(this.form)
       : closestTurboSetting(this.form) !== "false"
@@ -1099,6 +1111,7 @@ export class FormControlRegistry {
 
   requestPlan(options: ActiveFormRequestPlanOptions): FormRequestPlan {
     this.assertActive()
+    this.assertKnownFormOwner("request planning")
     const admittedOptions = activeFormOptions(options, "request plan")
     const protocol = activeProtocolOptions(
       activeFormOption(admittedOptions, "protocol", "request plan"),
@@ -1109,6 +1122,7 @@ export class FormControlRegistry {
     const documentUrl = this.session.tree.document.url
     if (!documentUrl) throw new RequestError("Active form request planning requires a document URL")
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    const readSubmitterAttributes = submitter ? this.isKnownVocabulary(submitter.node) : false
     return buildFormRequest({
       documentUrl,
       entries: this.collectSuccessfulEntries(submitter),
@@ -1120,12 +1134,15 @@ export class FormControlRegistry {
           : {}),
       },
       ...(signal !== undefined ? { signal } : {}),
-      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
+      ...(submitter
+        ? { submitter: submitterRequestAttributes(submitter, readSubmitterAttributes) }
+        : {}),
     })
   }
 
   submissionProposal(options: ActiveFormSubmissionProposalOptions): FormSubmissionProposal {
     this.assertActive()
+    this.assertKnownFormOwner("submission proposal")
     const admittedOptions = activeFormOptions(options, "submission proposal")
     const protocol = activeProtocolOptions(
       activeFormOption(admittedOptions, "protocol", "submission proposal"),
@@ -1138,20 +1155,25 @@ export class FormControlRegistry {
       throw new RequestError("Active form submission proposals require a document URL")
     }
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
-    assertNativeTargetAttributes(this.form, submitter)
+    const readSubmitterAttributes = submitter ? this.isKnownVocabulary(submitter.node) : false
+    assertNativeTargetAttributes(this.form, submitter, readSubmitterAttributes)
 
     const formTarget = attributeValue(this.form, "data-turbo-frame")
-    const submitterTarget = submitter
-      ? attributeValue(submitter.node, "data-turbo-frame")
-      : undefined
+    const submitterTarget =
+      submitter && readSubmitterAttributes
+        ? attributeValue(submitter.node, "data-turbo-frame")
+        : undefined
+    // Confirmation is also package-owned safety vocabulary, so it remains effective
+    // when the registered submitter tag is unknown.
     const submitterConfirmation = submitter
       ? attributeValue(submitter.node, "data-turbo-confirm")
       : undefined
     const formConfirmation = attributeValue(this.form, "data-turbo-confirm")
     const confirmationMessage = submitterConfirmation ?? formConfirmation
-    const submitterAction = submitter
-      ? attributeValue(submitter.node, "data-turbo-action")
-      : undefined
+    const submitterAction =
+      submitter && readSubmitterAttributes
+        ? attributeValue(submitter.node, "data-turbo-action")
+        : undefined
     const formAction = attributeValue(this.form, "data-turbo-action")
     const authoredAction = submitterAction ?? formAction
     const destination = resolveFormSubmissionDestination(this.session.tree, this.form, {
@@ -1170,7 +1192,9 @@ export class FormControlRegistry {
         ...(destination.kind === "frame" ? { frameId: destination.frameId } : {}),
       },
       ...(signal !== undefined ? { signal } : {}),
-      ...(submitter ? { submitter: submitterRequestAttributes(submitter) } : {}),
+      ...(submitter
+        ? { submitter: submitterRequestAttributes(submitter, readSubmitterAttributes) }
+        : {}),
     })
     const destinationFrame =
       destination.kind === "frame"
@@ -1231,6 +1255,7 @@ export class FormControlRegistry {
     requiresSafeTransport: boolean,
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
+    this.assertKnownFormOwner(requiresSafeTransport ? "retry" : "submission")
     const admittedOptions = activeFormOptions(options, "submit")
     if (hasActiveFormOption(admittedOptions, "signal", "submit")) {
       throw new RequestError("Active form submission owns its abort signal")
@@ -1238,9 +1263,10 @@ export class FormControlRegistry {
     const protocol = activeProtocolOptions(activeFormOption(admittedOptions, "protocol", "submit"))
     const selection = submitterSelectionOption(admittedOptions)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    const readSubmitterAttributes = submitter ? this.isKnownVocabulary(submitter.node) : false
     if (
       !hasAttribute(this.form, "novalidate") &&
-      !(submitter && hasAttribute(submitter.node, "formnovalidate"))
+      !(submitter && readSubmitterAttributes && hasAttribute(submitter.node, "formnovalidate"))
     ) {
       const validation = this.reportValidity()
       if (!validation.valid) {
@@ -1276,6 +1302,7 @@ export class FormControlRegistry {
     controllerOptions: FormSubmissionControllerSubmitOptions = {},
   ): Promise<ActiveFormSubmissionReport> {
     this.assertActive()
+    this.assertKnownFormOwner("retry")
     const admittedOptions = activeFormOptions(options, "retry")
     const protocol = activeProtocolOptions(activeFormOption(admittedOptions, "protocol", "retry"))
     const source = this.submissionActivity.retrySource()
@@ -1505,6 +1532,42 @@ export class FormControlRegistry {
     if (this.session.tree.getNodeByKey(this.form.key) !== this.form) {
       throw new StateError("Form control registry no longer owns its form node", {
         target: this.form.key,
+      })
+    }
+  }
+
+  private assertKnownFormOwner(operation: string): void {
+    if (this.formOwnerKnown) return
+    throw new RegistryError(`Expo Turbo form ${operation} requires a known form owner`, {
+      target: this.form.key,
+    })
+  }
+
+  private classifyFormOwner(): boolean {
+    const definition = this.resolveVocabulary(this.form)
+    if (definition === undefined) return false
+    if (definition.formOwner !== true) {
+      throw new RegistryError("Expo Turbo form association target is not a declared form owner", {
+        target: this.form.key,
+      })
+    }
+    return true
+  }
+
+  private isKnownVocabulary(element: ProtocolElement): boolean {
+    return this.resolveVocabulary(element) !== undefined
+  }
+
+  private resolveVocabulary(
+    element: ProtocolElement,
+  ): Readonly<{ readonly formOwner?: boolean }> | undefined {
+    const resolve = this.formSemantics?.resolve
+    if (!resolve) return undefined
+    try {
+      return resolve.call(this.formSemantics, element.tagName)
+    } catch {
+      throw new RegistryError("Expo Turbo form vocabulary could not be resolved", {
+        target: element.key,
       })
     }
   }

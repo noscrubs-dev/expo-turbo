@@ -128,7 +128,10 @@ liveTest(
     expect(session.tree.getElementById("demo-form")?.kind).toBe("element")
 
     const controller = new FormSubmissionController(session, fetch)
-    const forms = new DocumentFormControls(session, { submissionController: controller })
+    const forms = new DocumentFormControls(session, {
+      formSemantics: DEMO_REGISTRY,
+      submissionController: controller,
+    })
     const invalid = forms.controlsFor("id:demo-form")
     invalid.register("id:demo-form-first-name", {
       kind: "value",
