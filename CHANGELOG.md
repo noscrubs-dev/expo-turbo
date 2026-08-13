@@ -2,6 +2,184 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## 0.3.0
+
+- **Breaking:** Make `DocumentFormControls` fail closed when form-owner
+  vocabulary is unknown. The React renderer already refused an unknown owner,
+  but a direct `expo-turbo/core` caller could still read `action` and `method`
+  from that tag and send a real request, such as `POST /danger`. Core now
+  refuses request planning, proposals, submission, and retry before transport,
+  and it also refuses when no `formSemantics` resolver is supplied. Migration:
+  pass the component registry as `formSemantics` when constructing
+  `DocumentFormControls`, as the production runtime already does. A registered
+  submitter whose tag is unknown can no longer override a known owner's URL,
+  method, encoding, target, validation, or Turbo request metadata. Its
+  package-owned safety attributes still narrow the operation:
+  `data-turbo="false"` disables interception, and `data-turbo-confirm` requires
+  confirmation. This opt-out is silent in core because core has no vocabulary
+  reporting channel. Issue #400 stays open: `FormLinkSubmissionController`
+  still needs the same fail-closed resolver in `shouldInterceptSubmission`,
+  `submissionProposal`, and `submit`.
+- **Breaking:** Fail closed on module negotiation for a verified native
+  request. `expo_turbo_client_supports?` previously returned `true` for every
+  requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old
+  client and a header-stripping proxy, the two states a server cannot control,
+  were exactly the two that claimed support for everything. A request whose
+  `Accept` names `application/vnd.expo-turbo+xml` exactly and prefers it over
+  every other media range now answers `false` for a module it did not declare.
+  A wildcard, a lower quality than another range, and a quality value outside
+  the RFC 9110 grammar are all not native, so unreadable syntax never denies
+  service. A request that does not accept Expo Turbo keeps
+  the fail-open assumption. Every response reports which vocabulary answered it
+  in `X-Expo-Turbo-Vocabulary`: `declared`, `assumed-none`, or
+  `assumed-latest`. Migration: a native client must send
+  `X-Expo-Turbo-Modules`, which the `0.2.0` client already does for every
+  registered module; check the response header on a route that gates on a
+  module and confirm it reads `declared`. A blank module name now raises
+  `ArgumentError` instead of answering `true`, and a logger failure while
+  reporting a malformed header is no longer swallowed.
+- **Breaking:** Apply `Vary` to every response and always include `Accept`.
+  `Vary` was opt-in through `expo_turbo_vary_by_frame!`, so a document response
+  could reach a shared cache without it and then answer a later Frame request
+  for the same URL, and `Accept` was omitted whenever a route forced the format.
+  Migration: rename `expo_turbo_vary_by_frame!` to `expo_turbo_vary!`, and
+  delete the call unless another cache API needs it. Two layers now apply it: a
+  prepended `before_action`, so host code can read and extend it during the
+  action, and `ExpoTurbo::Rails::VaryHeaders`, Rack middleware installed
+  immediately outside `ActionDispatch::ShowExceptions`, which reaches responses
+  no controller callback can: a host filter that halts before the concern's own
+  filter, an unrescued exception, and an unknown route. Responses produced above
+  that point, static files, sendfile, and host authorization, are deliberately
+  excluded and documented, because they are not representations of an Expo Turbo
+  resource. Set `config.expo_turbo.vary_middleware = false` to remove the
+  middleware layer. Hosts that cache aggressively will see a lower hit rate on
+  routes that do not vary by Frame.
+- **Breaking:** Key `Rails.cache` fragments of an Expo Turbo render by the same
+  Frame and module identity. `Vary` protects a shared HTTP cache and does not
+  protect `Rails.cache`, so a fragment gated on a module version could be read
+  back for a different client. Migration: existing Expo Turbo fragment keys miss
+  once and then repopulate. HTML fragment keys are unchanged.
+- **Breaking:** Reject an invalid `Turbo-Frame` header with `400`. A malformed
+  Frame id returned `nil` and the request quietly became a document request, so
+  the client received a different representation than it asked for. Migration:
+  none for a valid client; a proxy that rewrites the header must stop.
+- **Breaking:** Validate component child modes on the server
+  ([#405](https://github.com/noscrubs-dev/expo-turbo/issues/405)). The client
+  capability manifest already declares `children` as `nodes`, `none`, or `text`,
+  and Rails discarded it. Bare text in a `nodes` container reached the device,
+  where it becomes an `RCTRawText` inside a `View`: a nonfatal RedBox in
+  development and nothing at all in production, which `react-test-renderer`
+  structurally cannot observe. Rails now rejects bare text in a `nodes`
+  container, element children in a `text` component, and any child of a `none`
+  component, before delivery. Migration: regenerate the capability manifest, or
+  add `children:` to each entry of a hand-written `components:` map; a manifest
+  without `children` stays readable and is not child-checked.
+- **Breaking:** Make Expo Turbo a Rails format instead of a parallel framework.
+  `include ExpoTurbo::Rails::Controller`, `expo_turbo_view_root`,
+  `render_expo_turbo`, `render_expo_turbo_stream`, and the private partial
+  resolver are removed. The Engine installs the concern through the
+  `action_controller` load hook, as `turbo-rails` does, and registers the
+  `expo_turbo` format. Migration: delete the `include` and the
+  `expo_turbo_view_root` call; move `app/views/expo_turbo/foo/bar.xml.erb` to
+  `app/views/foo/bar.expo_turbo.erb` beside the controller that renders it;
+  replace `render_expo_turbo "foo/bar"` with `render "bar"` or with no render
+  call; replace `render_expo_turbo_stream(a, b)` with
+  `render turbo_stream: [a, b]`; and replace `partial: "foo/bar"` with the
+  ordinary partial path. Set
+  `config.expo_turbo.include_controller = false` to keep the manual include.
+  Responses are validated once, on the finished response, so `respond_to` and
+  implicit rendering are covered too; set
+  `self.expo_turbo_validate_responses = false` in an action that must deliver a
+  payload the protocol rejects.
+- **Breaking:** Make the standard `turbo-rails` helpers format-aware and delete
+  the parallel namespace. `expo_turbo_frame_tag`, `expo_turbo_stream_from`, and
+  `expo_turbo_dom_id` are removed. Migration: rename them to `turbo_frame_tag`,
+  `turbo_stream_from`, and `dom_id`; each keeps its Expo Turbo behavior during
+  an Expo Turbo render and calls `turbo-rails` or Rails otherwise. The branch
+  is chosen by the format Rails selected for the render, so a browser that
+  names the Expo Turbo type at a low quality still gets HTML behavior.
+  `turbo_stream_from` still appends the hidden `:expo` stream-name suffix.
+  `turbo_frame_tag` now accepts every id shape `turbo-rails` accepts, including
+  a Symbol, and still normalizes a model class to the same id on `turbo-rails`
+  2.0.10 and 2.0.23. `dom_id` keeps the shared target roles as its prefix.
+  `expo_turbo_stream` remains as the explicit builder for a broadcast, which has
+  no request and therefore no format.
+- **Breaking:** Compare the `Turbo-Frame` request header against the Frame the
+  response actually contains, and answer `400` on a mismatch. A controller
+  cannot know the expected Frame before the view renders. Migration: delete
+  checks of the form `head :bad_request unless expo_turbo_frame_request_id ==
+  "some-frame"`; keep `head :bad_request unless expo_turbo_frame_request?` for
+  an endpoint that serves a Frame only. Set
+  `self.expo_turbo_frame_match = false` in an action that answers with a
+  different Frame on purpose.
+- `broadcast_*` stays explicitly named and is deliberately not overridden. A
+  model callback or job has no request and therefore no format, and
+  `turbo-rails` renders a broadcast through `ApplicationController.render` with
+  `:turbo_stream` fixed in its own source. Overriding `broadcast_replace_to`
+  would send native XML to browsers or browser HTML to native clients with no
+  way for either side to tell. The gem documents the upstream hook that would
+  remove the limitation.
+- `expo_turbo_attribute` remains a documented opt-in shim. Automatic encoding
+  would require replacing Rails' own escaping for every render and would still
+  miss attributes built by `tag.*` helpers, and no response validator can
+  recover the original value once an XML parser has applied attribute-value
+  normalization.
+- **Breaking:** Add the declare-once registry. Use `defineRegistry()` with one
+  `module: { name, version }` identity and a `components` object. Use each
+  object key as the wire tag. Use `component()` for the component contract and
+  `render()` for the React implementation. The module identity preserves
+  server negotiation. The key does not depend on a function name, so
+  minification, a higher-order component, `React.memo()`, or a normal function
+  rename cannot change the wire protocol. The old module API stays available
+  for compatibility, but new registry code must not use its separate component
+  array.
+- **Breaking:** The new registry throws for an unknown component in
+  development when React Native sets `__DEV__` or tooling sets
+  `NODE_ENV=development`. Unset tooling environments use production behavior.
+  In production, it keeps the child fallback and always writes a deduplicated
+  contract diagnostic. `onUnknownVocabulary` is still useful, but it is not the
+  only production signal. Migrate development fixtures by adding the missing
+  component key. Do not disable this check.
+- **Breaking:** An invalid legacy module name or RubyGems version no longer
+  stops app boot. The registry quarantines the full module, including its
+  components, and does not send a support claim for it. This makes server
+  negotiation fail closed. This also applies to the required `module` identity
+  in `defineRegistry()`: one bad name or version quarantines all components in
+  that registry. Fix the value to restore the full registry. For example,
+  change `name: "cart "` to `name: "cart"`, or change `version: "v2"` to
+  `version: "2"`.
+- **Breaking:** Remove `ComponentActionRegistry.modules`. It had no consumer.
+  Keep module metadata on `defineComponentActionModule()` if you use that API,
+  but do not read it from the action registry.
+- A normal component contract keeps only seven facts explicit:
+  1. The object key gives the stable wire tag.
+  2. Each `attr()` codec gives the runtime wire decoder because TypeScript
+     types do not exist at runtime.
+  3. `nodes`, `text`, or `none` gives the wire child rule because React cannot
+     infer it.
+  4. `role` gives form ownership or container behavior before render.
+  5. `aliases` gives deliberate compatibility names.
+  6. `styles` gives the bounded style-token set that the component accepts.
+  7. `morphState: "reset"` gives the non-default state policy. The default is
+     `preserve`.
+- Mechanical registry migration:
+  1. Replace
+     `createRegistry(defineComponentModule({ name, version, components: [...] }))`
+     with `defineRegistry({ module: { name, version }, components: { ... } })`.
+     Keep the same module name and version so server negotiation does not
+     change.
+  2. Move each old `tag` value to the matching object key.
+  3. Replace `component:` with `render:` and replace child strings with
+     `nodes`, `text`, or `none`.
+  4. Replace each `{ codec, prop }` binding and matching Zod field with one
+     `attr(codec, optionalSchema)`. Use `.optional()` or `.default(value)` on
+     that attribute. Kebab-case wire names produce camel-case prop names.
+  5. Delete empty `attributes` and `schema` objects. Move `style-tokens` to
+     `styles`. Move `formOwner` or `formContainer` to `role`.
+  6. Keep the explicit `schema` overload only for a cross-field rule, a prop
+     that has only a default and no wire attribute, or two wire attributes that
+     map to one prop.
+
 ## 0.2.0 - 2026-08-12
 
 - **Breaking:** Send decodable live registry module versions on document,
