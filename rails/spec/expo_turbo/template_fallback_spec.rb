@@ -184,6 +184,31 @@ RSpec.describe "Expo Turbo template fallback" do
     end
   end
 
+  # Rails annotates .html templates in development, and those annotations now
+  # reach a native client. They are XML comments, which the protocol carries as
+  # comment nodes, so the response still parses and is still admitted. The cost
+  # is that a development response names server paths to a native client, which
+  # is the same exposure a browser already has.
+  it "admits an HTML template that ActionView annotated" do
+    previous = ActionView::Base.annotate_rendered_view_with_filenames
+    ActionView::Base.annotate_rendered_view_with_filenames = true
+
+    with_templates(
+      controller_class,
+      "specs/show.html.erb" => %(<Screen id="a"><%= render partial: "specs/row" %></Screen>),
+      "specs/_row.html.erb" => %(<Text id="r">x</Text>)
+    ) do
+      status, headers, body = dispatch(controller_class)
+
+      expect(status).to eq(200)
+      expect(headers["Content-Type"]).to eq("#{ExpoTurbo::Rails::MIME_TYPE}; charset=utf-8")
+      expect(body).to include("<!-- BEGIN ", "specs/show.html.erb")
+      expect(ExpoTurbo::Rails::XmlFragments.parse_document(body).root.name).to eq("Screen")
+    end
+  ensure
+    ActionView::Base.annotate_rendered_view_with_filenames = previous
+  end
+
   it "keeps a separate view tree working through prepend_view_path" do
     Dir.mktmpdir do |directory|
       native_root = File.join(directory, "native_views")

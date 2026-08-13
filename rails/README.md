@@ -218,6 +218,15 @@ its Expo Turbo renders to `.expo_turbo` templates, as releases before `0.3.0`
 did. A host that would rather keep a separate tree of native views still can:
 `prepend_view_path` is ordinary Rails and is unaffected.
 
+One development-only surprise comes with it. Rails annotates `.html` templates
+with `<!-- BEGIN … -->` comments when
+`config.action_view.annotate_rendered_view_with_filenames` is on, which
+`load_defaults` turns on in development. Those annotations now reach a native
+client too. They are XML comments, which the protocol carries as comment nodes,
+so the response still parses and is still admitted; the cost is that a
+development response names server paths to a native client, exactly as it
+already does to a browser.
+
 ### Partials
 
 A shared `.html.erb` renders the `.html` partials beneath it, because ActionView

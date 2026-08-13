@@ -24,7 +24,10 @@ All notable public package, gem, and protocol changes will be recorded here.
   unaffected. Set `self.expo_turbo_html_template_fallback = false` to restore
   the confinement. A shared `NAME.html.erb` renders the `.html` partials beneath
   it, because that narrowing is ActionView's own; a format-neutral `NAME.erb`
-  keeps partial lookup on the request format.
+  keeps partial lookup on the request format. In development, Rails' own
+  `annotate_rendered_view_with_filenames` comments on an `.html` template now
+  reach a native client as XML comment nodes; the response still parses and is
+  still admitted.
 - Accept an HTML element name for a component through its existing `aliases:`
   declaration, so one template can spell a component as the element a browser
   understands. No change was needed for this and none was made: all four
