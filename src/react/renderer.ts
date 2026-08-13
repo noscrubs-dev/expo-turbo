@@ -701,6 +701,15 @@ export interface ExpoTurboProviderProps {
   readonly navigation?: NavigationAdapter
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
+  /**
+   * Whether this provider disposes `scopes` and `state` when it unmounts.
+   * Defaults to `true`, which is what a host composing them by hand expects.
+   *
+   * `ExpoTurbo` passes `false`: the runtime it built created those objects and
+   * disposes them itself, and two owners calling `dispose()` on one object is
+   * only harmless for as long as both stay idempotent.
+   */
+  readonly ownsStateDisposal?: boolean
   readonly registry: RenderRegistry
   readonly renderError?: (event: ExpoTurboRenderError) => ReactNode
   readonly scopes?: DocumentStateScopes
@@ -710,7 +719,22 @@ export interface ExpoTurboProviderProps {
   readonly styles?: StyleAdapter
 }
 
-function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefined): void {
+export interface ExpoTurboDisposable {
+  dispose(): void
+}
+
+/**
+ * Reference-counts a shared disposable across every mount that claims it, and
+ * disposes it one microtask after the last claim is released so that a
+ * remount in the same commit — StrictMode, a Fast Refresh cycle, a route
+ * swap — hands the resource over instead of tearing it down.
+ *
+ * This is the bookkeeping every host was previously copying by hand. Hosts on
+ * the `ExpoTurboApp`/`ExpoTurbo` path never need it: those components own the
+ * runtime they create. It is public for hosts that compose a runtime manually
+ * and share it between screens.
+ */
+export function useExpoTurboDisposable(resource: ExpoTurboDisposable | undefined): void {
   useEffect(() => {
     if (!resource) return
     providerDisposableOwners.set(resource, (providerDisposableOwners.get(resource) ?? 0) + 1)
@@ -726,13 +750,16 @@ function useProviderDisposable(resource: Readonly<{ dispose(): void }> | undefin
   }, [resource])
 }
 
+const useProviderDisposable = useExpoTurboDisposable
+
 const EMPTY_DOCUMENT_OUTPUT_LEDGER: DocumentOutputLedger = createDocumentOutputLedger()
 
 export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
   const outputLedger = useRef<DocumentOutputLedger | undefined>(undefined)
   outputLedger.current ??= createDocumentOutputLedger()
-  useProviderDisposable(props.scopes)
-  useProviderDisposable(props.state)
+  const ownsStateDisposal = props.ownsStateDisposal !== false
+  useProviderDisposable(ownsStateDisposal ? props.scopes : undefined)
+  useProviderDisposable(ownsStateDisposal ? props.state : undefined)
   useInsertionEffect(
     () =>
       registerStructuralOutputAdmission(props.session, (request) => {

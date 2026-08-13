@@ -3184,6 +3184,9 @@ describe("demo app runtime ownership", () => {
         loading: createElement("runtime-loading"),
         onError: (error) => errors.push(error),
         registry: DEMO_REGISTRY,
+        // Required since 0.3. Both tests assert `errors` stays empty, so this
+        // node appearing would itself be a failure.
+        renderError: (error: Error) => createElement("runtime-error", { message: error.message }),
         url,
       });
 
@@ -3246,6 +3249,9 @@ describe("demo app runtime ownership", () => {
         loading: createElement("runtime-loading"),
         onError: (error) => errors.push(error),
         registry: DEMO_REGISTRY,
+        // Required since 0.3. Both tests assert `errors` stays empty, so this
+        // node appearing would itself be a failure.
+        renderError: (error: Error) => createElement("runtime-error", { message: error.message }),
         url,
       });
 

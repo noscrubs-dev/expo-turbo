@@ -2,13 +2,19 @@ import { describe, expect, test } from "bun:test"
 import type { ComponentType } from "react"
 import { z } from "zod"
 
-import type { TurboResponse } from "../adapters/index.js"
-import { attributeValue, EXPO_TURBO_MIME_TYPE, isElement } from "../core/index.js"
+import type { CableCallbacks, TurboResponse } from "../adapters/index.js"
+import {
+  attributeValue,
+  DOCUMENT_REFRESH_DEBOUNCE_MS,
+  EXPO_TURBO_MIME_TYPE,
+  isElement,
+} from "../core/index.js"
 import { createRegistry, defineComponent, defineComponentModule } from "../registry/index.js"
 import { createExpoTurboRuntime } from "./runtime-factory.js"
 
 const TestDocument = (() => null) as ComponentType
 const TestForm = (() => null) as ComponentType
+const TestField = (() => null) as ComponentType
 const registry = createRegistry(
   defineComponentModule({
     components: [
@@ -26,6 +32,13 @@ const registry = createRegistry(
         formOwner: true,
         schema: z.object({}),
         tag: "TestForm",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: TestField,
+        schema: z.object({}),
+        tag: "TestField",
       }),
     ],
     name: "runtime-test",
@@ -101,6 +114,211 @@ describe("Expo Turbo runtime", () => {
       { method: "replace", url: "https://example.test/document" },
       { method: "push", url: "https://example.test/next" },
     ])
+  })
+
+  test("hands one host focus adapter to form validation", async () => {
+    const focused: string[] = []
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) =>
+          response(
+            '<TestDocument><TestForm id="form"><TestField id="field" /></TestForm></TestDocument>',
+            request.url,
+          ),
+      },
+      focus: {
+        blur() {},
+        focus: (nodeKey) => {
+          focused.push(nodeKey)
+        },
+        getFocusedId: () => focused.at(-1),
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const controls = runtime.forms.controlsFor("id:form")
+    controls.register("id:field", {
+      kind: "value",
+      name: "field",
+      validity: { message: "Field is required", valid: false },
+      value: "",
+    })
+
+    expect(controls.reportValidity()).toMatchObject({
+      firstInvalid: { nodeKey: "id:field" },
+      valid: false,
+    })
+    // The host supplies focus exactly once, to the runtime. Reverting the
+    // fan-out makes reportValidity() throw StateError("Invalid form submission
+    // requires a configured focus adapter") instead of recording a focus.
+    expect(focused).toEqual(["id:field"])
+
+    runtime.dispose()
+  })
+
+  test("fails invalid form validation closed when no focus adapter is supplied", async () => {
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) =>
+          response(
+            '<TestDocument><TestForm id="form"><TestField id="field" /></TestForm></TestDocument>',
+            request.url,
+          ),
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const controls = runtime.forms.controlsFor("id:form")
+    controls.register("id:field", {
+      kind: "value",
+      name: "field",
+      validity: { message: "Field is required", valid: false },
+      value: "",
+    })
+
+    // Asserts the absence of a second route: without the new `focus` option
+    // there is no adapter anywhere in the runtime, so the test above can only
+    // have observed the one it passed in.
+    expect(() => controls.reportValidity()).toThrow(
+      "Invalid form submission requires a configured focus adapter",
+    )
+
+    runtime.dispose()
+  })
+
+  test("does not yet refresh the document after a Cable reconnect", async () => {
+    const documentUrl = "https://example.test/document"
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+
+    callbacks[0]?.connected(false)
+    callbacks[0]?.disconnected(true)
+    callbacks[0]?.connected(true)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+
+    // A deliberate, documented gap rather than an oversight: anything broadcast
+    // while the socket was down stays missing until something else refreshes
+    // the document. Recovery is tracked in
+    // https://github.com/noscrubs-dev/expo-turbo/pull/418; when it lands, this
+    // expectation flips to a second request for `documentUrl`.
+    expect(requests).toEqual([documentUrl])
+
+    runtime.dispose()
+  })
+
+  test("applies a Cable-delivered refresh Stream action", async () => {
+    const documentUrl = "https://example.test/document"
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    callbacks[0]?.connected(false)
+
+    await callbacks[0]?.received(
+      '<turbo-stream action="refresh" target="ignored"><template></template></turbo-stream>',
+    )
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 150))
+
+    // Without `streamOptions.refresh` the action is a silent no-op: no request,
+    // no error, nothing for a host to notice.
+    expect(requests).toEqual([documentUrl, documentUrl])
+
+    runtime.dispose()
+  })
+
+  test("routes a failed background refresh to onBackgroundError", async () => {
+    const reported: Error[] = []
+    const callbacks: CableCallbacks[] = []
+    let failRefresh = false
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          if (failRefresh) throw new Error("refresh transport refused")
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      onBackgroundError: (error) => reported.push(error),
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    callbacks[0]?.connected(false)
+
+    failRefresh = true
+    await callbacks[0]?.received(
+      '<turbo-stream action="refresh" target="ignored"><template></template></turbo-stream>',
+    )
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+
+    // Without an observer this is an uncaught microtask throw: invisible to the
+    // host and impossible for it to catch.
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toBeInstanceOf(Error)
+
+    runtime.dispose()
   })
 
   test("does not report a canceled initial visit as loaded", async () => {

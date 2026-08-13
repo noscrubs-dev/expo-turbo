@@ -120,10 +120,12 @@ function visitMethod(action: VisitAction): DocumentHistoryWriteMethod | undefine
   throw new StateError("Expo Router visit action is invalid")
 }
 
-export function createExpoRouterAdapters(
-  router: ExpoRouterAdapterHost,
-  options: ExpoRouterAdapterOptions = {},
-): ExpoRouterAdapters {
+/**
+ * Validates an imperative router before it is wrapped. Exported so the React
+ * hook can keep checking the live router it was handed even though it builds
+ * its adapters once.
+ */
+export function assertExpoRouterAdapterHost(router: ExpoRouterAdapterHost): void {
   if (!router || typeof router !== "object" || Array.isArray(router)) {
     throw new StateError("Expo Router host must be an object")
   }
@@ -135,6 +137,13 @@ export function createExpoRouterAdapters(
   ) {
     throw new StateError("Expo Router host is invalid")
   }
+}
+
+export function createExpoRouterAdapters(
+  router: ExpoRouterAdapterHost,
+  options: ExpoRouterAdapterOptions = {},
+): ExpoRouterAdapters {
+  assertExpoRouterAdapterHost(router)
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new StateError("Expo Router adapter options must be an object")
   }

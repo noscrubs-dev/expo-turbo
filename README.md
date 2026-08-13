@@ -148,7 +148,8 @@ behavior.
 - [x] `ExpoTurboProvider`, `ExpoTurboRoot`, boundaries, hooks, and scoped state
 - [x] Small-slice external-store subscriptions and deterministic disposal
 - [x] Semantic style-token and direction adapters
-- [x] Host-owned focus, scroll, visibility, storage, navigation, and observability adapters
+- [x] Host-owned focus, scroll, visibility, and navigation adapters
+- [x] `ExpoTurboApp` zero-configuration Expo entrypoint with one `adapters` escape hatch
 - [x] Default credentialed fetch adapter with request and response-body timeouts
 - [x] Optional Expo Router navigation and history-write bridge
 - [x] Accessible busy, pending, disabled, validation, retry, and announcement surfaces
