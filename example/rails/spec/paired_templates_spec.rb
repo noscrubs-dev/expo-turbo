@@ -23,9 +23,33 @@ RSpec.describe "paired demo templates" do
       File.write(File.join(directory, "show.html.erb"), %(<p id="drifted">x</p>))
       File.write(File.join(directory, "show.expo_turbo.erb"), %(<DemoText id="original">x</DemoText>))
 
-      findings = ExpoTurbo::Rails::PairedTemplates.lint([*roots, directory])
+      finding = ExpoTurbo::Rails::PairedTemplates.lint([*roots, directory]).first
 
-      expect(findings.map(&:value)).to contain_exactly("drifted", "original")
+      expect(finding.aspect).to eq(:id)
+      expect(finding.value).to eq("drifted")
+      expect(finding.counterpart_value).to eq("original")
+    end
+  end
+
+  # Run against this application's real shared template rather than a fixture:
+  # a copy of it agrees with itself, and a copy whose id drifted is reported.
+  it "reports drift in a copy of the shared greeting template" do
+    shared = Rails.root.join("app/views/api/expo_turbo/demo/shared_greetings/show.html.erb").read
+    drifted = shared.sub("demo-shared-greeting-text", "renamed-by-mistake")
+    expect(drifted).not_to eq(shared)
+
+    Dir.mktmpdir do |directory|
+      File.write(File.join(directory, "agrees.html.erb"), shared)
+      File.write(File.join(directory, "agrees.expo_turbo.erb"), shared)
+      File.write(File.join(directory, "drifts.html.erb"), shared)
+      File.write(File.join(directory, "drifts.expo_turbo.erb"), drifted)
+
+      findings = ExpoTurbo::Rails::PairedTemplates.lint([directory])
+
+      expect(findings.map(&:aspect)).to contain_exactly(:id)
+      expect(findings.first.path).to end_with("drifts.html.erb")
+      expect(findings.first.value).to eq("demo-shared-greeting-text")
+      expect(findings.first.counterpart_value).to eq("renamed-by-mistake")
     end
   end
 

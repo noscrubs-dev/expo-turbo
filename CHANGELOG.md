@@ -5,21 +5,28 @@ All notable public package, gem, and protocol changes will be recorded here.
 ## 0.3.0
 
 - **Breaking:** Resolve an HTML template for a native request, and label the
-  response by the format the request selected. Lookup for an Expo Turbo render
+  response by the format the render selected. Lookup for an Expo Turbo render
   now tries `expo_turbo` first and `html` behind it, so one template can serve
   a browser and a native client, and `NAME.expo_turbo.erb` still wins over the
   `NAME.html.erb` beside it. Where a native request previously raised
   `ActionController::UnknownFormat` because only an HTML template existed, it
   now renders that template. The response is delivered as
   `application/vnd.expo-turbo+xml`, not `text/html`: the media type follows the
-  format Rails selected, never the extension of the file that answered. That is
-  what keeps the protocol rules applied, because `expo_turbo_validate_response!`
-  switches on the media type, so an HTML template that emits `<div>` fails on
-  the server instead of shipping HTML to a client that cannot read it. The same
-  rule now decides the helper branch: `expo_turbo_render?` reads the new
-  `expo_turbo_selected_format` rather than `lookup_context.formats.first`, which
-  ActionView rewrites to the format of the template it found as soon as a shared
-  template answers. Migration: a host whose `app/views` holds an HTML template
+  format the render selected, never the extension of the file that answered.
+  That is what keeps the protocol rules applied, because
+  `expo_turbo_validate_response!` switches on the media type, so an HTML
+  template that emits `<div>` fails on the server instead of shipping HTML to a
+  client that cannot read it. The same rule now decides the helper branch:
+  `expo_turbo_render?` reads the new `expo_turbo_selected_format` rather than
+  `lookup_context.formats.first`, which ActionView rewrites to the format of the
+  template it found as soon as a shared template answers. Two things can name
+  that format and they do not rank equally: a `formats:` argument the caller
+  wrote is a demand and wins, and the `Accept` header or the matching
+  `respond_to` branch is a resolution and applies otherwise. `render "page",
+  formats: [:html]` therefore answers a native client exactly as it answers a
+  browser, with `text/html` and the ordinary `turbo-rails` helpers, and a demand
+  lasts only for the render that carried it. Migration: a host whose
+  `app/views` holds an HTML template
   beside an Expo Turbo action now serves it, and a screen with both templates is
   unaffected. Set `self.expo_turbo_html_template_fallback = false` to restore
   the confinement. A shared `NAME.html.erb` renders the `.html` partials beneath
@@ -41,16 +48,23 @@ All notable public package, gem, and protocol changes will be recorded here.
   the five form-owner attributes either side admits, and `tag.br` writes `<br>`,
   which is not well-formed XML.
 - Add `rake expo_turbo:paired_templates`, a lint over `foo.html.erb` /
-  `foo.expo_turbo.erb` pairs. It reports divergence in element ids, Frame `src`,
-  form action and method, control names, and `data-turbo-*` attributes. It reads
-  template source and never renders, so it runs in CI with no database and no
-  server, and no request path loads it.
+  `foo.expo_turbo.erb` pairs. It reports divergence in `id`, `src`, `action`,
+  `method`, `name`, and every `data-turbo-*`, on any element rather than only on
+  the element name each attribute usually belongs to. It pairs elements first,
+  by `id` and then by document order, and compares each pair against its own
+  counterpart, because comparing the two templates' lists of values passes
+  whenever the same values appear somewhere on both sides: two Frames that
+  exchange their `src`, or two forms that exchange their `action`, leave every
+  list identical. It reads template source and never renders, so it runs in CI
+  with no database and no server, and no request path loads it.
   `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for
   a host's own test. It cannot see a value a helper produces, a value that
   differs at run time from identical source, anything a partial or layout
-  contributes, a branch only one audience takes, or semantics behind equal
-  source; the full list is at the top of
-  `lib/expo_turbo/rails/paired_templates.rb`.
+  contributes, a branch only one audience takes, semantics behind equal source,
+  an element that moved to a different parent, or two elements that exchanged
+  their ids and every compared attribute together; and pairing id-less elements
+  by document order over-reports rather than under-reports. The full list is at
+  the top of `lib/expo_turbo/rails/paired_templates.rb`.
 - **Breaking:** Fail closed on module negotiation for a verified native
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old

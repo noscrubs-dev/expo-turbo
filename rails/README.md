@@ -203,15 +203,30 @@ The specific format wins. Adding `show.expo_turbo.erb` beside an existing
 `show.html.erb` takes over the native request and leaves the browser alone, so
 a host can specialize one screen at a time and share the rest.
 
-### The response says what the request selected
+### The response says what the render selected
 
 An `.html.erb` that answered a native request is an Expo Turbo representation,
 not an HTML one. It is delivered as `application/vnd.expo-turbo+xml`, and the
 admission rules above apply to it unchanged: a template that emits `<div>`
 fails on the server instead of shipping HTML to a client that cannot read it.
 The standard helpers take their Expo Turbo branch inside it too, because the
-branch follows the format Rails selected for the response and not the extension
-of the file that answered.
+branch follows the format the render selected and not the extension of the file
+that answered.
+
+Two things can name that format, and they do not rank equally:
+
+| Source | Example | Rank |
+| --- | --- | --- |
+| **demanded** by the caller | `render "page", formats: [:html]` | wins |
+| **resolved** by Rails | the `Accept` header, or the `respond_to` branch that matched | otherwise |
+
+Writing `formats:` is a decision, so it is honoured whoever asked: `render
+"page", formats: [:html]` answers a native client with `text/html` and ordinary
+`turbo-rails` helpers, exactly as it answers a browser. A demand lasts only for
+the render that carried it. Everything else — an implicit render, a plain
+`render "show"`, a `respond_to` branch — is a resolution, and there the format
+Rails selected decides. `expo_turbo_selected_format` reports the answer, and
+both the media type and the helper branch read it, so the two cannot disagree.
 
 Set `self.expo_turbo_html_template_fallback = false` on a controller to confine
 its Expo Turbo renders to `.expo_turbo` templates, as releases before `0.3.0`
@@ -281,9 +296,21 @@ may name a component `a`, `form`, or `input` outright.
 A host that keeps `foo.html.erb` and `foo.expo_turbo.erb` for one screen has
 nothing telling it when the two drift apart. `rake expo_turbo:paired_templates`
 compares every discovered pair under `app/views` and reports divergence in the
-five things that break a screen without an error: element ids, Frame `src`,
-form action and method, control names, and `data-turbo-*` attributes. Set
+attributes that break a screen without an error: `id`, `src`, `action`,
+`method`, `name`, and every `data-turbo-*`. None is confined to one element
+name, so a Frame's `src`, a Stream's `method`, and a form's `action` are all
+covered whatever the two sides call those elements. Set
 `EXPO_TURBO_VIEW_PATHS` to lint other roots.
+
+**It compares element to element.** Comparing the two templates' *lists* of ids
+and srcs passes whenever the same values appear somewhere on both sides, which
+is exactly what happens when two Frames exchange their `src` or two forms
+exchange their `action`: every list matches and nothing is reported. So elements
+are paired first, and each pair is compared against its own counterpart.
+Elements pair by `id`, which the protocol already requires unique within a
+document; whatever is left pairs by document order. An element with no
+counterpart is reported as one. Only elements carrying at least one compared
+attribute are recorded, so an untracked wrapper cannot shift the ordering.
 
 It reads template source and never renders, so it runs in CI with no database
 and no server, and nothing in a request path loads it. Element names are not
@@ -291,11 +318,18 @@ compared, because two names for one component is what an alias is for.
 
 `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for a
 host's own test. What it cannot detect is listed in full at the top of
-`lib/expo_turbo/rails/paired_templates.rb`, and every entry follows from not
+`lib/expo_turbo/rails/paired_templates.rb`. Most entries follow from not
 rendering: a value a helper produces, a value that differs at run time from
 identical source, anything a partial or layout contributes, a branch only one
 audience takes, and semantics behind equal source. `dom_id` is the sharpest of
-those: the same expression on both sides still produces two ids.
+those: the same expression on both sides still produces two ids. Three follow
+from pairing rather than from rendering: it cannot see that an element moved to
+a different parent, because start tags are scanned and not nested; it cannot see
+two elements that exchanged their ids *and* every compared attribute together,
+because nothing is left to tell them apart; and pairing id-less elements by
+document order over-reports rather than under-reports, so one extra id-less
+element on a side can surface as several findings. Giving elements ids removes
+that last ambiguity.
 
 ## Frames
 
