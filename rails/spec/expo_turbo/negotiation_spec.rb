@@ -17,13 +17,19 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
               "revision" => 7,
               "digest" => "sha256-128:0123456789abcdef0123456789abcdef",
               "published" => false
+            },
+            {
+              "revision" => 8,
+              "digest" => "sha256-128:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "published" => false
             }
           ]
         },
         vocabularies: {
           "sha256-128:0123456789abcdef0123456789abcdef" => {
             "DemoCard" => ["title", "subtitle"]
-          }
+          },
+          "sha256-128:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" => {"RemovedCard" => []}
         }
       )
     end
@@ -49,6 +55,19 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
 
     expect(controller.expo_turbo_client_supports?("cart", ">= 999")).to be(false)
     expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
+  end
+
+  it "keeps two resolved descriptor digests separate in fragment cache identity" do
+    first = native_controller(
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    )
+    second = native_controller(
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+
+    expect(first.expo_turbo_cache_variant).not_to eq(second.expo_turbo_cache_variant)
+    expect(first.expo_turbo_client_supports_component?("RemovedCard")).to be(false)
+    expect(second.expo_turbo_client_supports_component?("RemovedCard")).to be(true)
   end
 
   it "keeps the 0.2 modules header as an old-client fallback for one minor" do
