@@ -80,6 +80,54 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
       expect(findings.map(&:element)).to contain_exactly("#one", "#two")
     end
 
+    # The same silent movement, between elements that carry no id. Dropping
+    # the element an attribute moved away from left the two remaining lists
+    # identical, so every one of these reported nothing.
+    it "reports an attribute that moved onto an element with no id" do
+      {
+        action: [%(<form action="/x"/><form/>), %(<DemoForm/><DemoForm action="/x"/>)],
+        method: [%(<form method="post"/><form/>), %(<DemoForm/><DemoForm method="post"/>)],
+        name: [%(<input name="email"/><input/>), %(<DemoFormInput/><DemoFormInput name="email"/>)],
+        src: [%(<turbo-frame src="/a"/><turbo-frame/>), %(<turbo-frame/><turbo-frame src="/a"/>)]
+      }.each do |aspect, (html, expo_turbo)|
+        Dir.mktmpdir do |directory|
+          File.write(File.join(directory, "show.html.erb"), html)
+          File.write(File.join(directory, "show.expo_turbo.erb"), expo_turbo)
+          findings = described_class.lint(directory)
+
+          expect(findings.map(&:aspect)).to eq([aspect, aspect]), "#{aspect} movement went unreported"
+        end
+      end
+    end
+
+    it "reports a Turbo data attribute that moved onto an element with no id" do
+      write("demo/show.html.erb", %(<a data-turbo-action="advance"/><a/>))
+      write("demo/show.expo_turbo.erb", %(<DemoLink/><DemoLink data-turbo-action="advance"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[data_turbo data_turbo])
+    end
+
+    # An id alone moving between two otherwise-empty elements is a reordering,
+    # not a divergence: both documents still carry `#one`, and everything that
+    # targets it - a Stream, a Frame, a scroll - behaves the same. The id is
+    # the identity, so it is the one thing that cannot be said to have moved.
+    it "treats an id that changed position as a reordering" do
+      write("demo/show.html.erb", %(<p id="one"/><p/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
+
+      expect(lint).to be_empty
+    end
+
+    # What matters is an attribute that ends up on a different element from
+    # its id, and that is reported.
+    it "reports an attribute left behind when its id moved" do
+      write("demo/show.html.erb", %(<p id="one" data-turbo-action="advance"/><p/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
+
+      expect(lint.map(&:aspect)).to eq([:data_turbo])
+      expect(lint.first.element).to eq("#one")
+    end
+
     it "reports two ids that were exchanged between elements" do
       write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
       write("demo/show.expo_turbo.erb", %(<turbo-frame id="two" src="/alpha"/><turbo-frame id="one" src="/beta"/>))
@@ -149,6 +197,41 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
       write("demo/show.expo_turbo.erb", %(<Gallery><DemoText id="a">x</DemoText></Gallery>))
 
       expect(lint).to be_empty
+    end
+
+    # One audience needing a wrapper the other does not is the ordinary shape
+    # of a template pair, not a divergence. A run whose two sides hold a
+    # different number of elements compares only what carries something, so a
+    # wrapper costs nothing rather than shifting every element after it.
+    it "reports nothing for a wrapper that only one side needs" do
+      write("demo/show.html.erb", %(<p id="top"/><form action="/x"/><input name="e"/><p id="end"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText id="top"/><Gallery/><DemoForm action="/x"/><DemoFormInput name="e"/><DemoText id="end"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "still reports real drift in a run that also gained a wrapper" do
+      write("demo/show.html.erb", %(<p id="top"/><form action="/x"/><input name="e"/><p id="end"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText id="top"/><Gallery/><DemoForm action="/y"/><DemoFormInput name="e"/><DemoText id="end"/>))
+
+      expect(lint.map(&:aspect)).to eq([:action])
+    end
+
+    # The cost of that fallback, stated rather than hidden: inside a run whose
+    # sides differ in element count, an attribute that moved onto a plain
+    # element is no longer visible. An id on either element restores it.
+    it "misses movement inside a run whose two sides differ in element count" do
+      write("demo/show.html.erb", %(<form action="/x"/><form/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><DemoForm/><DemoForm action="/x"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "sees that same movement once either element carries an id" do
+      write("demo/show.html.erb", %(<form id="f" action="/x"/><form/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><DemoForm id="f"/><DemoForm action="/x"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[action action])
     end
   end
 

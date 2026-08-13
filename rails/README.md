@@ -222,11 +222,14 @@ Two things can name that format, and they do not rank equally:
 
 Writing `formats:` is a decision, so it is honoured whoever asked: `render
 "page", formats: [:html]` answers a native client with `text/html` and ordinary
-`turbo-rails` helpers, exactly as it answers a browser. A demand lasts only for
-the render that carried it. Everything else — an implicit render, a plain
-`render "show"`, a `respond_to` branch — is a resolution, and there the format
-Rails selected decides. `expo_turbo_selected_format` reports the answer, and
-both the media type and the helper branch read it, so the two cannot disagree.
+`turbo-rails` helpers, exactly as it answers a browser. That holds for a
+`NAME.erb` template too, which carries no format of its own for Rails to fall
+back on. A demand covers its own render and is restored afterwards, so a helper
+called after a `render_to_string ..., formats: [:html]` is already back on the
+resolved format. Everything else — an implicit render, a plain `render "show"`,
+a `respond_to` branch — is a resolution, and there the format Rails selected
+decides. `expo_turbo_selected_format` reports the answer, and both the media
+type and the helper branch read it, so the two cannot disagree.
 
 Set `self.expo_turbo_html_template_fallback = false` on a controller to confine
 its Expo Turbo renders to `.expo_turbo` templates, as releases before `0.3.0`
@@ -306,11 +309,19 @@ covered whatever the two sides call those elements. Set
 and srcs passes whenever the same values appear somewhere on both sides, which
 is exactly what happens when two Frames exchange their `src` or two forms
 exchange their `action`: every list matches and nothing is reported. So elements
-are paired first, and each pair is compared against its own counterpart.
+are paired first, and each pair is compared against its own counterpart. An
+element with no counterpart is reported as one.
+
 Elements pair by `id`, which the protocol already requires unique within a
-document; whatever is left pairs by document order. An element with no
-counterpart is reported as one. Only elements carrying at least one compared
-attribute are recorded, so an untracked wrapper cannot shift the ordering.
+document. The id matches that appear in the same relative order on both sides
+also anchor the file, so what is left pairs by document order inside the runs
+between them and a difference stays in its own run. Inside a run, position
+counts only when the two sides put the same number of elements there; then
+every element is a position, including one carrying nothing compared, which is
+what makes an attribute that moved onto a plain element visible. When the counts
+differ the two sides are shaped differently — one audience needs a wrapper the
+other does not, which is ordinary for a pair of templates — and the run lines up
+only the elements carrying something, so a wrapper costs nothing.
 
 It reads template source and never renders, so it runs in CI with no database
 and no server, and nothing in a request path loads it. Element names are not
@@ -324,12 +335,18 @@ identical source, anything a partial or layout contributes, a branch only one
 audience takes, and semantics behind equal source. `dom_id` is the sharpest of
 those: the same expression on both sides still produces two ids. Three follow
 from pairing rather than from rendering: it cannot see that an element moved to
-a different parent, because start tags are scanned and not nested; it cannot see
-two elements that exchanged their ids *and* every compared attribute together,
-because nothing is left to tell them apart; and pairing id-less elements by
-document order over-reports rather than under-reports, so one extra id-less
-element on a side can surface as several findings. Giving elements ids removes
-that last ambiguity.
+a different parent, because start tags are scanned and not nested, and an `id`
+that changed position is a reordering rather than a divergence for the same
+reason — though an attribute *left behind* by that move is reported, because it
+is then on a different element from its id; it cannot see two elements that
+exchanged their ids *and* every compared attribute together, because nothing is
+left to tell them apart; and it cannot see movement inside a run whose two sides
+hold a different number of elements, which is the price of not reporting every
+element after a wrapper one audience needs. An id on either element restores
+that last one. In the other direction, a run whose sides hold the same number of
+elements but line them up differently is compared position by position, so one
+structural difference can surface as several findings; that is the same trust in
+position that makes movement visible.
 
 ## Frames
 

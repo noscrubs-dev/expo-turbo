@@ -24,8 +24,11 @@ All notable public package, gem, and protocol changes will be recorded here.
   wrote is a demand and wins, and the `Accept` header or the matching
   `respond_to` branch is a resolution and applies otherwise. `render "page",
   formats: [:html]` therefore answers a native client exactly as it answers a
-  browser, with `text/html` and the ordinary `turbo-rails` helpers, and a demand
-  lasts only for the render that carried it. Migration: a host whose
+  browser, with `text/html` and the ordinary `turbo-rails` helpers, including
+  for a `NAME.erb` template that carries no format of its own. A demand covers
+  its own render and is restored afterwards, so a helper called after a
+  `render_to_string ..., formats: [:html]` is already back on the resolved
+  format. Migration: a host whose
   `app/views` holds an HTML template
   beside an Expo Turbo action now serves it, and a screen with both templates is
   unaffected. Set `self.expo_turbo_html_template_fallback = false` to restore
@@ -55,16 +58,22 @@ All notable public package, gem, and protocol changes will be recorded here.
   counterpart, because comparing the two templates' lists of values passes
   whenever the same values appear somewhere on both sides: two Frames that
   exchange their `src`, or two forms that exchange their `action`, leave every
-  list identical. It reads template source and never renders, so it runs in CI
-  with no database and no server, and no request path loads it.
+  list identical. Id matches in the same relative order anchor the file, so a
+  difference stays in its own run; inside a run every element is a position
+  when the two sides hold the same number of them, which is what makes an
+  attribute that moved onto a plain element visible, and only the elements
+  carrying something are lined up when they do not, so a wrapper one audience
+  needs costs nothing. It reads template source and never renders, so it runs
+  in CI with no database and no server, and no request path loads it.
   `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for
   a host's own test. It cannot see a value a helper produces, a value that
   differs at run time from identical source, anything a partial or layout
   contributes, a branch only one audience takes, semantics behind equal source,
-  an element that moved to a different parent, or two elements that exchanged
-  their ids and every compared attribute together; and pairing id-less elements
-  by document order over-reports rather than under-reports. The full list is at
-  the top of `lib/expo_turbo/rails/paired_templates.rb`.
+  an element that moved to a different parent, two elements that exchanged their
+  ids and every compared attribute together, or movement inside a run whose two
+  sides hold a different number of elements; and a run whose sides hold the same
+  number but line them up differently over-reports rather than under-reports.
+  The full list is at the top of `lib/expo_turbo/rails/paired_templates.rb`.
 - **Breaking:** Fail closed on module negotiation for a verified native
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old

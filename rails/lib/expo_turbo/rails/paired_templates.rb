@@ -17,9 +17,18 @@ module ExpoTurbo
     # pair's attributes are compared against its own counterpart.
     #
     # Elements pair by `id`, which the protocol already requires to be unique
-    # within a document, and whatever is left over pairs by document order.
-    # Only elements carrying at least one compared attribute are recorded, so
-    # an untracked wrapper cannot shift the ordering of the ones that matter.
+    # within a document. The id matches that appear in the same relative order
+    # on both sides also anchor the file: what is left pairs by document order
+    # inside the runs between them, so a difference is contained to its own run.
+    #
+    # Inside a run, position means something only when the two sides put the
+    # same number of elements there. Then every element counts as a position,
+    # including one carrying nothing this compares, which is what makes an
+    # attribute that moved onto a plain element visible. When the counts differ
+    # the two sides are shaped differently, which for a pair of templates is
+    # ordinary rather than wrong: one audience needs a wrapper the other does
+    # not. The run then lines up only the elements that carry something to
+    # compare, so a wrapper costs nothing.
     #
     # It reads template source and never renders. Nothing here runs during a
     # request; the module is autoloaded and its only entry points are the rake
@@ -46,10 +55,18 @@ module ExpoTurbo
     #   both branches.
     # - Where an element sits. Start tags are scanned, not nested, so an
     #   element that moved to a different parent still pairs by its id and
-    #   reports nothing.
+    #   reports nothing. An id that changed position is likewise a reordering
+    #   and not a divergence: both documents still carry it, and everything
+    #   that targets it behaves the same. An attribute left behind by that move
+    #   IS reported, because it is then on a different element from its id.
     # - Two elements that exchanged their ids AND every compared attribute
     #   together. Nothing distinguishes them once element names are out of
     #   scope, which they are by design.
+    # - Movement inside a run whose two sides hold a different number of
+    #   elements. That run compares only the elements carrying something, so an
+    #   attribute that moved onto a plain element there is invisible. This is
+    #   the price of not reporting every element after a wrapper one audience
+    #   needs; an id on either element restores the detection.
     # - Semantics behind equal source: two `method="post"` forms that post to
     #   different places through different routes agree here. The reverse costs
     #   a false report rather than a miss: an expression is compared as text
@@ -61,10 +78,11 @@ module ExpoTurbo
     # - Any screen whose two templates are not a discovered pair, including a
     #   single shared template, which has nothing to diverge from.
     #
-    # Pairing id-less elements by document order over-reports rather than
-    # under-reports: one extra id-less element on a side shifts the rest, so a
-    # single edit can surface as several findings. Giving elements ids removes
-    # the ambiguity.
+    # Where it over-reports: a run whose two sides hold the same number of
+    # elements but line them up differently is compared position by position,
+    # so one structural difference can surface as several findings. That is the
+    # same trust in position that makes movement visible, so it is deliberate.
+    # Giving elements ids removes the ambiguity in both directions.
     module PairedTemplates
       EXPRESSION_OPEN = "«"
       EXPRESSION_CLOSE = "»"
@@ -187,38 +205,96 @@ module ExpoTurbo
       end
 
       # Pair by id first, because an id is the document's own identity and the
-      # protocol requires it unique. Whatever is left pairs by document order,
-      # which still catches an id that differs between the two sides. A pair
-      # may be half empty; that is an element with no counterpart.
+      # protocol requires it unique. Everything else pairs by document order,
+      # which still catches an id that differs between the two sides.
+      #
+      # Every element is a position, including one carrying nothing this
+      # compares. Leaving those out collapsed the order, so an attribute that
+      # moved from a compared element onto a plain one left two identical
+      # sequences and reported nothing. They are never a finding themselves.
+      #
+      # The id matches that appear in the same relative order on both sides
+      # also act as anchors: order pairing runs inside the segments between
+      # them, so an element inserted on one side shifts its own segment and
+      # not the rest of the file. An id match that crosses another still pairs
+      # by id; it just does not delimit a segment.
       def correspond(left_elements, right_elements)
-        pairs = []
-        available = {}
-        right_elements.each_with_index do |element, index|
-          next unless element.id
+        matches = id_matches(left_elements, right_elements)
+        anchors = ordered_anchors(matches)
+        anchored = anchors.to_h
+        consumed_left = matches.keys.to_h { |index| [index, true] }
+        consumed_right = matches.values.to_h { |index| [index, true] }
 
-          (available[element.id] ||= []) << index
+        pairs = matches.filter_map do |left_index, right_index|
+          [left_elements[left_index], right_elements[right_index]] unless anchored.key?(left_index)
         end
 
-        taken = {}
-        unmatched_left = []
-        left_elements.each do |element|
-          index = element.id ? available[element.id]&.shift : nil
-          if index
-            taken[index] = true
-            pairs << [element, right_elements[index]]
-          else
-            unmatched_left << element
-          end
-        end
-
-        unmatched_right = right_elements.each_with_index.reject { |_, index| taken[index] }.map(&:first)
-        [unmatched_left.length, unmatched_right.length].max.times do |index|
-          pairs << [unmatched_left[index], unmatched_right[index]]
+        left_cursor = 0
+        right_cursor = 0
+        (anchors + [[left_elements.length, right_elements.length]]).each do |left_stop, right_stop|
+          left_run = (left_cursor...left_stop).reject { |index| consumed_left[index] }
+          right_run = (right_cursor...right_stop).reject { |index| consumed_right[index] }
+          pairs.concat(align(left_run, right_run, left_elements, right_elements))
+          pairs << [left_elements[left_stop], right_elements[right_stop]] if left_stop < left_elements.length
+          left_cursor = left_stop + 1
+          right_cursor = right_stop + 1
         end
         pairs
       end
 
+      # Inside a run, position means something only when the two sides put the
+      # same number of elements there. Then every element counts as a position,
+      # including one carrying nothing this compares, which is what makes an
+      # attribute that moved onto a plain element visible.
+      #
+      # When the counts differ the two sides are shaped differently, which for
+      # a pair of templates is ordinary: one audience needs a wrapper the other
+      # does not. Position is then meaningless, and pairing on it would report
+      # every element after the first difference. The run falls back to lining
+      # up only the elements that carry something to compare, so a wrapper
+      # costs nothing and movement inside that run is what goes unseen.
+      def align(left_run, right_run, left_elements, right_elements)
+        if left_run.length != right_run.length
+          left_run = left_run.reject { |index| left_elements[index].attributes.empty? }
+          right_run = right_run.reject { |index| right_elements[index].attributes.empty? }
+        end
+
+        [left_run.length, right_run.length].max.times.map do |offset|
+          left_index = left_run[offset]
+          right_index = right_run[offset]
+          [left_index && left_elements[left_index], right_index && right_elements[right_index]]
+        end
+      end
+
+      def id_matches(left_elements, right_elements)
+        available = {}
+        right_elements.each_with_index do |element, index|
+          (available[element.id] ||= []) << index if element.id
+        end
+
+        left_elements.each_with_index.each_with_object({}) do |(element, index), matches|
+          next unless element.id
+
+          right_index = available[element.id]&.shift
+          matches[index] = right_index if right_index
+        end
+      end
+
+      def ordered_anchors(matches)
+        last = -1
+        matches.keys.sort.filter_map do |left_index|
+          right_index = matches[left_index]
+          next if right_index <= last
+
+          last = right_index
+          [left_index, right_index]
+        end
+      end
+
+      # An element carrying nothing this compares is a position and never a
+      # finding, on either side of a pair and on its own.
       def compare(left, right, left_path, right_path)
+        return [] if left&.attributes.to_h.empty? && right&.attributes.to_h.empty?
         return [Finding.new(:element, left.label, left.summary, nil, left_path, left.line, right_path)] if right.nil?
         return [Finding.new(:element, right.label, right.summary, nil, right_path, right.line, left_path)] if left.nil?
 
@@ -254,11 +330,8 @@ module ExpoTurbo
         normalized, offsets = normalize(source)
         normalized.scan(ELEMENT) do
           match = Regexp.last_match
-          attributes = tracked(parse_attributes(match[2]))
-          next if attributes.empty?
-
           line = source[0, source_offset(offsets, match.begin(0))].count("\n") + 1
-          elements << Element.new(line, attributes)
+          elements << Element.new(line, tracked(parse_attributes(match[2])))
         end
         elements
       end
@@ -310,7 +383,7 @@ module ExpoTurbo
         "#{EXPRESSION_OPEN}#{body.strip.gsub(/\s+/, " ")}#{EXPRESSION_CLOSE}"
       end
 
-      private_class_method :lint_pair, :correspond, :compare, :aspect_for, :read, :extract, :tracked,
+      private_class_method :lint_pair, :correspond, :align, :id_matches, :ordered_anchors, :compare, :aspect_for, :read, :extract, :tracked,
         :source_offset, :parse_attributes, :normalize, :replacement
     end
   end
