@@ -25,7 +25,7 @@ import {
   FrameRequestLoader,
   parseExpoTurboDocument,
 } from "../core/index.js"
-import { serializeModuleVersionsHeader } from "../core/protocol-request.js"
+import { serializeClientDescriptor } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
 
 const clock: ClockAdapter = {
@@ -100,10 +100,9 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     ? new DocumentHistory({ next: () => `expo-turbo-history-${++requestId}` }, options.history)
     : undefined
   history?.initialize({ kind: "unmanaged", url: options.url })
-  const moduleVersions = serializeModuleVersionsHeader(options.registry.capabilities.modules)
+  const clientDescriptor = serializeClientDescriptor(options.registry.capabilities.hash)
   const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
-    capabilityHash: options.registry.capabilities.hash,
-    moduleVersions,
+    clientDescriptor,
   })
   const controller = new DocumentVisitController(loader, clock, {
     ...(history ? { history } : {}),
@@ -127,8 +126,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   const frames = new FrameControllerRegistry(
     session,
     new FrameRequestLoader(session, options.fetch, requestIds, {
-      capabilityHash: options.registry.capabilities.hash,
-      moduleVersions,
+      clientDescriptor,
       refresh,
     }),
     undefined,
@@ -147,7 +145,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   const forms = new DocumentFormControls(session, {
     ...(options.focus ? { focus: options.focus } : {}),
     formSemantics: options.registry,
-    moduleVersions,
+    moduleVersions: clientDescriptor,
     submissionController: submission,
   })
   // Cable delivers Stream actions, including `refresh`, for as long as the

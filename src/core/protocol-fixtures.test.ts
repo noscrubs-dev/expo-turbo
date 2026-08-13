@@ -17,11 +17,6 @@ import {
   TURBO_RAILS_BASELINE_VERSION,
   TURBO_RAILS_MINIMUM_VERSION,
 } from "."
-import {
-  isExpoTurboModuleName,
-  isExpoTurboModuleVersion,
-  serializeModuleVersionsHeader,
-} from "./protocol-request"
 
 type NormalizedAttribute = readonly [name: string, namespace: string | null, value: string]
 
@@ -126,20 +121,6 @@ interface ProtocolManifest {
     readonly repository: string
     readonly suites: readonly UpstreamFunctionalSuite[]
     readonly tag: string
-  }
-}
-
-interface ModuleVersionGrammar {
-  readonly names: {
-    readonly accepted: readonly string[]
-    readonly rejected: readonly {
-      readonly serverCanonicalName: string | null
-      readonly value: string
-    }[]
-  }
-  readonly versions: {
-    readonly accepted: readonly string[]
-    readonly rejected: readonly string[]
   }
 }
 
@@ -318,32 +299,6 @@ async function loadManifest(): Promise<ProtocolManifest> {
   return validateManifest(JSON.parse(source) as unknown)
 }
 
-async function loadModuleVersionGrammar(): Promise<ModuleVersionGrammar> {
-  const source = await readFile(new URL("module-version-grammar.json", PROTOCOL_ROOT), "utf8")
-  const value = JSON.parse(source) as unknown
-  if (
-    !isRecord(value) ||
-    !isRecord(value.names) ||
-    !isRecord(value.versions) ||
-    !Array.isArray(value.names.accepted) ||
-    value.names.accepted.some((name) => typeof name !== "string") ||
-    !Array.isArray(value.names.rejected) ||
-    value.names.rejected.some(
-      (entry) =>
-        !isRecord(entry) ||
-        typeof entry.value !== "string" ||
-        (entry.serverCanonicalName !== null && typeof entry.serverCanonicalName !== "string"),
-    ) ||
-    !Array.isArray(value.versions.accepted) ||
-    value.versions.accepted.some((version) => typeof version !== "string") ||
-    !Array.isArray(value.versions.rejected) ||
-    value.versions.rejected.some((version) => typeof version !== "string")
-  ) {
-    throw new Error("Module version grammar fixture is invalid")
-  }
-  return value as unknown as ModuleVersionGrammar
-}
-
 function compareAttributes(left: NormalizedAttribute, right: NormalizedAttribute): number {
   const leftValues = [left[0], left[1] ?? "", left[2]]
   const rightValues = [right[0], right[1] ?? "", right[2]]
@@ -415,31 +370,6 @@ function normalizeStreamActions(xml: string): readonly NormalizedStreamAction[] 
 }
 
 describe("shared protocol fixtures", () => {
-  test("pins module names and RubyGems versions to the shared request grammar", async () => {
-    const grammar = await loadModuleVersionGrammar()
-
-    for (const version of grammar.versions.accepted) {
-      expect(isExpoTurboModuleVersion(version)).toBe(true)
-      expect(serializeModuleVersionsHeader([{ name: "cart", version }])).toBe(
-        `v1;cart=${encodeURIComponent(version)}`,
-      )
-    }
-    for (const version of grammar.versions.rejected) {
-      expect(isExpoTurboModuleVersion(version)).toBe(false)
-      expect(() => serializeModuleVersionsHeader([{ name: "cart", version }])).toThrow()
-    }
-    for (const name of grammar.names.accepted) {
-      expect(isExpoTurboModuleName(name)).toBe(true)
-      expect(serializeModuleVersionsHeader([{ name, version: "1" }])).toBe(
-        `v1;${encodeURIComponent(name)}=1`,
-      )
-    }
-    for (const { value } of grammar.names.rejected) {
-      expect(isExpoTurboModuleName(value)).toBe(false)
-      expect(() => serializeModuleVersionsHeader([{ name: value, version: "1" }])).toThrow()
-    }
-  })
-
   test("pin the shared protocol compatibility baselines", async () => {
     const manifest = await loadManifest()
 

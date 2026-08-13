@@ -7,19 +7,14 @@ export const TURBO_STREAM_MIME_TYPE = "text/vnd.turbo-stream.html" as const
 
 export interface ProtocolRequestHeaderOptions {
   readonly acceptsTurboStream?: boolean
+  /** @deprecated Use clientDescriptor. Retained only for source migration. */
   readonly capabilityHash?: string
+  readonly clientDescriptor?: string
   readonly frameId?: string
+  /** @deprecated The modules header is no longer emitted. */
   readonly moduleVersions?: string
   readonly requestId: string
 }
-
-export interface ExpoTurboModuleVersion {
-  readonly name: string
-  readonly version: string
-}
-
-const RUBYGEMS_VERSION_PATTERN =
-  /^[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 export interface ProtocolUrlResolution {
   readonly documentOrigin: string
@@ -63,59 +58,24 @@ function requestHeaderValue(value: unknown): string {
   return value
 }
 
-function hasModuleControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0)
-    return (
-      codePoint !== undefined &&
-      (codePoint <= 31 ||
-        codePoint === 127 ||
-        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
-        codePoint === 0xfffe ||
-        codePoint === 0xffff)
-    )
-  })
-}
+const VOCABULARY_DIGEST_PATTERN = /^sha256-128:[0-9a-f]{32}$/
 
-export function isExpoTurboModuleName(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.trim() !== "" &&
-    value.trim() === value &&
-    !hasModuleControlCharacter(value)
-  )
-}
-
-export function isExpoTurboModuleVersion(value: unknown): value is string {
-  return typeof value === "string" && RUBYGEMS_VERSION_PATTERN.test(value)
-}
-
-export function serializeModuleVersionsHeader(modules: readonly ExpoTurboModuleVersion[]): string {
-  if (!Array.isArray(modules)) {
-    throw new RequestError("Module versions must be an array")
+export function serializeClientDescriptor(vocabularyDigest?: string): string {
+  if (
+    vocabularyDigest !== undefined &&
+    (typeof vocabularyDigest !== "string" ||
+      [...vocabularyDigest].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint <= 31 || codePoint === 127
+      }))
+  ) {
+    throw new RequestError("Client vocabulary digest metadata is invalid")
   }
-  const names = new Set<string>()
-  const entries = modules.map((module) => {
-    if (!module || typeof module !== "object" || Array.isArray(module)) {
-      throw new RequestError("Module version entries must be objects")
-    }
-    const name: unknown = module.name
-    const version: unknown = module.version
-    if (!isExpoTurboModuleName(name)) {
-      throw new RequestError("Module version names are invalid")
-    }
-    if (!isExpoTurboModuleVersion(version)) {
-      throw new RequestError("Module versions must use RubyGems version syntax")
-    }
-    if (names.has(name)) throw new RequestError("Module version names must be unique")
-    names.add(name)
-    try {
-      return `${encodeURIComponent(name)}=${encodeURIComponent(version)}`
-    } catch {
-      throw new RequestError("Module version metadata is invalid")
-    }
-  })
-  return `v1;${entries.join(",")}`
+  const fields = ["v=1", `proto=${EXPO_TURBO_PROTOCOL_VERSION}`, `rt=${EXPO_TURBO_RUNTIME_VERSION}`]
+  if (typeof vocabularyDigest === "string" && VOCABULARY_DIGEST_PATTERN.test(vocabularyDigest)) {
+    fields.push(`vocab=${vocabularyDigest}`)
+  }
+  return fields.join("; ")
 }
 
 export function protocolRequestHeaders(
@@ -128,20 +88,23 @@ export function protocolRequestHeaders(
     throw new RequestError("Protocol request Stream negotiation metadata is invalid")
   }
   const requestId = requestHeaderValue(options.requestId)
-  const capabilityHash =
+  const transitionalDescriptor = options.moduleVersions?.startsWith("v=1; ")
+    ? options.moduleVersions
+    : undefined
+  const vocabularyDigest =
     options.capabilityHash === undefined ? undefined : requestHeaderValue(options.capabilityHash)
+  const clientDescriptor = requestHeaderValue(
+    options.clientDescriptor ??
+      transitionalDescriptor ??
+      serializeClientDescriptor(vocabularyDigest),
+  )
   const frameId = options.frameId === undefined ? undefined : requestHeaderValue(options.frameId)
-  const moduleVersions =
-    options.moduleVersions === undefined ? undefined : requestHeaderValue(options.moduleVersions)
   return Object.freeze({
     Accept: options.acceptsTurboStream
       ? `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`
       : EXPO_TURBO_MIME_TYPE,
-    "X-Expo-Turbo-Protocol": EXPO_TURBO_PROTOCOL_VERSION,
-    "X-Expo-Turbo-Runtime": EXPO_TURBO_RUNTIME_VERSION,
+    "X-Expo-Turbo-Client": clientDescriptor,
     "X-Turbo-Request-Id": requestId,
-    ...(capabilityHash ? { "X-Expo-Turbo-Capabilities": capabilityHash } : {}),
-    ...(moduleVersions ? { "X-Expo-Turbo-Modules": moduleVersions } : {}),
     ...(frameId ? { "Turbo-Frame": frameId } : {}),
   })
 }

@@ -2654,9 +2654,7 @@ describe("native form control registry", () => {
         },
         headers: {
           Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
-          "X-Expo-Turbo-Capabilities": "capability-hash",
-          "X-Expo-Turbo-Protocol": "0.1",
-          "X-Expo-Turbo-Runtime": "0.2.0",
+          "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.2.0",
           "X-Turbo-Request-Id": "request-1",
         },
         method: "POST",
@@ -3036,7 +3034,6 @@ describe("native form control registry", () => {
       }
 
       expect(compose(options).request.headers).toMatchObject({
-        "X-Expo-Turbo-Capabilities": "capability-before",
         "X-Turbo-Request-Id": "request-before",
       })
       expect(reads).toEqual({ protocol: 1, signal: 1, submitter: 1 })
@@ -3125,7 +3122,7 @@ describe("native form control registry", () => {
       async fetch(request) {
         const requestId = request.headers["X-Turbo-Request-Id"]
         observed.push({
-          capabilityHash: request.headers["X-Expo-Turbo-Capabilities"],
+          capabilityHash: request.headers["X-Expo-Turbo-Client"],
           requestId,
         })
         if (requestId === "retry-source") throw new Error("private network detail")
@@ -3170,7 +3167,7 @@ describe("native form control registry", () => {
       submitter: 1,
     })
     expect(observed.at(-1)).toEqual({
-      capabilityHash: "submit-capability",
+      capabilityHash: "v=1; proto=0.1; rt=0.2.0",
       requestId: "submit-live",
     })
 
@@ -3198,7 +3195,7 @@ describe("native form control registry", () => {
     ).resolves.toMatchObject({ requestId: "retry-live", status: "empty" })
     expect(retryReads).toEqual({ capabilityHash: 1, protocol: 1, requestId: 1 })
     expect(observed.at(-1)).toEqual({
-      capabilityHash: "retry-capability",
+      capabilityHash: "v=1; proto=0.1; rt=0.2.0",
       requestId: "retry-live",
     })
 

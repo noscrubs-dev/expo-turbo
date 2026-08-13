@@ -3,7 +3,6 @@ import { z } from "zod"
 
 import { RegistryError } from "../core/errors.js"
 import type { FormContainerRole } from "../core/forms.js"
-import { isExpoTurboModuleName, isExpoTurboModuleVersion } from "../core/protocol-request.js"
 import type { ProtocolElement, ProtocolNode } from "../core/tree.js"
 import { EXPO_TURBO_PROTOCOL_VERSION } from "../core/versions.js"
 import { type AttributeDefinition, attributeDefinitionParts } from "./attributes.js"
@@ -12,6 +11,7 @@ import {
   decodeRegistryElementForRender,
   decodeRegistryElementStrict,
 } from "./registry-decode-internal.js"
+import { sha256Hex } from "./sha256-internal.js"
 
 const RESERVED_TAGS = new Set([
   "expo-turbo-fragment",
@@ -21,8 +21,26 @@ const RESERVED_TAGS = new Set([
   "turbo-stream",
 ])
 
-export const REGISTRY_CAPABILITY_MANIFEST_VERSION = 1 as const
+export const REGISTRY_CAPABILITY_MANIFEST_VERSION = 2 as const
 const MAX_FALLBACK_DIAGNOSTIC_ATTEMPTS = 3
+function isExpoTurboModuleName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim() === value &&
+    value !== "" &&
+    ![...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return (
+        codePoint <= 31 ||
+        codePoint === 127 ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+        codePoint === 0xfffe ||
+        codePoint === 0xffff ||
+        codePoint === 0xfffd
+      )
+    })
+  )
+}
 
 type StringKey<Value> = Extract<keyof Value, string>
 
@@ -542,7 +560,8 @@ export interface CapabilityModule<
 > {
   readonly components: Definitions
   readonly name: Name
-  readonly version: string
+  /** @deprecated Vocabulary identity is derived from registry content. */
+  readonly version?: string
 }
 
 export interface ComponentModule<
@@ -559,8 +578,7 @@ type QuarantinedCapabilityModule = CapabilityModule & {
 function moduleIsQuarantined(module: CapabilityModule): module is QuarantinedCapabilityModule {
   return (
     (QUARANTINED_MODULE in module && module[QUARANTINED_MODULE] === true) ||
-    !isExpoTurboModuleName(module.name) ||
-    !isExpoTurboModuleVersion(module.version)
+    !isExpoTurboModuleName(module.name)
   )
 }
 
@@ -568,13 +586,12 @@ function freezeCapabilityModule<
   const Name extends string,
   const Definitions extends readonly RegistryComponentDefinition[],
 >(config: CapabilityModule<Name, Definitions>): CapabilityModule<Name, Definitions> {
-  const quarantined =
-    !isExpoTurboModuleName(config.name) || !isExpoTurboModuleVersion(config.version)
+  const quarantined = !isExpoTurboModuleName(config.name)
   return Object.freeze({
     ...(quarantined ? { [QUARANTINED_MODULE]: true as const } : {}),
     components: Object.freeze([...config.components]) as unknown as Definitions,
     name: config.name,
-    version: config.version,
+    ...(config.version === undefined ? {} : { version: config.version }),
   })
 }
 
@@ -656,7 +673,7 @@ export interface ComponentCapability {
 export interface RegistryCapabilityManifest {
   readonly components: readonly ComponentCapability[]
   readonly hash: string
-  readonly modules: readonly Readonly<{ name: string; version: string }>[]
+  readonly modules: readonly Readonly<{ name: string }>[]
   readonly protocolVersion: string
 }
 
@@ -671,12 +688,7 @@ function compareCodeUnits(left: string, right: string): number {
 }
 
 function capabilityHash(value: string): string {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`
+  return `sha256-128:${sha256Hex(value).slice(0, 32)}`
 }
 
 export function createCapabilityManifest(
@@ -741,7 +753,7 @@ export function createCapabilityManifest(
     .sort((left, right) => compareCodeUnits(left.tag, right.tag))
   const moduleCapabilities = modules
     .filter((module) => !moduleIsQuarantined(module))
-    .map((module) => Object.freeze({ name: module.name, version: module.version }))
+    .map((module) => Object.freeze({ name: module.name }))
     .sort((left, right) => compareCodeUnits(left.name, right.name))
   const serializable = {
     components: componentCapabilities,
@@ -910,14 +922,34 @@ type ComponentsFromDeclarations<
     : never
 }[keyof Declarations & string]
 
-export interface DefineRegistryConfig<
+export type DefineRegistryConfig<
   Declarations extends Readonly<Record<string, ComponentDeclaration>>,
-> {
+> = Readonly<{
   readonly components: Declarations
-  readonly module: Readonly<{
-    readonly name: string
-    readonly version: string
-  }>
+}> &
+  (
+    | Readonly<{ readonly package: string; readonly module?: never }>
+    | Readonly<{
+        /** @deprecated Use package with the package.json name. Version is ignored. */
+        readonly module: Readonly<{
+          readonly name: string
+          readonly version: string
+        }>
+        readonly package?: never
+      }>
+  )
+
+export function packageIdentity(packageManifest: unknown): string {
+  if (
+    typeof packageManifest !== "object" ||
+    packageManifest === null ||
+    Array.isArray(packageManifest) ||
+    !("name" in packageManifest) ||
+    !isExpoTurboModuleName(packageManifest.name)
+  ) {
+    throw new RegistryError("Registry package identity requires a valid package.json name")
+  }
+  return packageManifest.name
 }
 
 export function defineRegistry<
@@ -957,8 +989,7 @@ export function defineRegistry<
   })
   const module = defineComponentModule({
     components: components as ComponentsFromDeclarations<Declarations>[],
-    name: config.module.name,
-    version: config.module.version,
+    name: config.package ?? config.module?.name ?? "",
   })
   return new Registry<ComponentsFromDeclarations<Declarations>>([module], true)
 }

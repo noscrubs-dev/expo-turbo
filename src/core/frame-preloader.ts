@@ -45,6 +45,7 @@ export interface FramePreloadRequester {
 
 export interface FramePreloaderOptions {
   readonly capabilityHash?: string
+  readonly clientDescriptor?: string
   readonly moduleVersions?: string
   readonly requestLifecycle?: RequestLifecycle
 }
@@ -64,6 +65,7 @@ function preloadKey(frameId: string, url: string): string {
 export class FramePreloader implements FramePreloadRequester {
   private readonly active = new Map<string, ActiveFramePreload>()
   private readonly capabilityHash: string | undefined
+  private readonly clientDescriptor: string | undefined
   private readonly moduleVersions: string | undefined
   private readonly requestLifecycle: RequestLifecycle | undefined
 
@@ -76,9 +78,11 @@ export class FramePreloader implements FramePreloadRequester {
   ) {
     this.requestLifecycle = requestLifecycleOption(options, "Frame preloader")
     let capabilityHash: unknown
+    let clientDescriptor: unknown
     let moduleVersions: unknown
     try {
       capabilityHash = options.capabilityHash
+      clientDescriptor = options.clientDescriptor
       moduleVersions = options.moduleVersions
     } catch {
       throw new PropsError("Frame preloader options could not be read")
@@ -87,6 +91,10 @@ export class FramePreloader implements FramePreloadRequester {
       throw new PropsError("Frame preloader capability hash must be a string")
     }
     this.capabilityHash = capabilityHash
+    if (clientDescriptor !== undefined && typeof clientDescriptor !== "string") {
+      throw new PropsError("Frame preloader client descriptor must be a string")
+    }
+    this.clientDescriptor = clientDescriptor
     if (moduleVersions !== undefined && typeof moduleVersions !== "string") {
       throw new PropsError("Frame preloader module versions must be a string")
     }
@@ -171,6 +179,7 @@ export class FramePreloader implements FramePreloadRequester {
       headers: Object.freeze({
         ...protocolRequestHeaders({
           ...(this.capabilityHash ? { capabilityHash: this.capabilityHash } : {}),
+          ...(this.clientDescriptor ? { clientDescriptor: this.clientDescriptor } : {}),
           frameId,
           ...(this.moduleVersions ? { moduleVersions: this.moduleVersions } : {}),
           requestId,

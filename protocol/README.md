@@ -40,26 +40,29 @@ ordered application children; it is an envelope contract rather than evidence
 for every Frame loading or native-device lifecycle path. Fixture readers are
 test-only; neither package ships protocol sources as runtime assets.
 
-## Module version request header
+## Client compatibility descriptor
 
-Native requests send the optional `X-Expo-Turbo-Modules` header on document,
-Frame, form, and preload paths. Its versioned wire format is
-`v1;name=version,name=version`. Names and versions use `encodeURIComponent`
-percent encoding before they are joined. A module name must be nonblank, must
-not have leading or trailing whitespace, and must not contain C0 controls,
-DEL, U+FFFE, or U+FFFF. A version must match this RubyGems-compatible grammar:
+Native requests send one generated header:
 
 ```text
-[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?
+X-Expo-Turbo-Client: v=1; proto=0.1; rt=<package version>; vocab=sha256-128:<32 lowercase hex digits>
 ```
 
-`protocol/module-version-grammar.json` supplies the shared TypeScript and Ruby
-conformance cases. The client rejects invalid module metadata when the module
-is defined and again before it serializes a request. The server decodes valid
-entries, normalizes surrounding whitespace, and ignores only malformed
-entries. A missing header or malformed versioned envelope selects the latest
-vocabulary for web compatibility. An exact `v1;` header reports zero modules.
-The existing `X-Expo-Turbo-Capabilities` hash remains a separate header.
+The vocabulary digest identifies canonical registry content. It does not carry
+the ordered revision. Rails resolves that revision from the checked-in
+`expo-turbo.lock.json`. The 0.3 gem also reads `X-Expo-Turbo-Modules` only as a
+one-minor fallback for installed 0.2 clients.
+
+The shared `client-descriptor-grammar.json` pins the exact emitted forms and
+the Rails parser's accepted and rejected forms. It rejects extra fields,
+including a wire revision. The retained `module-version-grammar.json` protects
+the one-minor parser used by installed 0.2 clients.
+
+Descriptor version 1 has a closed field set. A future client that adds a field
+without changing `v` is incompatible with a 0.3 gem and fails closed. This is
+deliberate. The gem must ship first with the new grammar, and only then can a
+client send the new field. The order prevents an old gem from silently
+misreading a field whose meaning it does not know.
 
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral

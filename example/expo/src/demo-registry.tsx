@@ -1,4 +1,4 @@
-import { serializeModuleVersionsHeader } from "expo-turbo/core";
+import { serializeClientDescriptor } from "expo-turbo/core";
 import {
   attr,
   component,
@@ -8,11 +8,13 @@ import {
   jsonCodec,
   nodes,
   none,
+  packageIdentity,
   presenceCodec,
   stringCodec,
   text as textChildren,
   tokenListCodec,
 } from "expo-turbo/registry";
+import packageManifest from "../package.json";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as ReactNative from "react-native";
@@ -123,7 +125,7 @@ function DemoNativeSwitch({
 type DemoPlan = "none" | "starter" | "pro";
 
 export const DEMO_REGISTRY = defineRegistry({
-  module: { name: "demo-primitives", version: "0.1.0" },
+  package: packageIdentity(packageManifest),
   components: {
     Gallery: component({
       children: nodes,
@@ -833,9 +835,7 @@ export const DEMO_REGISTRY = defineRegistry({
   },
 });
 
-export const DEMO_MODULE_VERSIONS = serializeModuleVersionsHeader(
-  DEMO_REGISTRY.capabilities.modules,
-);
+export const DEMO_MODULE_VERSIONS = serializeClientDescriptor(DEMO_REGISTRY.capabilities.hash);
 
 export const DEMO_DOCUMENT = `<Gallery data-turbo-root="/demo">
   <DemoCard id="static-renderer" title="Rendered from XML" style-tokens="tone:info space:comfortable surface:elevated">

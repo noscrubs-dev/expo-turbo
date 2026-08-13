@@ -4,7 +4,7 @@ import { z } from "zod"
 
 import { PropsError, RegistryError } from "../core/errors"
 import { parseExpoTurboDocument } from "../core/parser"
-import { serializeModuleVersionsHeader } from "../core/protocol-request"
+import { serializeClientDescriptor } from "../core/protocol-request"
 import { isElement } from "../core/tree"
 import { attr } from "./attributes"
 import {
@@ -33,6 +33,7 @@ import {
   formOwner,
   nodes,
   none,
+  packageIdentity,
   type RegistryCapabilityManifest,
   type RegistryComponent,
   text as textChildren,
@@ -176,17 +177,17 @@ describe("typed component registry", () => {
     )
   })
 
-  test("publishes one required module identity in the manifest and request header", () => {
+  test("derives package and vocabulary identity without a typed version", () => {
     const registry = defineRegistry({
-      module: { name: "demo-primitives", version: "0.1.0" },
+      package: packageIdentity({ name: "expo-turbo-example", version: "99.0.0" }),
       components: {
         DemoText: component({ children: textChildren, render: ({ children }) => children }),
       },
     })
 
-    expect(registry.capabilities.modules).toEqual([{ name: "demo-primitives", version: "0.1.0" }])
-    expect(serializeModuleVersionsHeader(registry.capabilities.modules)).toBe(
-      "v1;demo-primitives=0.1.0",
+    expect(registry.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
+    expect(serializeClientDescriptor(registry.capabilities.hash)).toMatch(
+      /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
     )
   })
 
@@ -454,7 +455,7 @@ describe("typed component registry", () => {
     }
   })
 
-  test("quarantines invalid legacy module metadata so boot continues and support stays absent", () => {
+  test("quarantines invalid package identity but ignores a legacy typed version", () => {
     const spaced = defineComponentModule({ components: [card], name: " cart ", version: "1" })
     const invalidVersion = defineCapabilityModule({
       components: [derivedCardDefinition],
@@ -483,8 +484,8 @@ describe("typed component registry", () => {
     expect(runtime.capabilities.modules).toEqual([])
     expect(runtime.capabilities.components).toEqual([])
     expect(runtime.resolve("DemoCard")).toBeUndefined()
-    expect(manifest.modules).toEqual([])
-    expect(manifest.components).toEqual([])
+    expect(manifest.modules).toEqual([{ name: "prices" }])
+    expect(manifest.components.map(({ tag }) => tag)).toEqual(["DerivedCard"])
     expect(declared.capabilities.modules).toEqual([])
     expect(declared.capabilities.components).toEqual([])
     expect(declared.resolve("DeclaredCard")).toBeUndefined()
@@ -1342,7 +1343,7 @@ describe("typed component registry", () => {
     const first = createRegistry(primitives, stateModule)
     const second = createRegistry(stateModule, primitives)
     expect(first.capabilities.hash).toBe(second.capabilities.hash)
-    expect(first.capabilities.manifestVersion).toBe(1)
+    expect(first.capabilities.manifestVersion).toBe(2)
     expect(Object.isFrozen(first.capabilities.components[0])).toBe(true)
     expect(Object.isFrozen(first.capabilities.components[0]?.attributes)).toBe(true)
     expect(first.capabilities.components.map((component) => component.tag)).toEqual([

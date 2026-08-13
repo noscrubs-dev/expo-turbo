@@ -64,7 +64,12 @@ describe("Expo Turbo runtime", () => {
       fetch: {
         fetch: async (request) => {
           requests.push(request)
-          return response('<TestDocument><TestForm id="form" /></TestDocument>', request.url)
+          return response(
+            request.url.endsWith("/frame")
+              ? '<turbo-frame id="details"><TestField /></turbo-frame>'
+              : '<TestDocument><TestForm id="form" /><turbo-frame id="details" /></TestDocument>',
+            request.url,
+          )
         },
       },
       registry,
@@ -75,14 +80,25 @@ describe("Expo Turbo runtime", () => {
 
     expect(runtime.session.tree.document.children.find(isElement)?.tagName).toBe("TestDocument")
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.headers["X-Expo-Turbo-Capabilities"]).toBe(registry.capabilities.hash)
-    expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
+    const descriptor = `v=1; proto=0.1; rt=0.2.0; vocab=${registry.capabilities.hash}`
+    expect(requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+    expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
 
     const formRequest = runtime.forms
       .controlsFor("id:form")
       .requestPlan({ protocol: { requestId: "form-1" } }).request
-    expect(formRequest.headers["X-Expo-Turbo-Capabilities"]).toBeUndefined()
-    expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
+    expect(formRequest.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+    expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
+
+    await runtime.frames.get("details").visit("/frame")
+    expect(requests).toHaveLength(2)
+    // Reverting the runtime Frame hand-off removes the vocabulary digest from this exact map.
+    expect(requests[1]?.headers).toEqual({
+      Accept: EXPO_TURBO_MIME_TYPE,
+      "Turbo-Frame": "details",
+      "X-Expo-Turbo-Client": descriptor,
+      "X-Turbo-Request-Id": "expo-turbo-2",
+    })
 
     runtime.dispose()
     runtime.dispose()

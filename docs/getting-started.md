@@ -238,8 +238,7 @@ export const priceDefinition = defineComponentDefinition({
 
 export const storeCapabilities = defineCapabilityModule({
   components: [priceDefinition],
-  name: "store",
-  version: "1.0.0",
+  name: "@example/store",
 })
 ```
 
@@ -468,38 +467,50 @@ Changing the document path performs a visit on the existing runtime. Without
 so the host router remains synchronized. Expo Turbo then owns history identity,
 snapshots, and document/Frame coordination.
 
-### Module version negotiation
+### Client compatibility
 
-The runtime sends the live registry module names and versions in
-`X-Expo-Turbo-Modules` for document, Frame, form, and preload requests. Bump a
-module version when its XML vocabulary grows, such as when you add a tag or an
-attribute. Versions must use RubyGems syntax: start with a number, then use
-letters, numbers, dots, and an optional hyphenated suffix. Values such as `v2`,
-`1.0.0+build`, and `1_0` fail when the module is defined. Gate the new
-vocabulary where the Rails template uses it:
+The runtime sends one generated `X-Expo-Turbo-Client` descriptor. It contains
+the protocol version, runtime version, and a `sha256-128` digest of the canonical
+registry. The ordered vocabulary revision stays in `expo-turbo.lock.json`; it
+never goes on the wire. Gate the exact feature where the Rails template uses it:
 
 ```erb
-<% if expo_turbo_client_supports?("noscrubs-cart", ">= 3") %>
+<% if expo_turbo_client_supports_component?("NewCartTag") %>
   <NewCartTag />
 <% end %>
 ```
 
-Requirements use RubyGems syntax and can contain comma-separated clauses, such
-as `">= 2, < 4"`. Invalid helper arguments raise so a server-authored gate does
-not silently hide a feature from native clients.
+Use `expo_turbo_client_supports_attribute?("CartRow", "quantity")` for an
+attribute. Numeric revision requirements remain available through
+`expo_turbo_client_revision_satisfies?` as an escape hatch. The legacy
+`expo_turbo_client_supports?(module, requirement)` helper reads only the 0.2
+modules header and raises for a resolved descriptor. A native request with a
+missing, malformed, or unknown descriptor fails closed. A non-native request
+keeps the web assumption that it supports the current vocabulary.
 
-`expo_turbo_client_modules` returns the reported name and version pairs. A
-missing header is a web client signal and assumes the latest vocabulary. A
-malformed header envelope also fails open and does not cause a server error.
-Malformed entries in a valid header are ignored without discarding valid
-entries. For a valid header, a missing module or an unmet version requirement
-returns `false`.
+The descriptor-path error from `expo_turbo_client_supports?` does not appear in
+browser or other non-native request tests. Those requests fail open and the
+stale module gate returns `true`. Before deployment, search the templates for
+`expo_turbo_client_supports?` and replace each descriptor-era gate. A passing
+web test suite does not prove that this migration is complete.
 
-Version gating is the primary compatibility control. The tolerant decoder is a
-safety net for a missed gate. The header comes from the JavaScript registry, so
-an over-the-air update reports its new vocabulary without a binary release.
-Cacheable endpoints that gate output must vary on `Accept`, `Turbo-Frame`, and
-`X-Expo-Turbo-Modules`; `expo_turbo_cache_key` adds these dimensions.
+Generate the manifest with `capabilityManifestJSON()` and configure Rails with
+both paths:
+
+```ruby
+expo_turbo_template_capabilities(
+  manifest: Rails.root.join("config/expo_turbo_manifest.json"),
+  lockfile: Rails.root.join("expo-turbo.lock.json")
+)
+```
+
+Without `lockfile:`, the gem warns when a native descriptor arrives and all
+gates fail closed. Deploy the 0.3 gem before the 0.3 client. The new gem reads
+the old modules header, but the old gem cannot read the new descriptor.
+Within descriptor version 1, the gem rejects every field that is not in the
+current field set. A future client must wait until the gem accepts a new field.
+This is the reason for gem-first deployment: the server learns the grammar
+before a client sends it.
 
 Capability components that change server state outside a Turbo form can call
 `useDocumentReload()` from `expo-turbo/react`. The returned async function
@@ -523,7 +534,8 @@ An adopting Rails application should:
 3. Configure a host-owned XML view root plus exact component and style-token
    capabilities. Prefer a generated registry manifest by writing
    `capabilityManifestJSON()` from component-free capability modules and
-   passing its path as `manifest:` to `expo_turbo_template_capabilities`.
+   passing its path as `manifest:` and the checked-in compatibility lock as
+   `lockfile:` to `expo_turbo_template_capabilities`.
 4. Own every route, authorization rule, cache input, credential, and product
    view in the host.
 5. Use the gem's Frame, Stream, structural test, and optional protected Cable

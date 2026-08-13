@@ -47,7 +47,7 @@ ExpoTurboRailsSpecApp.routes.draw do
 end
 
 RSpec.describe ExpoTurbo::Rails::VaryHeaders do
-  let(:expected) { "Accept, Turbo-Frame, X-Expo-Turbo-Modules" }
+  let(:expected) { "Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules" }
 
   it "is installed outside ActionDispatch::ShowExceptions" do
     stack = ExpoTurboRailsSpecApp.middleware.middlewares
@@ -99,7 +99,7 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
     headers = {"vary" => "Accept-Encoding, accept"}
     _, merged = described_class.new(->(_) { [200, headers, []] }).call({})
 
-    expect(merged["vary"]).to eq("Accept-Encoding, accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(merged["vary"]).to eq("Accept-Encoding, accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
   end
 
   it "leaves an uncacheable Vary alone" do
@@ -112,7 +112,7 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
   it "stamps a frozen header set without raising" do
     _, merged = described_class.new(->(_) { [200, {}.freeze, []] }).call({})
 
-    expect(merged["vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(merged["vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
   end
 
   # Rack 3 permits a header value to be a String or an Array of Strings. An
@@ -123,7 +123,7 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
     _, merged = vary("vary" => ["Accept-Encoding", "Origin"])
 
     expect(merged["vary"]).to eq(
-      ["Accept-Encoding", "Origin", "Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"]
+      ["Accept-Encoding", "Origin", "Accept", "Turbo-Frame", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"]
     )
   end
 
@@ -131,7 +131,7 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
     _, merged = vary("vary" => ["Accept-Encoding, Accept", "Origin"])
 
     expect(merged["vary"]).to eq(
-      ["Accept-Encoding, Accept", "Origin", "Turbo-Frame", "X-Expo-Turbo-Modules"]
+      ["Accept-Encoding, Accept", "Origin", "Turbo-Frame", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"]
     )
   end
 
@@ -146,20 +146,20 @@ RSpec.describe ExpoTurbo::Rails::VaryHeaders do
   it "stamps an empty array and keeps the array form" do
     _, merged = vary("vary" => [])
 
-    expect(merged["vary"]).to eq(["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"])
+    expect(merged["vary"]).to eq(["Accept", "Turbo-Frame", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"])
   end
 
   it "does not repeat a dimension that an array already carries" do
     _, merged = vary("vary" => ["accept", "TURBO-FRAME"])
 
-    expect(merged["vary"]).to eq(["accept", "TURBO-FRAME", "X-Expo-Turbo-Modules"])
+    expect(merged["vary"]).to eq(["accept", "TURBO-FRAME", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"])
   end
 
   it "keeps a string-valued Vary a string" do
     _, merged = vary("vary" => "Accept-Encoding")
 
     expect(merged["vary"]).to be_a(String)
-    expect(merged["vary"]).to eq("Accept-Encoding, Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(merged["vary"]).to eq("Accept-Encoding, Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
   end
 
   def vary(headers)

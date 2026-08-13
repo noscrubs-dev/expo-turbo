@@ -1,0 +1,387 @@
+{
+  "components": [
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "message",
+          "prop": "message",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoAction"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "id",
+          "prop": "id",
+          "required": true
+        }
+      ],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoAnchorTarget"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "tokens:[\"demo-style\",5,[\"layout:row\",\"layout:stack\",\"safe-area:top\",\"space:comfortable\",\"space:compact\",\"surface:elevated\",\"tone:info\",\"tone:warning\"]]",
+          "name": "style-tokens",
+          "prop": "styleTokens",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "title",
+          "prop": "title",
+          "required": true
+        },
+        {
+          "codec": "enum:positive|warning",
+          "name": "tone",
+          "prop": "tone",
+          "required": false
+        }
+      ],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoCard"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "accessibility-label",
+          "prop": "accessibilityLabel",
+          "required": false
+        },
+        {
+          "codec": "presence",
+          "name": "disabled",
+          "prop": "disabled",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "href",
+          "prop": "href",
+          "required": true
+        }
+      ],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoDocumentLink"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "json:demo-flat-list-frame-ids",
+          "name": "frame-ids",
+          "prop": "frameIds",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "id",
+          "prop": "id",
+          "required": true
+        }
+      ],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFlatListRegion"
+    },
+    {
+      "aliases": [],
+      "attributes": [],
+      "children": "nodes",
+      "formOwner": true,
+      "morphState": "preserve",
+      "tag": "DemoForm"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "presence",
+          "name": "checked",
+          "prop": "checked",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "error",
+          "prop": "error",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "label",
+          "prop": "label",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "name",
+          "prop": "name",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "value",
+          "prop": "value",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormCheckbox"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "presence",
+          "name": "disabled",
+          "prop": "disabled",
+          "required": false
+        }
+      ],
+      "children": "nodes",
+      "formContainer": "fieldset",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormFieldset"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "error",
+          "prop": "error",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "filename",
+          "prop": "filename",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "label",
+          "prop": "label",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "name",
+          "prop": "name",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormFile"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "label",
+          "prop": "label",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "name",
+          "prop": "name",
+          "required": true
+        },
+        {
+          "codec": "presence",
+          "name": "required",
+          "prop": "required",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "value",
+          "prop": "value",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormInput"
+    },
+    {
+      "aliases": [],
+      "attributes": [],
+      "children": "nodes",
+      "formContainer": "legend",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormLegend"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "error",
+          "prop": "error",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "label",
+          "prop": "label",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "name",
+          "prop": "name",
+          "required": true
+        },
+        {
+          "codec": "enum:none|starter|pro",
+          "name": "selected",
+          "prop": "selected",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormPlanSelect"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "formaction",
+          "prop": "formaction",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "formenctype",
+          "prop": "formenctype",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "formmethod",
+          "prop": "formmethod",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "label",
+          "prop": "label",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "name",
+          "prop": "name",
+          "required": true
+        },
+        {
+          "codec": "string",
+          "name": "value",
+          "prop": "value",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoFormSubmitter"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "id",
+          "prop": "id",
+          "required": true
+        }
+      ],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoScrollRegion"
+    },
+    {
+      "aliases": [],
+      "attributes": [
+        {
+          "codec": "string",
+          "name": "increment-label",
+          "prop": "incrementLabel",
+          "required": false
+        },
+        {
+          "codec": "string",
+          "name": "message",
+          "prop": "message",
+          "required": true
+        }
+      ],
+      "children": "none",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoStreamMorphProbe"
+    },
+    {
+      "aliases": [
+        "p"
+      ],
+      "attributes": [],
+      "children": "text",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "DemoText"
+    },
+    {
+      "aliases": [],
+      "attributes": [],
+      "children": "nodes",
+      "formOwner": false,
+      "morphState": "preserve",
+      "tag": "Gallery"
+    }
+  ],
+  "hash": "sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea",
+  "manifestVersion": 2,
+  "modules": [
+    {
+      "name": "expo-turbo-example"
+    }
+  ],
+  "protocolVersion": "0.1"
+}

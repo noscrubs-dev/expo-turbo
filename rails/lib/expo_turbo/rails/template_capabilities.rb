@@ -5,7 +5,7 @@ require "json"
 module ExpoTurbo
   module Rails
     class TemplateCapabilities
-      MANIFEST_VERSION = 1
+      MANIFEST_VERSIONS = [1, 2].freeze
       PROTOCOL_ELEMENTS = %w[turbo-cable-stream-source turbo-frame turbo-stream template].freeze
       RESERVED_COMPONENT_NAMES = [*PROTOCOL_ELEMENTS, "expo-turbo-fragment"].freeze
       FORM_OWNER_ATTRIBUTE_NAMES = %w[action enctype method novalidate target].freeze
@@ -55,17 +55,17 @@ module ExpoTurbo
 
       def load_manifest_components(path)
         manifest = parse_manifest(read_manifest(path))
-        unless manifest["manifestVersion"] == MANIFEST_VERSION
+        unless MANIFEST_VERSIONS.include?(manifest["manifestVersion"])
           raise ConfigurationError, "Expo Turbo capability manifest version is unsupported"
         end
         unless manifest["protocolVersion"] == PROTOCOL_VERSION
           raise ConfigurationError, "Expo Turbo capability manifest protocol version does not match"
         end
-        unless manifest["hash"].is_a?(String) && /\Afnv1a32:[0-9a-f]{8}\z/.match?(manifest["hash"])
+        unless manifest["hash"].is_a?(String) && /\A(?:fnv1a32:[0-9a-f]{8}|sha256-128:[0-9a-f]{32})\z/.match?(manifest["hash"])
           raise ConfigurationError, "Expo Turbo capability manifest hash is invalid"
         end
 
-        validate_manifest_modules!(manifest["modules"])
+        validate_manifest_modules!(manifest["modules"], version: manifest["manifestVersion"])
         normalize_manifest_components(manifest["components"])
       end
 
@@ -94,19 +94,19 @@ module ExpoTurbo
         raise ConfigurationError, "Expo Turbo capability manifest must be valid JSON"
       end
 
-      def validate_manifest_modules!(modules)
+      def validate_manifest_modules!(modules, version:)
         unless modules.is_a?(Array)
           raise ConfigurationError, "Expo Turbo capability manifest requires a module list"
         end
 
         names = {}
         modules.each do |component_module|
-          unless component_module.is_a?(Hash) &&
-              component_module["name"].is_a?(String) &&
-              !component_module["name"].strip.empty? &&
-              component_module["version"].is_a?(String) &&
-              !component_module["version"].strip.empty?
-            raise ConfigurationError, "Expo Turbo capability manifest modules require names and versions"
+          valid = component_module.is_a?(Hash) &&
+            component_module["name"].is_a?(String) &&
+            !component_module["name"].strip.empty? &&
+            (version == 2 || (component_module["version"].is_a?(String) && !component_module["version"].strip.empty?))
+          unless valid
+            raise ConfigurationError, "Expo Turbo capability manifest modules require package identities"
           end
           if names.key?(component_module["name"])
             raise ConfigurationError, "Expo Turbo capability manifest contains a duplicate module"

@@ -113,6 +113,26 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
     manifest&.unlink
   end
 
+  it "loads the new sha256 vocabulary digest before clients start sending it" do
+    manifest = Tempfile.new(["expo-turbo-capabilities", ".json"])
+    manifest.write(
+      JSON.generate(
+        {
+          manifestVersion: 2,
+          protocolVersion: ExpoTurbo::Rails::PROTOCOL_VERSION,
+          hash: "sha256-128:0123456789abcdef0123456789abcdef",
+          modules: [{name: "expo-turbo-example"}],
+          components: [{tag: "DemoCard", aliases: [], attributes: []}]
+        }
+      )
+    )
+    manifest.close
+
+    expect { described_class.new(manifest: manifest.path) }.not_to raise_error
+  ensure
+    manifest&.unlink
+  end
+
   it "rejects absent, conflicting, unreadable, and malformed capability manifests" do
     expect { described_class.new }
       .to raise_error(ExpoTurbo::Rails::ConfigurationError, /exactly one/)

@@ -159,7 +159,10 @@ describe("Frame preloader", () => {
       },
       { next: () => "frame-preload-1" },
       cache,
-      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
+      {
+        clientDescriptor:
+          "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      },
     )
 
     expect(await preloader.preload("details", "/frame")).toEqual({
@@ -175,15 +178,16 @@ describe("Frame preloader", () => {
       url: "https://example.test/frame",
     })
     expect(requests).toHaveLength(1)
+    // Reverting Frame preload descriptor forwarding removes or changes this exact header map.
+    expect(requests[0]?.headers).toEqual({
+      Accept: EXPO_TURBO_MIME_TYPE,
+      "Turbo-Frame": "details",
+      "X-Expo-Turbo-Client":
+        "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      "X-Sec-Purpose": "prefetch",
+      "X-Turbo-Request-Id": "frame-preload-1",
+    })
     expect(requests[0]).toMatchObject({
-      headers: {
-        Accept: EXPO_TURBO_MIME_TYPE,
-        "Turbo-Frame": "details",
-        "X-Expo-Turbo-Capabilities": "sha256:capabilities",
-        "X-Expo-Turbo-Modules": "v1;cart=2",
-        "X-Sec-Purpose": "prefetch",
-        "X-Turbo-Request-Id": "frame-preload-1",
-      },
       method: "GET",
       url: "https://example.test/frame",
     })

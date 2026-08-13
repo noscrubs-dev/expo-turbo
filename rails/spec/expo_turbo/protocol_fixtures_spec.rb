@@ -151,7 +151,7 @@ RSpec.describe "shared protocol fixtures" do
     expect(baselines.fetch("rails")).to eq(ExpoTurbo::Rails::RAILS_BASELINE_VERSION)
   end
 
-  it "pins module names and RubyGems versions to the shared request grammar" do
+  it "pins retained module names and RubyGems versions to the shared request grammar" do
     module_version_grammar.fetch("versions").fetch("accepted").each do |version|
       encoded_version = ERB::Util.url_encode(version)
       controller = controller_with_module_header("v1;cart=#{encoded_version}")
@@ -163,6 +163,9 @@ RSpec.describe "shared protocol fixtures" do
       controller = controller_with_module_header("v1;cart=#{encoded_version}")
       allow(controller).to receive(:logger).and_return(double(warn: nil))
 
+      # The explicit pattern and Gem::Version both protect this retained path.
+      # Removing either guard alone keeps these cases rejected; removing both
+      # makes this fixture fail.
       expect(controller.expo_turbo_client_modules).to eq({})
     end
     module_version_grammar.fetch("names").fetch("accepted").each do |name|

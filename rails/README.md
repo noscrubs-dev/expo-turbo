@@ -27,7 +27,10 @@ gem "expo_turbo-rails"
 ```ruby
 # app/controllers/screens_controller.rb
 class ScreensController < ApplicationController
-  expo_turbo_template_capabilities(manifest: Rails.root.join("config/expo_turbo_manifest.json"))
+  expo_turbo_template_capabilities(
+    manifest: Rails.root.join("config/expo_turbo_manifest.json"),
+    lockfile: Rails.root.join("expo-turbo.lock.json")
+  )
 
   def show
     @account = Account.find(params[:id])
@@ -402,14 +405,13 @@ instructions, with every XML prefix declared by the Frame fragment itself. A
 model class normalizes to Rails' `new_*` id on every supported `turbo-rails`
 version, including 2.0.10, which renders the Ruby class name.
 
-## Module version negotiation
+## Client compatibility
 
-A native client reports its installed component modules in
-`X-Expo-Turbo-Modules`. `expo_turbo_client_supports?` answers whether the client
-understands a module version:
+A native client sends one generated `X-Expo-Turbo-Client` descriptor. Prefer a
+feature predicate over an ordered revision check:
 
 ```erb
-<% if expo_turbo_client_supports?("noscrubs-cart", ">= 2") %>
+<% if expo_turbo_client_supports_component?("CartSummary") %>
   <CartSummary id="cart" />
 <% end %>
 ```
@@ -424,17 +426,50 @@ Every response reports the vocabulary that answered it:
 
 | `X-Expo-Turbo-Vocabulary` | Meaning |
 | --- | --- |
-| `declared` | the client declared its modules |
+| `declared` | the descriptor digest resolved to a known vocabulary |
+| `legacy-declared` | an installed 0.2 client sent the legacy modules header |
 | `assumed-none` | a native request declared nothing, so nothing is supported |
 | `assumed-latest` | not a native request, so everything is assumed |
 
-A blank module name raises rather than answering. A malformed header or entry is
-logged, and that warning is not swallowed.
+Use `expo_turbo_client_supports_attribute?` for an attribute. The numeric
+`expo_turbo_client_revision_satisfies?` helper remains an escape hatch and
+compares the server-side revision for a resolved digest. The revision is not
+sent by clients. The legacy `expo_turbo_client_supports?(module, requirement)`
+helper reads only the 0.2 modules header. It raises for a resolved descriptor,
+so a module name cannot be ignored and fail open.
+
+This error does not appear in browser or other non-native request tests. Those
+requests keep the existing fail-open web behavior, so the legacy helper returns
+`true`. Before deployment, search every template for
+`expo_turbo_client_supports?` and replace each descriptor-era gate. Do not use a
+passing web test suite as evidence that this migration is complete.
+
+The `lockfile:` argument is required for descriptor negotiation. Pass it with
+the generated `manifest:` path, as shown in the first controller example. If a
+native descriptor arrives without this configuration, the gem warns and all
+feature and revision gates fail closed. An unknown digest also warns and fails
+closed.
+
+Compatibility during the 0.3 change:
+
+| Client | Gem | Result |
+| --- | --- | --- |
+| 0.2 | 0.3 | the gem reads `X-Expo-Turbo-Modules` and reports `legacy-declared` |
+| 0.3 | 0.2 | the old gem cannot read the descriptor and fails closed for native gates |
+| 0.3 | 0.3 | the digest resolves through the lock and reports `declared` |
+
+**Deployment order:** deploy the 0.3 gem before any 0.3 client. The 0.3 gem
+continues to read the 0.2 modules header. A 0.2 gem cannot read the new
+descriptor, so a 0.3 client connected to it fails all native gates closed.
+The 0.3 gem also rejects any extra descriptor field while `v=1` is active. A
+future client must not add a field until the deployed gem accepts it. This
+strict rule is deliberate: gem-first deployment makes grammar changes explicit
+and prevents an old gem from silently giving a new field the wrong meaning.
 
 ## Caching
 
-A response can differ by `Accept`, by `Turbo-Frame`, and by the client's module
-versions, so a shared cache must key on all three: it can receive a Frame
+A response can differ by `Accept`, by `Turbo-Frame`, and by the client descriptor,
+so a shared cache must key on all dimensions: it can receive a Frame
 request for a URL that was first fetched as a document, and `Accept` decides the
 vocabulary even when a route forced the format. The gem states its `Vary`
 guarantee as a boundary rather than as "every response", because one layer
@@ -453,7 +488,11 @@ Two layers apply the header:
   an unrescued exception or an unknown route never passes through a controller
   at all.
 
-### Guaranteed to carry `Vary: Accept, Turbo-Frame, X-Expo-Turbo-Modules`
+### Guaranteed compatibility cache dimensions
+
+The full value is `Vary: Accept, Turbo-Frame, X-Expo-Turbo-Client,
+X-Expo-Turbo-Modules`. The last field protects the one-minor fallback for 0.2
+clients and can be removed with that reader.
 
 Every response the Rails application emits below the middleware, whatever
 produced it:
@@ -477,10 +516,10 @@ Anything produced **above** the middleware never reaches it:
 | a proxy or CDN that synthesizes its own response — cached error pages, WAF blocks, maintenance pages | never enters the origin at all |
 
 None of those is a representation of an Expo Turbo resource, so none of them
-varies by `Accept`, `Turbo-Frame`, or the client module versions.
+varies by `Accept`, `Turbo-Frame`, or client compatibility identity.
 
 **What a host must do.** If you cache anything from that list *and* serve Expo
-Turbo XML for the same URL, add the three dimensions yourself at that layer: a
+Turbo XML for the same URL, add the same dimensions yourself at that layer: a
 `Vary` header on the CDN rule, the static-file handler, or the proxy response.
 If you serve Expo Turbo XML from middleware installed above this one, that
 middleware owns its own `Vary`. Set `config.expo_turbo.vary_middleware = false`
@@ -488,7 +527,7 @@ to remove the middleware layer; the controller layer then still applies, and the
 halted-filter and exception responses listed above lose the header.
 
 `Vary` does not protect `Rails.cache`. Fragment cache keys of an Expo Turbo
-render therefore include the same Frame and module identity, so a module-gated
+render therefore include the same Frame and descriptor identity, so a gated
 fragment cannot be read back for a different client. HTML fragment keys are
 unchanged.
 

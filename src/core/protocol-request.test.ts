@@ -1,44 +1,44 @@
 import { describe, expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
 
-import { RequestError, TargetError } from "./errors"
+import { TargetError } from "./errors"
 import {
   protocolRequestHeaders,
   resolveDocumentLinkAnchor,
   resolveDocumentLinkFragment,
   resolveDocumentLinkUrl,
-  serializeModuleVersionsHeader,
+  serializeClientDescriptor,
 } from "./protocol-request"
 
-describe("module version request header", () => {
-  test("encodes exact module name and version pairs without removing the capability hash", () => {
-    const moduleVersions = serializeModuleVersionsHeader([
-      { name: "Moduleé", version: "2.1.0" },
-      { name: "cart,offers", version: "3.0-beta.1" },
-    ])
+const descriptorGrammar = JSON.parse(
+  await readFile(new URL("../../protocol/client-descriptor-grammar.json", import.meta.url), "utf8"),
+) as Readonly<{
+  emitted: Readonly<{ withVocabulary: string; withoutVocabulary: string }>
+}>
 
-    expect(moduleVersions).toBe("v1;Module%C3%A9=2.1.0,cart%2Coffers=3.0-beta.1")
+describe("client compatibility descriptor", () => {
+  test("pins one generated header and does not emit any retired compatibility header", () => {
+    const descriptor = serializeClientDescriptor("sha256-128:0123456789abcdef0123456789abcdef")
+
+    // Reverting the descriptor shape or adding a wire revision changes this exact shared value.
+    expect(descriptor).toBe(descriptorGrammar.emitted.withVocabulary)
     expect(
       protocolRequestHeaders({
-        capabilityHash: "fnv1a32:12345678",
-        moduleVersions,
+        clientDescriptor: descriptor,
         requestId: "request-1",
       }),
-    ).toMatchObject({
-      "X-Expo-Turbo-Capabilities": "fnv1a32:12345678",
-      "X-Expo-Turbo-Modules": moduleVersions,
+    ).toEqual({
+      Accept: "application/vnd.expo-turbo+xml",
+      "X-Expo-Turbo-Client": descriptor,
+      "X-Turbo-Request-Id": "request-1",
     })
-    expect(serializeModuleVersionsHeader([])).toBe("v1;")
   })
 
-  test("rejects duplicate names and invalid header metadata", () => {
-    expect(() =>
-      serializeModuleVersionsHeader([
-        { name: "cart", version: "1" },
-        { name: "cart", version: "2" },
-      ]),
-    ).toThrow(RequestError)
-    expect(() => serializeModuleVersionsHeader([{ name: "cart", version: "bad\nvalue" }])).toThrow(
-      RequestError,
+  test("degrades without vocabulary for a safe unavailable digest", () => {
+    // Reverting the no-vocabulary form changes both exact shared values.
+    expect(serializeClientDescriptor()).toBe(descriptorGrammar.emitted.withoutVocabulary)
+    expect(serializeClientDescriptor("unavailable")).toBe(
+      descriptorGrammar.emitted.withoutVocabulary,
     )
   })
 })

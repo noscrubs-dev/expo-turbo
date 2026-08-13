@@ -11,6 +11,7 @@ class ApplicationController < ActionController::API
   # bytes a browser reads as a paragraph. Both sides have to declare it: the
   # server admitting a name the client cannot resolve fails only on the device.
   expo_turbo_template_capabilities(
+    lockfile: Rails.root.join("../..", "expo-turbo.lock.json"),
     components: {
       "DemoForm" => {children: "nodes"},
       "DemoDocumentLink" => {children: "nodes"},

@@ -31,14 +31,11 @@ mock.module("react-native", () => ({
 const { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } = await import("./demo-registry")
 
 test("the example registry keeps its server negotiation identity", () => {
-  expect(DEMO_REGISTRY.capabilities.modules).toEqual([
-    { name: "demo-primitives", version: "0.1.0" },
-  ])
-  expect(DEMO_MODULE_VERSIONS).toBe("v1;demo-primitives=0.1.0")
-  // Declaring the `p` alias on DemoText changed this hash from
-  // fnv1a32:3faed628: an alias is part of the vocabulary the hash identifies.
-  // The module versions are unchanged, so header negotiation is unaffected.
-  expect(DEMO_REGISTRY.capabilities.hash).toBe("fnv1a32:b8499054")
+  expect(DEMO_REGISTRY.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
+  expect(DEMO_MODULE_VERSIONS).toMatch(
+    /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
+  )
+  expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea")
 })
 
 // The Rails demo serves /api/expo_turbo/demo/shared_greeting from one
