@@ -158,7 +158,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   // settles; the recovery scheduler then owns the debounce and, crucially,
   // survives a navigation that starts inside it and does not complete.
   const cableRecovery = options.cable
-    ? new CableDocumentRecovery(session, controller, clock, backgroundErrorOption)
+    ? new CableDocumentRecovery(controller, clock, backgroundErrorOption)
     : undefined
   const reconnectRefresh =
     options.cable && cableRecovery

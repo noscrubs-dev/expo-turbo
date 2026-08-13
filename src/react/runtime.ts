@@ -150,6 +150,8 @@ export function ExpoTurbo({
     (event) => onUnknownVocabularyRef.current?.(event),
     [],
   )
+  const forwardBackgroundError = useCallback((error: Error) => onErrorRef.current?.(error), [])
+  const hasOnError = onError !== undefined
   const [status, setStatus] = useState<
     | Readonly<{ state: "loading" }>
     | Readonly<{ error: Error; state: "error" }>
@@ -183,7 +185,11 @@ export function ExpoTurbo({
       ...(focus ? { focus } : {}),
       ...(history ? { history } : {}),
       ...(navigation ? { navigation } : {}),
-      onBackgroundError: (error) => onErrorRef.current?.(error),
+      // Presence, not identity: an always-present wrapper would be a callback
+      // that does nothing when the host supplied no `onError`, which suppresses
+      // each controller's own fallback reporting just as effectively as a
+      // no-op. Absent has to mean absent all the way down.
+      ...(hasOnError ? { onBackgroundError: forwardBackgroundError } : {}),
       registry,
       url,
     })
@@ -193,7 +199,17 @@ export function ExpoTurbo({
       if (currentRuntimeRef.current === runtime) currentRuntimeRef.current = undefined
       runtime.dispose()
     }
-  }, [attempt, cable, fetch, focus, history, navigation, registry])
+  }, [
+    attempt,
+    cable,
+    fetch,
+    focus,
+    forwardBackgroundError,
+    hasOnError,
+    history,
+    navigation,
+    registry,
+  ])
 
   // The preceding effect replaces this ref whenever a runtime-defining input
   // changes, so those inputs intentionally restart the visit effect too.

@@ -413,7 +413,9 @@ describe("Expo Turbo runtime", () => {
     releaseRecovery?.()
     releaseNavigation?.()
     await visit
-    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 250))
+    // The cancelled attempt backs off before retrying, so wait past that rather
+    // than the bare debounce.
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS * 4 + 400))
 
     // The document was never re-fetched, so the recovery still owed one.
     expect(requests).toEqual([documentUrl, documentUrl, nextUrl, documentUrl])
@@ -478,10 +480,10 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
-  test("reports a failed reconnect recovery instead of throwing it uncaught", async () => {
+  test("routes a failed background refresh to onBackgroundError", async () => {
     const reported: Error[] = []
     const callbacks: CableCallbacks[] = []
-    let failRecovery = false
+    let failRefresh = false
     const runtime = createExpoTurboRuntime({
       cable: {
         subscribe(_identifier, handlers) {
@@ -491,7 +493,7 @@ describe("Expo Turbo runtime", () => {
       },
       fetch: {
         fetch: async (request) => {
-          if (failRecovery) throw new Error("recovery transport refused")
+          if (failRefresh) throw new Error("refresh transport refused")
           return response(
             '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
             request.url,
@@ -507,15 +509,18 @@ describe("Expo Turbo runtime", () => {
     const source = runtime.session.tree.getElementById("live")
     if (!source) throw new Error("the Cable source fixture is missing")
     runtime.streamSources?.retain(source)
-
-    failRecovery = true
     callbacks[0]?.connected(false)
-    callbacks[0]?.disconnected(true)
-    callbacks[0]?.connected(true)
-    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 150))
+
+    failRefresh = true
+    await callbacks[0]?.received(
+      '<turbo-stream action="refresh" target="ignored"><template></template></turbo-stream>',
+    )
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
 
     // Without an observer this is an uncaught microtask throw: invisible to the
-    // host and impossible for it to catch.
+    // host and impossible for it to catch. The bounded give-up report for a
+    // failing reconnect recovery is covered deterministically in
+    // cable-recovery-internal.test.ts rather than by waiting out real backoff.
     expect(reported).toHaveLength(1)
     expect(reported[0]).toBeInstanceOf(Error)
 

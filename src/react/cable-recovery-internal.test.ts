@@ -24,7 +24,6 @@ class ManualClock implements ClockAdapter {
     return handle
   }
 
-  /** Fires every currently scheduled timer. */
   fire(): void {
     for (const [handle, callback] of [...this.timers]) {
       this.timers.delete(handle)
@@ -33,49 +32,57 @@ class ManualClock implements ClockAdapter {
   }
 }
 
+interface HarnessOptions {
+  /** Serve refreshes the way a snapshot restoration would: no request id. */
+  readonly cached?: boolean
+  readonly reject?: boolean
+}
+
 /**
- * A visit controller and session reduced to exactly what the invariant reads:
- * whether a visit is running, what document is active, and how many times it
- * has been committed.
+ * A visit controller reduced to what the recovery reads. `refreshCurrent`
+ * refuses whenever the requested document is not the active one, exactly as the
+ * real controller does.
  */
-function harness(options: { readonly refuse?: boolean; readonly reject?: boolean } = {}) {
+function harness(options: HarnessOptions = {}) {
   const listeners = new Set<() => void>()
-  const treeListeners = new Set<() => void>()
   const refreshed: string[] = []
   const errors: Error[] = []
   let status: "canceled" | "completed" | "failed" | "initialized" | "started" = "initialized"
-  let url = BASE
-  let generation = 1
+  let active = BASE
+  let networkId = 0
 
   const notify = () => {
     for (const listener of [...listeners]) listener()
-    for (const listener of [...treeListeners]) listener()
-  }
-
-  const session = {
-    subscribeTreeState(listener: () => void) {
-      treeListeners.add(listener)
-      return () => treeListeners.delete(listener)
-    },
-    get tree() {
-      return { document: { url } }
-    },
-    get treeGeneration() {
-      return generation
-    },
   }
 
   const visits = {
     refreshCurrent: async (target: string) => {
       refreshed.push(target)
       if (options.reject) throw new Error("recovery transport refused")
-      if (options.refuse) return undefined
-      // A real refresh commits the document it targeted.
-      generation += 1
-      url = target
+      if (active !== target) return undefined
+      if (options.cached) {
+        // A snapshot restoration: the tree changed and no request was made, so
+        // the report carries no request id. `requestedUrl` is included even
+        // though the real restore report omits it, so that the request id is
+        // the only thing separating this from a network commit — otherwise the
+        // test would pass on the URL check and prove nothing about the
+        // discriminator.
+        status = "completed"
+        notify()
+        return { requestedUrl: target, status: "committed" as const, url: target }
+      }
+      networkId += 1
       status = "completed"
       notify()
-      return { status: "committed" as const }
+      return {
+        classification: "success" as const,
+        redirected: false,
+        requestId: `network-${networkId}`,
+        requestedUrl: target,
+        responseStatus: 200,
+        status: "committed" as const,
+        url: target,
+      }
     },
     get state() {
       return { status }
@@ -87,8 +94,10 @@ function harness(options: { readonly refuse?: boolean; readonly reject?: boolean
   }
 
   const clock = new ManualClock()
-  const recovery = new CableDocumentRecovery(session as never, visits as never, clock, {
-    debounceMs: 0,
+  const recovery = new CableDocumentRecovery(visits as never, clock, {
+    attempts: 3,
+    backoffFactor: 2,
+    debounceMs: 1,
     onError: (error) => errors.push(error),
   })
 
@@ -97,13 +106,13 @@ function harness(options: { readonly refuse?: boolean; readonly reject?: boolean
     errors,
     recovery,
     refreshed,
-    /** A visit that ends the way the argument says, without committing. */
-    settleVisit(next: "canceled" | "completed" | "failed", committedUrl?: string) {
+    goTo(url: string) {
+      active = url
+      status = "completed"
+      notify()
+    },
+    settleVisit(next: "canceled" | "failed") {
       status = next
-      if (next === "completed" && committedUrl !== undefined) {
-        generation += 1
-        url = committedUrl
-      }
       notify()
     },
     startVisit() {
@@ -115,100 +124,124 @@ function harness(options: { readonly refuse?: boolean; readonly reject?: boolean
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+async function tick(h: ReturnType<typeof harness>, times = 1): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    h.clock.fire()
+    await flush()
+  }
+}
+
 describe("Cable document recovery", () => {
-  test("stays armed when a navigation cancels the recovery and then fails", async () => {
-    // The round-5 sequence: the recovery GET is dispatched and then cancelled by
-    // a navigation, which returns a result rather than `undefined`, and the
-    // navigation itself then fails. Nothing re-fetched the document.
-    const h = harness({ refuse: true })
-    h.recovery.request({ baseUrl: BASE })
-    h.clock.fire()
-    await flush()
-
-    expect(h.refreshed).toEqual([BASE])
-    h.startVisit()
-    h.settleVisit("failed")
-    await flush()
-
-    expect(h.recovery.armed).toBe(true)
-    h.clock.fire()
-    await flush()
-    expect(h.refreshed).toEqual([BASE, BASE])
-  })
-
-  test("drops only once the document has actually been re-fetched", async () => {
+  test("discharges on a network refresh of the target", async () => {
     const h = harness()
     h.recovery.request({ baseUrl: BASE })
     expect(h.recovery.armed).toBe(true)
 
-    h.clock.fire()
-    await flush()
+    await tick(h)
 
-    // The refresh committed the target document, which is the whole obligation.
     expect(h.refreshed).toEqual([BASE])
     expect(h.recovery.armed).toBe(false)
   })
 
-  test("drops when the app has moved to a different document", async () => {
-    const h = harness({ refuse: true })
+  test("does not accept a cache-served commit as a re-fetch", async () => {
+    // A snapshot preview or restoration changes the tree without asking the
+    // server, so it cannot discharge an obligation that exists precisely
+    // because the server has news we missed.
+    const h = harness({ cached: true })
     h.recovery.request({ baseUrl: BASE })
-    h.startVisit()
-    h.settleVisit("completed", OTHER)
-    await flush()
 
-    // That document was fetched fresh with its own subscriptions, so there is
-    // nothing left to recover. Asserted on `armed`, not on request count: a
-    // retained recovery would be invisible in the requests because the URL
-    // guard suppresses the GET.
-    expect(h.recovery.armed).toBe(false)
-    h.clock.fire()
-    await flush()
-    expect(h.refreshed).toEqual([])
-  })
+    await tick(h)
 
-  test("stays armed through a visit that fails without committing", async () => {
-    const h = harness({ refuse: true })
-    h.recovery.request({ baseUrl: BASE })
-    h.startVisit()
-    h.settleVisit("canceled")
-    await flush()
-
+    expect(h.refreshed).toEqual([BASE])
     expect(h.recovery.armed).toBe(true)
   })
 
-  test("gives up loudly rather than retrying a failing recovery forever", async () => {
+  test("stays armed when a navigation cancels the recovery and then fails", async () => {
+    const h = harness()
+    h.recovery.request({ baseUrl: BASE })
+    h.startVisit()
+    await tick(h)
+
+    // A visit is in flight, so nothing was even attempted.
+    expect(h.refreshed).toEqual([])
+    h.settleVisit("failed")
+    await flush()
+    expect(h.recovery.armed).toBe(true)
+
+    await tick(h)
+    expect(h.refreshed).toEqual([BASE])
+    expect(h.recovery.armed).toBe(false)
+  })
+
+  test("suspends rather than discharging while another document is active", async () => {
+    const h = harness()
+    h.recovery.request({ baseUrl: BASE })
+    h.goTo(OTHER)
+    await tick(h, 3)
+
+    // Navigating away must not end the obligation: coming back can be served
+    // from a snapshot, which would restore the very content that is stale.
+    expect(h.recovery.armed).toBe(true)
+  })
+
+  test("resumes and recovers when the original document becomes active again", async () => {
+    const h = harness()
+    h.recovery.request({ baseUrl: BASE })
+    h.goTo(OTHER)
+    await tick(h, 2)
+    expect(h.recovery.armed).toBe(true)
+
+    h.goTo(BASE)
+    await tick(h, 2)
+
+    expect(h.refreshed.at(-1)).toBe(BASE)
+    expect(h.recovery.armed).toBe(false)
+  })
+
+  test("does not spend the attempt budget on refusals", async () => {
+    const h = harness()
+    h.recovery.request({ baseUrl: BASE })
+    h.goTo(OTHER)
+    // Far more cycles than the three-attempt budget.
+    await tick(h, 10)
+    h.goTo(BASE)
+    await tick(h, 2)
+
+    // A refusal is not a failed attempt, so returning still recovers.
+    expect(h.recovery.armed).toBe(false)
+    expect(h.errors).toEqual([])
+  })
+
+  test("gives up after bounded backoff with exactly one report", async () => {
     const h = harness({ reject: true })
     h.recovery.request({ baseUrl: BASE })
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      h.clock.fire()
-      await flush()
-    }
+    await tick(h, 12)
 
-    // Bounded: three attempts, each reported, then one final report and done.
     expect(h.refreshed).toHaveLength(3)
     expect(h.recovery.armed).toBe(false)
-    expect(h.errors).toHaveLength(4)
-    expect(h.errors.at(-1)?.message).toContain("gave up")
+    // One report per obligation, not one per attempt.
+    expect(h.errors).toHaveLength(1)
+    expect(h.errors[0]?.message).toContain("after 3 attempts")
   })
 
-  test("coalesces rapid reconnects for one document into a single obligation", async () => {
+  test("coalesces rapid reconnects into one obligation", async () => {
     const h = harness()
     h.recovery.request({ baseUrl: BASE })
     h.recovery.request({ baseUrl: BASE })
     h.recovery.request({ baseUrl: BASE })
-    h.clock.fire()
-    await flush()
+
+    await tick(h)
 
     expect(h.refreshed).toEqual([BASE])
   })
 
   test("cancels everything on disposal", async () => {
-    const h = harness({ refuse: true })
+    const h = harness()
     h.recovery.request({ baseUrl: BASE })
     h.recovery.dispose()
-    h.clock.fire()
-    await flush()
+
+    await tick(h, 3)
 
     expect(h.refreshed).toEqual([])
     expect(h.recovery.armed).toBe(false)
