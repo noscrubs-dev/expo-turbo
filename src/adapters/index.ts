@@ -67,19 +67,6 @@ export function isTurboMultipartBody(value: unknown): value is TurboMultipartBod
 
 export interface TurboRequest {
   readonly body?: TurboRequestBody
-  /**
-   * `"no-store"` means the response must come from the origin, not from any
-   * cache the adapter or platform keeps. Adapters that maintain or sit in front
-   * of a cache **must** honor it.
-   *
-   * It exists because some requests are only worth making if the bytes are
-   * fresh. Cable reconnect recovery is the current one: the document is being
-   * re-fetched precisely because the client missed what the server said while
-   * the socket was down, so a cached body answers the wrong question. The
-   * request also carries `Cache-Control: no-cache` and `Pragma: no-cache` for
-   * adapters that forward headers but do not read this field.
-   */
-  readonly cache?: "no-store"
   readonly headers: Readonly<Record<string, string>>
   readonly method: string
   readonly signal?: AbortSignal

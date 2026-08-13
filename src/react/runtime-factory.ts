@@ -10,7 +10,6 @@ import {
   CableStreamSourceRegistry,
   DocumentFormControls,
   DocumentHistory,
-  DocumentReconnectReconciler,
   DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
@@ -28,7 +27,6 @@ import {
 } from "../core/index.js"
 import { serializeModuleVersionsHeader } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
-import { CableDocumentRecovery, type CableRecoveryFreshness } from "./cable-recovery-internal.js"
 
 const clock: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -41,62 +39,6 @@ function rethrowUnobserved(error: Error): void {
   queueMicrotask(() => {
     throw error
   })
-}
-
-function canonicalUrl(url: string): string {
-  try {
-    return new URL(url).toString()
-  } catch {
-    return url
-  }
-}
-
-/**
- * Wraps the host transport so that GETs for a document owing Cable reconnect
- * recovery must come from the origin.
- *
- * This is what makes the recovery's refresh fresh *by construction*. Nothing in
- * the returned report can prove it otherwise: the loader mints the request id
- * before it ever calls the adapter, so a transport that answers from a cache
- * produces a perfectly well-formed report over stale bytes.
- *
- * Both signals are sent, because they reach different layers: `cache` for
- * adapters that read the field, and the HTTP request headers for adapters or
- * proxies that only forward headers.
- */
-function createFreshnessTransport(fetchAdapter: FetchAdapter): {
-  readonly fetch: FetchAdapter
-  readonly freshness: CableRecoveryFreshness
-} {
-  const claimed = new Set<string>()
-  return {
-    fetch: {
-      fetch(request) {
-        if (request.method !== "GET" || !claimed.has(canonicalUrl(request.url))) {
-          return fetchAdapter.fetch(request)
-        }
-        return fetchAdapter.fetch(
-          Object.freeze({
-            ...request,
-            cache: "no-store" as const,
-            headers: Object.freeze({
-              ...request.headers,
-              "Cache-Control": "no-cache",
-              Pragma: "no-cache",
-            }),
-          }),
-        )
-      },
-    },
-    freshness: {
-      claim(url) {
-        claimed.add(canonicalUrl(url))
-      },
-      release(url) {
-        claimed.delete(canonicalUrl(url))
-      },
-    },
-  }
 }
 
 const PLACEHOLDER_DOCUMENT =
@@ -159,8 +101,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     : undefined
   history?.initialize({ kind: "unmanaged", url: options.url })
   const moduleVersions = serializeModuleVersionsHeader(options.registry.capabilities.modules)
-  const transport = createFreshnessTransport(options.fetch)
-  const loader = new DocumentRequestLoader(session, transport.fetch, requestIds, {
+  const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
     capabilityHash: options.registry.capabilities.hash,
     moduleVersions,
   })
@@ -185,7 +126,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     : undefined
   const frames = new FrameControllerRegistry(
     session,
-    new FrameRequestLoader(session, transport.fetch, requestIds, {
+    new FrameRequestLoader(session, options.fetch, requestIds, {
       capabilityHash: options.registry.capabilities.hash,
       moduleVersions,
       refresh,
@@ -195,7 +136,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     controller,
     frameHistory ? { frameHistory } : undefined,
   )
-  const submission = new FormSubmissionController(session, transport.fetch, {
+  const submission = new FormSubmissionController(session, options.fetch, {
     frameControllers: frames,
     ...(history ? { history } : {}),
     ...(options.navigation ? { navigation: options.navigation } : {}),
@@ -209,33 +150,19 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     moduleVersions,
     submissionController: submission,
   })
-  // A Cable adapter that reconnects has to recover the document it was
-  // disconnected from, or messages missed during the gap leave the screen
-  // silently stale. The reconciler defers the handoff until the active visit
-  // settles; the recovery scheduler then owns the debounce and, crucially,
-  // survives a navigation that starts inside it and does not complete.
-  const cableRecovery = options.cable
-    ? new CableDocumentRecovery(controller, clock, {
-        ...backgroundErrorOption,
-        freshness: transport.freshness,
+  // Cable delivers Stream actions, including `refresh`, for as long as the
+  // socket is up. It does NOT yet recover the document after a reconnect: a
+  // broadcast missed while the socket was down leaves the mounted document
+  // stale until something else refreshes it. That recovery is deliberately not
+  // part of this runtime yet — see the 0.3.0 changelog.
+  const streamSources = options.cable
+    ? new CableStreamSourceRegistry(session, options.cable, {
+        // This registry requires an observer, so the fallback has to be the
+        // loud one rather than a no-op that swallows the fault.
+        onError: onBackgroundError ?? rethrowUnobserved,
+        streamOptions: { refresh },
       })
     : undefined
-  const reconnectRefresh =
-    options.cable && cableRecovery
-      ? new DocumentReconnectReconciler(cableRecovery, controller, backgroundErrorOption)
-      : undefined
-  const streamSources =
-    options.cable && reconnectRefresh
-      ? new CableStreamSourceRegistry(session, options.cable, {
-          // This registry requires an observer, so the fallback has to be the
-          // loud one rather than a no-op that swallows the fault.
-          onError: onBackgroundError ?? rethrowUnobserved,
-          reconnectRefresh,
-          // Without this, a Cable-delivered `<turbo-stream action="refresh">`
-          // silently does nothing at all: no request, no error.
-          streamOptions: { refresh },
-        })
-      : undefined
   let disposed = false
 
   return Object.freeze({
@@ -252,8 +179,6 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
       forms.dispose()
       frames.dispose()
       streamSources?.dispose()
-      reconnectRefresh?.dispose()
-      cableRecovery?.dispose()
       refresh.dispose()
       controller.cancel()
       loader.cancel()

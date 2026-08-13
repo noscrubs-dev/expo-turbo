@@ -26,37 +26,12 @@ All notable public package, gem, and protocol changes will be recorded here.
   document faults. A Cable-delivered `<turbo-stream action="refresh">` is wired
   through as well.
 
-  A server-directed reconnect also recovers the document it was disconnected
-  from, so nothing broadcast during the gap is silently missing. The recovery
-  holds one invariant rather than a list of visit outcomes: it stays armed until
-  the document it needs has actually been re-fetched. Freshness is established
-  rather than inferred: while a document owes recovery, the runtime marks its
-  requests `cache: "no-store"`, and the recovery discharges only when its own
-  refresh of that URL completes successfully. Nothing about a report can prove
-  freshness after the fact — the loader mints the request id before it calls the
-  transport, so a cached response yields a well-formed report over stale bytes.
-  A refusal, a
-  cancellation, a failed navigation, or a superseded request is therefore not a
-  special case: none of them is that observation, so the recovery stays armed.
-  Navigating away suspends rather than discharges it, because returning can be
-  served from a snapshot and would otherwise restore the stale content. Attempts
-  are bounded with exponential backoff spanning roughly a minute, and exhausting
-  them reports once through `onBackgroundError`, with the transport failure
-  attached as the error's `cause`.
-
-  Obligations are held per document URL, not one at a time: a reconnect for one
-  document must not erase a suspended obligation for another, or the first
-  document shows stale content for the rest of the session. At most eight
-  documents are retained, and passing that evicts the least recently requested
-  one — reported, not dropped, because an obligation that ends without a fresh
-  fetch has to end loudly.
-- Add `cache` to `TurboRequest`. `"no-store"` means the response must come from
-  the origin rather than any cache the adapter or platform keeps, and adapters
-  that maintain or sit in front of a cache must honor it. The packaged transport
-  maps it to `fetch(..., { cache: "no-store" })`, and the request also carries
-  `Cache-Control: no-cache` and `Pragma: no-cache` for adapters that forward
-  headers without reading the field. A custom adapter that serves from its own
-  cache and ignores both still defeats it.
+  **Known gap:** a reconnect does not refresh the document. Anything broadcast
+  while the socket was down stays missing until something else refreshes it, so
+  a mounted document can be stale after a dropped connection. This matches the
+  behavior before `cable` existed — the adapter adds live Streams without
+  changing what a disconnect costs — and reconnect recovery is tracked
+  separately rather than shipped half-verified.
 - The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
   It is a private Expo Router export, and a static named import of a missing
   export is a module-level `SyntaxError` that would take the whole

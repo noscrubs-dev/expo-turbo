@@ -24,49 +24,6 @@ function response(status: number, body: string, url = "https://example.test/resu
 }
 
 describe("createDefaultFetchAdapter", () => {
-  test("maps a no-store request onto RequestInit.cache and forwards the headers", async () => {
-    let init: RequestInit | undefined
-    globalThis.fetch = (async (_input, nextInit) => {
-      init = nextInit
-      return response(200, "<Page />")
-    }) as typeof fetch
-
-    const adapter = createDefaultFetchAdapter()
-    await adapter.fetch({
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
-      method: "GET",
-      url: "https://example.test/document",
-    })
-
-    // Cable reconnect recovery relies on this mapping: without it the platform
-    // HTTP cache can answer a request whose whole purpose is origin bytes, and
-    // nothing in the response would reveal that it did.
-    expect(init?.cache).toBe("no-store")
-    const headers = new Headers(init?.headers)
-    expect(headers.get("cache-control")).toBe("no-cache")
-    expect(headers.get("pragma")).toBe("no-cache")
-  })
-
-  test("leaves RequestInit.cache unset for an ordinary request", async () => {
-    let init: RequestInit | undefined
-    globalThis.fetch = (async (_input, nextInit) => {
-      init = nextInit
-      return response(200, "<Page />")
-    }) as typeof fetch
-
-    const adapter = createDefaultFetchAdapter()
-    await adapter.fetch({
-      headers: {},
-      method: "GET",
-      url: "https://example.test/document",
-    })
-
-    // Asserts the absence of a second route: the mapping above must come from
-    // the request, not from the adapter defaulting every call to no-store.
-    expect(init?.cache).toBeUndefined()
-  })
-
   test("sends credentials and protected protocol headers while returning XML error statuses", async () => {
     let input: RequestInfo | URL | undefined
     let init: RequestInit | undefined
