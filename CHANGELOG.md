@@ -4,6 +4,50 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.3.0
 
+- **Breaking:** Resolve an HTML template for a native request, and label the
+  response by the format the request selected. Lookup for an Expo Turbo render
+  now tries `expo_turbo` first and `html` behind it, so one template can serve
+  a browser and a native client, and `NAME.expo_turbo.erb` still wins over the
+  `NAME.html.erb` beside it. Where a native request previously raised
+  `ActionController::UnknownFormat` because only an HTML template existed, it
+  now renders that template. The response is delivered as
+  `application/vnd.expo-turbo+xml`, not `text/html`: the media type follows the
+  format Rails selected, never the extension of the file that answered. That is
+  what keeps the protocol rules applied, because `expo_turbo_validate_response!`
+  switches on the media type, so an HTML template that emits `<div>` fails on
+  the server instead of shipping HTML to a client that cannot read it. The same
+  rule now decides the helper branch: `expo_turbo_render?` reads the new
+  `expo_turbo_selected_format` rather than `lookup_context.formats.first`, which
+  ActionView rewrites to the format of the template it found as soon as a shared
+  template answers. Migration: a host whose `app/views` holds an HTML template
+  beside an Expo Turbo action now serves it, and a screen with both templates is
+  unaffected. Set `self.expo_turbo_html_template_fallback = false` to restore
+  the confinement. A shared `NAME.html.erb` renders the `.html` partials beneath
+  it, because that narrowing is ActionView's own; a format-neutral `NAME.erb`
+  keeps partial lookup on the request format.
+- Accept an HTML element name for a component through its existing `aliases:`
+  declaration, so one template can spell a component as the element a browser
+  understands. No change was needed for this and none was made: all four
+  protocol wrappers are already spelled as Turbo spells them in HTML, the client
+  reserves only those four names and `expo-turbo-fragment`, and both sides
+  already resolved a declared alias. It is now specified and tested as a
+  contract, including that an alias carries its component's child mode,
+  attribute allow list, required attributes, and form ownership, and that one
+  name may never resolve to two components. Two boundaries are documented rather
+  than worked around: `form_with` writes `accept-charset`, which is not among
+  the five form-owner attributes either side admits, and `tag.br` writes `<br>`,
+  which is not well-formed XML.
+- Add `rake expo_turbo:paired_templates`, a lint over `foo.html.erb` /
+  `foo.expo_turbo.erb` pairs. It reports divergence in element ids, Frame `src`,
+  form action and method, control names, and `data-turbo-*` attributes. It reads
+  template source and never renders, so it runs in CI with no database and no
+  server, and no request path loads it.
+  `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for
+  a host's own test. It cannot see a value a helper produces, a value that
+  differs at run time from identical source, anything a partial or layout
+  contributes, a branch only one audience takes, or semantics behind equal
+  source; the full list is at the top of
+  `lib/expo_turbo/rails/paired_templates.rb`.
 - **Breaking:** Fail closed on module negotiation for a verified native
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old
