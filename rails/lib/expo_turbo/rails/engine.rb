@@ -5,6 +5,12 @@ module ExpoTurbo
     class Engine < ::Rails::Engine
       config.expo_turbo = ActiveSupport::OrderedOptions.new
 
+      # A lint, not a runtime hook: loading the task does not load the linter,
+      # and no request path reaches either.
+      rake_tasks do
+        load File.expand_path("tasks/paired_templates.rake", __dir__)
+      end
+
       initializer "expo_turbo.rails.mime_type" do
         existing = Mime::Type.lookup_by_extension(MIME_SYMBOL)
 
