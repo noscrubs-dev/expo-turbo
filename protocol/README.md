@@ -58,6 +58,12 @@ the Rails parser's accepted and rejected forms. It rejects extra fields,
 including a wire revision. The retained `module-version-grammar.json` protects
 the one-minor parser used by installed 0.2 clients.
 
+Descriptor version 1 has a closed field set. A future client that adds a field
+without changing `v` is incompatible with a 0.3 gem and fails closed. This is
+deliberate. The gem must ship first with the new grammar, and only then can a
+client send the new field. The order prevents an old gem from silently
+misreading a field whose meaning it does not know.
+
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral
 conformance slice. A separate development-only browser differential executes

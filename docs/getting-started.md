@@ -488,6 +488,12 @@ modules header and raises for a resolved descriptor. A native request with a
 missing, malformed, or unknown descriptor fails closed. A non-native request
 keeps the web assumption that it supports the current vocabulary.
 
+The descriptor-path error from `expo_turbo_client_supports?` does not appear in
+browser or other non-native request tests. Those requests fail open and the
+stale module gate returns `true`. Before deployment, search the templates for
+`expo_turbo_client_supports?` and replace each descriptor-era gate. A passing
+web test suite does not prove that this migration is complete.
+
 Generate the manifest with `capabilityManifestJSON()` and configure Rails with
 both paths:
 
@@ -501,6 +507,10 @@ expo_turbo_template_capabilities(
 Without `lockfile:`, the gem warns when a native descriptor arrives and all
 gates fail closed. Deploy the 0.3 gem before the 0.3 client. The new gem reads
 the old modules header, but the old gem cannot read the new descriptor.
+Within descriptor version 1, the gem rejects every field that is not in the
+current field set. A future client must wait until the gem accepts a new field.
+This is the reason for gem-first deployment: the server learns the grammar
+before a client sends it.
 
 Capability components that change server state outside a Turbo form can call
 `useDocumentReload()` from `expo-turbo/react`. The returned async function

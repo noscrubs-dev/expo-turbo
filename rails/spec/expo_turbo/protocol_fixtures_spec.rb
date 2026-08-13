@@ -163,7 +163,9 @@ RSpec.describe "shared protocol fixtures" do
       controller = controller_with_module_header("v1;cart=#{encoded_version}")
       allow(controller).to receive(:logger).and_return(double(warn: nil))
 
-      # Reverting the legacy version grammar accepts at least one rejected fixture.
+      # The explicit pattern and Gem::Version both protect this retained path.
+      # Removing either guard alone keeps these cases rejected; removing both
+      # makes this fixture fail.
       expect(controller.expo_turbo_client_modules).to eq({})
     end
     module_version_grammar.fetch("names").fetch("accepted").each do |name|

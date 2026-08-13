@@ -248,6 +248,12 @@ sent by clients. The legacy `expo_turbo_client_supports?(module, requirement)`
 helper reads only the 0.2 modules header. It raises for a resolved descriptor,
 so a module name cannot be ignored and fail open.
 
+This error does not appear in browser or other non-native request tests. Those
+requests keep the existing fail-open web behavior, so the legacy helper returns
+`true`. Before deployment, search every template for
+`expo_turbo_client_supports?` and replace each descriptor-era gate. Do not use a
+passing web test suite as evidence that this migration is complete.
+
 The `lockfile:` argument is required for descriptor negotiation. Pass it with
 the generated `manifest:` path, as shown in the first controller example. If a
 native descriptor arrives without this configuration, the gem warns and all
@@ -265,6 +271,10 @@ Compatibility during the 0.3 change:
 **Deployment order:** deploy the 0.3 gem before any 0.3 client. The 0.3 gem
 continues to read the 0.2 modules header. A 0.2 gem cannot read the new
 descriptor, so a 0.3 client connected to it fails all native gates closed.
+The 0.3 gem also rejects any extra descriptor field while `v=1` is active. A
+future client must not add a field until the deployed gem accepts it. This
+strict rule is deliberate: gem-first deployment makes grammar changes explicit
+and prevents an old gem from silently giving a new field the wrong meaning.
 
 ## Caching
 

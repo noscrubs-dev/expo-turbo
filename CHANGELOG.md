@@ -22,6 +22,11 @@ All notable public package, gem, and protocol changes will be recorded here.
   every native feature gate closed. Deploy the 0.3 gem before the 0.3 client.
   A typed module `version` no longer defines identity or quarantines a module
   when its value is invalid; registry content defines vocabulary identity.
+  Before deployment, search templates for `expo_turbo_client_supports?`.
+  Browser and other non-native tests fail open, so they do not expose a stale
+  module gate that raises on the first native descriptor request. Descriptor
+  version 1 also rejects extra fields. Ship grammar support in the gem before a
+  client sends a new field.
 
 - Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
   entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
