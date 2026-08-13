@@ -26,6 +26,9 @@ module ExpoTurbo
         # Set false only for an endpoint that must deliver a payload the
         # protocol rejects, such as a client-behavior probe.
         class_attribute :expo_turbo_validate_responses, default: true
+        # Lets one template serve both audiences. Set false to confine an Expo
+        # Turbo render to .expo_turbo templates, as releases before 0.3.0 did.
+        class_attribute :expo_turbo_html_template_fallback, default: true
         helper ::Turbo::Engine.helpers if defined?(::Turbo::Engine)
         helper ExpoTurbo::Rails::Attributes::Helper
         helper ExpoTurbo::Rails::Frames::Helper
@@ -56,6 +59,28 @@ module ExpoTurbo
             max_style_tokens:
           )
         end
+      end
+
+      # The format Rails selected for this response, and the one rule that
+      # answers "is this an Expo Turbo render". It is not the same as
+      # lookup_context.formats.first during a render: ActionView prepends the
+      # format of the template that answered, so a shared .html template
+      # rewrites the lookup context to :html while still answering a native
+      # request. nil when Rails never assigned render formats, such as a
+      # broadcast rendered through ApplicationController.render.
+      attr_reader :expo_turbo_selected_format
+
+      # Rails assigns those formats from the Accept header in
+      # ActionController::Rendering#process_action, and again from a respond_to
+      # branch. Both assignments arrive here, because ActionView::ViewPaths
+      # delegates the writer to the lookup context and this concern sits above
+      # it. Appending :html lets one template serve both audiences; the Expo
+      # Turbo format stays first, so an .expo_turbo template always wins over
+      # the .html template beside it.
+      def formats=(values)
+        values = expo_turbo_lookup_formats(values)
+        @expo_turbo_selected_format = Array(values).first
+        super
       end
 
       # ActionView::Rendering renders a template for every option, and this
@@ -166,6 +191,40 @@ module ExpoTurbo
       end
 
       private
+
+      def expo_turbo_lookup_formats(values)
+        return values unless expo_turbo_html_template_fallback
+        return values unless values.is_a?(Array) && values.first == MIME_SYMBOL
+        return values if values.include?(:html)
+
+        values + [:html]
+      end
+
+      # respond_to narrows lookup to the format of the branch it ran, writing
+      # the lookup context directly. Repeat the assignment through the writer
+      # above, so `format.expo_turbo` reaches the same templates a plain render
+      # does.
+      def _process_format(format)
+        super
+        self.formats = [format.to_sym] if format.respond_to?(:to_sym) && format.to_sym
+      end
+
+      # The format Rails selected decides the media type. The extension of the
+      # file that answered decides nothing: an .html template serving a native
+      # request is an Expo Turbo representation, and labelling it text/html
+      # would both mislead the client and route the response around
+      # expo_turbo_validate_response!, which switches on the media type.
+      def _set_rendered_content_type(format)
+        super(expo_turbo_rendered_format(format))
+      end
+
+      def expo_turbo_rendered_format(format)
+        return format unless expo_turbo_html_template_fallback
+        return format unless format.respond_to?(:to_sym) && format.to_sym == :html
+        return format unless expo_turbo_selected_format == MIME_SYMBOL
+
+        Mime[MIME_SYMBOL]
+      end
 
       def expo_turbo_frame_header
         frame_id = request.get_header("HTTP_TURBO_FRAME")

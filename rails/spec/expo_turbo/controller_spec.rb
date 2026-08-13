@@ -36,9 +36,14 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
-  it "cannot select an HTML template for an Expo Turbo render" do
+  # An HTML template may answer an Expo Turbo render, and the vocabulary rules
+  # do not relax for it. Full coverage lives in template_fallback_spec.rb.
+  it "admits an HTML template that answered an Expo Turbo render against the same vocabulary" do
     with_templates(controller_class, "specs/show.html.erb" => "<p>HTML</p>") do
-      expect { render_document }.to raise_error(ActionView::MissingTemplate)
+      expect { render_document }.to raise_error(
+        ExpoTurbo::Rails::TemplateError,
+        "Expo Turbo templates must use declared components and valid style tokens"
+      )
     end
   end
 

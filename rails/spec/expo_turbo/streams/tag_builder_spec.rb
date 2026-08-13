@@ -383,8 +383,11 @@ RSpec.describe ExpoTurbo::Rails::Streams::TagBuilder do
 
       expect(stream.append("messages", renderable).to_s)
         .to eq('<turbo-stream action="append" target="messages"><template><DemoText id="message-1">XML only</DemoText></template></turbo-stream>')
-      expect { stream.append("messages", ExpoTurboTagBuilderSpecRenderable.new(partial: "specs/host_only")) }
-        .to raise_error(ActionView::MissingTemplate)
+      # A partial that exists only as HTML reaches an Expo Turbo Stream. This
+      # controller declares no capabilities, so nothing admits its vocabulary;
+      # template_fallback_spec.rb covers a controller that does.
+      expect(stream.append("messages", ExpoTurboTagBuilderSpecRenderable.new(partial: "specs/host_only")).to_s)
+        .to eq('<turbo-stream action="append" target="messages"><template><div>Host fallback</div></template></turbo-stream>')
 
       malformed_renderer = Object.new
       malformed_renderer.define_singleton_method(:render_in) { |_context| "<Demo:Item/>" }
