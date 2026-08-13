@@ -4,6 +4,102 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.3.0
 
+- Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
+  entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
+  Expo Router history and navigation bridge, the credentialed transport, the
+  runtime and its disposal, and visible loading and error surfaces. Hello world
+  is now one component in one route file. The single `adapters` prop is the
+  escape hatch, with three states per key: absent uses the packaged default, an
+  object overrides it, and `null` turns the key off even where a default
+  exists. Defaults ship for `fetch`, `history`, `navigation`,
+  `documentAnnouncements`, `formAnnouncements`, `documentLinks`,
+  `documentAutomaticPreloadPolicy`, and `documentPrefetchPolicy`. The keys with
+  no default need host-owned native node references, a real scroll container,
+  application style tokens, or a socket and credential policy, so the package
+  cannot supply one. The document path follows the mounted Expo Router route
+  including its search parameters, so a catch-all route needs no configuration.
+- Add a `cable` adapter to `createExpoTurboRuntime`, `ExpoTurbo`, and
+  `ExpoTurboApp`. Supplying it builds the Cable Stream source registry that
+  serves `turbo-cable-stream-source`, and the runtime owns its disposal.
+  Subscription and dispatch faults reach `onError` without replacing the
+  mounted document, because they are Stream transport faults rather than
+  document faults. A Cable-delivered `<turbo-stream action="refresh">` is wired
+  through as well.
+
+  **Known gap:** a reconnect does not refresh the document. Anything broadcast
+  while the socket was down stays missing until something else refreshes it, so
+  a mounted document can be stale after a dropped connection. This matches the
+  behavior before `cable` existed — the adapter adds live Streams without
+  changing what a disconnect costs — and reconnect recovery is tracked in pull
+  request 418 rather than shipped half-verified.
+- The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
+  It is a private Expo Router export, and a static named import of a missing
+  export is a module-level `SyntaxError` that would take the whole
+  `expo-turbo/expo` entrypoint down at import time. The bridge now binds it
+  through a namespace import and selects it once at module load. When it is
+  absent, `useExpoRouterDocumentPath()` returns `undefined` and `ExpoTurboApp`
+  renders its error surface asking for an explicit `path`, rather than falling
+  back to the bare pathname: `/orders` and `/orders?customer=42` are different
+  documents, and no remaining public hook can rebuild a query without inventing
+  one, since `useGlobalSearchParams()` merges route and query parameters.
+- `ExpoTurboApp` no longer throws during render for a bad `origin`, an
+  unresolvable path, or a missing transport. Each renders the error surface and
+  reports through `onError`, because an unhandled render throw is fatal on both
+  React Native platforms.
+- Fix `ExpoTurboProvider` and a runtime-owning `ExpoTurbo` both disposing
+  `scopes` and `state`. The runtime created them and disposes them itself, so
+  the provider now takes `ownsStateDisposal: false` from `ExpoTurbo` and skips
+  its own claim. A host composing `ExpoTurboProvider` by hand keeps the
+  previous behavior, since the prop defaults to `true`.
+- Fix external-scheme, cross-origin, and unvisitable document links failing
+  blank (#404). `ExpoTurbo` forwarded `navigation` to the runtime factory but
+  never to `ExpoTurboProvider`, while the renderer reads it from context, so
+  every `mailto:`, `tel:`, cross-origin, and non-visitable link raised
+  `TargetError` instead of reaching the host adapter.
+- Fix `useExpoRouterAdapters` rebuilding its adapters on every render when
+  called with inline option callbacks (#403), which is exactly what the guide
+  documented. New adapter identity replaced the whole runtime, which refetched
+  the document without bound and left a permanently blank screen. Options are
+  now read through a ref at call time and only the *presence* of `openExternal`
+  participates in memoization, so the returned adapters keep one identity for
+  the life of the mount.
+- Add `focus` to `createExpoTurboRuntime` and `ExpoTurbo`. The runtime is the
+  single owner and hands the adapter to form validation itself; when the same
+  object also satisfies `AutofocusAdapter`, `ExpoTurboApp` fans it out to the
+  renderer as well. A host supplies focus once instead of keeping two owners of
+  one adapter in step by hand.
+- Add `useExpoTurboDisposable` to `expo-turbo/react`. The reference-counting
+  and microtask-deferred disposal that hosts were copying by hand now lives in
+  the package, so a StrictMode double-mount, a Fast Refresh cycle, or a route
+  swap hands a shared runtime over instead of tearing it down.
+- Add `boundaries` to `ExpoTurbo` and `ExpoTurboApp` for host-authored
+  document, Frame, and form chrome. Neither component mounts a provider between
+  the host tree and the renderer, so host contexts stay ancestors of those
+  components.
+- **Breaking:** Remove `ScrollAdapter`, `StorageAdapter`,
+  `ObservabilityAdapter`, and `ObservabilityEvent`, along with the required
+  `scroll`, `storage`, and `observability` members of `ExpoTurboAdapters`. They
+  were required fields with no consumer anywhere in the package, the examples,
+  the Rails gem, or the protocol. Migration: delete those three members from
+  any `ExpoTurboAdapters` value. Nothing read them, so no behavior changes.
+  `ScrollAlignment` stays; `FrameAutoscrollRequest` still uses it. Keep host
+  persistence and telemetry in the host, and wire scrolling through the
+  specific adapters that are actually consumed, such as `frameAutoscroll`,
+  `documentAnchorScroll`, `documentRefreshScroll`, `documentHistoryScroll`, and
+  `autofocusScroll`.
+- **Breaking:** `renderError` is now required on `ExpoTurbo`. Misconfigured,
+  still-loading, and hard-failed were previously the same blank screen, and a
+  host-neutral component has no primitives with which to draw a better one.
+  Throwing instead is not an option either: an unhandled render throw is fatal
+  on both React Native platforms, which is worse than the blank screen it would
+  replace. Requiring the surface moves the decision to compile time, where it
+  costs nothing and cannot be missed. An untyped host that still omits it gets
+  one `console.error` and an empty render rather than a crash. Migration: pass
+  `renderError`, adopt `ExpoTurboApp` (which ships a visible surface), or pass
+  `renderError={() => null}` to keep rendering nothing.
+- **Breaking:** `react-native` is now an optional peer dependency, required
+  only by the new `expo-turbo/expo` entrypoint. Migration: none for existing
+  entrypoints; applications already depend on React Native.
 - **Breaking:** Fail closed on module negotiation for a verified native
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old
