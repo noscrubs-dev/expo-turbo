@@ -279,6 +279,97 @@ RSpec.describe "Expo Turbo template fallback" do
       end
     end
 
+    # A template with no format in its name answers either audience, which is
+    # the shape this README recommends for a template written to be shared. It
+    # has no format of its own to fall back on, so the demand is the only thing
+    # that says what the response is.
+    it "keeps an explicit HTML render on text/html for a format-neutral template" do
+      neutral_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecNeutralController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render template: "specs/page", formats: [:html]
+        end
+      end
+
+      with_templates(neutral_controller, "specs/page.erb" => %(<div class="ok">plain HTML</div>)) do
+        status, headers, body = dispatch(neutral_controller)
+
+        expect(status).to eq(200)
+        expect(headers["Content-Type"]).to eq("text/html; charset=utf-8")
+        expect(body).to eq(%(<div class="ok">plain HTML</div>))
+      end
+    end
+
+    it "keeps an explicit HTML render on text/html for a format-neutral partial" do
+      neutral_partial_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecNeutralPartialController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render partial: "specs/row", formats: [:html]
+        end
+      end
+
+      with_templates(neutral_partial_controller, "specs/_row.erb" => %(<div class="ok">plain HTML</div>)) do
+        status, headers, body = dispatch(neutral_partial_controller)
+
+        expect(status).to eq(200)
+        expect(headers["Content-Type"]).to eq("text/html; charset=utf-8")
+        expect(body).to eq(%(<div class="ok">plain HTML</div>))
+      end
+    end
+
+    it "still labels a format-neutral template Expo Turbo when nothing demanded otherwise" do
+      resolved_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecNeutralResolvedController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        def show
+          render template: "specs/page"
+        end
+      end
+
+      with_templates(resolved_controller, "specs/page.erb" => %(<Screen id="a"/>)) do
+        _status, headers, body = dispatch(resolved_controller)
+
+        expect(headers["Content-Type"]).to eq("#{ExpoTurbo::Rails::MIME_TYPE}; charset=utf-8")
+        expect(body).to eq(%(<Screen id="a"/>))
+      end
+    end
+
+    # The demand belongs to one render. Anything the action does between two
+    # renders - a helper call, a broadcast, a Stream builder - must already be
+    # back on the format Rails resolved.
+    it "restores the resolved format as soon as the demanding render finishes" do
+      observed = nil
+      scope_controller = Class.new(ActionController::API) do
+        def self.name = "ExpoTurboFallbackSpecScopeController"
+
+        expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}})
+
+        define_method(:show) do
+          render_to_string template: "specs/page", formats: [:html]
+          observed = [expo_turbo_selected_format, turbo_stream.class]
+          render template: "specs/show"
+        end
+      end
+
+      with_templates(
+        scope_controller,
+        "specs/page.html.erb" => %(<div class="ok">plain HTML</div>),
+        "specs/show.html.erb" => %(<Screen id="a"/>)
+      ) do
+        dispatch(scope_controller)
+
+        expect(observed).to eq([ExpoTurbo::Rails::MIME_SYMBOL, ExpoTurbo::Rails::Streams::TagBuilder])
+      end
+    end
+
     # The demand lasts for the render that carried it. A later render with no
     # formats: argument goes back to the format Rails resolved.
     it "does not leak the demand into a later render without one" do

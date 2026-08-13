@@ -95,6 +95,18 @@ module ExpoTurbo
         super
       end
 
+      # A demand belongs to the render that carried it and to nothing after it.
+      # Both entry points restore what was in force, so a helper called between
+      # two renders, or after a render_to_string, is already back on the
+      # resolved format rather than on the last format anyone named.
+      def render(*)
+        expo_turbo_scoped_demand { super }
+      end
+
+      def render_to_string(*)
+        expo_turbo_scoped_demand { super }
+      end
+
       # ActionView::Rendering renders a template for every option, and this
       # concern adds it to API controllers, where it would otherwise hide the
       # registered renderers such as `render turbo_stream:`. Ask the renderers
@@ -206,13 +218,19 @@ module ExpoTurbo
 
       # Every controller-level render passes through here, and a view rendering
       # a partial does not, so this records the caller's own `formats:` and
-      # nothing else. Each render re-answers the question, so a demand cannot
-      # outlive the render that carried it.
+      # nothing else.
       def _normalize_options(options)
         normalized = super
         demanded = normalized.key?(:formats) ? Array(normalized[:formats]).first : nil
         @expo_turbo_demanded_format = demanded.respond_to?(:to_sym) ? demanded.to_sym : nil
         normalized
+      end
+
+      def expo_turbo_scoped_demand
+        previous = @expo_turbo_demanded_format
+        yield
+      ensure
+        @expo_turbo_demanded_format = previous
       end
 
       def expo_turbo_lookup_formats(values)
@@ -232,18 +250,26 @@ module ExpoTurbo
         self.formats = [format.to_sym] if format.respond_to?(:to_sym) && format.to_sym
       end
 
-      # The format Rails selected decides the media type. The extension of the
-      # file that answered decides nothing: an .html template serving a native
-      # request is an Expo Turbo representation, and labelling it text/html
-      # would both mislead the client and route the response around
-      # expo_turbo_validate_response!, which switches on the media type.
+      # The format the render selected decides the media type. Rails offers the
+      # format of the template that answered, which is not the same thing and
+      # is sometimes nothing at all: a NAME.erb template carries no format, and
+      # Rails then falls back to the lookup context, which for a native request
+      # says Expo Turbo whatever the caller asked for.
       def _set_rendered_content_type(format)
         super(expo_turbo_rendered_format(format))
       end
 
       def expo_turbo_rendered_format(format)
+        # A demand names the representation outright, whatever the template
+        # that answered it was called and whether it was called anything.
+        demanded = @expo_turbo_demanded_format
+        return Mime[demanded] || format if demanded
+        # A resolution overrides only in the direction the fallback created: an
+        # .html or format-neutral template answering a native request is an
+        # Expo Turbo representation, and labelling it text/html would mislead
+        # the client and route the response around
+        # expo_turbo_validate_response!, which switches on the media type.
         return format unless expo_turbo_html_template_fallback
-        return format unless format.respond_to?(:to_sym) && format.to_sym == :html
         return format unless expo_turbo_selected_format == MIME_SYMBOL
 
         Mime[MIME_SYMBOL]
