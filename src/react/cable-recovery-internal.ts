@@ -4,10 +4,22 @@ import { DOCUMENT_REFRESH_DEBOUNCE_MS } from "../core/document-refresh-controlle
 import type { DocumentVisitController } from "../core/document-visit-controller.js"
 import { RequestError, StateError } from "../core/errors.js"
 
+/**
+ * Marks a document URL as needing origin bytes. While a URL is claimed, the
+ * runtime tags outgoing requests for it `cache: "no-store"`, which is what
+ * makes the recovery's own refresh fresh by construction instead of fresh by
+ * inference.
+ */
+export interface CableRecoveryFreshness {
+  claim(url: string): void
+  release(url: string): void
+}
+
 export interface CableDocumentRecoveryOptions {
   readonly attempts?: number
   readonly backoffFactor?: number
   readonly debounceMs?: number
+  readonly freshness?: CableRecoveryFreshness
   readonly maxDelayMs?: number
   readonly onError?: (error: Error) => void
 }
@@ -31,13 +43,16 @@ function canonical(url: string): string {
 }
 
 /**
- * True only for a report that a network response for `target` was applied.
+ * True only for a report that this recovery's own refresh of `target` was
+ * applied.
  *
- * `requestId` is the discriminator, and it is the reason a cache cannot fake
- * this: request ids are minted per network request, and a snapshot restore or
- * preview produces a `DocumentSnapshotRestoreReport` — `{ status, url }` — with
- * no request id anywhere in it. `empty` counts alongside `committed` because a
- * `204` is still the server being asked and answering "nothing changed".
+ * `requestId` rules out the internal cache paths — a snapshot restore or
+ * preview produces a `DocumentSnapshotRestoreReport`, `{ status, url }`, with
+ * no request id anywhere in it. It does **not** on its own prove the bytes came
+ * from the origin, because the loader mints the id before calling the fetch
+ * adapter; that is what `cache: "no-store"` on the request handles. `empty`
+ * counts alongside `committed` because a `204` is still the server being asked
+ * and answering "nothing changed".
  */
 function isNetworkDocumentCommit(result: unknown, target: string): boolean {
   if (!result || typeof result !== "object") return false
@@ -84,6 +99,7 @@ export class CableDocumentRecovery {
   private unsubscribe: (() => void) | undefined
   private readonly backoffFactor: number
   private readonly debounceMs: number
+  private readonly freshness: CableRecoveryFreshness | undefined
   private readonly maxAttempts: number
   private readonly maxDelayMs: number
   private readonly onError: ((error: Error) => void) | undefined
@@ -96,6 +112,7 @@ export class CableDocumentRecovery {
     this.backoffFactor = options.backoffFactor ?? CABLE_RECOVERY_BACKOFF_FACTOR
     this.debounceMs = options.debounceMs ?? DOCUMENT_REFRESH_DEBOUNCE_MS
     this.maxAttempts = options.attempts ?? CABLE_RECOVERY_MAX_ATTEMPTS
+    this.freshness = options.freshness
     this.maxDelayMs = options.maxDelayMs ?? CABLE_RECOVERY_MAX_DELAY_MS
     this.onError = options.onError
     if (!Number.isFinite(this.debounceMs) || this.debounceMs < 0) {
@@ -118,7 +135,10 @@ export class CableDocumentRecovery {
     }
     // A fresh reconnect is fresh evidence, so the attempt budget starts over
     // and rapid reconnects coalesce into one obligation.
+    const previous = this.target
     this.target = canonical(request.baseUrl)
+    if (previous !== undefined && previous !== this.target) this.freshness?.release(previous)
+    this.freshness?.claim(this.target)
     this.attempts = 0
     this.lastError = undefined
     this.watch()
@@ -132,6 +152,7 @@ export class CableDocumentRecovery {
   }
 
   private clear(): void {
+    if (this.target !== undefined) this.freshness?.release(this.target)
     this.target = undefined
     this.attempts = 0
     this.lastError = undefined
@@ -202,6 +223,9 @@ export class CableDocumentRecovery {
         new RequestError(
           `Cable reconnect recovery could not refresh the document after ${this.attempts} attempts`,
           { method: "GET" },
+          // A standard cause chain, so tools that walk `.cause` still reach the
+          // transport failure that ended it.
+          this.lastError ? { cause: this.lastError } : undefined,
         ),
       )
       this.clear()
@@ -221,7 +245,6 @@ export class CableDocumentRecovery {
   }
 
   private report(error: Error): void {
-    const cause = this.lastError
     if (!this.onError) {
       queueMicrotask(() => {
         throw error
@@ -229,7 +252,7 @@ export class CableDocumentRecovery {
       return
     }
     try {
-      this.onError(cause ? new AggregateError([error, cause], error.message) : error)
+      this.onError(error)
     } catch (reporterError) {
       queueMicrotask(() => {
         throw new AggregateError([error, reporterError], "Cable recovery reporter failed")

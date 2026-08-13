@@ -424,6 +424,65 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
+  test("demands origin bytes for the document it is recovering", async () => {
+    const documentUrl = "https://example.test/document"
+    const seen: Array<Readonly<{ cache?: string; cacheControl?: string; url: string }>> = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          seen.push({
+            ...(request.cache ? { cache: request.cache } : {}),
+            ...(request.headers["Cache-Control"]
+              ? { cacheControl: request.headers["Cache-Control"] }
+              : {}),
+            url: request.url,
+          })
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+
+    // The initial load is an ordinary request.
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.cache).toBeUndefined()
+
+    callbacks[0]?.connected(false)
+    callbacks[0]?.disconnected(true)
+    callbacks[0]?.connected(true)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 150))
+
+    // The recovery's own request must bypass every cache between here and the
+    // origin. Nothing in the response could prove freshness after the fact: the
+    // request id is minted before the adapter is ever called.
+    expect(seen).toHaveLength(2)
+    expect(seen[1]?.url).toBe(documentUrl)
+    expect(seen[1]?.cache).toBe("no-store")
+    expect(seen[1]?.cacheControl).toBe("no-cache")
+
+    // Once discharged, ordinary caching resumes.
+    await runtime.controller.visit(documentUrl)
+    expect(seen.at(-1)?.cache).toBeUndefined()
+
+    runtime.dispose()
+  })
+
   test("applies a Cable-delivered refresh Stream action", async () => {
     const documentUrl = "https://example.test/document"
     const requests: string[] = []

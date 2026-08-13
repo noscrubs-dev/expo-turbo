@@ -28,7 +28,7 @@ import {
 } from "../core/index.js"
 import { serializeModuleVersionsHeader } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
-import { CableDocumentRecovery } from "./cable-recovery-internal.js"
+import { CableDocumentRecovery, type CableRecoveryFreshness } from "./cable-recovery-internal.js"
 
 const clock: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -41,6 +41,62 @@ function rethrowUnobserved(error: Error): void {
   queueMicrotask(() => {
     throw error
   })
+}
+
+function canonicalUrl(url: string): string {
+  try {
+    return new URL(url).toString()
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Wraps the host transport so that GETs for a document owing Cable reconnect
+ * recovery must come from the origin.
+ *
+ * This is what makes the recovery's refresh fresh *by construction*. Nothing in
+ * the returned report can prove it otherwise: the loader mints the request id
+ * before it ever calls the adapter, so a transport that answers from a cache
+ * produces a perfectly well-formed report over stale bytes.
+ *
+ * Both signals are sent, because they reach different layers: `cache` for
+ * adapters that read the field, and the HTTP request headers for adapters or
+ * proxies that only forward headers.
+ */
+function createFreshnessTransport(fetchAdapter: FetchAdapter): {
+  readonly fetch: FetchAdapter
+  readonly freshness: CableRecoveryFreshness
+} {
+  const claimed = new Set<string>()
+  return {
+    fetch: {
+      fetch(request) {
+        if (request.method !== "GET" || !claimed.has(canonicalUrl(request.url))) {
+          return fetchAdapter.fetch(request)
+        }
+        return fetchAdapter.fetch(
+          Object.freeze({
+            ...request,
+            cache: "no-store" as const,
+            headers: Object.freeze({
+              ...request.headers,
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            }),
+          }),
+        )
+      },
+    },
+    freshness: {
+      claim(url) {
+        claimed.add(canonicalUrl(url))
+      },
+      release(url) {
+        claimed.delete(canonicalUrl(url))
+      },
+    },
+  }
 }
 
 const PLACEHOLDER_DOCUMENT =
@@ -103,7 +159,8 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     : undefined
   history?.initialize({ kind: "unmanaged", url: options.url })
   const moduleVersions = serializeModuleVersionsHeader(options.registry.capabilities.modules)
-  const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
+  const transport = createFreshnessTransport(options.fetch)
+  const loader = new DocumentRequestLoader(session, transport.fetch, requestIds, {
     capabilityHash: options.registry.capabilities.hash,
     moduleVersions,
   })
@@ -128,7 +185,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     : undefined
   const frames = new FrameControllerRegistry(
     session,
-    new FrameRequestLoader(session, options.fetch, requestIds, {
+    new FrameRequestLoader(session, transport.fetch, requestIds, {
       capabilityHash: options.registry.capabilities.hash,
       moduleVersions,
       refresh,
@@ -138,7 +195,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     controller,
     frameHistory ? { frameHistory } : undefined,
   )
-  const submission = new FormSubmissionController(session, options.fetch, {
+  const submission = new FormSubmissionController(session, transport.fetch, {
     frameControllers: frames,
     ...(history ? { history } : {}),
     ...(options.navigation ? { navigation: options.navigation } : {}),
@@ -158,7 +215,10 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   // settles; the recovery scheduler then owns the debounce and, crucially,
   // survives a navigation that starts inside it and does not complete.
   const cableRecovery = options.cable
-    ? new CableDocumentRecovery(controller, clock, backgroundErrorOption)
+    ? new CableDocumentRecovery(controller, clock, {
+        ...backgroundErrorOption,
+        freshness: transport.freshness,
+      })
     : undefined
   const reconnectRefresh =
     options.cable && cableRecovery

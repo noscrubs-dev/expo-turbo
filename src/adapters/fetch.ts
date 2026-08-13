@@ -378,6 +378,9 @@ export function createDefaultFetchAdapter(options: DefaultFetchAdapterOptions = 
           if (controller.signal.aborted) throw ownerAbort
           return globalThis.fetch(request.url, {
             ...(body === undefined ? {} : { body: body as BodyInit }),
+            // A request that asked for origin bytes must not be answered by the
+            // platform HTTP cache.
+            ...(request.cache === "no-store" ? { cache: "no-store" as const } : {}),
             credentials: "include",
             headers,
             method: request.method,

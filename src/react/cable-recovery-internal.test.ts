@@ -35,6 +35,7 @@ class ManualClock implements ClockAdapter {
 interface HarnessOptions {
   /** Serve refreshes the way a snapshot restoration would: no request id. */
   readonly cached?: boolean
+  readonly freshness?: { claim(url: string): void; release(url: string): void }
   readonly reject?: boolean
 }
 
@@ -98,6 +99,7 @@ function harness(options: HarnessOptions = {}) {
     attempts: 3,
     backoffFactor: 2,
     debounceMs: 1,
+    ...(options.freshness ? { freshness: options.freshness } : {}),
     onError: (error) => errors.push(error),
   })
 
@@ -223,6 +225,47 @@ describe("Cable document recovery", () => {
     // One report per obligation, not one per attempt.
     expect(h.errors).toHaveLength(1)
     expect(h.errors[0]?.message).toContain("after 3 attempts")
+    // A standard cause chain, so a tool walking `.cause` still reaches the
+    // transport failure rather than only a summary.
+    expect((h.errors[0] as { cause?: unknown })?.cause).toBeInstanceOf(Error)
+    expect((h.errors[0] as { cause?: Error })?.cause?.message).toBe("recovery transport refused")
+  })
+
+  test("claims and releases document freshness around the obligation", async () => {
+    const claims: string[] = []
+    const releases: string[] = []
+    const h = harness({
+      freshness: {
+        claim: (url) => claims.push(url),
+        release: (url) => releases.push(url),
+      },
+    })
+
+    h.recovery.request({ baseUrl: BASE })
+    // Claimed while owed: the loader mints a request id before it ever calls
+    // the adapter, so nothing in the report can prove the bytes were fresh.
+    // Demanding origin bytes is what makes it true rather than inferred.
+    expect(claims).toEqual([BASE])
+    expect(releases).toEqual([])
+
+    await tick(h)
+
+    expect(h.recovery.armed).toBe(false)
+    expect(releases).toEqual([BASE])
+  })
+
+  test("releases freshness when the obligation is abandoned", async () => {
+    const releases: string[] = []
+    const h = harness({
+      freshness: { claim: () => undefined, release: (url) => releases.push(url) },
+    })
+
+    h.recovery.request({ baseUrl: BASE })
+    h.recovery.dispose()
+
+    // A claim that outlived its obligation would force uncached GETs of that
+    // document for the rest of the session.
+    expect(releases).toEqual([BASE])
   })
 
   test("coalesces rapid reconnects into one obligation", async () => {
