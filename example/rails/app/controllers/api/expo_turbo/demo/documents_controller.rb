@@ -3,7 +3,7 @@ module Api
     module Demo
       class DocumentsController < ApplicationController
         def show
-          render_expo_turbo "demo/documents/show"
+          render "show"
         end
       end
     end

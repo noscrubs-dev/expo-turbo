@@ -43,6 +43,12 @@ class ExpoTurboUpstreamParityFrameContext
   end
 end
 
+# Unmodified turbo-rails, with none of this gem's helper modules in the chain.
+class ExpoTurboUpstreamParityStreamContext
+  include ActionView::Helpers::TagHelper
+  include Turbo::StreamsHelper
+end
+
 RSpec.describe "Expo Turbo upstream helper parity" do
   let(:template_actions) { %i[append prepend before after replace update] }
   let(:selector_actions) { %i[append_all prepend_all before_all after_all replace_all update_all] }
@@ -64,8 +70,9 @@ RSpec.describe "Expo Turbo upstream helper parity" do
 
   def expo_frame(id, **attributes, &block)
     controller = controller_class.new
-    controller.request = ActionDispatch::TestRequest.create
-    controller.view_context.expo_turbo_frame_tag(id, **attributes, &block)
+    controller.request = ActionDispatch::TestRequest.create("HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE)
+    controller.formats = controller.request.formats.filter_map(&:ref)
+    controller.view_context.turbo_frame_tag(id, **attributes, &block)
   end
 
   def normalized_attributes(node)
@@ -241,5 +248,67 @@ RSpec.describe "Expo Turbo upstream helper parity" do
     else
       expect(attribute_value(normalized_frame(upstream_class), "id")).to eq("ExpoTurboUpstreamParityRecord")
     end
+  end
+
+  # A web render must reach unmodified turbo-rails byte for byte. Parsed
+  # comparison is not enough here: a stream-name suffix or a different channel
+  # survives parsing, and a mixed Accept value is exactly where the helpers
+  # could disagree with the format Rails selected.
+  {
+    "an HTML Accept value" => "text/html",
+    "a mixed Accept value that prefers HTML" => "text/html, application/vnd.expo-turbo+xml;q=0.1",
+    # Both types at equal quality: the request is a verified native request by
+    # Accept alone, and Rails still selects HTML. Only the selected format can
+    # answer this one correctly.
+    "a mixed Accept value at equal quality" => "text/html, application/vnd.expo-turbo+xml",
+    "a Turbo Stream Accept value that prefers HTML" =>
+      "text/vnd.turbo-stream.html, text/html, application/vnd.expo-turbo+xml;q=0.1",
+    "no Accept value" => nil
+  }.each do |label, accept|
+    it "renders Frames byte for byte like turbo-rails for #{label}" do
+      payload = '<p id="loaded">Loaded</p>'.html_safe
+      arguments = ["details", {src: "/frames/details", target: "sidebar", loading: :lazy}]
+      rendered = web_context(accept).turbo_frame_tag(arguments.first, **arguments.last) { payload }
+      upstream = ExpoTurboUpstreamParityFrameContext.new
+        .turbo_frame_tag(arguments.first, **arguments.last) { payload }
+
+      expect(rendered.to_s).to eq(upstream.to_s)
+    end
+
+    it "renders Stream sources byte for byte like turbo-rails for #{label}" do
+      rendered = web_context(accept).turbo_stream_from("room", :updates, id: "room-stream")
+      upstream = ExpoTurboUpstreamParityStreamContext.new
+        .turbo_stream_from("room", :updates, id: "room-stream")
+
+      expect(rendered.to_s).to eq(upstream.to_s)
+      expect(::Turbo::StreamsChannel.verified_stream_name(signed_stream_name(rendered)))
+        .to eq("room:updates")
+    end
+
+    it "builds Rails DOM IDs and the turbo-rails Stream builder for #{label}" do
+      context = web_context(accept)
+      record = ExpoTurboUpstreamParityRecord.new(7)
+
+      expect(context.dom_id(record)).to eq(ActionView::RecordIdentifier.dom_id(record))
+      %i[edit new destroy frame list].each do |prefix|
+        expect(context.dom_id(record, prefix)).to eq(ActionView::RecordIdentifier.dom_id(record, prefix))
+      end
+      expect(context.dom_id(ExpoTurboUpstreamParityRecord))
+        .to eq(ActionView::RecordIdentifier.dom_id(ExpoTurboUpstreamParityRecord))
+      expect(context.turbo_stream).to be_a(::Turbo::Streams::TagBuilder)
+      expect(context.turbo_stream).not_to be_a(ExpoTurbo::Rails::Streams::TagBuilder)
+    end
+  end
+
+  def web_context(accept)
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create(accept ? {"HTTP_ACCEPT" => accept} : {})
+    controller.response = ActionDispatch::TestResponse.new
+    controller.formats = controller.request.formats.filter_map(&:ref)
+    controller.view_context
+  end
+
+  def signed_stream_name(source)
+    ExpoTurbo::Rails::Testing.parse_document(source.to_s).root["signed-stream-name"]
   end
 end

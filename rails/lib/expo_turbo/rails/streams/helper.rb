@@ -4,20 +4,34 @@ module ExpoTurbo
   module Rails
     module Streams
       module Helper
+        include Format::Helper
+
         RESERVED_STREAM_SOURCE_ATTRIBUTES = %w[channel signed-stream-name data-channel data-signed-stream-name].freeze
         RESERVED_STREAM_SOURCE_DATA_ATTRIBUTES = %w[channel signed-stream-name].freeze
         RESERVED_PROTECTED_STREAM_SOURCE_ATTRIBUTES = (RESERVED_STREAM_SOURCE_ATTRIBUTES + %w[data-grant grant]).freeze
         RESERVED_PROTECTED_STREAM_SOURCE_DATA_ATTRIBUTES = (RESERVED_STREAM_SOURCE_DATA_ATTRIBUTES + %w[grant]).freeze
 
+        # The explicit builder. It stays Expo Turbo in any context, including a
+        # broadcast, which has no request and therefore no format.
         def expo_turbo_stream
           TagBuilder.new(
             self,
-            partial_resolver: ->(partial) { controller.send(:expo_turbo_partial_file, partial) },
             fragment_validator: ->(document) { controller.send(:expo_turbo_validate_stream_fragment!, document) }
           )
         end
 
-        def expo_turbo_stream_from(*streamables, **attributes)
+        # The standard turbo-rails builder for an HTML render, and the Expo
+        # Turbo builder for an Expo Turbo render.
+        def turbo_stream
+          expo_turbo_render? ? expo_turbo_stream : super
+        end
+
+        # The standard turbo-rails source. For an Expo Turbo render it keeps
+        # the fixed :expo stream-name suffix, so native XML never arrives on
+        # the browser topic of the same streamables.
+        def turbo_stream_from(*streamables, **attributes)
+          return super unless expo_turbo_render?
+
           reserved_data_attribute = attributes
             .select { |key, _| key.to_s == "data" }
             .values
