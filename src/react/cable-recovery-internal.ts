@@ -2,7 +2,8 @@ import type { ClockAdapter } from "../adapters/index.js"
 import type { DocumentRefreshRequest } from "../core/document-refresh-controller.js"
 import { DOCUMENT_REFRESH_DEBOUNCE_MS } from "../core/document-refresh-controller.js"
 import type { DocumentVisitController } from "../core/document-visit-controller.js"
-import { RequestError, StateError } from "../core/errors.js"
+import type { CableRecoveryAbandonmentReason } from "../core/errors.js"
+import { CableRecoveryAbandonedError, RequestError, StateError } from "../core/errors.js"
 
 /**
  * Marks a document URL as needing origin bytes. While a URL is claimed, the
@@ -89,18 +90,35 @@ function isNetworkDocumentCommit(result: unknown, target: string): boolean {
  *
  * The record *is* the identity token. Every callback closes over the record it
  * was started for and checks `obligations.get(url) === record` before changing
- * anything, so a result can only ever affect the obligation that started it.
- * A second reconnect for the same URL installs a different record, which is why
- * an old in-flight refresh can neither discharge the new obligation nor spend
- * its attempt budget: there is no field to compare and therefore no comparison
- * to forget.
+ * anything, so a result can only ever affect the obligation that started it,
+ * and a callback from an obligation that has already ended changes nothing.
  *
- * The timer is per record for the same reason. A shared timer let one
- * document's exhaustion clear another document's pending attempt, leaving it
- * armed with nothing scheduled and no report.
+ * The record lives for as long as the *document* owes recovery, not for as long
+ * as one reconnect does. A second reconnect for the same document does not
+ * install a second obligation, because the duty is the same duty: fetch this
+ * document from the origin. What a reconnect does change is `epoch`.
+ *
+ * `epoch` is what a reconnect means for a refresh already in flight. That
+ * refresh was issued before the newest gap, so its response may have been
+ * generated before the broadcasts that gap swallowed: it cannot be allowed to
+ * discharge the obligation. It still reached the transport, so it still costs
+ * one attempt — otherwise a connection that flaps once per in-flight refresh
+ * would make the terminal report unreachable while issuing unbounded requests.
+ *
+ * `attempts` deliberately survives a reconnect for the same reason. Resetting
+ * it let a flapping connection consume the budget and reset it forever, so the
+ * document could neither recover nor report — in exactly the weak-signal
+ * condition this component exists for.
+ *
+ * The timer is per record. A shared timer let one document's exhaustion clear
+ * another document's pending attempt, leaving it armed with nothing scheduled
+ * and no report. A reconnect does not restart a timer that is already pending,
+ * for the mirror-image reason: reconnects arriving faster than the debounce
+ * would push the attempt out forever.
  */
 interface RecoveryObligation {
   attempts: number
+  epoch: number
   handle: unknown
   lastError: Error | undefined
   /** At most one attempt in flight per obligation, structurally. */
@@ -117,20 +135,23 @@ interface RecoveryObligation {
  * means the tree changed, and a snapshot preview or restoration changes the
  * tree with no request at all.
  *
- * The invariant, stated for the mount it protects: **while a document is still
- * mounted it stops owing recovery only on a genuine fresh re-fetch of that
- * document, or on an explicit terminal report.** Exactly four paths end an
- * obligation:
+ * The invariant: **a document stops owing recovery only on a genuine fresh
+ * re-fetch of that document, or on a report that names it.** Exactly four paths
+ * end an obligation, and every one of them is one of those two:
  *
  * 1. a refresh report for that URL carrying a request id — fresh by
  *    construction, because the URL is claimed `cache: "no-store"` for as long
  *    as it owes recovery and `refreshCurrent` reaches neither the snapshot
  *    cache nor the prefetch cache;
- * 2. the attempt budget running out, reported once;
- * 3. refusal past `maxDocuments`, reported as it happens;
- * 4. `dispose()`, which is not really an ending — it is the end of the mounted
- *    document the obligation existed to protect, so there is nothing left to be
- *    stale and nothing for a report to act on.
+ * 2. the attempt budget running out;
+ * 3. refusal past `maxDocuments`;
+ * 4. `dispose()`.
+ *
+ * 2, 3 and 4 all report a `CableRecoveryAbandonedError` carrying the document's
+ * canonical URL and the reason. Disposal reports like the rest of them: the
+ * runtime keeps its session and tree after `dispose()`, so the document it was
+ * showing stays displayable with its recovery silently removed, which is the
+ * staleness this component exists to prevent rather than an exemption from it.
  *
  * Consequences worth stating, because both are deliberate:
  *
@@ -195,49 +216,96 @@ export class CableDocumentRecovery {
     }
     const target = canonical(request.baseUrl)
     const existing = this.obligations.get(target)
-    if (!existing && this.obligations.size >= this.maxDocuments) {
-      // Refused, not evicted, and loudly: the documents already owing recovery
-      // keep owing it, and the one that could not be admitted is the one this
-      // call names, so the caller needs no URL in the report to know which
-      // document stays stale.
-      this.report(
-        new RequestError(
-          `Cable reconnect recovery refused this document because ${this.maxDocuments} others already owe recovery; it stays stale until something else refreshes it`,
-          { method: "GET" },
-        ),
+    if (existing) {
+      // The same document owing recovery again is the same duty, not a new one.
+      // Neither its attempt budget nor its pending timer is reset, because a
+      // connection that flaps faster than either would otherwise starve both the
+      // refresh and the terminal report. What the reconnect does change is the
+      // epoch, which retires any refresh already in flight: that request was
+      // issued before this gap, so its bytes cannot answer for it.
+      existing.epoch += 1
+      this.watch()
+      // Only when nothing is already on its way. A suspended obligation — one
+      // whose last attempt was refused because another document is active — has
+      // neither, and a reconnect is the right moment to try it again.
+      if (existing.handle === undefined && !existing.pending) this.schedule(existing)
+      return
+    }
+    if (this.obligations.size >= this.maxDocuments) {
+      // Refused, not evicted: the documents already owing recovery keep owing
+      // it, so `armedFor` never stops being true for one that was quietly
+      // dropped. The report names the document that could not be admitted,
+      // because a host cannot refresh a document the report will not name.
+      this.abandon(
+        target,
+        "capacity",
+        `Cable reconnect recovery refused a document because ${this.maxDocuments} others already owe recovery; it stays stale until something else refreshes it`,
+        undefined,
       )
       return
     }
     // A reconnect for one document must never erase an obligation for another:
     // the second document's recovery would silently take the first's place and
     // the first would show stale content for the rest of the session.
-    //
-    // A repeat for the same document is a *new* obligation with fresh evidence.
-    // Its attempt budget starts over, rapid reconnects coalesce, and — because
-    // the record is the identity — the previous record's in-flight refresh can
-    // no longer touch it. The freshness claim is deliberately not released and
-    // re-taken: the URL owes origin bytes continuously across the handover.
-    if (existing?.handle !== undefined) this.clock.clearTimeout(existing.handle)
     const obligation: RecoveryObligation = {
       attempts: 0,
+      epoch: 0,
       handle: undefined,
       lastError: undefined,
       pending: false,
       url: target,
     }
     this.obligations.set(target, obligation)
-    if (!existing) this.freshness?.claim(target)
+    this.freshness?.claim(target)
     this.watch()
     this.schedule(obligation)
   }
 
   dispose(): void {
     if (this.disposed) return
+    // Reported, not silently dropped. `runtime.dispose()` keeps its session and
+    // tree — it cancels the controller and the loader, it does not tear the
+    // document down — and `ExpoTurbo` disposes a runtime whenever a
+    // runtime-defining input changes, while the document that runtime rendered
+    // can still be on screen. A document left displayable with its recovery
+    // removed is the silent staleness this component exists to prevent, so
+    // disposal ends obligations the same way exhaustion does: loudly, by name.
+    //
+    // `disposed` is set before the reports, not after. Reporting hands control
+    // to the host, and an obligation armed after this point would sit in the
+    // map with `owns` false for the rest of the session: never fired, never
+    // reported. `end` finds its record through the map rather than through
+    // `owns`, so closing that window costs nothing.
     this.disposed = true
-    for (const obligation of [...this.obligations.values()]) this.end(obligation)
+    for (const obligation of [...this.obligations.values()]) {
+      this.abandon(
+        obligation.url,
+        "disposed",
+        "Cable reconnect recovery was disposed before this document was refreshed; it stays stale until something else refreshes it",
+        obligation,
+      )
+    }
     // `end` drops the subscription once the map empties; this covers a disposal
     // with nothing armed, where the map was already empty.
     this.unwatch()
+  }
+
+  /**
+   * The only way a document stops owing recovery without having been re-fetched.
+   * It ends the obligation and reports it by name in one place, so an ending
+   * cannot be added later that forgets to say which document it abandoned.
+   */
+  private abandon(
+    url: string,
+    reason: CableRecoveryAbandonmentReason,
+    message: string,
+    obligation: RecoveryObligation | undefined,
+  ): void {
+    const cause = obligation?.lastError
+    if (obligation) this.end(obligation)
+    this.report(
+      new CableRecoveryAbandonedError(message, url, reason, cause ? { cause } : undefined),
+    )
   }
 
   /** Whether this record is still the live obligation for its document. */
@@ -284,6 +352,7 @@ export class CableDocumentRecovery {
 
   private attempt(obligation: RecoveryObligation): void {
     const target = obligation.url
+    const epoch = obligation.epoch
     obligation.pending = true
     let refresh: Promise<unknown>
     try {
@@ -298,16 +367,26 @@ export class CableDocumentRecovery {
         obligation.pending = false
         if (!this.owns(obligation)) return
         // `undefined` is a refusal, not an attempt: this document is not the
-        // active one, or a visit was already running. Costing an attempt for it
-        // would burn the budget while the user is simply reading another
-        // screen.
+        // active one, or a visit was already running. No request was made, so
+        // costing an attempt for it would burn the budget while the user is
+        // simply reading another screen.
         if (result === undefined) return
+        // A reconnect landed while this was in flight. The request went out
+        // before that gap, so whatever it returned may predate the broadcasts
+        // the gap swallowed and cannot discharge the obligation. It did reach
+        // the transport, so it still costs an attempt.
+        if (obligation.epoch !== epoch) {
+          this.failedAttempt(obligation, undefined)
+          return
+        }
         if (isNetworkDocumentCommit(result, target)) {
           this.end(obligation)
           return
         }
         this.failedAttempt(obligation, undefined)
       },
+      // A failure counts whatever the epoch: a GET that reached the transport
+      // and failed is the evidence the budget exists to bound.
       (error: unknown) => {
         obligation.pending = false
         this.failedAttempt(obligation, error)
@@ -325,15 +404,11 @@ export class CableDocumentRecovery {
     if (obligation.attempts >= this.maxAttempts) {
       // One report per obligation, not one per attempt: a reconnect that needs
       // retrying is ordinary, and only the permanent failure is actionable.
-      const attempts = obligation.attempts
-      const cause = obligation.lastError
-      this.end(obligation)
-      this.report(
-        new RequestError(
-          `Cable reconnect recovery could not refresh the document after ${attempts} attempts`,
-          { method: "GET" },
-          cause ? { cause } : undefined,
-        ),
+      this.abandon(
+        obligation.url,
+        "exhausted",
+        `Cable reconnect recovery could not refresh a document after ${obligation.attempts} attempts`,
+        obligation,
       )
       return
     }

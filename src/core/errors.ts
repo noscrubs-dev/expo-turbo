@@ -121,3 +121,45 @@ export class SubscriptionError extends ExpoTurboError {
     super("subscription", message, context, options)
   }
 }
+
+/**
+ * Why a document stopped owing Cable reconnect recovery without ever being
+ * re-fetched.
+ *
+ * - `capacity`: too many other documents already owed recovery to admit it.
+ * - `disposed`: the runtime holding the obligation was disposed.
+ * - `exhausted`: the bounded retries all failed.
+ */
+export type CableRecoveryAbandonmentReason = "capacity" | "disposed" | "exhausted"
+
+/**
+ * A document that needed origin bytes after a Cable reconnect will not be
+ * getting them.
+ *
+ * `documentUrl` is a typed property rather than an `ExpoTurboErrorContext`
+ * field, and it is deliberately absent from `message`. That context is the
+ * redacted protocol-metadata bag every error carries into logs, and a document
+ * URL can hold a token or a customer id in its query string, so it does not
+ * belong there. A host reading this property has asked for it. The precedent is
+ * `RequestLifecycleTransportError`, which likewise carries typed state of its
+ * own beside the redacted context.
+ *
+ * Without the URL the report is not actionable: it says something on this device
+ * is stale without saying what, and a host cannot refresh a document it cannot
+ * name.
+ */
+export class CableRecoveryAbandonedError extends RequestError {
+  readonly documentUrl: string
+  readonly reason: CableRecoveryAbandonmentReason
+
+  constructor(
+    message: string,
+    documentUrl: string,
+    reason: CableRecoveryAbandonmentReason,
+    options?: ErrorOptions,
+  ) {
+    super(message, { method: "GET" }, options)
+    this.documentUrl = documentUrl
+    this.reason = reason
+  }
+}

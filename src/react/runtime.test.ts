@@ -295,6 +295,8 @@ describe("Expo Turbo runtime", () => {
     const documentUrl = "https://example.test/document"
     const nextUrl = "https://example.test/next"
     const requests: string[] = []
+    const noStore: boolean[] = []
+    const reported: Error[] = []
     const callbacks: CableCallbacks[] = []
     let releaseNavigation: (() => void) | undefined
     const held = new Promise<void>((resolve, reject) => {
@@ -315,6 +317,7 @@ describe("Expo Turbo runtime", () => {
       fetch: {
         fetch: async (request) => {
           requests.push(request.url)
+          noStore.push(request.cache === "no-store")
           if (request.url === nextUrl) await held
           return response(
             '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
@@ -322,6 +325,7 @@ describe("Expo Turbo runtime", () => {
           )
         },
       },
+      onBackgroundError: (error) => reported.push(error),
       registry,
       url: documentUrl,
     })
@@ -344,11 +348,12 @@ describe("Expo Turbo runtime", () => {
     await visit
     await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
 
-    return { documentUrl, nextUrl, requests, runtime }
+    return { documentUrl, nextUrl, noStore, reported, requests, runtime }
   }
 
   test("recovers the document when a navigation swallows the reconnect and then fails", async () => {
-    const { documentUrl, nextUrl, requests, runtime } = await reconnectDuringHeldNavigation("fail")
+    const { documentUrl, nextUrl, reported, requests, runtime } =
+      await reconnectDuringHeldNavigation("fail")
 
     // The failed navigation left the original document on screen and stale, so
     // the recovery had to survive it.
@@ -356,12 +361,16 @@ describe("Expo Turbo runtime", () => {
     expect(runtime.session.tree.document.url).toBe(documentUrl)
 
     runtime.dispose()
+    // It discharged on that third request, so disposal had nothing left to
+    // abandon and reported nothing.
+    expect(reported).toEqual([])
   })
 
   test("recovers when a navigation cancels the recovery in flight and then fails", async () => {
     const documentUrl = "https://example.test/document"
     const nextUrl = "https://example.test/next"
     const requests: string[] = []
+    const reported: Error[] = []
     const callbacks: CableCallbacks[] = []
     let releaseRecovery: (() => void) | undefined
     let releaseNavigation: (() => void) | undefined
@@ -394,6 +403,7 @@ describe("Expo Turbo runtime", () => {
           )
         },
       },
+      onBackgroundError: (error) => reported.push(error),
       registry,
       url: documentUrl,
     })
@@ -423,11 +433,21 @@ describe("Expo Turbo runtime", () => {
     // than the bare debounce.
     await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS * 4 + 400))
 
-    // The document was never re-fetched, so the recovery still owed one.
+    // The document was never re-fetched, so the recovery still owed one. This
+    // fixture never releases that retry, so it is still owed at disposal.
     expect(requests).toEqual([documentUrl, documentUrl, nextUrl, documentUrl])
     expect(runtime.session.tree.document.url).toBe(documentUrl)
+    expect(reported).toEqual([])
 
+    // The document this runtime is still showing owes a fetch it will now never
+    // get, so disposal has to say so and say which document. `runtime.dispose()`
+    // leaves the session and the tree intact — asserted here, because that is
+    // the whole reason disposal cannot end an obligation silently.
     runtime.dispose()
+    expect(runtime.session.tree.document.url).toBe(documentUrl)
+    expect(runtime.session.treeGeneration).toBeGreaterThan(0)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toMatchObject({ documentUrl, reason: "disposed" })
   })
 
   test("demands origin bytes for the document it is recovering", async () => {
@@ -531,18 +551,31 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
-  test("drops the reconnect recovery when the navigation that swallowed it succeeds", async () => {
-    const { documentUrl, nextUrl, requests, runtime } =
+  test("suspends the reconnect recovery when the navigation that swallowed it succeeds", async () => {
+    const { documentUrl, nextUrl, noStore, reported, requests, runtime } =
       await reconnectDuringHeldNavigation("succeed")
 
-    // Request count alone cannot tell "dropped" from "still armed" here: a
-    // retained recovery targets the old URL, which `refreshCurrent` refuses, so
-    // it would issue no request either way. The drop itself is asserted
-    // directly on `armed` in cable-recovery-internal.test.ts; this only pins
-    // that a successful navigation costs no extra fetch.
+    // A successful navigation suspends the recovery rather than ending it, and
+    // a suspended obligation costs no request: `refreshCurrent` refuses a
+    // document that is not the active one, which spends no attempt either.
     expect(requests).toEqual([documentUrl, nextUrl])
 
+    // Returning is where suspension has to pay off, because a return can be
+    // served from a snapshot of exactly the stale content the reconnect was
+    // about. Two things prove the obligation survived the successful
+    // navigation: the return visit itself is forced to origin bytes, because
+    // the claim covers every GET for a document while it owes recovery, and the
+    // recovery then issues its own refresh on top. The first two requests
+    // carry no such tag, so the claim is not simply always on.
+    await runtime.controller.visit(documentUrl)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+
+    expect(requests).toEqual([documentUrl, nextUrl, documentUrl, documentUrl])
+    expect(noStore).toEqual([false, false, true, true])
+
+    // Having been refreshed, it owes nothing, so disposal abandons nothing.
     runtime.dispose()
+    expect(reported).toEqual([])
   })
 
   test("routes a failed background refresh to onBackgroundError", async () => {

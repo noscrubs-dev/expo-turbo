@@ -32,10 +32,51 @@ class ManualClock implements ClockAdapter {
   }
 }
 
+/**
+ * A clock with a real timeline, for the scenarios where the interval between
+ * reconnects is the whole point. `ManualClock` fires every timer regardless of
+ * its delay, so it cannot show a timer that is reset before it ever comes due.
+ */
+class VirtualClock implements ClockAdapter {
+  private next = 1
+  private time = 0
+  private readonly timers = new Map<number, { callback: () => void; dueAt: number }>()
+
+  clearTimeout(handle: unknown): void {
+    this.timers.delete(handle as number)
+  }
+
+  now(): number {
+    return this.time
+  }
+
+  setTimeout(callback: () => void, delayMs = 0): unknown {
+    const handle = this.next++
+    this.timers.set(handle, { callback, dueAt: this.time + Math.max(0, delayMs) })
+    return handle
+  }
+
+  /** Advances the timeline in `stepMs` slices, running whatever comes due. */
+  async advance(ms: number, stepMs = 25): Promise<void> {
+    const target = this.time + ms
+    while (this.time < target) {
+      this.time = Math.min(target, this.time + stepMs)
+      for (const [handle, timer] of [...this.timers]) {
+        if (timer.dueAt > this.time) continue
+        this.timers.delete(handle)
+        timer.callback()
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    }
+  }
+}
+
 interface HarnessOptions {
   /** Which document the visit controller considers active. */
   readonly active?: string
   readonly attempts?: number
+  readonly backoffFactor?: number
+  readonly debounceMs?: number
   /** Serve refreshes the way a snapshot restoration would: no request id. */
   readonly cached?: boolean
   readonly documents?: number
@@ -49,6 +90,8 @@ interface HarnessOptions {
    */
   readonly hold?: readonly string[]
   readonly reject?: boolean
+  /** Use a real timeline instead of the fire-everything manual clock. */
+  readonly virtual?: boolean
 }
 
 /**
@@ -126,11 +169,11 @@ function harness(options: HarnessOptions = {}) {
     },
   }
 
-  const clock = new ManualClock()
+  const clock = options.virtual ? new VirtualClock() : new ManualClock()
   const recovery = new CableDocumentRecovery(visits as never, clock, {
     attempts: options.attempts ?? 3,
-    backoffFactor: 2,
-    debounceMs: 1,
+    backoffFactor: options.backoffFactor ?? 2,
+    debounceMs: options.debounceMs ?? 1,
     ...(options.documents === undefined ? {} : { documents: options.documents }),
     ...(options.freshness ? { freshness: options.freshness } : {}),
     onError: (error) => errors.push(error),
@@ -178,10 +221,31 @@ function harness(options: HarnessOptions = {}) {
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 async function tick(h: ReturnType<typeof harness>, times = 1): Promise<void> {
+  const clock = h.clock as ManualClock
   for (let index = 0; index < times; index += 1) {
-    h.clock.fire()
+    clock.fire()
     await flush()
   }
+}
+
+/**
+ * Reconnects every `everyMs` for `forMs`, the way a phone on a weak signal
+ * does. This is the condition the feature exists for, so the component has to
+ * both recover and report under it.
+ */
+async function flap(
+  h: ReturnType<typeof harness>,
+  url: string,
+  options: Readonly<{ everyMs: number; forMs: number }>,
+): Promise<number> {
+  const clock = h.clock as VirtualClock
+  let reconnects = 0
+  for (let elapsed = 0; elapsed < options.forMs; elapsed += options.everyMs) {
+    h.recovery.request({ baseUrl: url })
+    reconnects += 1
+    await clock.advance(options.everyMs)
+  }
+  return reconnects
 }
 
 describe("Cable document recovery", () => {
@@ -311,6 +375,90 @@ describe("Cable document recovery", () => {
     expect(h.refreshed.filter((url) => url === BASE)).not.toEqual([])
   })
 
+  test("still refreshes while the connection keeps flapping", async () => {
+    // A phone on a weak signal reconnects faster than the debounce. If a
+    // reconnect resets the pending timer, the timer never comes due and the
+    // recovery never issues a single request — in the exact condition the
+    // feature exists for. Reinstate the timer reset in `request` and this
+    // fails with `refreshed` empty.
+    const h = harness({ debounceMs: 150, virtual: true })
+
+    const reconnects = await flap(h, BASE, { everyMs: 100, forMs: 10_000 })
+
+    expect(reconnects).toBe(100)
+    expect(h.refreshed.length).toBeGreaterThan(0)
+    expect(h.refreshed[0]).toBe(BASE)
+    // It discharged on the first successful refresh and later reconnects armed
+    // it again, so the flapping never left it stuck.
+    expect(h.errors).toEqual([])
+  })
+
+  test("still reports when the connection flaps faster than the attempt budget", async () => {
+    // The worse half of the same defect: real GETs are being made and failing,
+    // and resetting the attempt count on every reconnect means the budget is
+    // consumed and reset rather than never started, so the terminal report is
+    // unreachable. Reinstate `attempts: 0` on re-arm and this fails with
+    // `errors` empty and the document still armed.
+    const h = harness({
+      attempts: 3,
+      debounceMs: 150,
+      failFor: [BASE],
+      virtual: true,
+    })
+
+    await flap(h, BASE, { everyMs: 500, forMs: 10_000 })
+
+    expect(h.refreshed.length).toBeGreaterThanOrEqual(3)
+    expect(h.errors.length).toBeGreaterThanOrEqual(1)
+    expect(h.errors[0]?.message).toContain("after 3 attempts")
+    // Asserts the absence of the second route: the report is not an artifact of
+    // the flapping stopping, because reconnects continued for the full window.
+    expect(h.errors[0]).toMatchObject({ documentUrl: BASE, reason: "exhausted" })
+  })
+
+  test("cannot discharge on a refresh a newer reconnect superseded", async () => {
+    // A reconnect while a refresh is in flight means that refresh was issued
+    // before the gap it would have to cover, so its bytes may predate the
+    // broadcasts that gap swallowed and cannot end the obligation. Drop the
+    // epoch check and this fails: the pre-gap commit discharges it.
+    const h = harness({ attempts: 2, hold: [BASE] })
+
+    h.recovery.request({ baseUrl: BASE })
+    await tick(h)
+    h.recovery.request({ baseUrl: BASE })
+    h.settle(0, "network")
+    await flush()
+
+    expect(h.recovery.armedFor(BASE)).toBe(true)
+    expect(h.errors).toEqual([])
+
+    // It still cost a budget slot, because it did reach the transport. With a
+    // two-attempt budget one more settled attempt exhausts it — which is what
+    // keeps a connection that flaps once per in-flight refresh from issuing
+    // unbounded requests and never reporting.
+    await tick(h)
+    h.settle(1, "reject")
+    await flush()
+
+    expect(h.errors).toHaveLength(1)
+    expect(h.errors[0]?.message).toContain("after 2 attempts")
+    expect(h.errors[0]).toMatchObject({ documentUrl: BASE, reason: "exhausted" })
+  })
+
+  test("discharges on a refresh no reconnect superseded", async () => {
+    // Asserts the absence of the second route for the test above: the epoch
+    // check does not simply block every discharge in that fixture.
+    const h = harness({ attempts: 2, hold: [BASE] })
+
+    h.recovery.request({ baseUrl: BASE })
+    await tick(h)
+    h.settle(0, "network")
+    await flush()
+
+    expect(h.recovery.armedFor(BASE)).toBe(false)
+    expect(h.errors).toEqual([])
+  })
+
   test("leaves another document's timer running when one document exhausts", async () => {
     // Revert the per-obligation timer to one shared timer and this fails at the
     // last two assertions: `stop()` clears the shared handle on A's exhaustion,
@@ -387,44 +535,41 @@ describe("Cable document recovery", () => {
     expect(h.errors).toEqual([])
   })
 
-  test("does not let an old in-flight failure spend a re-armed attempt budget", async () => {
-    // Revert the record-identity check and this fails at the mid-point
-    // assertions: the stale rejection counts against the new obligation, so it
-    // gives up after two of its own attempts instead of three and reports while
-    // it still had budget left.
+  test("charges a failure to the budget whichever reconnect issued it", async () => {
+    // The budget bounds *requests that reached the transport*, not requests
+    // belonging to the newest reconnect. Excusing a superseded failure is what
+    // made the terminal report unreachable while a flapping connection issued
+    // real, failing GETs: reconnect during flight, excuse the failure, repeat.
+    //
+    // Restore `attempts: 0` on re-arm, or stop counting a superseded failure,
+    // and this fails: the third rejection no longer exhausts the budget.
     const h = harness({ attempts: 3, failFor: [BASE], hold: [BASE] })
 
     h.recovery.request({ baseUrl: BASE })
     await tick(h)
+    // A reconnect retires the in-flight attempt, then it fails anyway.
     h.recovery.request({ baseUrl: BASE })
-
-    // The superseded attempt fails. It must not touch the new obligation.
     h.settle(0, "reject")
     await flush()
     expect(h.errors).toEqual([])
 
-    // Two attempts of the new obligation's own budget.
     await tick(h)
     h.settle(1, "reject")
     await flush()
-    await tick(h)
-    h.settle(2, "reject")
-    await flush()
-
-    // Still armed with one attempt left. A consumed budget would already have
-    // reported by now.
     expect(h.errors).toEqual([])
     expect(h.recovery.armedFor(BASE)).toBe(true)
 
     await tick(h)
-    h.settle(3, "reject")
+    h.settle(2, "reject")
     await flush()
 
+    // Three failed GETs, three attempts, one report — the reconnect in the
+    // middle changed neither the count nor the fact that it ends loudly.
+    expect(h.refreshed).toHaveLength(3)
     expect(h.errors).toHaveLength(1)
     expect(h.errors[0]?.message).toContain("after 3 attempts")
+    expect(h.errors[0]).toMatchObject({ documentUrl: BASE, reason: "exhausted" })
     expect(h.recovery.armedFor(BASE)).toBe(false)
-    // One refresh before the re-arm and the new obligation's own three.
-    expect(h.refreshed).toHaveLength(4)
   })
 
   test("refuses a new obligation past the cap instead of evicting an armed one", async () => {
@@ -452,10 +597,17 @@ describe("Cable document recovery", () => {
     expect(releases).toEqual([])
 
     // Reported as it happens, because an obligation that never starts is the
-    // same silent staleness as one that ends without a fresh fetch.
+    // same silent staleness as one that ends without a fresh fetch — and named,
+    // because a host cannot refresh a document the report will not identify.
     expect(h.errors).toHaveLength(1)
-    expect(h.errors[0]?.message).toContain("refused this document")
     expect(h.errors[0]?.message).toContain("2 others")
+    expect(h.errors[0]).toMatchObject({
+      documentUrl: "https://example.test/three",
+      reason: "capacity",
+    })
+    // The URL stays out of `message`, which is the part that reaches logs
+    // wholesale; a host has to read the typed property to get it.
+    expect(h.errors[0]?.message).not.toContain("example.test")
   })
 
   test("admits a repeat reconnect for a document already at the cap", async () => {
@@ -471,7 +623,15 @@ describe("Cable document recovery", () => {
     expect(h.recovery.armedFor("https://example.test/two")).toBe(true)
   })
 
-  test("releases every obligation on disposal", async () => {
+  test("reports every obligation it still owed when disposed", async () => {
+    // Disposal is not an exemption from the invariant. `runtime.dispose()`
+    // keeps its session and tree — it cancels the controller and the loader,
+    // it does not tear the document down — and `ExpoTurbo` disposes a runtime
+    // whenever a runtime-defining input changes, while the document that
+    // runtime rendered can still be on screen. Ending these silently leaves a
+    // displayable document stale with nothing left to fix it.
+    //
+    // Drop the reports from `dispose` and this fails with `errors` empty.
     const releases: string[] = []
     const h = harness({
       freshness: { claim: () => undefined, release: (url) => releases.push(url) },
@@ -484,6 +644,27 @@ describe("Cable document recovery", () => {
 
     expect(releases.sort()).toEqual([BASE, OTHER].sort())
     expect(h.recovery.armed).toBe(false)
+    // One report per document still owed, each naming its own document.
+    expect(h.errors).toHaveLength(2)
+    expect(h.errors.map((error) => (error as { documentUrl?: string }).documentUrl).sort()).toEqual(
+      [BASE, OTHER].sort(),
+    )
+    for (const error of h.errors) expect(error).toMatchObject({ reason: "disposed" })
+  })
+
+  test("reports nothing when disposed with nothing owed", async () => {
+    // Asserts the absence of the second route for the test above: disposal
+    // itself is not what produces a report, so a host is not trained to ignore
+    // the channel by an error on every unmount.
+    const h = harness()
+
+    h.recovery.request({ baseUrl: BASE })
+    await tick(h)
+    expect(h.recovery.armed).toBe(false)
+
+    h.recovery.dispose()
+
+    expect(h.errors).toEqual([])
   })
 
   test("claims and releases document freshness around the obligation", async () => {

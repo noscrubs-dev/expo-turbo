@@ -134,22 +134,31 @@ All notable public package, gem, and protocol changes will be recorded here.
   recovery stays armed. Navigating away suspends rather than discharges it,
   because returning can be served from a snapshot and would otherwise restore
   the stale content. Attempts are bounded with exponential backoff spanning
-  roughly a minute, and exhausting them reports once through
-  `onBackgroundError`, with the transport failure attached as the error's
-  `cause`. Disposal ends every obligation without a report, which is the one
-  exit that is neither: it is the end of the mounted document the obligation
-  existed to protect, so there is nothing left to be stale.
+  roughly a minute. Every ending that is not a fresh re-fetch — exhausting the
+  attempts, refusing past the document cap, and disposal — reports a
+  `CableRecoveryAbandonedError` through `onBackgroundError` carrying the
+  document's canonical URL and the reason, with any transport failure as the
+  error's `cause`. Disposal is not exempt: `runtime.dispose()` keeps its session
+  and tree, so the document it was showing stays displayable with its recovery
+  removed. The URL is a typed `documentUrl` property rather than an
+  `ExpoTurboErrorContext` field and is kept out of `message`, because that
+  context is the redacted bag every error carries into logs and a document URL
+  can hold a token in its query string; a host reading the property has asked
+  for it. Without it the report names no document and a host cannot act on it.
 
   Obligations are held per document URL, not one at a time, and each owns its
   own timer and its own attempt budget: a reconnect for one document must not
   erase a suspended obligation for another, and one document exhausting its
-  attempts must not cancel another document's pending one. A result can only
-  ever change the obligation that started it, so a second reconnect for the same
-  URL is a new obligation that an older in-flight refresh can neither discharge
-  nor charge an attempt to. At most eight documents may owe recovery at once;
-  past that a new obligation is **refused and reported** rather than an existing
-  one evicted, so a document that is armed stays armed and the report is about
-  the document the caller just named.
+  attempts must not cancel another document's pending one. A reconnect for a
+  document that already owes recovery is the same duty, so it resets neither the
+  budget nor a pending timer — a connection flapping faster than either would
+  otherwise leave the document unable to recover *or* report, in exactly the
+  weak-signal condition this exists for. What a reconnect does do is retire any
+  refresh already in flight: that request was issued before the newest gap, so
+  its bytes cannot discharge the obligation, though it still costs an attempt
+  because it reached the transport. At most eight documents may owe recovery at
+  once; past that a new obligation is **refused and reported** rather than an
+  existing one evicted, so a document that is armed stays armed.
 - Add `cache` to `TurboRequest`. `"no-store"` means the response must come from
   the origin rather than any cache the adapter or platform keeps, and adapters
   that maintain or sit in front of a cache must honor it. The packaged transport

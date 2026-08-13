@@ -147,6 +147,12 @@ succeed — the attempts are bounded, spanning roughly a minute — it reports
 through `onError` rather than giving up quietly. Eight documents may owe
 recovery at once; a ninth is refused and reported.
 
+Every one of those endings, including a runtime disposed while a document still
+owed a refresh, arrives as a `CableRecoveryAbandonedError` whose `documentUrl`
+names the document and whose `reason` is `exhausted`, `capacity`, or `disposed`.
+Read `documentUrl` to know which screen is stale; it is deliberately absent from
+`message`, which is what ends up in logs.
+
 Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
 library hands the same instance to form validation and to the renderer, so an
 application never keeps two owners of one adapter in step by hand.
