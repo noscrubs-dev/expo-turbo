@@ -95,7 +95,7 @@ module ExpoTurbo
 
           Dir.glob("**/*.*.*", base: root).sort.each do |relative|
             match = TEMPLATE_NAME.match(File.basename(relative))
-            next unless match
+            next unless match && File.file?(File.join(root, relative))
 
             name = File.join(File.dirname(relative), match[:logical]).delete_prefix("./")
             entry = found[name] ||= Pair.new(name, nil, nil)

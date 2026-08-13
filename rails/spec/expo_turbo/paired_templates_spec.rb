@@ -169,6 +169,14 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
     expect(findings.first.path).to eq(File.join(root, "demo/show.html.erb"))
   end
 
+  it "ignores a directory whose name looks like a template" do
+    FileUtils.mkdir_p(File.join(root, "demo/show.html.erb"))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">x</DemoText>))
+
+    expect(lint).to be_empty
+    expect(described_class.pairs(root)).to be_empty
+  end
+
   it "defaults to the application view root" do
     expect(described_class.default_roots).to eq([::Rails.root.join("app/views").to_s])
   end

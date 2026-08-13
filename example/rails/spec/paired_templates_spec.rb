@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "tmpdir"
 require "expo_turbo/rails/paired_templates"
 
 # The lint runs in CI here, over this application's real views. It is not a
