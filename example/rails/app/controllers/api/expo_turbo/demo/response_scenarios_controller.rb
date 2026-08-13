@@ -24,6 +24,8 @@ module Api
           when "wrong-mime"
             render plain: "This is intentionally not Expo Turbo XML.", content_type: "text/plain"
           when "malformed-xml"
+            # A deliberate client-behavior probe: it must reach the device.
+            self.expo_turbo_validate_responses = false
             render plain: "<Gallery>", content_type: ::ExpoTurbo::Rails::MIME_TYPE
           when "delayed-document"
             sleep(delay_ms.fdiv(1_000))
@@ -47,18 +49,16 @@ module Api
         end
 
         def render_document(status:)
-          render_expo_turbo(
-            "demo/response_scenarios/document",
-            locals: {status: Rack::Utils.status_code(status)},
-            status:
-          )
+          render "document", locals: {status: Rack::Utils.status_code(status)}, status:
         end
 
         def render_frame(id: FRAME_ID)
-          expo_turbo_vary_by_frame!
-          return head :bad_request unless expo_turbo_frame_request_id == FRAME_ID
+          return head :bad_request unless expo_turbo_frame_request?
 
-          render_expo_turbo "demo/response_scenarios/frame", locals: {id:}
+          # The mismatch scenario proves native missing-Frame handling, so it
+          # opts out of the automatic response check on purpose.
+          self.expo_turbo_frame_match = id == FRAME_ID
+          render "frame", locals: {id:}
         end
       end
     end

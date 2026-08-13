@@ -10,6 +10,9 @@ module ExpoTurbo
       RESERVED_COMPONENT_NAMES = [*PROTOCOL_ELEMENTS, "expo-turbo-fragment"].freeze
       FORM_OWNER_ATTRIBUTE_NAMES = %w[action enctype method novalidate target].freeze
       SHARED_ATTRIBUTE_NAMES = %w[autofocus class dir dirname form id xml:space xmlns].freeze
+      CHILD_MODES = %w[nodes none text].freeze
+      XML_SPACE_ATTRIBUTE = "xml:space"
+      XML_INSIGNIFICANT_WHITESPACE = /[^\t\n\r ]/
       TOKEN_PATTERN = /\A[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)*\z/
       MAX_TOKEN_LENGTH = 64
       JAVASCRIPT_WHITESPACE = /[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+/u
@@ -26,7 +29,7 @@ module ExpoTurbo
 
         manifest_backed = !manifest.nil?
         components = load_manifest_components(manifest) if manifest_backed
-        @components, @style_token_components, @component_attributes = normalize_components(
+        @components, @style_token_components, @component_attributes, @component_children = normalize_components(
           components,
           manifest_backed:
         )
@@ -149,6 +152,7 @@ module ExpoTurbo
           components[component["tag"]] = {
             aliases: component["aliases"],
             attributes: attribute_names,
+            children: manifest_child_mode(component),
             form_owner: component["formOwner"] == true,
             required_attributes: attributes.filter_map { |attribute| attribute["name"] if attribute["required"] },
             style_tokens: attribute_names.include?("style-tokens")
@@ -156,10 +160,20 @@ module ExpoTurbo
         end
       end
 
+      def manifest_child_mode(component)
+        return unless component.key?("children")
+        unless CHILD_MODES.include?(component["children"])
+          raise ConfigurationError, "Expo Turbo capability manifest children must be nodes, none, or text"
+        end
+
+        component["children"]
+      end
+
       def normalize_components(components, manifest_backed:)
         raise ConfigurationError, "Expo Turbo template capabilities require a component map" unless components.is_a?(Hash)
 
         component_attributes = {}
+        component_children = {}
         names = {}
         style_token_components = {}
         components.each do |tag, configuration|
@@ -173,18 +187,19 @@ module ExpoTurbo
               required: configuration[:required_attributes].to_h { |name| [name, true] }.freeze
             }.freeze
           end
+          component_children[tag] = configuration[:children] if configuration[:children]
           style_token_components[tag] = true if configuration[:style_tokens]
           configuration[:aliases].each { |alias_name| declare_component_name!(names, alias_name, tag) }
         end
-        [names.freeze, style_token_components.freeze, component_attributes.freeze]
+        [names.freeze, style_token_components.freeze, component_attributes.freeze, component_children.freeze]
       end
 
       def normalize_component_configuration(tag, configuration, manifest_backed:)
         configuration = {} if configuration.nil?
-        allowed_keys = %i[aliases style_tokens]
+        allowed_keys = %i[aliases children style_tokens]
         allowed_keys.concat(%i[attributes form_owner required_attributes]) if manifest_backed
         unless configuration.is_a?(Hash) && (configuration.keys - allowed_keys).empty?
-          raise ConfigurationError, "Expo Turbo component #{tag.inspect} accepts only aliases and style_tokens"
+          raise ConfigurationError, "Expo Turbo component #{tag.inspect} accepts only aliases, children, and style_tokens"
         end
 
         aliases = configuration.fetch(:aliases, [])
@@ -208,10 +223,22 @@ module ExpoTurbo
         {
           aliases: aliases.freeze,
           attributes: attributes.freeze,
+          children: validate_child_mode!(tag, configuration[:children]),
           form_owner:,
           required_attributes: required_attributes.freeze,
           style_tokens:
         }.freeze
+      end
+
+      def validate_child_mode!(tag, children)
+        return if children.nil?
+
+        children = children.to_s
+        unless CHILD_MODES.include?(children)
+          raise ConfigurationError, "Expo Turbo component #{tag.inspect} children must be nodes, none, or text"
+        end
+
+        children.freeze
       end
 
       def declare_component_name!(names, name, canonical)
@@ -313,6 +340,7 @@ module ExpoTurbo
         raise ValidationError, "Expo Turbo template contains an undeclared component" unless component
 
         validate_component_attributes!(element, component)
+        validate_component_children!(element, component)
         style_tokens = literal_attribute(element, "style-tokens")&.value
         if style_tokens
           unless @style_token_components.key?(component)
@@ -353,6 +381,49 @@ module ExpoTurbo
         return if capabilities[:required].keys.all? { |name| present.key?(name) }
 
         raise ValidationError, "Expo Turbo template omits a required component attribute"
+      end
+
+      # The native decoder applies the same three rules. Only the "nodes" rule
+      # is silent on the device: bare text under a container becomes an
+      # RCTRawText inside a View, which shows a nonfatal RedBox in development
+      # and nothing at all in production.
+      def validate_component_children!(element, component)
+        case @component_children[component]
+        when "nodes"
+          if rendered_text_child?(element)
+            raise ValidationError, "Expo Turbo template puts bare text in a component that accepts elements"
+          end
+        when "text"
+          if element.element_children.any?
+            raise ValidationError, "Expo Turbo template puts an element in a component that accepts text"
+          end
+        when "none"
+          if element.element_children.any? || rendered_text_child?(element)
+            raise ValidationError, "Expo Turbo template gives children to a component that accepts no children"
+          end
+        end
+      end
+
+      # Mirrors the native renderedTextValue rules: CDATA and preserved space
+      # always render, and other whitespace-only text renders as nothing.
+      def rendered_text_child?(element)
+        element.children.any? do |node|
+          next false unless node.text? || node.cdata?
+
+          node.cdata? || preserved_space?(element) || node.content.match?(XML_INSIGNIFICANT_WHITESPACE)
+        end
+      end
+
+      def preserved_space?(element)
+        while element&.element?
+          case element[XML_SPACE_ATTRIBUTE]
+          when "preserve" then return true
+          when "default" then return false
+          end
+
+          element = element.parent
+        end
+        false
       end
 
       def qualified_attribute_name(attribute)

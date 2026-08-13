@@ -3,7 +3,7 @@ module Api
     module Demo
       class RefreshMorphDocumentsController < ApplicationController
         def show
-          render_expo_turbo "demo/refresh_morph_documents/show"
+          render "show"
         end
       end
     end

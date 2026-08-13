@@ -1,0 +1,93 @@
+# frozen_string_literal: true
+
+require "action_controller/api"
+require "spec_helper"
+require "support/rendering"
+
+RSpec.describe "Expo Turbo Frame requests" do
+  include ExpoTurboSpecRendering
+
+  let(:controller_class) do
+    Class.new(ActionController::API) do
+      include ExpoTurbo::Rails::Controller
+
+      expo_turbo_template_capabilities(components: {"Screen" => {}})
+
+      def show
+        render "specs/show"
+      end
+    end
+  end
+
+  let(:frame_template) { '<turbo-frame id="details"><Screen/></turbo-frame>' }
+
+  it "rejects an invalid Turbo-Frame header instead of serving a document" do
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => "<Screen/>") do
+      ["details invalid", "details\nnext", " ", "\xFF".b].each do |header|
+        status, _headers, body = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => header})
+
+        expect(status).to eq(400)
+        expect(body).to eq("")
+      end
+    end
+  end
+
+  it "serves a document when no Turbo-Frame header is present" do
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => "<Screen/>") do
+      status, _headers, body = dispatch(controller_class)
+
+      expect(status).to eq(200)
+      expect(body).to eq("<Screen/>")
+    end
+  end
+
+  it "serves a Frame response that contains the requested Frame" do
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => frame_template) do
+      status, _headers, body = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "details"})
+
+      expect(status).to eq(200)
+      expect(body).to eq(frame_template)
+    end
+  end
+
+  # The action cannot know the expected Frame before the view renders, so the
+  # check reads the response instead of a hand-written id in the controller.
+  it "rejects a response that does not contain the requested Frame" do
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => frame_template) do
+      status, _headers, body = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "sidebar"})
+
+      expect(status).to eq(400)
+      expect(body).to eq("")
+    end
+  end
+
+  it "finds the requested Frame anywhere in the response document" do
+    template = '<Screen><turbo-frame id="details"><Screen/></turbo-frame></Screen>'
+
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
+      status, = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "details"})
+
+      expect(status).to eq(200)
+    end
+  end
+
+  it "does not accept a namespaced id attribute as the match" do
+    template = '<Screen xmlns:meta="urn:metadata"><turbo-frame meta:id="details"/></Screen>'
+
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => template) do
+      status, = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "details"})
+
+      expect(status).to eq(400)
+    end
+  end
+
+  it "lets one action answer a Frame request with a different Frame on purpose" do
+    controller_class.expo_turbo_frame_match = false
+
+    with_templates(controller_class, "specs/show.expo_turbo.erb" => frame_template) do
+      status, = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "sidebar"})
+
+      expect(status).to eq(200)
+    end
+  end
+end

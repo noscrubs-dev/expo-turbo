@@ -62,7 +62,7 @@ describe("component action registry", () => {
     expect(state.get("count")).toBe(2)
     expect(lifecycle).toEqual(["success:2", "end:success"])
     expect(registry().actions).toEqual(["increment"])
-    expect(registry().modules).toEqual([{ name: "counter-actions", version: "0.1.0" }])
+    expect("modules" in registry()).toBe(false)
   })
 
   test("serializes concurrent invocations and keeps the queue alive after failure", async () => {

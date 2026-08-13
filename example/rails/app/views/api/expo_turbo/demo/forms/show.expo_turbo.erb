@@ -1,5 +1,5 @@
-<%= expo_turbo_frame_tag "demo-form-frame" do %>
-  <%= render partial: "expo_turbo/demo/forms/first_name_form", locals: {error:, first_name:} %>
+<%= turbo_frame_tag "demo-form-frame" do %>
+  <%= render partial: "first_name_form", locals: {error:, first_name:} %>
   <DemoForm id="demo-upload-form" action="/api/expo_turbo/demo/form" enctype="multipart/form-data" method="post">
     <DemoText id="demo-upload-form-title">Native multipart upload</DemoText>
     <DemoFormFile
