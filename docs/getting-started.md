@@ -137,6 +137,16 @@ without leaving `ExpoTurboApp`. Supplying `cable` is what enables
 `turbo-cable-stream-source`; the runtime owns the subscription registry and
 releases it on unmount.
 
+Cable delivers Stream actions, `refresh` included, for as long as the socket is
+up, and it recovers the mounted document after a reconnect: anything broadcast
+while the socket was down was missed, so the document is re-fetched from the
+origin rather than from any cache. That recovery stays armed until the fetch
+actually lands, so a refused refresh, a cancelled one, or a navigation that
+fails does not end it, and navigating away only suspends it. If it cannot
+succeed — the attempts are bounded, spanning roughly a minute — it reports
+through `onError` rather than giving up quietly. Eight documents may owe
+recovery at once; a ninth is refused and reported.
+
 Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
 library hands the same instance to form validation and to the renderer, so an
 application never keeps two owners of one adapter in step by hand.

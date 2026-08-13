@@ -120,28 +120,36 @@ All notable public package, gem, and protocol changes will be recorded here.
 
   A server-directed reconnect also recovers the document it was disconnected
   from, so nothing broadcast during the gap is silently missing. The recovery
-  holds one invariant rather than a list of visit outcomes: it stays armed until
-  the document it needs has actually been re-fetched. Freshness is established
-  rather than inferred: while a document owes recovery, the runtime marks its
-  requests `cache: "no-store"`, and the recovery discharges only when its own
-  refresh of that URL completes successfully. Nothing about a report can prove
-  freshness after the fact — the loader mints the request id before it calls the
+  holds one invariant rather than a list of visit outcomes: **while a document
+  is still mounted it stops owing recovery only on a genuine fresh re-fetch of
+  that document, or on an explicit report.** Exactly three paths end an
+  obligation, and each one is one of those two. Freshness is established rather
+  than inferred: while a document owes recovery, the runtime marks its requests
+  `cache: "no-store"`, and the recovery discharges only when its own refresh of
+  that URL completes successfully. Nothing about a report can prove freshness
+  after the fact — the loader mints the request id before it calls the
   transport, so a cached response yields a well-formed report over stale bytes.
-  A refusal, a
-  cancellation, a failed navigation, or a superseded request is therefore not a
-  special case: none of them is that observation, so the recovery stays armed.
-  Navigating away suspends rather than discharges it, because returning can be
-  served from a snapshot and would otherwise restore the stale content. Attempts
-  are bounded with exponential backoff spanning roughly a minute, and exhausting
-  them reports once through `onBackgroundError`, with the transport failure
-  attached as the error's `cause`.
+  A refusal, a cancellation, a failed navigation, or a superseded request is
+  therefore not a special case: none of them is that observation, so the
+  recovery stays armed. Navigating away suspends rather than discharges it,
+  because returning can be served from a snapshot and would otherwise restore
+  the stale content. Attempts are bounded with exponential backoff spanning
+  roughly a minute, and exhausting them reports once through
+  `onBackgroundError`, with the transport failure attached as the error's
+  `cause`. Disposal ends every obligation without a report, which is the one
+  exit that is neither: it is the end of the mounted document the obligation
+  existed to protect, so there is nothing left to be stale.
 
-  Obligations are held per document URL, not one at a time: a reconnect for one
-  document must not erase a suspended obligation for another, or the first
-  document shows stale content for the rest of the session. At most eight
-  documents are retained, and passing that evicts the least recently requested
-  one — reported, not dropped, because an obligation that ends without a fresh
-  fetch has to end loudly.
+  Obligations are held per document URL, not one at a time, and each owns its
+  own timer and its own attempt budget: a reconnect for one document must not
+  erase a suspended obligation for another, and one document exhausting its
+  attempts must not cancel another document's pending one. A result can only
+  ever change the obligation that started it, so a second reconnect for the same
+  URL is a new obligation that an older in-flight refresh can neither discharge
+  nor charge an attempt to. At most eight documents may owe recovery at once;
+  past that a new obligation is **refused and reported** rather than an existing
+  one evicted, so a document that is armed stays armed and the report is about
+  the document the caller just named.
 - Add `cache` to `TurboRequest`. `"no-store"` means the response must come from
   the origin rather than any cache the adapter or platform keeps, and adapters
   that maintain or sit in front of a cache must honor it. The packaged transport

@@ -37,9 +37,18 @@ export const CABLE_RECOVERY_MAX_DELAY_MS = 30_000
 /**
  * How many documents may owe recovery at once. Obligations are per document, so
  * a user cycling through screens on a flaky connection would otherwise retain
- * one entry per document for the life of the session. Passing this evicts the
- * least recently requested obligation — and reports it, because an obligation
- * that ends without a fresh fetch has to end loudly.
+ * one entry per document for the life of the session.
+ *
+ * Passing this **refuses the new obligation** rather than evicting an existing
+ * one. Refusal keeps the map honest: a document that is armed stays armed, so
+ * `armedFor` never starts lying about one that was quietly dropped. It also
+ * puts the report on the document in the request that just arrived, which is
+ * information the caller already holds — an eviction report would have to name
+ * a URL, and `ExpoTurboErrorContext` carries no URL by design.
+ *
+ * The cost is that the refused document is the newest, which is usually the one
+ * on screen. Re-arming a URL already in the map never refuses, so a document
+ * that already owes recovery keeps recovering.
  */
 export const CABLE_RECOVERY_MAX_DOCUMENTS = 8
 
@@ -76,6 +85,30 @@ function isNetworkDocumentCommit(result: unknown, target: string): boolean {
 }
 
 /**
+ * One document's outstanding recovery.
+ *
+ * The record *is* the identity token. Every callback closes over the record it
+ * was started for and checks `obligations.get(url) === record` before changing
+ * anything, so a result can only ever affect the obligation that started it.
+ * A second reconnect for the same URL installs a different record, which is why
+ * an old in-flight refresh can neither discharge the new obligation nor spend
+ * its attempt budget: there is no field to compare and therefore no comparison
+ * to forget.
+ *
+ * The timer is per record for the same reason. A shared timer let one
+ * document's exhaustion clear another document's pending attempt, leaving it
+ * armed with nothing scheduled and no report.
+ */
+interface RecoveryObligation {
+  attempts: number
+  handle: unknown
+  lastError: Error | undefined
+  /** At most one attempt in flight per obligation, structurally. */
+  pending: boolean
+  readonly url: string
+}
+
+/**
  * Document recovery after an Action Cable reconnect.
  *
  * Everything broadcast while the socket was down was missed, so the document
@@ -84,10 +117,20 @@ function isNetworkDocumentCommit(result: unknown, target: string): boolean {
  * means the tree changed, and a snapshot preview or restoration changes the
  * tree with no request at all.
  *
- * The invariant is unchanged — **the recovery stays armed until the document it
- * needs has actually been re-fetched** — but it is now attached to an
- * observation only a network round trip can produce: a refresh report for the
- * target URL carrying a request id. Caches cannot mint one.
+ * The invariant, stated for the mount it protects: **while a document is still
+ * mounted it stops owing recovery only on a genuine fresh re-fetch of that
+ * document, or on an explicit terminal report.** Exactly four paths end an
+ * obligation:
+ *
+ * 1. a refresh report for that URL carrying a request id — fresh by
+ *    construction, because the URL is claimed `cache: "no-store"` for as long
+ *    as it owes recovery and `refreshCurrent` reaches neither the snapshot
+ *    cache nor the prefetch cache;
+ * 2. the attempt budget running out, reported once;
+ * 3. refusal past `maxDocuments`, reported as it happens;
+ * 4. `dispose()`, which is not really an ending — it is the end of the mounted
+ *    document the obligation existed to protect, so there is nothing left to be
+ *    stale and nothing for a report to act on.
  *
  * Consequences worth stating, because both are deliberate:
  *
@@ -99,17 +142,8 @@ function isNetworkDocumentCommit(result: unknown, target: string): boolean {
  *   to re-fetch the document merely makes one later refresh redundant, which is
  *   a wasted request rather than stale content.
  */
-interface RecoveryObligation {
-  attempts: number
-  lastError: Error | undefined
-  /** Monotonic, for least-recently-requested eviction. */
-  sequence: number
-}
-
 export class CableDocumentRecovery {
   private disposed = false
-  private handle: unknown
-  private requestSequence = 0
   private unsubscribe: (() => void) | undefined
   /** One obligation per canonical document URL. */
   private readonly obligations = new Map<string, RecoveryObligation>()
@@ -139,6 +173,9 @@ export class CableDocumentRecovery {
     if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1) {
       throw new RequestError("Cable recovery attempts must be a positive integer")
     }
+    if (!Number.isInteger(this.maxDocuments) || this.maxDocuments < 1) {
+      throw new RequestError("Cable recovery documents must be a positive integer")
+    }
   }
 
   /** Whether any document still owes a recovery fetch. */
@@ -157,134 +194,129 @@ export class CableDocumentRecovery {
       throw new StateError("Cable document recovery requires a base URL")
     }
     const target = canonical(request.baseUrl)
-    // A reconnect for one document must never erase a suspended obligation for
-    // another: the second document's recovery would silently take the first's
-    // place and the first would show stale content for the rest of the session.
-    // A repeat for the same document is the same obligation with fresh
-    // evidence, so its attempt budget starts over and rapid reconnects coalesce.
-    this.obligations.set(target, {
+    const existing = this.obligations.get(target)
+    if (!existing && this.obligations.size >= this.maxDocuments) {
+      // Refused, not evicted, and loudly: the documents already owing recovery
+      // keep owing it, and the one that could not be admitted is the one this
+      // call names, so the caller needs no URL in the report to know which
+      // document stays stale.
+      this.report(
+        new RequestError(
+          `Cable reconnect recovery refused this document because ${this.maxDocuments} others already owe recovery; it stays stale until something else refreshes it`,
+          { method: "GET" },
+        ),
+      )
+      return
+    }
+    // A reconnect for one document must never erase an obligation for another:
+    // the second document's recovery would silently take the first's place and
+    // the first would show stale content for the rest of the session.
+    //
+    // A repeat for the same document is a *new* obligation with fresh evidence.
+    // Its attempt budget starts over, rapid reconnects coalesce, and — because
+    // the record is the identity — the previous record's in-flight refresh can
+    // no longer touch it. The freshness claim is deliberately not released and
+    // re-taken: the URL owes origin bytes continuously across the handover.
+    if (existing?.handle !== undefined) this.clock.clearTimeout(existing.handle)
+    const obligation: RecoveryObligation = {
       attempts: 0,
+      handle: undefined,
       lastError: undefined,
-      sequence: ++this.requestSequence,
-    })
-    this.freshness?.claim(target)
-    this.evictExcess(target)
+      pending: false,
+      url: target,
+    }
+    this.obligations.set(target, obligation)
+    if (!existing) this.freshness?.claim(target)
     this.watch()
-    this.schedule(this.debounceMs, true)
+    this.schedule(obligation)
   }
 
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const target of [...this.obligations.keys()]) this.release(target)
-    this.stop()
+    for (const obligation of [...this.obligations.values()]) this.end(obligation)
+    // `end` drops the subscription once the map empties; this covers a disposal
+    // with nothing armed, where the map was already empty.
+    this.unwatch()
+  }
+
+  /** Whether this record is still the live obligation for its document. */
+  private owns(obligation: RecoveryObligation): boolean {
+    return !this.disposed && this.obligations.get(obligation.url) === obligation
   }
 
   /**
-   * Ends one obligation. Every exit routes through here so the no-store claim
-   * is released exactly once per document.
+   * Ends one obligation. Every exit routes through here, so the no-store claim
+   * is released exactly once per document and only this obligation's own timer
+   * is cleared.
    */
-  private release(target: string): void {
-    if (!this.obligations.delete(target)) return
-    this.freshness?.release(target)
+  private end(obligation: RecoveryObligation): void {
+    if (this.obligations.get(obligation.url) !== obligation) return
+    this.obligations.delete(obligation.url)
+    if (obligation.handle !== undefined) this.clock.clearTimeout(obligation.handle)
+    obligation.handle = undefined
+    this.freshness?.release(obligation.url)
+    if (this.obligations.size === 0) this.unwatch()
   }
 
-  private stop(): void {
-    if (this.handle !== undefined) this.clock.clearTimeout(this.handle)
-    this.handle = undefined
-    if (this.obligations.size > 0) return
-    const unsubscribe = this.unsubscribe
-    this.unsubscribe = undefined
-    unsubscribe?.()
-  }
-
-  private evictExcess(keep: string): void {
-    while (this.obligations.size > this.maxDocuments) {
-      let oldest: string | undefined
-      let oldestSequence = Number.POSITIVE_INFINITY
-      for (const [target, obligation] of this.obligations) {
-        if (target === keep) continue
-        if (obligation.sequence < oldestSequence) {
-          oldest = target
-          oldestSequence = obligation.sequence
-        }
-      }
-      if (oldest === undefined) return
-      const evicted = this.obligations.get(oldest)
-      this.release(oldest)
-      // Reported, not dropped: an obligation ending without a fresh fetch is
-      // exactly the silent staleness this component exists to prevent.
-      this.report(
-        new RequestError(
-          `Cable reconnect recovery abandoned a document after ${this.maxDocuments} others needed recovery`,
-          { method: "GET" },
-          evicted?.lastError ? { cause: evicted.lastError } : undefined,
-        ),
-      )
-    }
-  }
-
-  private schedule(delayMs: number, reset: boolean): void {
-    if (this.disposed || this.obligations.size === 0) return
-    if (this.handle !== undefined) {
-      if (!reset) return
-      this.clock.clearTimeout(this.handle)
-    }
-    this.handle = this.clock.setTimeout(() => this.fire(), delayMs)
-  }
-
-  private backoffDelay(): number {
-    let lowest = 0
-    for (const obligation of this.obligations.values()) {
-      lowest = lowest === 0 ? obligation.attempts : Math.min(lowest, obligation.attempts)
-    }
-    const scaled = this.debounceMs * this.backoffFactor ** lowest
+  private backoffDelay(obligation: RecoveryObligation): number {
+    const scaled = this.debounceMs * this.backoffFactor ** obligation.attempts
     return Math.min(scaled, this.maxDelayMs)
   }
 
-  private fire(): void {
-    this.handle = undefined
-    if (this.disposed || this.obligations.size === 0) return
-    // A visit in flight may be about to re-fetch one of these itself; the
-    // watcher calls back when it settles.
-    if (this.visits.state.status === "started") return
-
-    // Every armed document is attempted. `refreshCurrent` refuses the ones that
-    // are not active without issuing a request, so at most one of these reaches
-    // the network and the rest cost nothing.
-    for (const target of [...this.obligations.keys()]) this.attempt(target)
+  private schedule(obligation: RecoveryObligation): void {
+    if (!this.owns(obligation)) return
+    if (obligation.handle !== undefined) this.clock.clearTimeout(obligation.handle)
+    obligation.handle = this.clock.setTimeout(() => {
+      obligation.handle = undefined
+      this.fire(obligation)
+    }, this.backoffDelay(obligation))
   }
 
-  private attempt(target: string): void {
+  private fire(obligation: RecoveryObligation): void {
+    if (!this.owns(obligation) || obligation.pending) return
+    // A visit in flight may be about to re-fetch this document itself; the
+    // watcher calls back when it settles. Leaving the obligation with no timer
+    // is deliberate — that is the suspended state, and it is not an ending.
+    if (this.visits.state.status === "started") return
+    this.attempt(obligation)
+  }
+
+  private attempt(obligation: RecoveryObligation): void {
+    const target = obligation.url
+    obligation.pending = true
     let refresh: Promise<unknown>
     try {
       refresh = this.visits.refreshCurrent(target, "replace", "preserve")
     } catch (error) {
-      this.failedAttempt(target, error)
+      obligation.pending = false
+      this.failedAttempt(obligation, error)
       return
     }
     void refresh.then(
       (result) => {
-        if (this.disposed || !this.obligations.has(target)) return
+        obligation.pending = false
+        if (!this.owns(obligation)) return
         // `undefined` is a refusal, not an attempt: this document is not the
-        // active one. Costing an attempt for it would burn the budget while the
-        // user is simply reading another screen.
+        // active one, or a visit was already running. Costing an attempt for it
+        // would burn the budget while the user is simply reading another
+        // screen.
         if (result === undefined) return
         if (isNetworkDocumentCommit(result, target)) {
-          this.release(target)
-          this.stop()
+          this.end(obligation)
           return
         }
-        this.failedAttempt(target, undefined)
+        this.failedAttempt(obligation, undefined)
       },
-      (error: unknown) => this.failedAttempt(target, error),
+      (error: unknown) => {
+        obligation.pending = false
+        this.failedAttempt(obligation, error)
+      },
     )
   }
 
-  private failedAttempt(target: string, error: unknown): void {
-    if (this.disposed) return
-    const obligation = this.obligations.get(target)
-    if (!obligation) return
+  private failedAttempt(obligation: RecoveryObligation, error: unknown): void {
+    if (!this.owns(obligation)) return
     if (error !== undefined) {
       obligation.lastError =
         error instanceof Error ? error : new RequestError("Cable recovery failed")
@@ -293,29 +325,39 @@ export class CableDocumentRecovery {
     if (obligation.attempts >= this.maxAttempts) {
       // One report per obligation, not one per attempt: a reconnect that needs
       // retrying is ordinary, and only the permanent failure is actionable.
+      const attempts = obligation.attempts
       const cause = obligation.lastError
-      this.release(target)
+      this.end(obligation)
       this.report(
         new RequestError(
-          `Cable reconnect recovery could not refresh the document after ${obligation.attempts} attempts`,
+          `Cable reconnect recovery could not refresh the document after ${attempts} attempts`,
           { method: "GET" },
           cause ? { cause } : undefined,
         ),
       )
-      this.stop()
       return
     }
-    this.schedule(this.backoffDelay(), true)
+    this.schedule(obligation)
   }
 
   private watch(): void {
     if (this.disposed) return
     this.unsubscribe ??= this.visits.subscribe(() => {
-      if (this.disposed || this.obligations.size === 0) return
-      if (this.visits.state.status === "started") return
-      // Resume suspended obligations once the document is settled again.
-      this.schedule(this.backoffDelay(), false)
+      if (this.disposed || this.visits.state.status === "started") return
+      // Resume the obligations whose attempt was swallowed by a visit that was
+      // in flight when their timer fired. One with a timer already pending, or
+      // an attempt already in flight, is left alone: re-arming it here would
+      // let a burst of visit events restart its wait forever.
+      for (const obligation of [...this.obligations.values()]) {
+        if (obligation.handle === undefined && !obligation.pending) this.schedule(obligation)
+      }
     })
+  }
+
+  private unwatch(): void {
+    const unsubscribe = this.unsubscribe
+    this.unsubscribe = undefined
+    unsubscribe?.()
   }
 
   private report(error: Error): void {
