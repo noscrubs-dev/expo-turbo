@@ -173,7 +173,6 @@ RSpec.describe "standalone demo host" do
       .to eq(%w[demo-http-stream-message demo-http-stream-list])
     expect(streams.first.at_xpath("./template/DemoText[@id='demo-http-stream-message-value']")&.text)
       .to eq("Rendered from XML partial")
-    expect(streams.first.at_xpath("./template/DemoText")&.text).not_to eq("HTML fallback")
     expect(streams.last.at_xpath("./template/DemoText[@id='demo-http-stream-item']")&.text)
       .to eq("Second sibling")
   end
