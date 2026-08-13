@@ -136,12 +136,15 @@ All notable public package, gem, and protocol changes will be recorded here.
   service. A request that does not accept Expo Turbo keeps
   the fail-open assumption. Every response reports which vocabulary answered it
   in `X-Expo-Turbo-Vocabulary`: `declared`, `assumed-none`, or
-  `assumed-latest`. Migration: a native client must send
-  `X-Expo-Turbo-Modules`, which the `0.2.0` client already does for every
-  registered module; check the response header on a route that gates on a
-  module and confirm it reads `declared`. A blank module name now raises
-  `ArgumentError` instead of answering `true`, and a logger failure while
-  reporting a malformed header is no longer swallowed.
+  `assumed-latest`. This requirement applied to the module-header negotiation
+  that this release then replaced: a 0.2 client must send
+  `X-Expo-Turbo-Modules`, which it already does for every registered module. A
+  0.3 client instead sends `X-Expo-Turbo-Client`; the 0.3 gem keeps reading the
+  legacy modules header for one minor so installed 0.2 clients still
+  negotiate. During migration, check the response header on a gated route and
+  confirm it reads `declared` or `legacy-declared`, as applicable. A blank
+  module name now raises `ArgumentError` instead of answering `true`, and a
+  logger failure while reporting a malformed header is no longer swallowed.
 - **Breaking:** Apply `Vary` to every response and always include `Accept`.
   `Vary` was opt-in through `expo_turbo_vary_by_frame!`, so a document response
   could reach a shared cache without it and then answer a later Frame request
