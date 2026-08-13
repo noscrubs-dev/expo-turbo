@@ -29,13 +29,16 @@ All notable public package, gem, and protocol changes will be recorded here.
   A server-directed reconnect also recovers the document it was disconnected
   from, so nothing broadcast during the gap is silently missing. The recovery
   holds one invariant rather than a list of visit outcomes: it stays armed until
-  the document it needs has actually been re-fetched, discharged only by
-  observing that the active document's tree generation advanced, or that the app
-  has moved to a different document and the recovery is moot. A refusal, a
+  the document it needs has actually been re-fetched. "Re-fetched" means a
+  refresh report for that URL carrying a request id, which only a network round
+  trip produces — a snapshot preview or restoration changes the tree with no
+  request and no request id, and so cannot discharge it. A refusal, a
   cancellation, a failed navigation, or a superseded request is therefore not a
-  special case — none of them is the observation that discharges it, so the
-  recovery simply stays armed. Attempts are bounded and exhausting them reports
-  through `onBackgroundError`.
+  special case: none of them is that observation, so the recovery stays armed.
+  Navigating away suspends rather than discharges it, because returning can be
+  served from a snapshot and would otherwise restore the stale content. Attempts
+  are bounded with exponential backoff spanning roughly a minute, and exhausting
+  them reports once through `onBackgroundError`.
 - The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
   It is a private Expo Router export, and a static named import of a missing
   export is a module-level `SyntaxError` that would take the whole
