@@ -190,8 +190,64 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
-  test("does not yet refresh the document after a Cable reconnect", async () => {
-    const documentUrl = "https://example.test/document"
+  /**
+   * #412's gap test with its expectation flipped. It asserted `requests` stayed
+   * at one — "a reconnect issues no second request" — and pinned the absence of
+   * this feature. If recovery silently stops working the count returns to one
+   * and this fails, which is the point of keeping it rather than deleting it.
+   */
+  test("refreshes the document after a Cable disconnect and reconnect", async () => {
+    const requests: string[] = []
+    const callbacks: CableCallbacks[] = []
+    let unsubscribes = 0
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return {
+            unsubscribe() {
+              unsubscribes += 1
+            },
+          }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    const handlers = callbacks[0]
+    if (!handlers) throw new Error("the Cable adapter was never subscribed")
+    expect(requests).toHaveLength(1)
+
+    // A server-directed reconnect: everything broadcast during the gap was
+    // missed, so the document has to be re-fetched or it stays silently stale.
+    handlers.connected(false)
+    handlers.disconnected(true)
+    handlers.connected(true)
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 100))
+
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toBe("https://example.test/document")
+
+    runtime.dispose()
+    expect(unsubscribes).toBe(1)
+  })
+
+  test("does not reconcile when the Cable adapter never reports a reconnect", async () => {
     const requests: string[] = []
     const callbacks: CableCallbacks[] = []
     const runtime = createExpoTurboRuntime({
@@ -211,6 +267,216 @@ describe("Expo Turbo runtime", () => {
         },
       },
       registry,
+      url: "https://example.test/document",
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    callbacks[0]?.connected(false)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 100))
+
+    // Asserts the absence of a second route: a first connect must not refresh,
+    // so the reconciliation above can only have come from the reconnect.
+    expect(requests).toHaveLength(1)
+
+    runtime.dispose()
+  })
+
+  /**
+   * A reconnect whose debounced recovery is still armed when a navigation
+   * starts. The navigation is held open past the debounce window on purpose:
+   * that is the only arrangement in which the refresh timer fires while a visit
+   * is active, which is what made `refreshCurrent()` refuse and the pending
+   * recovery vanish.
+   */
+  async function reconnectDuringHeldNavigation(outcome: "fail" | "succeed") {
+    const documentUrl = "https://example.test/document"
+    const nextUrl = "https://example.test/next"
+    const requests: string[] = []
+    const noStore: boolean[] = []
+    const reported: Error[] = []
+    const callbacks: CableCallbacks[] = []
+    let releaseNavigation: (() => void) | undefined
+    const held = new Promise<void>((resolve, reject) => {
+      releaseNavigation = () => {
+        if (outcome === "fail") reject(new Error("navigation transport refused"))
+        else resolve()
+      }
+    })
+    held.catch(() => undefined)
+
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          noStore.push(request.cache === "no-store")
+          if (request.url === nextUrl) await held
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      onBackgroundError: (error) => reported.push(error),
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    const handlers = callbacks[0]
+    if (!handlers) throw new Error("the Cable adapter was never subscribed")
+
+    handlers.connected(false)
+    handlers.disconnected(true)
+    handlers.connected(true)
+
+    const visit = runtime.controller.visit(nextUrl).catch(() => undefined)
+    // Let the recovery timer fire while that visit is still in flight.
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 50))
+    releaseNavigation?.()
+    await visit
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+
+    return { documentUrl, nextUrl, noStore, reported, requests, runtime }
+  }
+
+  test("recovers the document when a navigation swallows the reconnect and then fails", async () => {
+    const { documentUrl, nextUrl, reported, requests, runtime } =
+      await reconnectDuringHeldNavigation("fail")
+
+    // The failed navigation left the original document on screen and stale, so
+    // the recovery had to survive it.
+    expect(requests).toEqual([documentUrl, nextUrl, documentUrl])
+    expect(runtime.session.tree.document.url).toBe(documentUrl)
+
+    runtime.dispose()
+    // It discharged on that third request, so disposal had nothing left to
+    // abandon and reported nothing.
+    expect(reported).toEqual([])
+  })
+
+  test("recovers when a navigation cancels the recovery in flight and then fails", async () => {
+    const documentUrl = "https://example.test/document"
+    const nextUrl = "https://example.test/next"
+    const requests: string[] = []
+    const reported: Error[] = []
+    const callbacks: CableCallbacks[] = []
+    let releaseRecovery: (() => void) | undefined
+    let releaseNavigation: (() => void) | undefined
+
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request.url)
+          // Hold the second GET of the document — the recovery — so a
+          // navigation can cancel it while it is in flight.
+          if (request.url === documentUrl && requests.length > 1) {
+            await new Promise<void>((resolve) => {
+              releaseRecovery = resolve
+            })
+          }
+          if (request.url === nextUrl) {
+            await new Promise<void>((_resolve, reject) => {
+              releaseNavigation = () => reject(new Error("navigation transport refused"))
+            })
+          }
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      onBackgroundError: (error) => reported.push(error),
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    const source = runtime.session.tree.getElementById("live")
+    if (!source) throw new Error("the Cable source fixture is missing")
+    runtime.streamSources?.retain(source)
+    const handlers = callbacks[0]
+    if (!handlers) throw new Error("the Cable adapter was never subscribed")
+
+    handlers.connected(false)
+    handlers.disconnected(true)
+    handlers.connected(true)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 50))
+    expect(requests).toEqual([documentUrl, documentUrl])
+
+    // Cancel the in-flight recovery with a navigation, then fail it. The
+    // cancelled recovery resolves with a result rather than `undefined`, so any
+    // scheme keyed on that value concludes the refresh happened.
+    const visit = runtime.controller.visit(nextUrl).catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    releaseRecovery?.()
+    releaseNavigation?.()
+    await visit
+    // The cancelled attempt backs off before retrying, so wait past that rather
+    // than the bare debounce.
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS * 4 + 400))
+
+    // The document was never re-fetched, so the recovery still owed one. This
+    // fixture never releases that retry, so it is still owed at disposal.
+    expect(requests).toEqual([documentUrl, documentUrl, nextUrl, documentUrl])
+    expect(runtime.session.tree.document.url).toBe(documentUrl)
+    expect(reported).toEqual([])
+
+    // The document this runtime is still showing owes a fetch it will now never
+    // get, so disposal has to say so and say which document. `runtime.dispose()`
+    // leaves the session and the tree intact — asserted here, because that is
+    // the whole reason disposal cannot end an obligation silently.
+    runtime.dispose()
+    expect(runtime.session.tree.document.url).toBe(documentUrl)
+    expect(runtime.session.treeGeneration).toBeGreaterThan(0)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toMatchObject({ documentUrl, reason: "disposed" })
+  })
+
+  test("demands origin bytes for the document it is recovering", async () => {
+    const documentUrl = "https://example.test/document"
+    const seen: Array<Readonly<{ cache?: string; cacheControl?: string; url: string }>> = []
+    const callbacks: CableCallbacks[] = []
+    const runtime = createExpoTurboRuntime({
+      cable: {
+        subscribe(_identifier, handlers) {
+          callbacks.push(handlers)
+          return { unsubscribe() {} }
+        },
+      },
+      fetch: {
+        fetch: async (request) => {
+          seen.push({
+            ...(request.cache ? { cache: request.cache } : {}),
+            ...(request.headers["Cache-Control"]
+              ? { cacheControl: request.headers["Cache-Control"] }
+              : {}),
+            url: request.url,
+          })
+          return response(
+            '<TestDocument><turbo-cable-stream-source id="live" channel="DemoChannel" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
       url: documentUrl,
     })
 
@@ -219,17 +485,26 @@ describe("Expo Turbo runtime", () => {
     if (!source) throw new Error("the Cable source fixture is missing")
     runtime.streamSources?.retain(source)
 
+    // The initial load is an ordinary request.
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.cache).toBeUndefined()
+
     callbacks[0]?.connected(false)
     callbacks[0]?.disconnected(true)
     callbacks[0]?.connected(true)
-    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 150))
 
-    // A deliberate, documented gap rather than an oversight: anything broadcast
-    // while the socket was down stays missing until something else refreshes
-    // the document. Recovery is tracked in
-    // https://github.com/noscrubs-dev/expo-turbo/pull/418; when it lands, this
-    // expectation flips to a second request for `documentUrl`.
-    expect(requests).toEqual([documentUrl])
+    // The recovery's own request must bypass every cache between here and the
+    // origin. Nothing in the response could prove freshness after the fact: the
+    // request id is minted before the adapter is ever called.
+    expect(seen).toHaveLength(2)
+    expect(seen[1]?.url).toBe(documentUrl)
+    expect(seen[1]?.cache).toBe("no-store")
+    expect(seen[1]?.cacheControl).toBe("no-cache")
+
+    // Once discharged, ordinary caching resumes.
+    await runtime.controller.visit(documentUrl)
+    expect(seen.at(-1)?.cache).toBeUndefined()
 
     runtime.dispose()
   })
@@ -276,6 +551,33 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
+  test("suspends the reconnect recovery when the navigation that swallowed it succeeds", async () => {
+    const { documentUrl, nextUrl, noStore, reported, requests, runtime } =
+      await reconnectDuringHeldNavigation("succeed")
+
+    // A successful navigation suspends the recovery rather than ending it, and
+    // a suspended obligation costs no request: `refreshCurrent` refuses a
+    // document that is not the active one, which spends no attempt either.
+    expect(requests).toEqual([documentUrl, nextUrl])
+
+    // Returning is where suspension has to pay off, because a return can be
+    // served from a snapshot of exactly the stale content the reconnect was
+    // about. Two things prove the obligation survived the successful
+    // navigation: the return visit itself is forced to origin bytes, because
+    // the claim covers every GET for a document while it owes recovery, and the
+    // recovery then issues its own refresh on top. The first two requests
+    // carry no such tag, so the claim is not simply always on.
+    await runtime.controller.visit(documentUrl)
+    await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
+
+    expect(requests).toEqual([documentUrl, nextUrl, documentUrl, documentUrl])
+    expect(noStore).toEqual([false, false, true, true])
+
+    // Having been refreshed, it owes nothing, so disposal abandons nothing.
+    runtime.dispose()
+    expect(reported).toEqual([])
+  })
+
   test("routes a failed background refresh to onBackgroundError", async () => {
     const reported: Error[] = []
     const callbacks: CableCallbacks[] = []
@@ -314,7 +616,9 @@ describe("Expo Turbo runtime", () => {
     await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
 
     // Without an observer this is an uncaught microtask throw: invisible to the
-    // host and impossible for it to catch.
+    // host and impossible for it to catch. The bounded give-up report for a
+    // failing reconnect recovery is covered deterministically in
+    // cable-recovery-internal.test.ts rather than by waiting out real backoff.
     expect(reported).toHaveLength(1)
     expect(reported[0]).toBeInstanceOf(Error)
 

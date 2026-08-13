@@ -138,11 +138,20 @@ without leaving `ExpoTurboApp`. Supplying `cable` is what enables
 releases it on unmount.
 
 Cable delivers Stream actions, `refresh` included, for as long as the socket is
-up. It does **not** recover the document after a reconnect: anything broadcast
-while the socket was down stays missing, so a mounted document can be stale
-after a dropped connection. Refresh it yourself on reconnect if that matters for
-your screens — `useDocumentReload()` from `expo-turbo/react` does it. Recovery
-is tracked in [pull request 418](https://github.com/noscrubs-dev/expo-turbo/pull/418).
+up, and it recovers the mounted document after a reconnect: anything broadcast
+while the socket was down was missed, so the document is re-fetched from the
+origin rather than from any cache. That recovery stays armed until the fetch
+actually lands, so a refused refresh, a cancelled one, or a navigation that
+fails does not end it, and navigating away only suspends it. If it cannot
+succeed — the attempts are bounded, spanning roughly a minute — it reports
+through `onError` rather than giving up quietly. Eight documents may owe
+recovery at once; a ninth is refused and reported.
+
+Every one of those endings, including a runtime disposed while a document still
+owed a refresh, arrives as a `CableRecoveryAbandonedError` whose `documentUrl`
+names the document and whose `reason` is `exhausted`, `capacity`, or `disposed`.
+Read `documentUrl` to know which screen is stale; it is deliberately absent from
+`message`, which is what ends up in logs.
 
 Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
 library hands the same instance to form validation and to the renderer, so an
