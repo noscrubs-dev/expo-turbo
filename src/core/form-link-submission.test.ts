@@ -198,8 +198,6 @@ describe("FormLinkSubmissionController", () => {
       })
       expect(request.headers).toMatchObject({
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
-        "X-Expo-Turbo-Capabilities": "sha256:generated-links",
-        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Turbo-Request-Id": `link-${index + 1}`,
       })
     }
@@ -219,8 +217,7 @@ describe("FormLinkSubmissionController", () => {
     expect(requests[0]).toMatchObject({
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
-        "X-Expo-Turbo-Protocol": "0.1",
-        "X-Expo-Turbo-Runtime": "0.2.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.2.0",
         "X-Turbo-Request-Id": "link-1",
       },
       method: "GET",

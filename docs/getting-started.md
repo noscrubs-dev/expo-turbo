@@ -238,8 +238,7 @@ export const priceDefinition = defineComponentDefinition({
 
 export const storeCapabilities = defineCapabilityModule({
   components: [priceDefinition],
-  name: "store",
-  version: "1.0.0",
+  name: "@example/store",
 })
 ```
 
@@ -468,38 +467,24 @@ Changing the document path performs a visit on the existing runtime. Without
 so the host router remains synchronized. Expo Turbo then owns history identity,
 snapshots, and document/Frame coordination.
 
-### Module version negotiation
+### Client compatibility
 
-The runtime sends the live registry module names and versions in
-`X-Expo-Turbo-Modules` for document, Frame, form, and preload requests. Bump a
-module version when its XML vocabulary grows, such as when you add a tag or an
-attribute. Versions must use RubyGems syntax: start with a number, then use
-letters, numbers, dots, and an optional hyphenated suffix. Values such as `v2`,
-`1.0.0+build`, and `1_0` fail when the module is defined. Gate the new
-vocabulary where the Rails template uses it:
+The runtime sends one generated `X-Expo-Turbo-Client` descriptor. It contains
+the protocol version, runtime version, and a `sha256-128` digest of the canonical
+registry. The ordered vocabulary revision stays in `expo-turbo.lock.json`; it
+never goes on the wire. Gate the exact feature where the Rails template uses it:
 
 ```erb
-<% if expo_turbo_client_supports?("noscrubs-cart", ">= 3") %>
+<% if expo_turbo_client_supports_component?("NewCartTag") %>
   <NewCartTag />
 <% end %>
 ```
 
-Requirements use RubyGems syntax and can contain comma-separated clauses, such
-as `">= 2, < 4"`. Invalid helper arguments raise so a server-authored gate does
-not silently hide a feature from native clients.
-
-`expo_turbo_client_modules` returns the reported name and version pairs. A
-missing header is a web client signal and assumes the latest vocabulary. A
-malformed header envelope also fails open and does not cause a server error.
-Malformed entries in a valid header are ignored without discarding valid
-entries. For a valid header, a missing module or an unmet version requirement
-returns `false`.
-
-Version gating is the primary compatibility control. The tolerant decoder is a
-safety net for a missed gate. The header comes from the JavaScript registry, so
-an over-the-air update reports its new vocabulary without a binary release.
-Cacheable endpoints that gate output must vary on `Accept`, `Turbo-Frame`, and
-`X-Expo-Turbo-Modules`; `expo_turbo_cache_key` adds these dimensions.
+Use `expo_turbo_client_supports_attribute?("CartRow", "quantity")` for an
+attribute. Numeric revision requirements remain available through
+`expo_turbo_client_supports?` as an escape hatch. A native request with a
+missing, malformed, or unknown descriptor fails closed. A non-native request
+keeps the web assumption that it supports the current vocabulary.
 
 Capability components that change server state outside a Turbo form can call
 `useDocumentReload()` from `expo-turbo/react`. The returned async function

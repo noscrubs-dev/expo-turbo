@@ -3,11 +3,61 @@
 require "action_controller/api"
 require "spec_helper"
 
-RSpec.describe "Expo Turbo module negotiation" do
+RSpec.describe "Expo Turbo client descriptor negotiation" do
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
+
+      self.expo_turbo_compatibility_registry = ExpoTurbo::Rails::CompatibilityRegistry.from_data(
+        lock: {
+          "lockVersion" => 1,
+          "current" => "sha256-128:0123456789abcdef0123456789abcdef",
+          "history" => [
+            {
+              "revision" => 7,
+              "digest" => "sha256-128:0123456789abcdef0123456789abcdef",
+              "published" => false
+            }
+          ]
+        },
+        vocabularies: {
+          "sha256-128:0123456789abcdef0123456789abcdef" => {
+            "DemoCard" => ["title", "subtitle"]
+          }
+        }
+      )
     end
+  end
+
+  it "resolves a digest without carrying its revision on the wire" do
+    descriptor = "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    controller = native_controller("HTTP_X_EXPO_TURBO_CLIENT" => descriptor)
+
+    expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
+    expect(controller.expo_turbo_client_supports_attribute?("DemoCard", "subtitle")).to be(true)
+    expect(controller.expo_turbo_client_supports_component?("RemovedCard")).to be(false)
+    expect(controller.expo_turbo_client_supports?("application", ">= 7")).to be(true)
+    expect(controller.expo_turbo_client_supports?("application", ">= 8")).to be(false)
+    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("declared")
+  end
+
+  it "prefers the descriptor over a conflicting legacy modules header" do
+    controller = native_controller(
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      "HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=999"
+    )
+
+    expect(controller.expo_turbo_client_supports?("cart", ">= 999")).to be(false)
+    expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
+  end
+
+  it "keeps the 0.2 modules header as an old-client fallback for one minor" do
+    controller = native_controller("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
+
+    expect(controller.expo_turbo_client_supports?("cart", ">= 2")).to be(true)
+    expect(controller.expo_turbo_client_supports?("cart", ">= 3")).to be(false)
+    expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(false)
+    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("legacy-declared")
   end
 
   it "treats an explicit Expo Turbo Accept value as a verified native request" do
@@ -58,7 +108,7 @@ RSpec.describe "Expo Turbo module negotiation" do
     expect(controller.expo_turbo_client_supports?("cart", ">= 2")).to be(true)
     expect(controller.expo_turbo_client_supports?("cart", ">= 3")).to be(false)
     expect(controller.expo_turbo_client_supports?("missing", ">= 0")).to be(false)
-    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("declared")
+    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("legacy-declared")
   end
 
   it "keeps the fail-open assumption for a request that does not accept Expo Turbo" do

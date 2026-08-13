@@ -24,7 +24,7 @@ RSpec.describe "Expo Turbo cache identity" do
       status, headers, = dispatch(controller_class)
 
       expect(status).to eq(200)
-      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
     end
   end
 
@@ -36,7 +36,7 @@ RSpec.describe "Expo Turbo cache identity" do
       status, headers, = dispatch(controller_class, headers: {"HTTP_TURBO_FRAME" => "details\ninvalid"})
 
       expect(status).to eq(400)
-      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
     end
   end
 
@@ -49,7 +49,7 @@ RSpec.describe "Expo Turbo cache identity" do
       status, headers, = dispatch(guarded)
 
       expect(status).to eq(401)
-      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+      expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
     end
   end
 
@@ -65,7 +65,7 @@ RSpec.describe "Expo Turbo cache identity" do
     status, headers, = dispatch(failing)
 
     expect(status).to eq(422)
-    expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
   end
 
   it "varies on Accept even when the route forced the response format" do
@@ -75,7 +75,7 @@ RSpec.describe "Expo Turbo cache identity" do
 
     controller.expo_turbo_vary!
 
-    expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Modules")
+    expect(controller.response.headers["Vary"]).to eq("Accept, Turbo-Frame, X-Expo-Turbo-Client, X-Expo-Turbo-Modules")
   end
 
   it "does not keep a name that hides the module-version dimension" do

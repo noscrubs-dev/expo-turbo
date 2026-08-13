@@ -1,0 +1,13 @@
+{
+  "lockVersion": 1,
+  "current": "sha256-128:65c83520091798cf1c3afcb1e863f2b7",
+  "history": [
+    {
+      "revision": 1,
+      "digest": "sha256-128:65c83520091798cf1c3afcb1e863f2b7",
+      "published": false,
+      "package": "expo-turbo-example",
+      "manifest": "example/rails/config/expo_turbo_manifest.json"
+    }
+  ]
+}

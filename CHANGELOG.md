@@ -4,6 +4,16 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## 0.3.0
 
+- **Breaking:** Replace four client compatibility headers with
+  `X-Expo-Turbo-Client: v=1; proto=<protocol>; rt=<runtime>;
+  vocab=sha256-128:<digest>`. The registry digest is derived from canonical
+  content, and package identity replaces the typed module version. The ordered
+  revision stays only in `expo-turbo.lock.json`; the server maps digest to
+  revision. Use `expo_turbo_client_supports_component?` and
+  `expo_turbo_client_supports_attribute?` for gates. The numeric helper remains
+  an escape hatch. The 0.3 gem reads `X-Expo-Turbo-Modules` only for installed
+  0.2 clients and reports `legacy-declared`. New clients do not send it.
+
 - Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
   entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
   Expo Router history and navigation bridge, the credentialed transport, the

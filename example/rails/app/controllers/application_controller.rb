@@ -5,6 +5,7 @@ class ApplicationController < ActionController::API
   # example/expo/src/demo-registry.tsx. The server rejects a child that the
   # native decoder cannot render before the response leaves the host.
   expo_turbo_template_capabilities(
+    lockfile: Rails.root.join("../..", "expo-turbo.lock.json"),
     components: {
       "DemoForm" => {children: "nodes"},
       "DemoDocumentLink" => {children: "nodes"},

@@ -75,14 +75,15 @@ describe("Expo Turbo runtime", () => {
 
     expect(runtime.session.tree.document.children.find(isElement)?.tagName).toBe("TestDocument")
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.headers["X-Expo-Turbo-Capabilities"]).toBe(registry.capabilities.hash)
-    expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
+    const descriptor = `v=1; proto=0.1; rt=0.2.0; vocab=${registry.capabilities.hash}`
+    expect(requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+    expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
 
     const formRequest = runtime.forms
       .controlsFor("id:form")
       .requestPlan({ protocol: { requestId: "form-1" } }).request
-    expect(formRequest.headers["X-Expo-Turbo-Capabilities"]).toBeUndefined()
-    expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBe("v1;runtime-test=1")
+    expect(formRequest.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+    expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
 
     runtime.dispose()
     runtime.dispose()

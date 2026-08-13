@@ -20,6 +20,7 @@ module ExpoTurbo
 
       included do
         class_attribute :expo_turbo_template_capabilities_config, instance_accessor: false
+        class_attribute :expo_turbo_compatibility_registry, instance_accessor: false
         # Every Frame response must contain the requested Frame. Set false for
         # one action that deliberately answers with a different Frame.
         class_attribute :expo_turbo_frame_match, default: true
@@ -43,18 +44,20 @@ module ExpoTurbo
         after_action :expo_turbo_validate_response!
         after_action :expo_turbo_vary!
         after_action :expo_turbo_report_response_vocabulary
-        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?, :expo_turbo_frame_request?,
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?,
+          :expo_turbo_client_supports_attribute?, :expo_turbo_client_supports_component?, :expo_turbo_frame_request?,
           :expo_turbo_frame_request_id, :expo_turbo_request?
       end
 
       class_methods do
-        def expo_turbo_template_capabilities(components: nil, manifest: nil, style_tokens: {}, max_style_tokens: 5)
+        def expo_turbo_template_capabilities(components: nil, manifest: nil, lockfile: nil, style_tokens: {}, max_style_tokens: 5)
           self.expo_turbo_template_capabilities_config = TemplateCapabilities.new(
             components:,
             manifest:,
             style_tokens:,
             max_style_tokens:
           )
+          self.expo_turbo_compatibility_registry = CompatibilityRegistry.load(lockfile) if lockfile
         end
       end
 
@@ -119,10 +122,35 @@ module ExpoTurbo
         negotiation = expo_turbo_module_negotiation
         return true if negotiation.fetch(:latest)
 
+        if (entry = negotiation[:entry])
+          return parsed_requirement.satisfied_by?(Gem::Version.new(entry.revision.to_s))
+        end
+
         version = negotiation.fetch(:modules)[module_name]
         return false unless version
 
         parsed_requirement.satisfied_by?(Gem::Version.new(version))
+      end
+
+      def expo_turbo_client_supports_component?(tag)
+        raise ArgumentError, "tag must be a nonblank String" unless tag.is_a?(String) && tag.present?
+
+        negotiation = expo_turbo_module_negotiation
+        return true if negotiation.fetch(:latest)
+
+        negotiation[:entry]&.supports_component?(tag) || false
+      end
+
+      def expo_turbo_client_supports_attribute?(tag, attribute)
+        raise ArgumentError, "tag must be a nonblank String" unless tag.is_a?(String) && tag.present?
+        unless attribute.is_a?(String) && attribute.present?
+          raise ArgumentError, "attribute must be a nonblank String"
+        end
+
+        negotiation = expo_turbo_module_negotiation
+        return true if negotiation.fetch(:latest)
+
+        negotiation[:entry]&.supports_attribute?(tag, attribute) || false
       end
 
       def expo_turbo_cache_variant
@@ -133,7 +161,9 @@ module ExpoTurbo
         ]
       end
 
-      VARY_DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"].freeze
+      # Keep the legacy dimension while the 0.3 gem reads the 0.2 modules
+      # header. Removing it now would let two old clients share one response.
+      VARY_DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"].freeze
 
       # Applied to every response, not only to a request that already carries a
       # Frame header: a shared cache can receive a Frame request for the same
@@ -180,6 +210,7 @@ module ExpoTurbo
       VOCABULARY_HEADER = "X-Expo-Turbo-Vocabulary"
       VOCABULARY_HEADER_VALUES = {
         declared: "declared",
+        legacy_declared: "legacy-declared",
         assumed_latest: "assumed-latest",
         assumed_none: "assumed-none"
       }.freeze
@@ -190,18 +221,49 @@ module ExpoTurbo
       # server's control. Only a request that does not accept Expo Turbo keeps
       # the fail-open assumption, because module gating cannot apply to it.
       def expo_turbo_module_negotiation
+        descriptor = request.get_header("HTTP_X_EXPO_TURBO_CLIENT")
         header = request.get_header("HTTP_X_EXPO_TURBO_MODULES")
         native = expo_turbo_request?
         cached = defined?(@expo_turbo_module_negotiation) && @expo_turbo_module_negotiation
-        if cached && cached.fetch(:header).equal?(header) && cached.fetch(:native) == native
+        if cached && cached.fetch(:descriptor).equal?(descriptor) && cached.fetch(:header).equal?(header) && cached.fetch(:native) == native
           expo_turbo_report_vocabulary(cached.fetch(:value))
           return cached.fetch(:value)
         end
 
-        value = expo_turbo_negotiate_modules(header, native: native)
-        @expo_turbo_module_negotiation = {header: header, native: native, value: value}.freeze
+        value = expo_turbo_negotiate_client(descriptor, header, native: native)
+        @expo_turbo_module_negotiation = {descriptor: descriptor, header: header, native: native, value: value}.freeze
         expo_turbo_report_vocabulary(value)
         value
+      end
+
+      def expo_turbo_negotiate_client(descriptor, legacy_header, native:)
+        unless descriptor.nil?
+          return ASSUMED_LATEST unless native
+
+          fields = CompatibilityRegistry.parse_descriptor(descriptor)
+          return assumed_or_report_descriptor unless fields
+
+          digest = fields["vocab"]
+          return ASSUMED_NONE unless digest
+
+          entry = self.class.expo_turbo_compatibility_registry&.resolve(digest)
+          return ASSUMED_NONE unless entry
+
+          return {
+            vocabulary: :declared,
+            latest: false,
+            entry: entry,
+            modules: {}.freeze,
+            cache_variant: digest.freeze
+          }.freeze
+        end
+
+        expo_turbo_negotiate_modules(legacy_header, native: native)
+      end
+
+      def assumed_or_report_descriptor
+        logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Client header") if respond_to?(:logger) && logger
+        ASSUMED_NONE
       end
 
       def expo_turbo_negotiate_modules(header, native:)
@@ -212,7 +274,7 @@ module ExpoTurbo
         return assumed_or_report(assumed) unless parsed
 
         {
-          vocabulary: :declared,
+          vocabulary: :legacy_declared,
           latest: false,
           modules: parsed.fetch(:modules),
           cache_variant: parsed.fetch(:cache_variant)

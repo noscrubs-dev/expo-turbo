@@ -263,8 +263,6 @@ describe("Frame request loader", () => {
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
         "Turbo-Frame": "details",
-        "X-Expo-Turbo-Capabilities": "sha256:capabilities",
-        "X-Expo-Turbo-Modules": "v1;cart=2",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",

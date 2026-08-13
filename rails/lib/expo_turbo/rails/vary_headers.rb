@@ -16,9 +16,9 @@ module ExpoTurbo
     # are produced above it: static files, Rack::Sendfile, host authorization,
     # and the web server itself. Those are not representations of an Expo Turbo
     # resource, so their bytes do not depend on Accept, Turbo-Frame, or the
-    # client module versions.
+    # client descriptor or its one-minor legacy fallback.
     class VaryHeaders
-      DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Modules"].freeze
+      DIMENSIONS = ["Accept", "Turbo-Frame", "X-Expo-Turbo-Client", "X-Expo-Turbo-Modules"].freeze
       HEADER = "vary"
 
       def initialize(app)

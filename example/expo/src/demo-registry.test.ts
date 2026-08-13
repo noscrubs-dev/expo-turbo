@@ -31,11 +31,11 @@ mock.module("react-native", () => ({
 const { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } = await import("./demo-registry")
 
 test("the example registry keeps its server negotiation identity", () => {
-  expect(DEMO_REGISTRY.capabilities.modules).toEqual([
-    { name: "demo-primitives", version: "0.1.0" },
-  ])
-  expect(DEMO_MODULE_VERSIONS).toBe("v1;demo-primitives=0.1.0")
-  expect(DEMO_REGISTRY.capabilities.hash).toBe("fnv1a32:3faed628")
+  expect(DEMO_REGISTRY.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
+  expect(DEMO_MODULE_VERSIONS).toMatch(
+    /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
+  )
+  expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:65c83520091798cf1c3afcb1e863f2b7")
 })
 
 test("the example registry throws for an unregistered component in development", () => {
