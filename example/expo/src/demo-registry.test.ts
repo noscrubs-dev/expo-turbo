@@ -35,7 +35,21 @@ test("the example registry keeps its server negotiation identity", () => {
   expect(DEMO_MODULE_VERSIONS).toMatch(
     /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
   )
-  expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:65c83520091798cf1c3afcb1e863f2b7")
+  expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea")
+})
+
+// The Rails demo serves /api/expo_turbo/demo/shared_greeting from one
+// template, which spells DemoText as the HTML element a browser understands.
+// The host admits `p` through the alias it declares; without the same alias
+// here the device receives markup it cannot draw.
+test("the example registry renders the HTML element name the shared Rails template writes", () => {
+  const shared = parseExpoTurboDocument(
+    '<p id="demo-shared-greeting-text">One template, two audiences</p>',
+  ).document.children.find(isElement)
+  if (!shared) throw new Error("fixture lost its root element")
+
+  expect(DEMO_REGISTRY.resolve("p")).toBe(DEMO_REGISTRY.resolve("DemoText"))
+  expect(() => DEMO_REGISTRY.decodeForRender(shared)).not.toThrow()
 })
 
 test("the example registry throws for an unregistered component in development", () => {

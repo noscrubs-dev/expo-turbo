@@ -358,7 +358,9 @@
       "tag": "DemoStreamMorphProbe"
     },
     {
-      "aliases": [],
+      "aliases": [
+        "p"
+      ],
       "attributes": [],
       "children": "text",
       "formOwner": false,
@@ -374,7 +376,7 @@
       "tag": "Gallery"
     }
   ],
-  "hash": "sha256-128:65c83520091798cf1c3afcb1e863f2b7",
+  "hash": "sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea",
   "manifestVersion": 2,
   "modules": [
     {

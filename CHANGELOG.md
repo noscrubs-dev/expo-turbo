@@ -27,7 +27,98 @@ All notable public package, gem, and protocol changes will be recorded here.
   module gate that raises on the first native descriptor request. Descriptor
   version 1 also rejects extra fields. Ship grammar support in the gem before a
   client sends a new field.
-
+- **Breaking:** Resolve an HTML template for a native request, and label the
+  response by the format the render selected. Lookup for an Expo Turbo render
+  now tries `expo_turbo` first and `html` behind it, so one template can serve
+  a browser and a native client, and `NAME.expo_turbo.erb` still wins over the
+  `NAME.html.erb` beside it. Where a native request previously raised
+  `ActionController::UnknownFormat` because only an HTML template existed, it
+  now renders that template. The response is delivered as
+  `application/vnd.expo-turbo+xml`, not `text/html`: the media type follows the
+  format the render selected, never the extension of the file that answered.
+  That is what keeps the protocol rules applied, because
+  `expo_turbo_validate_response!` switches on the media type, so an HTML
+  template that emits `<div>` fails on the server instead of shipping HTML to a
+  client that cannot read it. The same rule now decides the helper branch:
+  `expo_turbo_render?` reads the new `expo_turbo_selected_format` rather than
+  `lookup_context.formats.first`, which ActionView rewrites to the format of the
+  template it found as soon as a shared template answers. Two things can name
+  that format and they do not rank equally: a `formats:` argument the caller
+  wrote is a demand and wins, and the `Accept` header or the matching
+  `respond_to` branch is a resolution and applies otherwise. `render "page",
+  formats: [:html]` therefore answers a native client exactly as it answers a
+  browser, with `text/html` and the ordinary `turbo-rails` helpers, including
+  for a `NAME.erb` template that carries no format of its own. A demand covers
+  its own render and is restored afterwards, so a helper called after a
+  `render_to_string ..., formats: [:html]` is already back on the resolved
+  format. Migration: a host whose
+  `app/views` holds an HTML template
+  beside an Expo Turbo action now serves it, and a screen with both templates is
+  unaffected. Set `self.expo_turbo_html_template_fallback = false` to restore
+  the confinement. A shared `NAME.html.erb` renders the `.html` partials beneath
+  it, because that narrowing is ActionView's own; a format-neutral `NAME.erb`
+  keeps partial lookup on the request format. In development, Rails' own
+  `annotate_rendered_view_with_filenames` comments on an `.html` template now
+  reach a native client as XML comment nodes; the response still parses and is
+  still admitted.
+- Accept an HTML element name for a component through its existing `aliases:`
+  declaration, so one template can spell a component as the element a browser
+  understands. No change was needed for this and none was made: all four
+  protocol wrappers are already spelled as Turbo spells them in HTML, the client
+  reserves only those four names and `expo-turbo-fragment`, and both sides
+  already resolved a declared alias. It is now specified and tested as a
+  contract, including that an alias carries its component's child mode,
+  attribute allow list, required attributes, and form ownership, and that one
+  name may never resolve to two components. Two boundaries are documented rather
+  than worked around: `form_with` writes `accept-charset`, which is not among
+  the five form-owner attributes either side admits, and `tag.br` writes `<br>`,
+  which is not well-formed XML.
+- Add `rake expo_turbo:paired_templates`, a lint over `foo.html.erb` /
+  `foo.expo_turbo.erb` pairs. It reports divergence in `id`, `src`, `action`,
+  `method`, `name`, and every `data-turbo-*`, on any element rather than only on
+  the element name each attribute usually belongs to. It pairs elements first,
+  by `id` and then by document order, and compares each pair against its own
+  counterpart, because comparing the two templates' lists of values passes
+  whenever the same values appear somewhere on both sides: two Frames that
+  exchange their `src`, or two forms that exchange their `action`, leave every
+  list identical. Id matches in the same relative order anchor the file, so a
+  difference stays in its own run; inside a run every element is a position
+  when the two sides hold the same number of them, which is what makes an
+  attribute that moved onto a plain element visible, and only the elements
+  carrying something are lined up when they do not, so a wrapper one audience
+  needs costs nothing. Order is reported as its own `reordered` finding rather
+  than as an attribute mismatch, because two audiences handed the same targets
+  in a different sequence receive different documents: relative order among
+  id-bearing elements is checked whatever else the two sides contain, and
+  absolute position as well when they hold the same number of elements. It also
+  reports an element with no counterpart. It reads template source and never
+  renders, so it runs in CI with no database and no server, and no request path
+  loads it. `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same
+  findings for a host's own test. It cannot see a value a helper produces, a
+  value that differs at run time from identical source, anything a partial or
+  layout contributes, a branch only one audience takes, semantics behind equal
+  source, nesting, a reordering with no id to name it, a reordering whose
+  relative id order is unchanged while the two sides hold a different number of
+  elements, or movement of an attribute inside a run whose two sides hold a
+  different number of elements; and a run whose sides hold the same number but
+  line them up differently over-reports rather than under-reports. The full list
+  is at the top of `lib/expo_turbo/rails/paired_templates.rb`.
+- **Breaking:** Make `DocumentFormControls` fail closed when form-owner
+  vocabulary is unknown. The React renderer already refused an unknown owner,
+  but a direct `expo-turbo/core` caller could still read `action` and `method`
+  from that tag and send a real request, such as `POST /danger`. Core now
+  refuses request planning, proposals, submission, and retry before transport,
+  and it also refuses when no `formSemantics` resolver is supplied. Migration:
+  pass the component registry as `formSemantics` when constructing
+  `DocumentFormControls`, as the production runtime already does. A registered
+  submitter whose tag is unknown can no longer override a known owner's URL,
+  method, encoding, target, validation, or Turbo request metadata. Its
+  package-owned safety attributes still narrow the operation:
+  `data-turbo="false"` disables interception, and `data-turbo-confirm` requires
+  confirmation. This opt-out is silent in core because core has no vocabulary
+  reporting channel. Issue #400 stays open: `FormLinkSubmissionController`
+  still needs the same fail-closed resolver in `shouldInterceptSubmission`,
+  `submissionProposal`, and `submit`.
 - Add `expo-turbo/expo` with `ExpoTurboApp`, the zero-configuration Expo
   entrypoint. `<ExpoTurboApp origin registry />` owns the document URL, the
   Expo Router history and navigation bridge, the credentialed transport, the

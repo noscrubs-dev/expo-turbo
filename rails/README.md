@@ -51,7 +51,10 @@ There is no include, no view root, no `render_expo_turbo`, no route
 constraint, and no second helper namespace. The action renders implicitly,
 because the template exists.
 
-To serve HTML and Expo Turbo from the same action, use `respond_to`:
+One action serves both audiences with no `respond_to` at all: the Accept header
+picks the format and lookup picks the template, including one template written
+for both. See [Sharing one template](#sharing-one-template). Use `respond_to`
+when the two audiences need different work done, not merely different markup:
 
 ```ruby
 def show
@@ -101,9 +104,12 @@ instead of collapsing into a shared `new_*` target.
 ## Templates and admission
 
 An Expo Turbo template is an ordinary view named `NAME.expo_turbo.erb`, found by
-ordinary lookup. The format is the confinement: lookup for this format cannot
-select `.html.erb`, so no private view root or private partial resolver is
-needed. This applies to Stream partials, layouts, and record partials too.
+ordinary lookup, with no private view root and no private partial resolver.
+This applies to Stream partials, layouts, and record partials too. Lookup tries
+`expo_turbo` first and `html` behind it, so `NAME.expo_turbo.erb` always wins
+over the `NAME.html.erb` beside it, and an HTML template answers when no Expo
+Turbo template exists. [Sharing one template](#sharing-one-template) covers
+that case.
 
 Every response whose media type is `application/vnd.expo-turbo+xml`, and every
 Stream response to a request that accepts Expo Turbo, is admitted before Rails
@@ -180,6 +186,190 @@ tree. Rails rejects a malformed or protocol-incompatible file and applies the
 same validation in every environment. A manifest that predates `children` stays
 readable, and its components are not child-checked. Generate the file in CI and
 fail on a diff to detect a stale manifest before deployment.
+
+## Sharing one template
+
+One template can serve a browser and a native client. Nothing is generated and
+nothing is compiled: the two vocabularies diverge in element names alone, and
+ordinary lookup resolves the rest.
+
+### Which file answers
+
+| Files present | Browser | Native client |
+| --- | --- | --- |
+| `show.expo_turbo.erb` | no template | serves |
+| `show.html.erb` | serves | serves, as Expo Turbo |
+| both | `show.html.erb` | `show.expo_turbo.erb` |
+| `show.erb` | serves | serves |
+
+The specific format wins. Adding `show.expo_turbo.erb` beside an existing
+`show.html.erb` takes over the native request and leaves the browser alone, so
+a host can specialize one screen at a time and share the rest.
+
+### The response says what the render selected
+
+An `.html.erb` that answered a native request is an Expo Turbo representation,
+not an HTML one. It is delivered as `application/vnd.expo-turbo+xml`, and the
+admission rules above apply to it unchanged: a template that emits `<div>`
+fails on the server instead of shipping HTML to a client that cannot read it.
+The standard helpers take their Expo Turbo branch inside it too, because the
+branch follows the format the render selected and not the extension of the file
+that answered.
+
+Two things can name that format, and they do not rank equally:
+
+| Source | Example | Rank |
+| --- | --- | --- |
+| **demanded** by the caller | `render "page", formats: [:html]` | wins |
+| **resolved** by Rails | the `Accept` header, or the `respond_to` branch that matched | otherwise |
+
+Writing `formats:` is a decision, so it is honoured whoever asked: `render
+"page", formats: [:html]` answers a native client with `text/html` and ordinary
+`turbo-rails` helpers, exactly as it answers a browser. That holds for a
+`NAME.erb` template too, which carries no format of its own for Rails to fall
+back on. A demand covers its own render and is restored afterwards, so a helper
+called after a `render_to_string ..., formats: [:html]` is already back on the
+resolved format. Everything else — an implicit render, a plain `render "show"`,
+a `respond_to` branch — is a resolution, and there the format Rails selected
+decides. `expo_turbo_selected_format` reports the answer, and both the media
+type and the helper branch read it, so the two cannot disagree.
+
+Set `self.expo_turbo_html_template_fallback = false` on a controller to confine
+its Expo Turbo renders to `.expo_turbo` templates, as releases before `0.3.0`
+did. A host that would rather keep a separate tree of native views still can:
+`prepend_view_path` is ordinary Rails and is unaffected.
+
+One development-only surprise comes with it. Rails annotates `.html` templates
+with `<!-- BEGIN … -->` comments when
+`config.action_view.annotate_rendered_view_with_filenames` is on, which
+`load_defaults` turns on in development. Those annotations now reach a native
+client too. They are XML comments, which the protocol carries as comment nodes,
+so the response still parses and is still admitted; the cost is that a
+development response names server paths to a native client, exactly as it
+already does to a browser.
+
+### Partials
+
+A shared `.html.erb` renders the `.html` partials beneath it, because ActionView
+puts the format of the template it found at the front of lookup. A
+format-neutral `NAME.erb` does not narrow lookup, so its partials still follow
+the format of the request and reach `_row.expo_turbo.erb` when one exists.
+Prefer `NAME.erb` for a template written to be shared, and `NAME.html.erb` when
+an existing HTML view is being reused as-is.
+
+### Element names
+
+Every protocol wrapper is already spelled the way Turbo spells it in HTML:
+`turbo-frame`, `turbo-stream`, `turbo-cable-stream-source`, and `template` need
+no translation and no declaration. A component reaches its HTML name through an
+alias:
+
+```ruby
+expo_turbo_template_capabilities(
+  components: {
+    "Text" => {aliases: ["p"], children: "text"},
+    "Link" => {aliases: ["a"], children: "text"},
+    "Form" => {aliases: ["form"], children: "nodes"}
+  }
+)
+```
+
+`<p id="hint">Pick a plan</p>` is then a paragraph to a browser and a `Text` to
+a native client, and the alias carries the component's child mode, attribute
+allow list, required attributes, and form ownership. Two names for one
+component is the point; one name for two components raises at boot. A protocol
+wrapper name cannot be aliased. Declare the same aliases on the client
+component, or the server will admit a name the device cannot render.
+
+Aliases are not required for this: no HTML element name is reserved, so a host
+may name a component `a`, `form`, or `input` outright.
+
+### What a shared template cannot use
+
+- **Void-element helpers.** `tag.br` writes `<br>`, which is not well-formed
+  XML. Rails' form builder does close its own inputs, so `text_field` and
+  friends are fine; `tag.br`, `tag.hr`, and `tag.img` are not.
+- **`form_with`.** It writes `accept-charset="UTF-8"`. The shared form-owner
+  attributes are `action`, `enctype`, `method`, `novalidate`, and `target`,
+  five of HTML's nine, and both the server and the client decoder admit exactly
+  those five. A shared form writes its own element.
+- **`dom_id` for a value both audiences must agree on.** It is format-aware by
+  design, so the same expression produces a different id per audience. Use a
+  literal id, or accept the divergence deliberately.
+
+## The paired template lint
+
+A host that keeps `foo.html.erb` and `foo.expo_turbo.erb` for one screen has
+nothing telling it when the two drift apart. `rake expo_turbo:paired_templates`
+compares every discovered pair under `app/views` and reports divergence in the
+attributes that break a screen without an error: `id`, `src`, `action`,
+`method`, `name`, and every `data-turbo-*`. None is confined to one element
+name, so a Frame's `src`, a Stream's `method`, and a form's `action` are all
+covered whatever the two sides call those elements. It also reports an element
+with no counterpart, and an id-bearing element the two sides put in a different
+order. Set `EXPO_TURBO_VIEW_PATHS` to lint other roots.
+
+**It compares element to element.** Comparing the two templates' *lists* of ids
+and srcs passes whenever the same values appear somewhere on both sides, which
+is exactly what happens when two Frames exchange their `src` or two forms
+exchange their `action`: every list matches and nothing is reported. So elements
+are paired first, and each pair is compared against its own counterpart. An
+element with no counterpart is reported as one.
+
+Elements pair by `id`, which the protocol already requires unique within a
+document. The id matches that appear in the same relative order on both sides
+also anchor the file, so what is left pairs by document order inside the runs
+between them and a difference stays in its own run. Inside a run, position
+counts only when the two sides put the same number of elements there; then
+every element is a position, including one carrying nothing compared, which is
+what makes an attribute that moved onto a plain element visible. When the counts
+differ the two sides are shaped differently — one audience needs a wrapper the
+other does not, which is ordinary for a pair of templates — and the run lines up
+only the elements carrying something, so a wrapper costs nothing.
+
+**Order is a finding of its own.** Two audiences handed the same targets in a
+different sequence receive different documents: another Frame navigates first,
+focus lands elsewhere, a Stream applies against a different neighbour. Calling
+that an attribute mismatch would name it wrongly, so it is reported as
+`reordered`. Only an element carrying an `id` can be said to have moved, because
+without one nothing identifies it across the two files. Relative order among
+id-bearing elements is checked whatever else the two sides contain, so an
+inserted wrapper cannot disturb it; absolute position is compared only when the
+two sides hold the same number of elements, because otherwise an insertion and a
+move are the same picture.
+
+It reads template source and never renders, so it runs in CI with no database
+and no server, and nothing in a request path loads it. Element names are not
+compared, because two names for one component is what an alias is for.
+
+`ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for a
+host's own test. What it cannot detect is listed in full at the top of
+`lib/expo_turbo/rails/paired_templates.rb`. Most entries follow from not
+rendering: a value a helper produces, a value that differs at run time from
+identical source, anything a partial or layout contributes, a branch only one
+audience takes, and semantics behind equal source. `dom_id` is the sharpest of
+those: the same expression on both sides still produces two ids. Four follow
+from pairing rather than from rendering:
+
+- **Nesting.** Start tags are scanned and never built into a tree, so an element
+  that moved to a different parent while keeping its place in the start-tag
+  order is invisible. It is the one structural difference the order check does
+  not reach.
+- **A reordering with no id to name it.** Only an element carrying an `id` can
+  be said to have moved. Two id-less elements swapping surfaces as the attribute
+  divergence it cannot be told apart from when they carry compared attributes,
+  and not at all when they carry none.
+- **A reordering whose relative id order is unchanged and whose two sides hold a
+  different number of elements.** Absolute position is compared only when the
+  counts match, because an insertion and a move are otherwise the same picture.
+- **Movement of an attribute inside a run whose two sides hold a different
+  number of elements**, for the same reason. An id on either element restores
+  this and the one above.
+
+In the other direction, a run whose sides hold the same number of elements but
+line them up differently is compared position by position, so one structural
+difference can surface as several findings; that is the same trust in position
+that makes movement visible.
 
 ## Frames
 
@@ -371,7 +561,9 @@ end
 ```
 
 `partial: "notices/notice"` resolves `app/views/notices/_notice.expo_turbo.erb`
-and never falls back to `.html.erb`. Raw positional content, keyword `content:`,
+first, and `_notice.html.erb` when no Expo Turbo partial exists; that fallback is
+the ordinary lookup rule and it is admitted the same way. Raw positional content,
+keyword `content:`,
 and captured blocks are inserted as XML template payloads, so hosts must provide
 valid XML. For target and selector actions, keyword `content:` is consumed as the
 `<template>` payload; provide exactly one of positional content, keyword content,
