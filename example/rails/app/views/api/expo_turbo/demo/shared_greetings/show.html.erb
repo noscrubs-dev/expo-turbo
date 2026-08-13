@@ -1,0 +1,12 @@
+<%# The shared template. One file answers a browser and a native client.
+
+     turbo-frame needs no translation: it is spelled the same in Turbo HTML and
+     in the protocol. `p` is an HTML element name that ApplicationController
+     declares as an alias of the DemoText component, so the same element means
+     a paragraph to a browser and a DemoText to a native client.
+
+     Everything here is well-formed XML on purpose. `tag.br` and the other
+     void-element helpers write `<br>`, which no XML parser will read, and
+     form_with writes accept-charset, which the protocol does not admit on a
+     form owner. Neither belongs in a shared template. %>
+<%= turbo_frame_tag "demo-shared-greeting" do %><p id="demo-shared-greeting-text"><%= @greeting %></p><% end %>

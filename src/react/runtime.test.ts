@@ -190,7 +190,13 @@ describe("Expo Turbo runtime", () => {
     runtime.dispose()
   })
 
-  test("reconciles the document after a Cable disconnect and reconnect", async () => {
+  /**
+   * #412's gap test with its expectation flipped. It asserted `requests` stayed
+   * at one — "a reconnect issues no second request" — and pinned the absence of
+   * this feature. If recovery silently stops working the count returns to one
+   * and this fails, which is the point of keeping it rather than deleting it.
+   */
+  test("refreshes the document after a Cable disconnect and reconnect", async () => {
     const requests: string[] = []
     const callbacks: CableCallbacks[] = []
     let unsubscribes = 0

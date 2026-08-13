@@ -28,6 +28,9 @@ require_relative "rails/engine"
 
 module ExpoTurbo
   module Rails
+    # A lint, never part of a request. Loaded by its rake task or by a host's
+    # own test, and by nothing a response passes through.
+    autoload :PairedTemplates, "expo_turbo/rails/paired_templates"
     autoload :XmlFragments, "expo_turbo/rails/xml_fragments"
 
     module Streams

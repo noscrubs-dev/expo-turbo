@@ -49,6 +49,12 @@ import { DocumentSession } from "./session"
 import { StreamLifecycle } from "./stream-lifecycle"
 import { attributeValue, isElement } from "./tree"
 
+const FORM_SEMANTICS = Object.freeze({
+  formContainerRole: () => undefined,
+  resolve: (tagName: string) =>
+    Object.freeze({ formOwner: tagName === "DemoForm" || tagName === "form" }),
+})
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -126,7 +132,7 @@ function fixture(): DocumentSession {
 function registry(session: DocumentSession, formId: string): FormControlRegistry {
   const form = session.tree.getElementById(formId)
   if (!form) throw new Error(`missing form fixture ${formId}`)
-  return new FormControlRegistry(session, form.key)
+  return new FormControlRegistry(session, form.key, { formSemantics: FORM_SEMANTICS })
 }
 
 function proposal(
@@ -1932,6 +1938,7 @@ describe("FormSubmissionController", () => {
     const firstController = new FormSubmissionController(session, transport.adapter)
     const secondController = new FormSubmissionController(session, transport.adapter)
     const formControls = new DocumentFormControls(session, {
+      formSemantics: FORM_SEMANTICS,
       submissionController: firstController,
     }).controlsFor("id:document-form")
     const duplicateControls = registry(session, "document-form")
@@ -2514,6 +2521,7 @@ describe("FormSubmissionController", () => {
       },
     })
     const controls = new FormControlRegistry(session, "id:document-form", {
+      formSemantics: FORM_SEMANTICS,
       submissionController: controller,
     })
 
@@ -2823,6 +2831,7 @@ describe("FormSubmissionController", () => {
     const transport = pendingFetch()
     const controller = new FormSubmissionController(session, transport.adapter)
     const controls = new FormControlRegistry(session, "id:document-form", {
+      formSemantics: FORM_SEMANTICS,
       submissionController: controller,
     })
 

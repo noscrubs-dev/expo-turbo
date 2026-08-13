@@ -32,6 +32,15 @@ import { TURBO_STREAM_MIME_TYPE } from "./protocol-request"
 
 type TurboModule = typeof import("@hotwired/turbo")
 
+const FORM_SEMANTICS = Object.freeze({
+  formContainerRole: () => undefined,
+  resolve: (tagName: string) => Object.freeze({ formOwner: tagName === "form" }),
+})
+
+function formControls(session: DocumentSession, form: ProtocolElement): FormControlRegistry {
+  return new FormControlRegistry(session, form.key, { formSemantics: FORM_SEMANTICS })
+}
+
 const browser = new Window({ url: "https://example.test/demo" })
 const originalGlobals = new Map<string, PropertyDescriptor | undefined>()
 let turbo: TurboModule
@@ -2372,7 +2381,7 @@ for (const responseStatus of [422, 500] as const) {
     )
     const form = session.tree.getElementById("profile")
     if (!form) throw new Error("Expo Frame form differential form is missing")
-    const controls = new FormControlRegistry(session, form.key)
+    const controls = formControls(session, form)
     let expoRequest: TurboRequest | undefined
     const expoResult = await new FormSubmissionController(session, {
       fetch: async (request) => {
@@ -2474,7 +2483,7 @@ test("matches upstream Turbo for a Frame form Stream response", async () => {
   const form = session.tree.getElementById("profile")
   const expoFrameBefore = session.tree.getElementById("details")
   if (!form || !expoFrameBefore) throw new Error("Expo Stream Frame form fixture is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoResult = await new FormSubmissionController(session, {
     fetch: async (request) => {
@@ -2565,7 +2574,7 @@ test("matches upstream Turbo prevented missing-Frame handling for a Frame form",
   const form = session.tree.getElementById("profile")
   const expoFrameBefore = session.tree.getElementById("details")
   if (!form || !expoFrameBefore) throw new Error("Expo missing Frame form fixture is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   const expoEvents: unknown[] = []
   const lifecycle = new FrameLifecycle()
   lifecycle.subscribe("frame-missing", (event) => {
@@ -2696,7 +2705,7 @@ test("matches upstream Turbo Frame form visit-control response promotion", async
   const form = session.tree.getElementById("profile")
   const expoFrameBefore = session.tree.getElementById("details")
   if (!form || !expoFrameBefore) throw new Error("Expo promoted Frame form fixture is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoVisits: unknown[] = []
   const lifecycle = new FrameLifecycle({
@@ -2866,7 +2875,7 @@ test("matches upstream Turbo for an empty Frame form 204 response", async () => 
   const form = session.tree.getElementById("profile")
   const expoFrameBefore = session.tree.getElementById("details")
   if (!form || !expoFrameBefore) throw new Error("Expo empty Frame form fixture is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoResult = await new FormSubmissionController(session, {
     fetch: async (request) => {
@@ -2948,7 +2957,7 @@ test("matches upstream Turbo for a redirected Frame form success", async () => {
   )
   const form = session.tree.getElementById("profile")
   if (!form) throw new Error("Expo redirected Frame form is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoResult = await new FormSubmissionController(session, {
     fetch: async (request) => {
@@ -3048,7 +3057,7 @@ test("matches upstream Turbo for a top-level GET form document response", async 
   )
   const form = session.tree.getElementById("search")
   if (!form) throw new Error("Expo document GET form is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoResult = await new FormSubmissionController(session, {
     fetch: async (request) => {
@@ -3132,7 +3141,7 @@ test("matches upstream Turbo for a redirected top-level POST form document respo
   )
   const form = session.tree.getElementById("search")
   if (!form) throw new Error("Expo document POST form is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   controls.register("id:query", {
     kind: "value",
     name: "query",
@@ -3244,7 +3253,7 @@ test("matches upstream Turbo unsafe document form redirect safety", async () => 
   )
   const form = session.tree.getElementById("search")
   if (!form) throw new Error("Expo unsafe document form is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoError: unknown
   try {
     await new FormSubmissionController(session, {
@@ -3326,7 +3335,7 @@ for (const responseStatus of [422, 500] as const) {
     )
     const form = session.tree.getElementById("profile")
     if (!form) throw new Error("Expo document error form is missing")
-    const controls = new FormControlRegistry(session, form.key)
+    const controls = formControls(session, form)
     let expoRequest: TurboRequest | undefined
     const expoResult = await new FormSubmissionController(session, {
       fetch: async (request) => {
@@ -3411,7 +3420,7 @@ for (const responseStatus of [201, 204] as const) {
     )
     const form = session.tree.getElementById("profile")
     if (!form) throw new Error("Expo empty document form is missing")
-    const controls = new FormControlRegistry(session, form.key)
+    const controls = formControls(session, form)
     let expoRequest: TurboRequest | undefined
     const expoResult = await new FormSubmissionController(session, {
       fetch: async (request) => {
@@ -3502,7 +3511,7 @@ test("matches upstream Turbo for a top-level form Stream response", async () => 
   )
   const form = session.tree.getElementById("profile")
   if (!form) throw new Error("Expo document Stream form is missing")
-  const controls = new FormControlRegistry(session, form.key)
+  const controls = formControls(session, form)
   let expoRequest: TurboRequest | undefined
   const expoResult = await new FormSubmissionController(session, {
     fetch: async (request) => {

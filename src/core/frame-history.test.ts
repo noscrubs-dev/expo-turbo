@@ -35,6 +35,11 @@ import { RequestLifecycle } from "./request-lifecycle"
 import { DocumentSession } from "./session"
 import { attributeValue, isElement } from "./tree"
 
+const FORM_SEMANTICS = Object.freeze({
+  formContainerRole: () => undefined,
+  resolve: (tagName: string) => Object.freeze({ formOwner: tagName === "DemoForm" }),
+})
+
 // @ts-expect-error Frame history coordinators are constructor-issued nominal handles.
 const forgedFrameHistoryCoordinator: FrameHistoryCoordinator = {}
 void forgedFrameHistoryCoordinator
@@ -918,7 +923,9 @@ describe("promoted Frame history", () => {
       if (!event.detail.url.endsWith("/promoted-form")) return
       const form = current.session.tree.getElementById("replacement-form")
       if (!form) throw new Error("committed same-Frame form is missing")
-      const controls = new FormControlRegistry(current.session, form.key)
+      const controls = new FormControlRegistry(current.session, form.key, {
+        formSemantics: FORM_SEMANTICS,
+      })
       formSubmission = formController.submit((signal) =>
         controls.submissionProposal({ protocol: { requestId: "replacement-form" }, signal }),
       )
@@ -1171,7 +1178,9 @@ describe("promoted Frame history", () => {
     current.registry.get("details")
     const form = current.session.tree.getElementById("frame-form")
     if (!form) throw new Error("fixture Frame form is missing")
-    const controls = new FormControlRegistry(current.session, form.key)
+    const controls = new FormControlRegistry(current.session, form.key, {
+      formSemantics: FORM_SEMANTICS,
+    })
     const formController = new FormSubmissionController(
       current.session,
       {
@@ -1371,7 +1380,9 @@ describe("promoted Frame history", () => {
     })
     const form = current.session.tree.getElementById("document-form")
     if (!form) throw new Error("fixture document form is missing")
-    const controls = new FormControlRegistry(current.session, form.key)
+    const controls = new FormControlRegistry(current.session, form.key, {
+      formSemantics: FORM_SEMANTICS,
+    })
 
     const frameVisit = current.registry.visit("/frame", {
       action: "advance",
