@@ -63,17 +63,23 @@ All notable public package, gem, and protocol changes will be recorded here.
   when the two sides hold the same number of them, which is what makes an
   attribute that moved onto a plain element visible, and only the elements
   carrying something are lined up when they do not, so a wrapper one audience
-  needs costs nothing. It reads template source and never renders, so it runs
-  in CI with no database and no server, and no request path loads it.
-  `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same findings for
-  a host's own test. It cannot see a value a helper produces, a value that
-  differs at run time from identical source, anything a partial or layout
-  contributes, a branch only one audience takes, semantics behind equal source,
-  an element that moved to a different parent, two elements that exchanged their
-  ids and every compared attribute together, or movement inside a run whose two
-  sides hold a different number of elements; and a run whose sides hold the same
-  number but line them up differently over-reports rather than under-reports.
-  The full list is at the top of `lib/expo_turbo/rails/paired_templates.rb`.
+  needs costs nothing. Order is reported as its own `reordered` finding rather
+  than as an attribute mismatch, because two audiences handed the same targets
+  in a different sequence receive different documents: relative order among
+  id-bearing elements is checked whatever else the two sides contain, and
+  absolute position as well when they hold the same number of elements. It also
+  reports an element with no counterpart. It reads template source and never
+  renders, so it runs in CI with no database and no server, and no request path
+  loads it. `ExpoTurbo::Rails::PairedTemplates.lint(roots)` returns the same
+  findings for a host's own test. It cannot see a value a helper produces, a
+  value that differs at run time from identical source, anything a partial or
+  layout contributes, a branch only one audience takes, semantics behind equal
+  source, nesting, a reordering with no id to name it, a reordering whose
+  relative id order is unchanged while the two sides hold a different number of
+  elements, or movement of an attribute inside a run whose two sides hold a
+  different number of elements; and a run whose sides hold the same number but
+  line them up differently over-reports rather than under-reports. The full list
+  is at the top of `lib/expo_turbo/rails/paired_templates.rb`.
 - **Breaking:** Fail closed on module negotiation for a verified native
   request. `expo_turbo_client_supports?` previously returned `true` for every
   requirement when `X-Expo-Turbo-Modules` was absent or malformed, so an old

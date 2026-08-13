@@ -30,6 +30,11 @@ module ExpoTurbo
     # not. The run then lines up only the elements that carry something to
     # compare, so a wrapper costs nothing.
     #
+    # Order is checked as well, and reported as its own kind rather than forced
+    # into an attribute mismatch, because it is a different thing: two
+    # audiences handed the same targets in a different sequence receive
+    # different documents, whatever the attributes say. See #reorderings.
+    #
     # It reads template source and never renders. Nothing here runs during a
     # request; the module is autoloaded and its only entry points are the rake
     # task and a host's own test.
@@ -53,20 +58,24 @@ module ExpoTurbo
     #   stripped, so every branch of a conditional is read as if taken; a
     #   template that branches on `expo_turbo_request?` reports the markup of
     #   both branches.
-    # - Where an element sits. Start tags are scanned, not nested, so an
-    #   element that moved to a different parent still pairs by its id and
-    #   reports nothing. An id that changed position is likewise a reordering
-    #   and not a divergence: both documents still carry it, and everything
-    #   that targets it behaves the same. An attribute left behind by that move
-    #   IS reported, because it is then on a different element from its id.
-    # - Two elements that exchanged their ids AND every compared attribute
-    #   together. Nothing distinguishes them once element names are out of
-    #   scope, which they are by design.
-    # - Movement inside a run whose two sides hold a different number of
-    #   elements. That run compares only the elements carrying something, so an
-    #   attribute that moved onto a plain element there is invisible. This is
-    #   the price of not reporting every element after a wrapper one audience
-    #   needs; an id on either element restores the detection.
+    # - Nesting. Start tags are scanned and never built into a tree, so an
+    #   element that moved to a different parent while keeping its place in the
+    #   start-tag order is invisible. This is the one structural difference the
+    #   order check above does not reach.
+    # - A reordering with no id to name it. Only an element carrying an id can
+    #   be said to have moved, because without one nothing identifies it across
+    #   the two files. Two id-less elements swapping surfaces as the attribute
+    #   divergence it is indistinguishable from when they carry compared
+    #   attributes, and not at all when they carry none.
+    # - A reordering whose relative id order is unchanged and whose two sides
+    #   hold a different number of elements. Absolute position is compared only
+    #   when the counts match, because an insertion and a move are otherwise the
+    #   same picture.
+    # - Movement of an attribute inside a run whose two sides hold a different
+    #   number of elements, for the same reason: that run compares only the
+    #   elements carrying something, so an attribute that moved onto a plain one
+    #   there is invisible. An id on either element restores this and the one
+    #   above.
     # - Semantics behind equal source: two `method="post"` forms that post to
     #   different places through different routes agree here. The reverse costs
     #   a false report rather than a miss: an expression is compared as text
@@ -102,6 +111,7 @@ module ExpoTurbo
         id: "id",
         method: "method",
         name: "control name",
+        reordered: "reordered",
         src: "src",
         unreadable: "unreadable template"
       }.freeze
@@ -143,6 +153,8 @@ module ExpoTurbo
           case aspect
           when :unreadable then ASPECT_LABELS.fetch(:unreadable)
           when :element then "#{element} (#{value}) has no counterpart in #{counterpart_path}"
+          when :reordered
+            "#{element} is at position #{value} here and position #{counterpart_value} in #{counterpart_path}"
           else
             label = ASPECT_LABELS.fetch(aspect)
             return "#{element} #{label} #{value.inspect} is absent in #{counterpart_path}" if counterpart_value.nil?
@@ -199,9 +211,56 @@ module ExpoTurbo
         unreadable << Finding.new(:unreadable, nil, nil, nil, pair.expo_turbo_path, 1, pair.html_path) if expo_turbo.nil?
         return unreadable if unreadable.any?
 
-        correspond(extract(html), extract(expo_turbo))
+        left_elements = extract(html)
+        right_elements = extract(expo_turbo)
+        attribute_findings = correspond(left_elements, right_elements)
           .flat_map { |left, right| compare(left, right, pair.html_path, pair.expo_turbo_path) }
+        order_findings = reorderings(left_elements, right_elements, pair.html_path, pair.expo_turbo_path)
+
+        (attribute_findings + order_findings)
           .sort_by { |finding| [finding.path, finding.line, finding.aspect.to_s, finding.value.to_s] }
+      end
+
+      # Order is a divergence of its own. Two audiences handed the same targets
+      # in a different sequence receive different documents: a different Frame
+      # navigates first, focus lands elsewhere, a Stream applies against a
+      # different neighbour. Reporting that as an attribute mismatch would name
+      # it wrongly, so it is its own finding.
+      #
+      # Only an element carrying an id can be said to have moved, because
+      # without one there is nothing that identifies it across the two files;
+      # two id-less elements swapping is indistinguishable from their
+      # attributes changing, and compare already reports that.
+      #
+      # Two questions are asked, and the second needs a guard the first does
+      # not. Relative order among id-bearing elements holds whatever else the
+      # two sides contain, so an inserted wrapper cannot disturb it. Absolute
+      # position is compared only when the two sides hold the same number of
+      # elements, because otherwise an insertion and a move look exactly alike
+      # and silence is the safe reading of the two.
+      def reorderings(left_elements, right_elements, left_path, right_path)
+        matches = id_matches(left_elements, right_elements)
+        comparable_positions = left_elements.length == right_elements.length
+        out_of_order = {}
+        highest = -1
+        matches.keys.sort.each do |left_index|
+          right_index = matches[left_index]
+          if right_index < highest
+            out_of_order[left_index] = true
+          else
+            highest = right_index
+          end
+        end
+
+        matches.keys.sort.filter_map do |left_index|
+          right_index = matches[left_index]
+          moved_relatively = out_of_order[left_index]
+          moved_absolutely = comparable_positions && left_index != right_index
+          next unless moved_relatively || moved_absolutely
+
+          element = left_elements[left_index]
+          Finding.new(:reordered, element.label, left_index + 1, right_index + 1, left_path, element.line, right_path)
+        end
       end
 
       # Pair by id first, because an id is the document's own identity and the
@@ -383,7 +442,7 @@ module ExpoTurbo
         "#{EXPRESSION_OPEN}#{body.strip.gsub(/\s+/, " ")}#{EXPRESSION_CLOSE}"
       end
 
-      private_class_method :lint_pair, :correspond, :align, :id_matches, :ordered_anchors, :compare, :aspect_for, :read, :extract, :tracked,
+      private_class_method :lint_pair, :correspond, :reorderings, :align, :id_matches, :ordered_anchors, :compare, :aspect_for, :read, :extract, :tracked,
         :source_offset, :parse_attributes, :normalize, :replacement
     end
   end

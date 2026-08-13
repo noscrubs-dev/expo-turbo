@@ -302,8 +302,9 @@ compares every discovered pair under `app/views` and reports divergence in the
 attributes that break a screen without an error: `id`, `src`, `action`,
 `method`, `name`, and every `data-turbo-*`. None is confined to one element
 name, so a Frame's `src`, a Stream's `method`, and a form's `action` are all
-covered whatever the two sides call those elements. Set
-`EXPO_TURBO_VIEW_PATHS` to lint other roots.
+covered whatever the two sides call those elements. It also reports an element
+with no counterpart, and an id-bearing element the two sides put in a different
+order. Set `EXPO_TURBO_VIEW_PATHS` to lint other roots.
 
 **It compares element to element.** Comparing the two templates' *lists* of ids
 and srcs passes whenever the same values appear somewhere on both sides, which
@@ -323,6 +324,17 @@ differ the two sides are shaped differently — one audience needs a wrapper the
 other does not, which is ordinary for a pair of templates — and the run lines up
 only the elements carrying something, so a wrapper costs nothing.
 
+**Order is a finding of its own.** Two audiences handed the same targets in a
+different sequence receive different documents: another Frame navigates first,
+focus lands elsewhere, a Stream applies against a different neighbour. Calling
+that an attribute mismatch would name it wrongly, so it is reported as
+`reordered`. Only an element carrying an `id` can be said to have moved, because
+without one nothing identifies it across the two files. Relative order among
+id-bearing elements is checked whatever else the two sides contain, so an
+inserted wrapper cannot disturb it; absolute position is compared only when the
+two sides hold the same number of elements, because otherwise an insertion and a
+move are the same picture.
+
 It reads template source and never renders, so it runs in CI with no database
 and no server, and nothing in a request path loads it. Element names are not
 compared, because two names for one component is what an alias is for.
@@ -333,20 +345,28 @@ host's own test. What it cannot detect is listed in full at the top of
 rendering: a value a helper produces, a value that differs at run time from
 identical source, anything a partial or layout contributes, a branch only one
 audience takes, and semantics behind equal source. `dom_id` is the sharpest of
-those: the same expression on both sides still produces two ids. Three follow
-from pairing rather than from rendering: it cannot see that an element moved to
-a different parent, because start tags are scanned and not nested, and an `id`
-that changed position is a reordering rather than a divergence for the same
-reason — though an attribute *left behind* by that move is reported, because it
-is then on a different element from its id; it cannot see two elements that
-exchanged their ids *and* every compared attribute together, because nothing is
-left to tell them apart; and it cannot see movement inside a run whose two sides
-hold a different number of elements, which is the price of not reporting every
-element after a wrapper one audience needs. An id on either element restores
-that last one. In the other direction, a run whose sides hold the same number of
-elements but line them up differently is compared position by position, so one
-structural difference can surface as several findings; that is the same trust in
-position that makes movement visible.
+those: the same expression on both sides still produces two ids. Four follow
+from pairing rather than from rendering:
+
+- **Nesting.** Start tags are scanned and never built into a tree, so an element
+  that moved to a different parent while keeping its place in the start-tag
+  order is invisible. It is the one structural difference the order check does
+  not reach.
+- **A reordering with no id to name it.** Only an element carrying an `id` can
+  be said to have moved. Two id-less elements swapping surfaces as the attribute
+  divergence it cannot be told apart from when they carry compared attributes,
+  and not at all when they carry none.
+- **A reordering whose relative id order is unchanged and whose two sides hold a
+  different number of elements.** Absolute position is compared only when the
+  counts match, because an insertion and a move are otherwise the same picture.
+- **Movement of an attribute inside a run whose two sides hold a different
+  number of elements**, for the same reason. An id on either element restores
+  this and the one above.
+
+In the other direction, a run whose sides hold the same number of elements but
+line them up differently is compared position by position, so one structural
+difference can surface as several findings; that is the same trust in position
+that makes movement visible.
 
 ## Frames
 

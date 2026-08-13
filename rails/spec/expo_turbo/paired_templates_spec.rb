@@ -107,32 +107,89 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
       expect(lint.map(&:aspect)).to eq(%i[data_turbo data_turbo])
     end
 
-    # An id alone moving between two otherwise-empty elements is a reordering,
-    # not a divergence: both documents still carry `#one`, and everything that
-    # targets it - a Stream, a Frame, a scroll - behaves the same. The id is
-    # the identity, so it is the one thing that cannot be said to have moved.
-    it "treats an id that changed position as a reordering" do
-      write("demo/show.html.erb", %(<p id="one"/><p/>))
-      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
-
-      expect(lint).to be_empty
-    end
-
-    # What matters is an attribute that ends up on a different element from
-    # its id, and that is reported.
-    it "reports an attribute left behind when its id moved" do
-      write("demo/show.html.erb", %(<p id="one" data-turbo-action="advance"/><p/>))
-      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
-
-      expect(lint.map(&:aspect)).to eq([:data_turbo])
-      expect(lint.first.element).to eq("#one")
-    end
-
     it "reports two ids that were exchanged between elements" do
       write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
       write("demo/show.expo_turbo.erb", %(<turbo-frame id="two" src="/alpha"/><turbo-frame id="one" src="/beta"/>))
 
       expect(reported(:src)).to contain_exactly("/alpha", "/beta")
+    end
+
+    it "reports an attribute left behind when its id moved" do
+      write("demo/show.html.erb", %(<p id="one" data-turbo-action="advance"/><p/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
+
+      expect(lint.map(&:aspect)).to contain_exactly(:data_turbo, :reordered)
+      expect(lint.map(&:element).uniq).to eq(["#one"])
+    end
+  end
+
+  # Order is a divergence in its own right, not an attribute mismatch. Two
+  # audiences given the same targets in a different sequence receive different
+  # documents: a different Frame navigates first, focus lands elsewhere, and a
+  # Stream applies against a different neighbour. It is reported as itself.
+  describe "reordering" do
+    it "reports an element that moved past one carrying nothing compared" do
+      write("demo/show.html.erb", %(<turbo-frame id="x" src="/one"/><turbo-frame/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame/><turbo-frame id="x" src="/one"/>))
+
+      finding = lint.first
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+      expect(finding.element).to eq("#x")
+      expect(finding.value).to eq(1)
+      expect(finding.counterpart_value).to eq(2)
+      expect(finding.to_s).to include("position 1", "position 2")
+    end
+
+    it "reports an id and a Turbo data attribute that moved together" do
+      write("demo/show.html.erb", %(<a id="x" data-turbo-action="advance"/><a/>))
+      write("demo/show.expo_turbo.erb", %(<DemoLink/><DemoLink id="x" data-turbo-action="advance"/>))
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+    end
+
+    it "reports two elements that swapped places while keeping their own attributes" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="b" src="/2"/><turbo-frame id="a" src="/1"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[reordered reordered])
+      expect(lint.map(&:element)).to contain_exactly("#a", "#b")
+    end
+
+    # Relative order among id-bearing elements is checked whatever the counts,
+    # so a swap is still reported when one side also gained a wrapper.
+    it "reports a swap even when one side also gained an element" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><turbo-frame id="b" src="/2"/><turbo-frame id="a" src="/1"/>))
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+    end
+
+    # Absolute position is compared only when the two sides hold the same
+    # number of elements. Otherwise an inserted wrapper and a move look
+    # identical, and silence is the safe reading.
+    it "reports nothing when a wrapper shifted every position" do
+      write("demo/show.html.erb", %(<turbo-frame id="x" src="/one"/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><turbo-frame id="x" src="/one"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "reports nothing when order is unchanged" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+
+      expect(lint).to be_empty
+    end
+
+    # Without an id there is no identity that could be said to have moved, so
+    # two id-less elements swapping is reported as the attribute divergence it
+    # is indistinguishable from, not as a reordering.
+    it "does not claim a reordering between elements with no id" do
+      write("demo/show.html.erb", %(<form action="/x"/><form action="/y"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm action="/y"/><DemoForm action="/x"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[action action])
     end
   end
 
@@ -159,11 +216,14 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
   end
 
   describe "how elements are paired" do
+    # Attributes still follow the id wherever it sits, so nothing is reported
+    # as an attribute mismatch. The order difference is reported as itself.
     it "pairs by id even when the elements sit in a different order" do
       write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
       write("demo/show.expo_turbo.erb", %(<turbo-frame id="two" src="/beta"/><turbo-frame id="one" src="/alpha"/>))
 
-      expect(lint).to be_empty
+      expect(lint.map(&:aspect)).to eq(%i[reordered reordered])
+      expect(lint.map(&:aspect)).not_to include(:src)
     end
 
     it "pairs by document order when neither side carries an id" do
@@ -286,7 +346,8 @@ RSpec.describe ExpoTurbo::Rails::PairedTemplates do
     write("demo/show.html.erb", %(<turbo-frame id="b" src="/b2"/>\n<turbo-frame id="a" src="/a2"/>))
     write("demo/show.expo_turbo.erb", %(<turbo-frame id="a" src="/a1"/>\n<turbo-frame id="b" src="/b1"/>))
 
-    expect(lint.map(&:line)).to eq([1, 2])
+    expect(lint.map(&:line)).to eq([1, 1, 2, 2])
+    expect(lint.map(&:aspect)).to eq(%i[reordered src reordered src])
     expect(lint.map(&:to_s)).to eq(described_class.lint(root).map(&:to_s))
   end
 
