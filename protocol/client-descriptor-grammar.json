@@ -1,19 +1,19 @@
 {
   "emitted": {
-    "withVocabulary": "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
-    "withoutVocabulary": "v=1; proto=0.1; rt=0.2.0"
+    "withVocabulary": "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+    "withoutVocabulary": "v=1; proto=0.1; rt=0.3.0"
   },
   "accepted": [
-    "v=1; proto=0.1; rt=0.2.0",
-    "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    "v=1; proto=0.1; rt=0.3.0",
+    "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
   ],
   "rejected": [
-    "v=1; proto=0.1; rt=0.2.0; rev=7",
-    "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef; rev=7",
-    "v=2; proto=0.1; rt=0.2.0",
-    "v=1; proto=0.2; rt=0.2.0",
+    "v=1; proto=0.1; rt=0.3.0; rev=7",
+    "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef; rev=7",
+    "v=2; proto=0.1; rt=0.3.0",
+    "v=1; proto=0.2; rt=0.3.0",
     "v=1; proto=0.1",
-    "v=1; proto=0.1; rt=0.2.0; rt=0.3.0",
-    "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef"
+    "v=1; proto=0.1; rt=0.3.0; rt=0.3.0",
+    "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef"
   ]
 }

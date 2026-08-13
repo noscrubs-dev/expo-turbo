@@ -1,6 +1,6 @@
 {
   "name": "expo-turbo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Host-neutral Turbo XML runtime for Expo React Native and Rails",
   "type": "module",
   "sideEffects": false,

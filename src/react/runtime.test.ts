@@ -80,7 +80,7 @@ describe("Expo Turbo runtime", () => {
 
     expect(runtime.session.tree.document.children.find(isElement)?.tagName).toBe("TestDocument")
     expect(requests).toHaveLength(1)
-    const descriptor = `v=1; proto=0.1; rt=0.2.0; vocab=${registry.capabilities.hash}`
+    const descriptor = `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`
     expect(requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
     expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
 
