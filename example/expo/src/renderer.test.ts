@@ -328,7 +328,11 @@ function formScopeUnmountFixture(
       return binding
     },
     controller,
-    forms: () => new DocumentFormControls(session, { submissionController: controller }),
+    forms: () =>
+      new DocumentFormControls(session, {
+        formSemantics: registry,
+        submissionController: controller,
+      }),
     pending,
     provider,
     session,
@@ -481,7 +485,10 @@ function formTerminalFixture(
       },
     },
   )
-  const forms = new DocumentFormControls(session, { submissionController: controller })
+  const forms = new DocumentFormControls(session, {
+    formSemantics: registry,
+    submissionController: controller,
+  })
   let renderer: ReactTestRenderer | undefined
   act(() => {
     const provider =
@@ -1783,7 +1790,10 @@ describe("React protocol renderer", () => {
         }
       },
     })
-    const forms = new DocumentFormControls(session, { submissionController })
+    const forms = new DocumentFormControls(session, {
+      formSemantics: registry,
+      submissionController,
+    })
     const activeRenderer = render(session, registry, { forms, strict: true })
     const control = activeRenderer.root.find(
       (node) => String(node.type) === "auto-submit-value",
@@ -2179,7 +2189,10 @@ describe("React protocol renderer", () => {
       fetch: (request) =>
         new Promise<TurboResponse>((resolve) => pendingSubmissions.push({ request, resolve })),
     })
-    const forms = new DocumentFormControls(session, { submissionController })
+    const forms = new DocumentFormControls(session, {
+      formSemantics: componentRegistry,
+      submissionController,
+    })
     const scopes = new DocumentStateScopes(session)
     const state = new DocumentStateStore()
     let renderer: ReactTestRenderer | undefined
@@ -2920,7 +2933,10 @@ describe("React protocol renderer", () => {
         { url: "https://example.test/current" },
       ),
     )
-    const forms = new DocumentFormControls(session, { formMode: "optin" })
+    const forms = new DocumentFormControls(session, {
+      formMode: "optin",
+      formSemantics: componentRegistry,
+    })
     let renderer: ReactTestRenderer | undefined
     await act(async () => {
       renderer = create(
@@ -3066,7 +3082,7 @@ describe("React protocol renderer", () => {
         { url: "https://example.test/forms/current" },
       ),
     )
-    const forms = new DocumentFormControls(session)
+    const forms = new DocumentFormControls(session, { formSemantics: registry })
     const errors: ExpoTurboRenderError[] = []
     let renderer: ReactTestRenderer | undefined
     await act(async () => {
@@ -4195,6 +4211,7 @@ describe("React protocol renderer", () => {
         },
         getFocusedId: () => focused.at(-1),
       },
+      formSemantics: registry,
       submissionController: controller,
     })
     let renderer: ReactTestRenderer | undefined
@@ -14374,7 +14391,10 @@ describe("React protocol renderer", () => {
     const errors: ExpoTurboRenderError[] = []
     const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
     render(session, registry, {
-      forms: new DocumentFormControls(session, { submissionController }),
+      forms: new DocumentFormControls(session, {
+        formSemantics: registry,
+        submissionController,
+      }),
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
         vocabulary.push(event)
@@ -14729,8 +14749,9 @@ describe("React protocol renderer", () => {
       ),
     )
     const errors: ExpoTurboRenderError[] = []
-    const renderer = render(session, blankingRefusalFixture(), {
-      forms: new DocumentFormControls(session),
+    const registry = blankingRefusalFixture()
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
       onError: (event) => errors.push(event),
       renderError: (event) => createElement("protocol-error", null, event.error.message),
     })
@@ -14825,8 +14846,9 @@ describe("React protocol renderer", () => {
       ),
     )
     const errors: ExpoTurboRenderError[] = []
-    const renderer = render(session, blankingRefusalFixture(), {
-      forms: new DocumentFormControls(session),
+    const registry = blankingRefusalFixture()
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
       onError: (event) => errors.push(event),
       renderError: (event) => createElement("protocol-error", null, event.error.message),
     })
@@ -15144,7 +15166,7 @@ describe("React protocol renderer", () => {
     )
     const errors: ExpoTurboRenderError[] = []
     const renderer = render(session, registry, {
-      forms: new DocumentFormControls(session),
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
       onError: (event) => errors.push(event),
       renderError: (event) => createElement("node-error", null, event.error.message),
     })
@@ -15347,8 +15369,9 @@ describe("React protocol renderer", () => {
       ),
     )
     const errors: ExpoTurboRenderError[] = []
-    const renderer = render(session, blankingRefusalFixture(), {
-      forms: new DocumentFormControls(session),
+    const registry = blankingRefusalFixture()
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
       onError: (event) => errors.push(event),
       renderError: (event) => createElement("protocol-error", null, event.error.message),
     })
@@ -15412,7 +15435,7 @@ describe("React protocol renderer", () => {
     const errors: ExpoTurboRenderError[] = []
     const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
     const renderer = render(session, registry, {
-      forms: new DocumentFormControls(session),
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
       onError: (event) => errors.push(event),
       onUnknownVocabulary: (event) => {
         vocabulary.push(event)
