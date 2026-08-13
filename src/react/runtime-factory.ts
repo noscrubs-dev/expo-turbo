@@ -1,10 +1,13 @@
 import type {
+  CableAdapter,
   ClockAdapter,
   DocumentHistoryHostAdapter,
   FetchAdapter,
+  FocusAdapter,
   NavigationAdapter,
 } from "../adapters/index.js"
 import {
+  CableStreamSourceRegistry,
   DocumentFormControls,
   DocumentHistory,
   DocumentRefreshController,
@@ -31,6 +34,13 @@ const clock: ClockAdapter = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
 }
 
+/** Matches the core controllers' own fallback when no observer was supplied. */
+function rethrowUnobserved(error: Error): void {
+  queueMicrotask(() => {
+    throw error
+  })
+}
+
 const PLACEHOLDER_DOCUMENT =
   '<turbo-frame id="expo-turbo-placeholder" disabled="" data-turbo-cache-control="no-cache" />'
 
@@ -41,14 +51,35 @@ export interface ExpoTurboRuntime {
   readonly scopes: DocumentStateScopes
   readonly session: DocumentSession
   readonly state: DocumentStateStore
+  /** Present only when a Cable adapter was supplied. */
+  readonly streamSources?: CableStreamSourceRegistry
   dispose(): void
   load(): Promise<DocumentVisitResult>
 }
 
 export interface CreateExpoTurboRuntimeOptions {
+  /**
+   * Transport for `turbo-cable-stream-source` elements. Supplying it is what
+   * creates the Stream source registry; the runtime owns its disposal.
+   */
+  readonly cable?: CableAdapter
   readonly fetch: FetchAdapter
+  /**
+   * Logical focus for form validation. The runtime is the single owner: it
+   * hands this one adapter to every consumer that needs it, so a host never
+   * has to pass the same object to two places and keep their lifetimes in step.
+   */
+  readonly focus?: FocusAdapter
   readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
+  /**
+   * Receives faults from background work: Cable subscription and dispatch, and
+   * document refresh. These are not document faults, so they are reported
+   * rather than replacing the mounted document with an error surface — but they
+   * must be reported, because the alternative is an uncaught microtask throw
+   * the host can neither see nor catch.
+   */
+  readonly onBackgroundError?: (error: Error) => void
   readonly registry: ComponentRegistry<RegistryComponent>
   readonly url: string
 }
@@ -79,7 +110,12 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     snapshotCache: snapshots,
     visitLifecycle,
   })
-  const refresh = new DocumentRefreshController(session, controller, clock)
+  const onBackgroundError = options.onBackgroundError
+  // Spread rather than a wrapper: an always-present callback would replace each
+  // controller's own fallback reporting with a no-op when the host supplied
+  // nothing, which is worse than the default it displaced.
+  const backgroundErrorOption = onBackgroundError ? { onError: onBackgroundError } : {}
+  const refresh = new DocumentRefreshController(session, controller, clock, backgroundErrorOption)
   const frameHistory = history
     ? new FrameHistoryCoordinator(session, {
         history,
@@ -109,10 +145,26 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     visitLifecycle,
   })
   const forms = new DocumentFormControls(session, {
+    ...(options.focus ? { focus: options.focus } : {}),
     formSemantics: options.registry,
     moduleVersions,
     submissionController: submission,
   })
+  // Cable delivers Stream actions, including `refresh`, for as long as the
+  // socket is up. It does NOT recover the document after a reconnect: a
+  // broadcast missed while the socket was down leaves the mounted document
+  // stale until something else refreshes it. That is a known limitation rather
+  // than an oversight — it matches the behavior before `cable` existed — and
+  // `runtime.test.ts` pins it. Recovery is tracked in
+  // https://github.com/noscrubs-dev/expo-turbo/pull/418.
+  const streamSources = options.cable
+    ? new CableStreamSourceRegistry(session, options.cable, {
+        // This registry requires an observer, so the fallback has to be the
+        // loud one rather than a no-op that swallows the fault.
+        onError: onBackgroundError ?? rethrowUnobserved,
+        streamOptions: { refresh },
+      })
+    : undefined
   let disposed = false
 
   return Object.freeze({
@@ -122,11 +174,13 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     scopes,
     session,
     state,
+    ...(streamSources ? { streamSources } : {}),
     dispose(): void {
       if (disposed) return
       disposed = true
       forms.dispose()
       frames.dispose()
+      streamSources?.dispose()
       refresh.dispose()
       controller.cancel()
       loader.cancel()

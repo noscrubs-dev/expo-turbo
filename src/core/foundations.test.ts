@@ -105,14 +105,7 @@ describe("adapter boundary", () => {
         openExternal() {},
         visit() {},
       },
-      observability: { report() {} },
       requestIds: { next: () => "request-1" },
-      scroll: { scrollTo() {} },
-      storage: {
-        delete: async () => {},
-        get: async () => undefined,
-        set: async () => {},
-      },
       styles: {
         compose: (styles) => Object.assign({}, ...styles),
         maxTokens: 1,
