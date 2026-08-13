@@ -242,8 +242,17 @@ Every response reports the vocabulary that answered it:
 | `assumed-latest` | not a native request, so everything is assumed |
 
 Use `expo_turbo_client_supports_attribute?` for an attribute. The numeric
-`expo_turbo_client_supports?` helper remains an escape hatch and compares the
-server-side revision for a resolved digest. The revision is not sent by clients.
+`expo_turbo_client_revision_satisfies?` helper remains an escape hatch and
+compares the server-side revision for a resolved digest. The revision is not
+sent by clients. The legacy `expo_turbo_client_supports?(module, requirement)`
+helper reads only the 0.2 modules header. It raises for a resolved descriptor,
+so a module name cannot be ignored and fail open.
+
+The `lockfile:` argument is required for descriptor negotiation. Pass it with
+the generated `manifest:` path, as shown in the first controller example. If a
+native descriptor arrives without this configuration, the gem warns and all
+feature and revision gates fail closed. An unknown digest also warns and fails
+closed.
 
 Compatibility during the 0.3 change:
 
@@ -252,6 +261,10 @@ Compatibility during the 0.3 change:
 | 0.2 | 0.3 | the gem reads `X-Expo-Turbo-Modules` and reports `legacy-declared` |
 | 0.3 | 0.2 | the old gem cannot read the descriptor and fails closed for native gates |
 | 0.3 | 0.3 | the digest resolves through the lock and reports `declared` |
+
+**Deployment order:** deploy the 0.3 gem before any 0.3 client. The 0.3 gem
+continues to read the 0.2 modules header. A 0.2 gem cannot read the new
+descriptor, so a 0.3 client connected to it fails all native gates closed.
 
 ## Caching
 

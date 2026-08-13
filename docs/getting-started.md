@@ -482,9 +482,25 @@ never goes on the wire. Gate the exact feature where the Rails template uses it:
 
 Use `expo_turbo_client_supports_attribute?("CartRow", "quantity")` for an
 attribute. Numeric revision requirements remain available through
-`expo_turbo_client_supports?` as an escape hatch. A native request with a
+`expo_turbo_client_revision_satisfies?` as an escape hatch. The legacy
+`expo_turbo_client_supports?(module, requirement)` helper reads only the 0.2
+modules header and raises for a resolved descriptor. A native request with a
 missing, malformed, or unknown descriptor fails closed. A non-native request
 keeps the web assumption that it supports the current vocabulary.
+
+Generate the manifest with `capabilityManifestJSON()` and configure Rails with
+both paths:
+
+```ruby
+expo_turbo_template_capabilities(
+  manifest: Rails.root.join("config/expo_turbo_manifest.json"),
+  lockfile: Rails.root.join("expo-turbo.lock.json")
+)
+```
+
+Without `lockfile:`, the gem warns when a native descriptor arrives and all
+gates fail closed. Deploy the 0.3 gem before the 0.3 client. The new gem reads
+the old modules header, but the old gem cannot read the new descriptor.
 
 Capability components that change server state outside a Turbo form can call
 `useDocumentReload()` from `expo-turbo/react`. The returned async function
@@ -508,7 +524,8 @@ An adopting Rails application should:
 3. Configure a host-owned XML view root plus exact component and style-token
    capabilities. Prefer a generated registry manifest by writing
    `capabilityManifestJSON()` from component-free capability modules and
-   passing its path as `manifest:` to `expo_turbo_template_capabilities`.
+   passing its path as `manifest:` and the checked-in compatibility lock as
+   `lockfile:` to `expo_turbo_template_capabilities`.
 4. Own every route, authorization rule, cache input, credential, and product
    view in the host.
 5. Use the gem's Frame, Stream, structural test, and optional protected Cable

@@ -44,7 +44,7 @@ module ExpoTurbo
         after_action :expo_turbo_validate_response!
         after_action :expo_turbo_vary!
         after_action :expo_turbo_report_response_vocabulary
-        helper_method :expo_turbo_client_modules, :expo_turbo_client_supports?,
+        helper_method :expo_turbo_client_modules, :expo_turbo_client_revision_satisfies?, :expo_turbo_client_supports?,
           :expo_turbo_client_supports_attribute?, :expo_turbo_client_supports_component?, :expo_turbo_frame_request?,
           :expo_turbo_frame_request_id, :expo_turbo_request?
       end
@@ -57,7 +57,7 @@ module ExpoTurbo
             style_tokens:,
             max_style_tokens:
           )
-          self.expo_turbo_compatibility_registry = CompatibilityRegistry.load(lockfile) if lockfile
+          self.expo_turbo_compatibility_registry = lockfile ? CompatibilityRegistry.load(lockfile) : nil
         end
       end
 
@@ -115,21 +115,30 @@ module ExpoTurbo
         raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
         raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
 
-        requirement_parts = requirement.split(",", -1).map(&:strip)
-        raise ArgumentError, "requirement must not contain empty clauses" if requirement_parts.any?(&:empty?)
-
-        parsed_requirement = Gem::Requirement.new(*requirement_parts)
+        parsed_requirement = expo_turbo_parse_requirement(requirement)
         negotiation = expo_turbo_module_negotiation
         return true if negotiation.fetch(:latest)
 
-        if (entry = negotiation[:entry])
-          return parsed_requirement.satisfied_by?(Gem::Version.new(entry.revision.to_s))
+        if negotiation[:entry]
+          raise ArgumentError,
+            "module-scoped requirements cannot test a vocabulary revision; use expo_turbo_client_revision_satisfies?"
         end
 
         version = negotiation.fetch(:modules)[module_name]
         return false unless version
 
         parsed_requirement.satisfied_by?(Gem::Version.new(version))
+      end
+
+      def expo_turbo_client_revision_satisfies?(requirement)
+        parsed_requirement = expo_turbo_parse_requirement(requirement)
+        negotiation = expo_turbo_module_negotiation
+        return true if negotiation.fetch(:latest)
+
+        entry = negotiation[:entry]
+        return false unless entry
+
+        parsed_requirement.satisfied_by?(Gem::Version.new(entry.revision.to_s))
       end
 
       def expo_turbo_client_supports_component?(tag)
@@ -246,8 +255,20 @@ module ExpoTurbo
           digest = fields["vocab"]
           return ASSUMED_NONE unless digest
 
-          entry = self.class.expo_turbo_compatibility_registry&.resolve(digest)
-          return ASSUMED_NONE unless entry
+          registry = self.class.expo_turbo_compatibility_registry
+          unless registry
+            expo_turbo_report_descriptor_failure(
+              "Expo Turbo cannot resolve X-Expo-Turbo-Client; configure lockfile: in expo_turbo_template_capabilities"
+            )
+            return ASSUMED_NONE
+          end
+          entry = registry.resolve(digest)
+          unless entry
+            expo_turbo_report_descriptor_failure(
+              "Expo Turbo ignored an unknown vocabulary digest in X-Expo-Turbo-Client"
+            )
+            return ASSUMED_NONE
+          end
 
           return {
             vocabulary: :declared,
@@ -262,8 +283,22 @@ module ExpoTurbo
       end
 
       def assumed_or_report_descriptor
-        logger.warn("Expo Turbo ignored a malformed X-Expo-Turbo-Client header") if respond_to?(:logger) && logger
+        expo_turbo_report_descriptor_failure("Expo Turbo ignored a malformed X-Expo-Turbo-Client header")
         ASSUMED_NONE
+      end
+
+      def expo_turbo_report_descriptor_failure(message)
+        logger.warn(message) if respond_to?(:logger) && logger
+      end
+
+      def expo_turbo_parse_requirement(requirement)
+        raise ArgumentError, "requirement must be a String" unless requirement.is_a?(String)
+        raise ArgumentError, "requirement must not be empty" if requirement.strip.empty?
+
+        requirement_parts = requirement.split(",", -1).map(&:strip)
+        raise ArgumentError, "requirement must not contain empty clauses" if requirement_parts.any?(&:empty?)
+
+        Gem::Requirement.new(*requirement_parts)
       end
 
       def expo_turbo_negotiate_modules(header, native:)

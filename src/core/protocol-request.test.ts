@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
 
 import { TargetError } from "./errors"
 import {
@@ -9,13 +10,18 @@ import {
   serializeClientDescriptor,
 } from "./protocol-request"
 
+const descriptorGrammar = JSON.parse(
+  await readFile(new URL("../../protocol/client-descriptor-grammar.json", import.meta.url), "utf8"),
+) as Readonly<{
+  emitted: Readonly<{ withVocabulary: string; withoutVocabulary: string }>
+}>
+
 describe("client compatibility descriptor", () => {
   test("pins one generated header and does not emit any retired compatibility header", () => {
     const descriptor = serializeClientDescriptor("sha256-128:0123456789abcdef0123456789abcdef")
 
-    expect(descriptor).toBe(
-      "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
-    )
+    // Reverting the descriptor shape or adding a wire revision changes this exact shared value.
+    expect(descriptor).toBe(descriptorGrammar.emitted.withVocabulary)
     expect(
       protocolRequestHeaders({
         clientDescriptor: descriptor,
@@ -29,8 +35,11 @@ describe("client compatibility descriptor", () => {
   })
 
   test("degrades without vocabulary for a safe unavailable digest", () => {
-    expect(serializeClientDescriptor()).toBe("v=1; proto=0.1; rt=0.2.0")
-    expect(serializeClientDescriptor("unavailable")).toBe("v=1; proto=0.1; rt=0.2.0")
+    // Reverting the no-vocabulary form changes both exact shared values.
+    expect(serializeClientDescriptor()).toBe(descriptorGrammar.emitted.withoutVocabulary)
+    expect(serializeClientDescriptor("unavailable")).toBe(
+      descriptorGrammar.emitted.withoutVocabulary,
+    )
   })
 })
 

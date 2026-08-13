@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 require "pathname"
 
 module ExpoTurbo
@@ -32,6 +33,15 @@ module ExpoTurbo
           unless manifest["hash"] == entry.fetch("digest")
             raise ConfigurationError, "Expo Turbo compatibility manifest digest does not match its lock entry"
           end
+          digest_source = {
+            "components" => manifest.fetch("components"),
+            "modules" => manifest.fetch("modules"),
+            "protocolVersion" => manifest.fetch("protocolVersion")
+          }
+          computed_digest = "sha256-128:#{Digest::SHA256.hexdigest(JSON.generate(digest_source))[0, 32]}"
+          unless computed_digest == entry.fetch("digest")
+            raise ConfigurationError, "Expo Turbo compatibility manifest computed digest does not match its lock entry"
+          end
           components = manifest.fetch("components").to_h do |component|
             [component.fetch("tag"), component.fetch("attributes").map { |attribute| attribute.fetch("name") }]
           end
@@ -58,6 +68,8 @@ module ExpoTurbo
           true
         end
         return unless valid
+        expected_fields = fields.key?("vocab") ? %w[proto rt v vocab] : %w[proto rt v]
+        return unless fields.keys.sort == expected_fields.sort
         return unless fields["v"] == "1" && fields["proto"] == PROTOCOL_VERSION && fields["rt"]
         return unless fields["vocab"].nil? || DIGEST_PATTERN.match?(fields["vocab"])
 
@@ -68,6 +80,7 @@ module ExpoTurbo
         unless lock.is_a?(Hash) && lock["lockVersion"] == 1 && lock["history"].is_a?(Array)
           raise ConfigurationError, "Expo Turbo compatibility lock is invalid"
         end
+        digests = {}
         revisions = {}
         @entries = lock.fetch("history").to_h do |record|
           digest = record["digest"]
@@ -78,6 +91,10 @@ module ExpoTurbo
           if revisions.key?(revision)
             raise ConfigurationError, "Expo Turbo compatibility lock revisions must be unique"
           end
+          if digests.key?(digest)
+            raise ConfigurationError, "Expo Turbo compatibility lock digests must be unique"
+          end
+          digests[digest] = true
           revisions[revision] = true
           components = vocabularies.fetch(digest, {})
           [digest, Entry.new(digest:, revision:, components: components.freeze).freeze]

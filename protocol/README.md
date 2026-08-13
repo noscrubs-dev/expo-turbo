@@ -45,13 +45,18 @@ test-only; neither package ships protocol sources as runtime assets.
 Native requests send one generated header:
 
 ```text
-X-Expo-Turbo-Client: v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:<32 lowercase hex digits>
+X-Expo-Turbo-Client: v=1; proto=0.1; rt=<package version>; vocab=sha256-128:<32 lowercase hex digits>
 ```
 
 The vocabulary digest identifies canonical registry content. It does not carry
 the ordered revision. Rails resolves that revision from the checked-in
 `expo-turbo.lock.json`. The 0.3 gem also reads `X-Expo-Turbo-Modules` only as a
 one-minor fallback for installed 0.2 clients.
+
+The shared `client-descriptor-grammar.json` pins the exact emitted forms and
+the Rails parser's accepted and rejected forms. It rejects extra fields,
+including a wire revision. The retained `module-version-grammar.json` protects
+the one-minor parser used by installed 0.2 clients.
 
 Behavior expectations are upstream-derived from Turbo 8.0.23 and execute in
 the TypeScript tree runtime. They are the first source-controlled behavioral

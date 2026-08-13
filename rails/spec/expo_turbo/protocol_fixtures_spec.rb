@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "action_controller/api"
+require "erb"
 require "json"
 require "spec_helper"
 require "expo_turbo/rails/testing"
@@ -29,9 +30,19 @@ RSpec.describe "shared protocol fixtures" do
   let(:manifest) do
     JSON.parse(File.read(File.join(ExpoTurboProtocolFixturesSpec::PROTOCOL_DIRECTORY, "compatibility-manifest.json")))
   end
+  let(:module_version_grammar) do
+    path = File.join(ExpoTurboProtocolFixturesSpec::PROTOCOL_DIRECTORY, "module-version-grammar.json")
+    JSON.parse(File.read(path))
+  end
 
   def stream
     controller_class.new.expo_turbo_stream
+  end
+
+  def controller_with_module_header(header)
+    controller = controller_class.new
+    controller.request = ActionDispatch::TestRequest.create("HTTP_X_EXPO_TURBO_MODULES" => header)
+    controller
   end
 
   def frame(id, **attributes, &block)
@@ -138,6 +149,38 @@ RSpec.describe "shared protocol fixtures" do
     expect(baselines.fetch("turboRails").fetch("minimum")).to eq(ExpoTurbo::Rails::TURBO_RAILS_MINIMUM_VERSION)
     expect(baselines.fetch("turboRails").fetch("target")).to eq(ExpoTurbo::Rails::TURBO_RAILS_BASELINE_VERSION)
     expect(baselines.fetch("rails")).to eq(ExpoTurbo::Rails::RAILS_BASELINE_VERSION)
+  end
+
+  it "pins retained module names and RubyGems versions to the shared request grammar" do
+    module_version_grammar.fetch("versions").fetch("accepted").each do |version|
+      encoded_version = ERB::Util.url_encode(version)
+      controller = controller_with_module_header("v1;cart=#{encoded_version}")
+
+      expect(controller.expo_turbo_client_modules).to eq("cart" => version)
+    end
+    module_version_grammar.fetch("versions").fetch("rejected").each do |version|
+      encoded_version = ERB::Util.url_encode(version)
+      controller = controller_with_module_header("v1;cart=#{encoded_version}")
+      allow(controller).to receive(:logger).and_return(double(warn: nil))
+
+      # Reverting the legacy version grammar accepts at least one rejected fixture.
+      expect(controller.expo_turbo_client_modules).to eq({})
+    end
+    module_version_grammar.fetch("names").fetch("accepted").each do |name|
+      encoded_name = ERB::Util.url_encode(name)
+      controller = controller_with_module_header("v1;#{encoded_name}=1")
+
+      expect(controller.expo_turbo_client_modules).to eq(name => "1")
+    end
+    module_version_grammar.fetch("names").fetch("rejected").each do |entry|
+      encoded_name = ERB::Util.url_encode(entry.fetch("value"))
+      controller = controller_with_module_header("v1;#{encoded_name}=1")
+      allow(controller).to receive(:logger).and_return(double(warn: nil))
+      canonical_name = entry.fetch("serverCanonicalName")
+      expected = canonical_name.nil? ? {} : {canonical_name => "1"}
+
+      expect(controller.expo_turbo_client_modules).to eq(expected)
+    end
   end
 
   it "classifies every pinned upstream Turbo functional suite" do

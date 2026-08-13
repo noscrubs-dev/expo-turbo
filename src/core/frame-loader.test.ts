@@ -252,19 +252,25 @@ describe("Frame request loader", () => {
         },
       },
       { next: () => "request-1" },
-      { capabilityHash: "sha256:capabilities", moduleVersions: "v1;cart=2" },
+      {
+        clientDescriptor:
+          "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      },
     )
 
     const report = await loader.load("details", "/frame")
     const frame = session.tree.getElementById("details")
     if (!frame) throw new Error("fixture lost its active frame")
 
+    // Reverting Frame descriptor forwarding removes or changes this exact header map.
+    expect(requests[0]?.headers).toEqual({
+      Accept: EXPO_TURBO_MIME_TYPE,
+      "Turbo-Frame": "details",
+      "X-Expo-Turbo-Client":
+        "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      "X-Turbo-Request-Id": "request-1",
+    })
     expect(requests[0]).toMatchObject({
-      headers: {
-        Accept: EXPO_TURBO_MIME_TYPE,
-        "Turbo-Frame": "details",
-        "X-Turbo-Request-Id": "request-1",
-      },
       method: "GET",
       url: "https://example.test/frame",
     })

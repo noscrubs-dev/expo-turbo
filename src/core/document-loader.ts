@@ -163,6 +163,7 @@ type InternalDocumentSnapshotOptions = Readonly<{
 
 export interface DocumentRequestLoaderOptions {
   readonly capabilityHash?: string
+  readonly clientDescriptor?: string
   readonly limits?: Partial<ParseLimits>
   readonly moduleVersions?: string
   readonly requestLifecycle?: RequestLifecycle
@@ -574,6 +575,9 @@ export class DocumentRequestLoader {
     const request: TurboRequest = Object.freeze({
       headers: protocolRequestHeaders({
         ...(this.options.capabilityHash ? { capabilityHash: this.options.capabilityHash } : {}),
+        ...(this.options.clientDescriptor
+          ? { clientDescriptor: this.options.clientDescriptor }
+          : {}),
         ...(this.options.moduleVersions ? { moduleVersions: this.options.moduleVersions } : {}),
         requestId,
       }),

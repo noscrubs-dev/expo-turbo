@@ -4,6 +4,10 @@ require "action_controller/api"
 require "spec_helper"
 
 RSpec.describe "Expo Turbo client descriptor negotiation" do
+  let(:descriptor_grammar) do
+    path = File.expand_path("../../../protocol/client-descriptor-grammar.json", __dir__)
+    JSON.parse(File.read(path))
+  end
   let(:controller_class) do
     Class.new(ActionController::API) do
       include ExpoTurbo::Rails::Controller
@@ -42,9 +46,71 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
     expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
     expect(controller.expo_turbo_client_supports_attribute?("DemoCard", "subtitle")).to be(true)
     expect(controller.expo_turbo_client_supports_component?("RemovedCard")).to be(false)
-    expect(controller.expo_turbo_client_supports?("application", ">= 7")).to be(true)
-    expect(controller.expo_turbo_client_supports?("application", ">= 8")).to be(false)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 7")).to be(true)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 8")).to be(false)
     expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("declared")
+  end
+
+  it "shares the exact descriptor grammar with the client" do
+    descriptor_grammar.fetch("accepted").each do |descriptor|
+      expect(ExpoTurbo::Rails::CompatibilityRegistry.parse_descriptor(descriptor)).to be_a(Hash)
+    end
+    descriptor_grammar.fetch("rejected").each do |descriptor|
+      # Reverting strict field admission accepts the pinned wire revision or another invalid form.
+      expect(ExpoTurbo::Rails::CompatibilityRegistry.parse_descriptor(descriptor)).to be_nil
+    end
+  end
+
+  it "warns when a descriptor cannot resolve because lockfile configuration is missing" do
+    unconfigured_class = Class.new(ActionController::API) do
+      include ExpoTurbo::Rails::Controller
+
+      expo_turbo_template_capabilities(components: {"DemoCard" => {}})
+    end
+    controller = unconfigured_class.new
+    controller.request = ActionDispatch::TestRequest.create(
+      "HTTP_ACCEPT" => ExpoTurbo::Rails::MIME_TYPE,
+      "HTTP_X_EXPO_TURBO_CLIENT" => descriptor_grammar.fetch("emitted").fetch("withVocabulary")
+    )
+    controller.response = ActionDispatch::TestResponse.new
+    logger = double
+    allow(logger).to receive(:warn)
+    allow(controller).to receive(:logger).and_return(logger)
+
+    expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(false)
+    expect(controller.expo_turbo_client_supports_attribute?("DemoCard", "title")).to be(false)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 1")).to be(false)
+    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("assumed-none")
+    # Reverting the warning makes a missing lockfile fail this diagnostic assertion.
+    expect(logger).to have_received(:warn).with(/lockfile:/)
+  end
+
+  it "warns when a valid descriptor carries an unknown digest" do
+    controller = native_controller(
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:cccccccccccccccccccccccccccccccc"
+    )
+    logger = double
+    allow(logger).to receive(:warn)
+    allow(controller).to receive(:logger).and_return(logger)
+
+    expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(false)
+    expect(controller.expo_turbo_client_supports_attribute?("DemoCard", "title")).to be(false)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 1")).to be(false)
+    expect(controller.response.headers["X-Expo-Turbo-Vocabulary"]).to eq("assumed-none")
+    # Reverting the warning makes an unknown deployment digest fail this diagnostic assertion.
+    expect(logger).to have_received(:warn).with(/unknown vocabulary digest/)
+  end
+
+  it "rejects a module-scoped numeric gate for a resolved descriptor" do
+    controller = native_controller(
+      "HTTP_X_EXPO_TURBO_CLIENT" => descriptor_grammar.fetch("emitted").fetch("withVocabulary")
+    )
+
+    # Reverting the guard makes this unknown module return true at revision 7.
+    expect { controller.expo_turbo_client_supports?("module-that-never-existed", ">= 1") }
+      .to raise_error(ArgumentError, /revision/)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 7")).to be(true)
+    expect(controller.expo_turbo_client_revision_satisfies?(">= 8")).to be(false)
   end
 
   it "prefers the descriptor over a conflicting legacy modules header" do
@@ -53,7 +119,8 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
       "HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=999"
     )
 
-    expect(controller.expo_turbo_client_supports?("cart", ">= 999")).to be(false)
+    expect { controller.expo_turbo_client_supports?("cart", ">= 999") }
+      .to raise_error(ArgumentError, /revision/)
     expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
   end
 

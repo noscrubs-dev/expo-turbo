@@ -102,7 +102,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   history?.initialize({ kind: "unmanaged", url: options.url })
   const clientDescriptor = serializeClientDescriptor(options.registry.capabilities.hash)
   const loader = new DocumentRequestLoader(session, options.fetch, requestIds, {
-    capabilityHash: options.registry.capabilities.hash,
+    clientDescriptor,
   })
   const controller = new DocumentVisitController(loader, clock, {
     ...(history ? { history } : {}),
@@ -126,7 +126,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   const frames = new FrameControllerRegistry(
     session,
     new FrameRequestLoader(session, options.fetch, requestIds, {
-      capabilityHash: options.registry.capabilities.hash,
+      clientDescriptor,
       refresh,
     }),
     undefined,

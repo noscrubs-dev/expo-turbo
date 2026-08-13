@@ -64,7 +64,12 @@ describe("Expo Turbo runtime", () => {
       fetch: {
         fetch: async (request) => {
           requests.push(request)
-          return response('<TestDocument><TestForm id="form" /></TestDocument>', request.url)
+          return response(
+            request.url.endsWith("/frame")
+              ? '<turbo-frame id="details"><TestField /></turbo-frame>'
+              : '<TestDocument><TestForm id="form" /><turbo-frame id="details" /></TestDocument>',
+            request.url,
+          )
         },
       },
       registry,
@@ -84,6 +89,16 @@ describe("Expo Turbo runtime", () => {
       .requestPlan({ protocol: { requestId: "form-1" } }).request
     expect(formRequest.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
     expect(formRequest.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
+
+    await runtime.frames.get("details").visit("/frame")
+    expect(requests).toHaveLength(2)
+    // Reverting the runtime Frame hand-off removes the vocabulary digest from this exact map.
+    expect(requests[1]?.headers).toEqual({
+      Accept: EXPO_TURBO_MIME_TYPE,
+      "Turbo-Frame": "details",
+      "X-Expo-Turbo-Client": descriptor,
+      "X-Turbo-Request-Id": "expo-turbo-2",
+    })
 
     runtime.dispose()
     runtime.dispose()
