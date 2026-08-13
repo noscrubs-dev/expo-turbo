@@ -1,0 +1,405 @@
+# frozen_string_literal: true
+
+require "fileutils"
+require "spec_helper"
+require "tmpdir"
+require "expo_turbo/rails/paired_templates"
+
+RSpec.describe ExpoTurbo::Rails::PairedTemplates do
+  around do |example|
+    Dir.mktmpdir { |directory| example.metadata[:root] = directory and example.run }
+  end
+
+  let(:root) { |example| example.metadata[:root] }
+
+  def write(name, source)
+    path = File.join(root, name)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, source)
+    path
+  end
+
+  def lint
+    described_class.lint(root)
+  end
+
+  def reported(aspect)
+    lint.select { |finding| finding.aspect == aspect }.map(&:value)
+  end
+
+  it "reports nothing for a pair that agrees" do
+    write("demo/show.html.erb", %(<turbo-frame id="greeting" src="/g"><p id="text">Hi</p></turbo-frame>))
+    write("demo/show.expo_turbo.erb", %(<turbo-frame id="greeting" src="/g"><DemoText id="text">Hi</DemoText></turbo-frame>))
+
+    expect(lint).to be_empty
+  end
+
+  it "does not compare element names, because an alias is the point" do
+    write("demo/show.html.erb", %(<p id="a">Hi</p>))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">Hi</DemoText>))
+
+    expect(lint).to be_empty
+  end
+
+  # Each of these passed the value-set comparison this replaced. Two elements
+  # exchanging their targets left every global set identical, so the lint
+  # reported clean on exactly the divergence it exists to catch.
+  describe "divergence that keeps the same values" do
+    it "reports two Frames that exchanged their src" do
+      write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="one" src="/beta"/><turbo-frame id="two" src="/alpha"/>))
+
+      expect(lint.map(&:to_s)).to contain_exactly(
+        a_string_including("#one", "src", "/alpha", "/beta"),
+        a_string_including("#two", "src", "/beta", "/alpha")
+      )
+    end
+
+    it "reports two forms that exchanged their action and method" do
+      write("demo/show.html.erb", %(<form id="a" action="/x" method="post"/><form id="b" action="/y" method="get"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm id="a" action="/y" method="get"/><DemoForm id="b" action="/x" method="post"/>))
+
+      expect(reported(:action)).to contain_exactly("/x", "/y")
+      expect(reported(:method)).to contain_exactly("post", "get")
+    end
+
+    it "reports a control name that moved to another element" do
+      write("demo/show.html.erb", %(<form id="f"><input id="one" name="email"/><input id="two" name="plan"/></form>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm id="f"><DemoFormInput id="one" name="plan"/><DemoFormInput id="two" name="email"/></DemoForm>))
+
+      expect(reported(:name)).to contain_exactly("email", "plan")
+    end
+
+    it "reports a Turbo data attribute that moved to another element" do
+      write("demo/show.html.erb", %(<a id="one" data-turbo-action="advance">A</a><a id="two">B</a>))
+      write("demo/show.expo_turbo.erb", %(<DemoLink id="one">A</DemoLink><DemoLink id="two" data-turbo-action="advance">B</DemoLink>))
+
+      findings = lint
+
+      expect(findings.map(&:aspect)).to contain_exactly(:data_turbo, :data_turbo)
+      expect(findings.map(&:element)).to contain_exactly("#one", "#two")
+    end
+
+    # The same silent movement, between elements that carry no id. Dropping
+    # the element an attribute moved away from left the two remaining lists
+    # identical, so every one of these reported nothing.
+    it "reports an attribute that moved onto an element with no id" do
+      {
+        action: [%(<form action="/x"/><form/>), %(<DemoForm/><DemoForm action="/x"/>)],
+        method: [%(<form method="post"/><form/>), %(<DemoForm/><DemoForm method="post"/>)],
+        name: [%(<input name="email"/><input/>), %(<DemoFormInput/><DemoFormInput name="email"/>)],
+        src: [%(<turbo-frame src="/a"/><turbo-frame/>), %(<turbo-frame/><turbo-frame src="/a"/>)]
+      }.each do |aspect, (html, expo_turbo)|
+        Dir.mktmpdir do |directory|
+          File.write(File.join(directory, "show.html.erb"), html)
+          File.write(File.join(directory, "show.expo_turbo.erb"), expo_turbo)
+          findings = described_class.lint(directory)
+
+          expect(findings.map(&:aspect)).to eq([aspect, aspect]), "#{aspect} movement went unreported"
+        end
+      end
+    end
+
+    it "reports a Turbo data attribute that moved onto an element with no id" do
+      write("demo/show.html.erb", %(<a data-turbo-action="advance"/><a/>))
+      write("demo/show.expo_turbo.erb", %(<DemoLink/><DemoLink data-turbo-action="advance"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[data_turbo data_turbo])
+    end
+
+    it "reports two ids that were exchanged between elements" do
+      write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="two" src="/alpha"/><turbo-frame id="one" src="/beta"/>))
+
+      expect(reported(:src)).to contain_exactly("/alpha", "/beta")
+    end
+
+    it "reports an attribute left behind when its id moved" do
+      write("demo/show.html.erb", %(<p id="one" data-turbo-action="advance"/><p/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText/><DemoText id="one"/>))
+
+      expect(lint.map(&:aspect)).to contain_exactly(:data_turbo, :reordered)
+      expect(lint.map(&:element).uniq).to eq(["#one"])
+    end
+  end
+
+  # Order is a divergence in its own right, not an attribute mismatch. Two
+  # audiences given the same targets in a different sequence receive different
+  # documents: a different Frame navigates first, focus lands elsewhere, and a
+  # Stream applies against a different neighbour. It is reported as itself.
+  describe "reordering" do
+    it "reports an element that moved past one carrying nothing compared" do
+      write("demo/show.html.erb", %(<turbo-frame id="x" src="/one"/><turbo-frame/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame/><turbo-frame id="x" src="/one"/>))
+
+      finding = lint.first
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+      expect(finding.element).to eq("#x")
+      expect(finding.value).to eq(1)
+      expect(finding.counterpart_value).to eq(2)
+      expect(finding.to_s).to include("position 1", "position 2")
+    end
+
+    it "reports an id and a Turbo data attribute that moved together" do
+      write("demo/show.html.erb", %(<a id="x" data-turbo-action="advance"/><a/>))
+      write("demo/show.expo_turbo.erb", %(<DemoLink/><DemoLink id="x" data-turbo-action="advance"/>))
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+    end
+
+    it "reports two elements that swapped places while keeping their own attributes" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="b" src="/2"/><turbo-frame id="a" src="/1"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[reordered reordered])
+      expect(lint.map(&:element)).to contain_exactly("#a", "#b")
+    end
+
+    # Relative order among id-bearing elements is checked whatever the counts,
+    # so a swap is still reported when one side also gained a wrapper.
+    it "reports a swap even when one side also gained an element" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><turbo-frame id="b" src="/2"/><turbo-frame id="a" src="/1"/>))
+
+      expect(lint.map(&:aspect)).to eq([:reordered])
+    end
+
+    # Absolute position is compared only when the two sides hold the same
+    # number of elements. Otherwise an inserted wrapper and a move look
+    # identical, and silence is the safe reading.
+    it "reports nothing when a wrapper shifted every position" do
+      write("demo/show.html.erb", %(<turbo-frame id="x" src="/one"/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><turbo-frame id="x" src="/one"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "reports nothing when order is unchanged" do
+      write("demo/show.html.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="a" src="/1"/><turbo-frame id="b" src="/2"/>))
+
+      expect(lint).to be_empty
+    end
+
+    # Without an id there is no identity that could be said to have moved, so
+    # two id-less elements swapping is reported as the attribute divergence it
+    # is indistinguishable from, not as a reordering.
+    it "does not claim a reordering between elements with no id" do
+      write("demo/show.html.erb", %(<form action="/x"/><form action="/y"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm action="/y"/><DemoForm action="/x"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[action action])
+    end
+  end
+
+  # `method` used to be collected only alongside `action`, so a form that
+  # relies on the route for its target reported nothing at all.
+  it "reports a method that diverges with no action anywhere" do
+    write("demo/show.html.erb", %(<form id="a" method="post"><input name="e"/></form>))
+    write("demo/show.expo_turbo.erb", %(<DemoForm id="a" method="get"><DemoFormInput name="e"/></DemoForm>))
+
+    expect(reported(:method)).to contain_exactly("post")
+    expect(lint.first.counterpart_value).to eq("get")
+  end
+
+  it "reports a method that only one side carries" do
+    write("demo/show.html.erb", %(<form id="a" method="post"/>))
+    write("demo/show.expo_turbo.erb", %(<DemoForm id="a"/>))
+
+    finding = lint.first
+
+    expect(finding.aspect).to eq(:method)
+    expect(finding.value).to eq("post")
+    expect(finding.counterpart_value).to be_nil
+    expect(finding.to_s).to include("absent")
+  end
+
+  describe "how elements are paired" do
+    # Attributes still follow the id wherever it sits, so nothing is reported
+    # as an attribute mismatch. The order difference is reported as itself.
+    it "pairs by id even when the elements sit in a different order" do
+      write("demo/show.html.erb", %(<turbo-frame id="one" src="/alpha"/><turbo-frame id="two" src="/beta"/>))
+      write("demo/show.expo_turbo.erb", %(<turbo-frame id="two" src="/beta"/><turbo-frame id="one" src="/alpha"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[reordered reordered])
+      expect(lint.map(&:aspect)).not_to include(:src)
+    end
+
+    it "pairs by document order when neither side carries an id" do
+      write("demo/show.html.erb", %(<form action="/x"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm action="/y"/>))
+
+      expect(reported(:action)).to contain_exactly("/x")
+    end
+
+    it "still compares ids that differ, by falling back to document order" do
+      write("demo/show.html.erb", %(<p id="only-html">x</p>))
+      write("demo/show.expo_turbo.erb", %(<DemoText id="only-native">x</DemoText>))
+
+      expect(reported(:id)).to contain_exactly("only-html")
+      expect(lint.first.counterpart_value).to eq("only-native")
+    end
+
+    it "reports an element that has no counterpart at all" do
+      write("demo/show.html.erb", %(<form id="f"><input name="email"/><input name="plan"/></form>))
+      write("demo/show.expo_turbo.erb", %(<DemoForm id="f"><DemoFormInput name="email"/></DemoForm>))
+
+      findings = lint
+
+      expect(findings.map(&:aspect)).to contain_exactly(:element)
+      expect(findings.first.value).to include("plan")
+      expect(findings.first.to_s).to include("no counterpart")
+    end
+
+    it "ignores an element that carries nothing worth comparing" do
+      write("demo/show.html.erb", %(<div><section><p id="a">x</p></section></div>))
+      write("demo/show.expo_turbo.erb", %(<Gallery><DemoText id="a">x</DemoText></Gallery>))
+
+      expect(lint).to be_empty
+    end
+
+    # One audience needing a wrapper the other does not is the ordinary shape
+    # of a template pair, not a divergence. A run whose two sides hold a
+    # different number of elements compares only what carries something, so a
+    # wrapper costs nothing rather than shifting every element after it.
+    it "reports nothing for a wrapper that only one side needs" do
+      write("demo/show.html.erb", %(<p id="top"/><form action="/x"/><input name="e"/><p id="end"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText id="top"/><Gallery/><DemoForm action="/x"/><DemoFormInput name="e"/><DemoText id="end"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "still reports real drift in a run that also gained a wrapper" do
+      write("demo/show.html.erb", %(<p id="top"/><form action="/x"/><input name="e"/><p id="end"/>))
+      write("demo/show.expo_turbo.erb", %(<DemoText id="top"/><Gallery/><DemoForm action="/y"/><DemoFormInput name="e"/><DemoText id="end"/>))
+
+      expect(lint.map(&:aspect)).to eq([:action])
+    end
+
+    # The cost of that fallback, stated rather than hidden: inside a run whose
+    # sides differ in element count, an attribute that moved onto a plain
+    # element is no longer visible. An id on either element restores it.
+    it "misses movement inside a run whose two sides differ in element count" do
+      write("demo/show.html.erb", %(<form action="/x"/><form/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><DemoForm/><DemoForm action="/x"/>))
+
+      expect(lint).to be_empty
+    end
+
+    it "sees that same movement once either element carries an id" do
+      write("demo/show.html.erb", %(<form id="f" action="/x"/><form/>))
+      write("demo/show.expo_turbo.erb", %(<Gallery/><DemoForm id="f"/><DemoForm action="/x"/>))
+
+      expect(lint.map(&:aspect)).to eq(%i[action action])
+    end
+  end
+
+  it "compares an ERB expression by its source, after collapsing whitespace runs" do
+    write("demo/show.html.erb", %(<p id="<%=   dom_id(post,\n  :frame)   %>">x</p>))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="<%= dom_id(post, :frame) %>">x</DemoText>))
+
+    expect(lint).to be_empty
+  end
+
+  it "reports two expressions that differ only in spacing inside the call" do
+    write("demo/show.html.erb", %(<p id="<%= dom_id( post ) %>">x</p>))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="<%= dom_id(post) %>">x</DemoText>))
+
+    expect(reported(:id)).to contain_exactly("«dom_id( post )»")
+  end
+
+  it "reads every branch of a conditional, on both sides" do
+    write("demo/show.html.erb", <<~ERB)
+      <% if signed_in? %><p id="in">in</p><% else %><p id="out">out</p><% end %>
+    ERB
+    write("demo/show.expo_turbo.erb", <<~ERB)
+      <% if signed_in? %><DemoText id="in">in</DemoText><% end %>
+    ERB
+
+    findings = lint
+
+    expect(findings.map(&:aspect)).to contain_exactly(:element)
+    expect(findings.first.value).to include("out")
+  end
+
+  it "ignores an ERB comment" do
+    write("demo/show.html.erb", %(<%# id="ghost" %><p id="a">x</p>))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">x</DemoText>))
+
+    expect(lint).to be_empty
+  end
+
+  it "names the file and the line a divergence came from" do
+    write("demo/show.html.erb", "<div>\n<p id=\"only-html\">x</p>\n</div>")
+    write("demo/show.expo_turbo.erb", "<Gallery>\n</Gallery>")
+
+    finding = lint.first
+
+    expect(finding.path).to eq(File.join(root, "demo/show.html.erb"))
+    expect(finding.line).to eq(2)
+    expect(finding.counterpart_path).to eq(File.join(root, "demo/show.expo_turbo.erb"))
+    expect(finding.to_s).to include("demo/show.html.erb:2", "only-html")
+  end
+
+  it "sorts findings so a CI report reads the same way twice" do
+    write("demo/show.html.erb", %(<turbo-frame id="b" src="/b2"/>\n<turbo-frame id="a" src="/a2"/>))
+    write("demo/show.expo_turbo.erb", %(<turbo-frame id="a" src="/a1"/>\n<turbo-frame id="b" src="/b1"/>))
+
+    expect(lint.map(&:line)).to eq([1, 1, 2, 2])
+    expect(lint.map(&:aspect)).to eq(%i[reordered src reordered src])
+    expect(lint.map(&:to_s)).to eq(described_class.lint(root).map(&:to_s))
+  end
+
+  it "pairs partials and pairs across different template handlers" do
+    write("demo/_row.html.erb", %(<p id="row-html">x</p>))
+    write("demo/_row.expo_turbo.builder", %(<DemoText id="row-native">x</DemoText>))
+
+    expect(reported(:id)).to contain_exactly("row-html")
+  end
+
+  it "ignores a template that has no counterpart" do
+    write("demo/show.html.erb", %(<p id="lonely">x</p>))
+    write("demo/other.expo_turbo.erb", %(<DemoText id="lonely-too">x</DemoText>))
+
+    expect(lint).to be_empty
+    expect(described_class.pairs(root)).to be_empty
+  end
+
+  it "ignores a locale or variant qualifier when it matches on both sides" do
+    write("demo/show.en.html.erb", %(<p id="a">x</p>))
+    write("demo/show.en.expo_turbo.erb", %(<DemoText id="b">x</DemoText>))
+
+    expect(reported(:id)).to contain_exactly("a")
+  end
+
+  it "reports an unreadable template instead of raising" do
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">x</DemoText>))
+    File.binwrite(File.join(root, "demo/show.html.erb"), "\xC3\x28<p id=\"a\">x</p>")
+
+    findings = lint
+
+    expect(findings.map(&:aspect)).to contain_exactly(:unreadable)
+    expect(findings.first.path).to eq(File.join(root, "demo/show.html.erb"))
+  end
+
+  it "ignores a directory whose name looks like a template" do
+    FileUtils.mkdir_p(File.join(root, "demo/show.html.erb"))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">x</DemoText>))
+
+    expect(lint).to be_empty
+    expect(described_class.pairs(root)).to be_empty
+  end
+
+  it "defaults to the application view root" do
+    expect(described_class.default_roots).to eq([::Rails.root.join("app/views").to_s])
+  end
+
+  it "accepts several roots and skips a root that does not exist" do
+    write("demo/show.html.erb", %(<p id="only-html">x</p>))
+    write("demo/show.expo_turbo.erb", %(<DemoText id="a">x</DemoText>))
+
+    expect(described_class.lint(root, File.join(root, "absent")).map(&:aspect))
+      .to contain_exactly(:id)
+  end
+end

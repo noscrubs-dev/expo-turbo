@@ -182,6 +182,10 @@ export const DEMO_REGISTRY = defineRegistry({
       ).default([]),
     }),
     DemoText: component({
+      // `p` is the HTML spelling of this component. The Rails demo declares
+      // the same alias, so one template serves a browser a paragraph and this
+      // client a DemoText.
+      aliases: ["p"],
       children: textChildren,
       render: function DemoText({ children }) {
         const direction = useExpoTurboDirection();

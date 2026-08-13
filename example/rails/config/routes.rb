@@ -9,6 +9,9 @@ Rails.application.routes.draw do
     namespace :expo_turbo do
       namespace :demo do
         resource :document, only: :show, defaults: {format: :expo_turbo}
+        # Deliberately forces no format. The shared template screen has to let
+        # the Accept header choose between the two audiences.
+        resource :shared_greeting, only: :show
         resource :protected_document, only: :show, defaults: {format: :expo_turbo}
         resource :refresh_morph_document, only: :show, defaults: {format: :expo_turbo}
         resource :frame, only: :show, defaults: {format: :expo_turbo}
