@@ -35,6 +35,7 @@ class ManualClock implements ClockAdapter {
 interface HarnessOptions {
   /** Serve refreshes the way a snapshot restoration would: no request id. */
   readonly cached?: boolean
+  readonly documents?: number
   readonly freshness?: { claim(url: string): void; release(url: string): void }
   readonly reject?: boolean
 }
@@ -99,6 +100,7 @@ function harness(options: HarnessOptions = {}) {
     attempts: 3,
     backoffFactor: 2,
     debounceMs: 1,
+    ...(options.documents === undefined ? {} : { documents: options.documents }),
     ...(options.freshness ? { freshness: options.freshness } : {}),
     onError: (error) => errors.push(error),
   })
@@ -229,6 +231,75 @@ describe("Cable document recovery", () => {
     // transport failure rather than only a summary.
     expect((h.errors[0] as { cause?: unknown })?.cause).toBeInstanceOf(Error)
     expect((h.errors[0] as { cause?: Error })?.cause?.message).toBe("recovery transport refused")
+  })
+
+  test("keeps a suspended obligation when a second document reconnects", async () => {
+    const releases: string[] = []
+    const h = harness({
+      freshness: { claim: () => undefined, release: (url) => releases.push(url) },
+    })
+
+    // A reconnects and arms, then the user navigates away and A suspends.
+    h.recovery.request({ baseUrl: BASE })
+    h.goTo(OTHER)
+    await tick(h)
+    expect(h.recovery.armedFor(BASE)).toBe(true)
+
+    // B reconnects while A is suspended. With one global target this replaces
+    // A outright — releasing its freshness claim and resetting its state — and
+    // A can then show stale snapshot content for the rest of the session.
+    h.recovery.request({ baseUrl: OTHER })
+    await tick(h)
+
+    expect(h.recovery.armedFor(OTHER)).toBe(false)
+    expect(h.recovery.armedFor(BASE)).toBe(true)
+    expect(releases).toEqual([OTHER])
+
+    // Returning to A still recovers it.
+    h.goTo(BASE)
+    await tick(h, 2)
+    expect(h.recovery.armedFor(BASE)).toBe(false)
+    expect(h.refreshed.filter((url) => url === BASE)).not.toEqual([])
+  })
+
+  test("bounds retained obligations and reports the ones it abandons", async () => {
+    const releases: string[] = []
+    const h = harness({
+      documents: 2,
+      freshness: { claim: () => undefined, release: (url) => releases.push(url) },
+    })
+
+    // Nothing armed is active, so every obligation stays suspended.
+    h.goTo("https://example.test/elsewhere")
+    h.recovery.request({ baseUrl: "https://example.test/one" })
+    h.recovery.request({ baseUrl: "https://example.test/two" })
+    h.recovery.request({ baseUrl: "https://example.test/three" })
+
+    // The least recently requested is evicted rather than retained forever...
+    expect(h.recovery.armedFor("https://example.test/one")).toBe(false)
+    expect(h.recovery.armedFor("https://example.test/two")).toBe(true)
+    expect(h.recovery.armedFor("https://example.test/three")).toBe(true)
+    expect(releases).toEqual(["https://example.test/one"])
+    // ...and it is reported, because an obligation that ends without a fresh
+    // fetch has to end loudly. Silent eviction would be the same class of bug
+    // that per-URL obligations exist to fix.
+    expect(h.errors).toHaveLength(1)
+    expect(h.errors[0]?.message).toContain("abandoned a document")
+  })
+
+  test("releases every obligation on disposal", async () => {
+    const releases: string[] = []
+    const h = harness({
+      freshness: { claim: () => undefined, release: (url) => releases.push(url) },
+    })
+
+    h.goTo("https://example.test/elsewhere")
+    h.recovery.request({ baseUrl: BASE })
+    h.recovery.request({ baseUrl: OTHER })
+    h.recovery.dispose()
+
+    expect(releases.sort()).toEqual([BASE, OTHER].sort())
+    expect(h.recovery.armed).toBe(false)
   })
 
   test("claims and releases document freshness around the obligation", async () => {

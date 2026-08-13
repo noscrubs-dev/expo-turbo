@@ -19,6 +19,7 @@ export interface CableDocumentRecoveryOptions {
   readonly attempts?: number
   readonly backoffFactor?: number
   readonly debounceMs?: number
+  readonly documents?: number
   readonly freshness?: CableRecoveryFreshness
   readonly maxDelayMs?: number
   readonly onError?: (error: Error) => void
@@ -33,6 +34,14 @@ type RecoveryVisits = Pick<DocumentVisitController, "refreshCurrent" | "state" |
 export const CABLE_RECOVERY_MAX_ATTEMPTS = 5
 export const CABLE_RECOVERY_BACKOFF_FACTOR = 4
 export const CABLE_RECOVERY_MAX_DELAY_MS = 30_000
+/**
+ * How many documents may owe recovery at once. Obligations are per document, so
+ * a user cycling through screens on a flaky connection would otherwise retain
+ * one entry per document for the life of the session. Passing this evicts the
+ * least recently requested obligation — and reports it, because an obligation
+ * that ends without a fresh fetch has to end loudly.
+ */
+export const CABLE_RECOVERY_MAX_DOCUMENTS = 8
 
 function canonical(url: string): string {
   try {
@@ -90,18 +99,26 @@ function isNetworkDocumentCommit(result: unknown, target: string): boolean {
  *   to re-fetch the document merely makes one later refresh redundant, which is
  *   a wasted request rather than stale content.
  */
+interface RecoveryObligation {
+  attempts: number
+  lastError: Error | undefined
+  /** Monotonic, for least-recently-requested eviction. */
+  sequence: number
+}
+
 export class CableDocumentRecovery {
-  private attempts = 0
   private disposed = false
   private handle: unknown
-  private lastError: Error | undefined
-  private target: string | undefined
+  private requestSequence = 0
   private unsubscribe: (() => void) | undefined
+  /** One obligation per canonical document URL. */
+  private readonly obligations = new Map<string, RecoveryObligation>()
   private readonly backoffFactor: number
   private readonly debounceMs: number
   private readonly freshness: CableRecoveryFreshness | undefined
   private readonly maxAttempts: number
   private readonly maxDelayMs: number
+  private readonly maxDocuments: number
   private readonly onError: ((error: Error) => void) | undefined
 
   constructor(
@@ -114,6 +131,7 @@ export class CableDocumentRecovery {
     this.maxAttempts = options.attempts ?? CABLE_RECOVERY_MAX_ATTEMPTS
     this.freshness = options.freshness
     this.maxDelayMs = options.maxDelayMs ?? CABLE_RECOVERY_MAX_DELAY_MS
+    this.maxDocuments = options.documents ?? CABLE_RECOVERY_MAX_DOCUMENTS
     this.onError = options.onError
     if (!Number.isFinite(this.debounceMs) || this.debounceMs < 0) {
       throw new RequestError("Cable recovery debounce must be a non-negative number")
@@ -123,9 +141,14 @@ export class CableDocumentRecovery {
     }
   }
 
-  /** Whether a document still owes a recovery fetch. */
+  /** Whether any document still owes a recovery fetch. */
   get armed(): boolean {
-    return this.target !== undefined
+    return this.obligations.size > 0
+  }
+
+  /** Whether this specific document still owes a recovery fetch. */
+  armedFor(url: string): boolean {
+    return this.obligations.has(canonical(url))
   }
 
   request(request: DocumentRefreshRequest): void {
@@ -133,14 +156,19 @@ export class CableDocumentRecovery {
     if (!request || typeof request.baseUrl !== "string" || request.baseUrl === "") {
       throw new StateError("Cable document recovery requires a base URL")
     }
-    // A fresh reconnect is fresh evidence, so the attempt budget starts over
-    // and rapid reconnects coalesce into one obligation.
-    const previous = this.target
-    this.target = canonical(request.baseUrl)
-    if (previous !== undefined && previous !== this.target) this.freshness?.release(previous)
-    this.freshness?.claim(this.target)
-    this.attempts = 0
-    this.lastError = undefined
+    const target = canonical(request.baseUrl)
+    // A reconnect for one document must never erase a suspended obligation for
+    // another: the second document's recovery would silently take the first's
+    // place and the first would show stale content for the rest of the session.
+    // A repeat for the same document is the same obligation with fresh
+    // evidence, so its attempt budget starts over and rapid reconnects coalesce.
+    this.obligations.set(target, {
+      attempts: 0,
+      lastError: undefined,
+      sequence: ++this.requestSequence,
+    })
+    this.freshness?.claim(target)
+    this.evictExcess(target)
     this.watch()
     this.schedule(this.debounceMs, true)
   }
@@ -148,23 +176,56 @@ export class CableDocumentRecovery {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    this.clear()
+    for (const target of [...this.obligations.keys()]) this.release(target)
+    this.stop()
   }
 
-  private clear(): void {
-    if (this.target !== undefined) this.freshness?.release(this.target)
-    this.target = undefined
-    this.attempts = 0
-    this.lastError = undefined
+  /**
+   * Ends one obligation. Every exit routes through here so the no-store claim
+   * is released exactly once per document.
+   */
+  private release(target: string): void {
+    if (!this.obligations.delete(target)) return
+    this.freshness?.release(target)
+  }
+
+  private stop(): void {
     if (this.handle !== undefined) this.clock.clearTimeout(this.handle)
     this.handle = undefined
+    if (this.obligations.size > 0) return
     const unsubscribe = this.unsubscribe
     this.unsubscribe = undefined
     unsubscribe?.()
   }
 
+  private evictExcess(keep: string): void {
+    while (this.obligations.size > this.maxDocuments) {
+      let oldest: string | undefined
+      let oldestSequence = Number.POSITIVE_INFINITY
+      for (const [target, obligation] of this.obligations) {
+        if (target === keep) continue
+        if (obligation.sequence < oldestSequence) {
+          oldest = target
+          oldestSequence = obligation.sequence
+        }
+      }
+      if (oldest === undefined) return
+      const evicted = this.obligations.get(oldest)
+      this.release(oldest)
+      // Reported, not dropped: an obligation ending without a fresh fetch is
+      // exactly the silent staleness this component exists to prevent.
+      this.report(
+        new RequestError(
+          `Cable reconnect recovery abandoned a document after ${this.maxDocuments} others needed recovery`,
+          { method: "GET" },
+          evicted?.lastError ? { cause: evicted.lastError } : undefined,
+        ),
+      )
+    }
+  }
+
   private schedule(delayMs: number, reset: boolean): void {
-    if (this.disposed || this.target === undefined) return
+    if (this.disposed || this.obligations.size === 0) return
     if (this.handle !== undefined) {
       if (!reset) return
       this.clock.clearTimeout(this.handle)
@@ -173,62 +234,75 @@ export class CableDocumentRecovery {
   }
 
   private backoffDelay(): number {
-    const scaled = this.debounceMs * this.backoffFactor ** this.attempts
+    let lowest = 0
+    for (const obligation of this.obligations.values()) {
+      lowest = lowest === 0 ? obligation.attempts : Math.min(lowest, obligation.attempts)
+    }
+    const scaled = this.debounceMs * this.backoffFactor ** lowest
     return Math.min(scaled, this.maxDelayMs)
   }
 
   private fire(): void {
     this.handle = undefined
-    if (this.disposed) return
-    const target = this.target
-    if (target === undefined) return
-    // A visit in flight may be about to re-fetch this itself; the watcher calls
-    // back when it settles.
+    if (this.disposed || this.obligations.size === 0) return
+    // A visit in flight may be about to re-fetch one of these itself; the
+    // watcher calls back when it settles.
     if (this.visits.state.status === "started") return
 
+    // Every armed document is attempted. `refreshCurrent` refuses the ones that
+    // are not active without issuing a request, so at most one of these reaches
+    // the network and the rest cost nothing.
+    for (const target of [...this.obligations.keys()]) this.attempt(target)
+  }
+
+  private attempt(target: string): void {
     let refresh: Promise<unknown>
     try {
       refresh = this.visits.refreshCurrent(target, "replace", "preserve")
     } catch (error) {
-      this.failedAttempt(error)
+      this.failedAttempt(target, error)
       return
     }
     void refresh.then(
       (result) => {
-        if (this.disposed || this.target !== target) return
-        // `undefined` is a refusal, not an attempt: a visit slipped in, or this
-        // document is not the active one. Costing an attempt for it would burn
-        // the budget while the user is simply reading another screen.
+        if (this.disposed || !this.obligations.has(target)) return
+        // `undefined` is a refusal, not an attempt: this document is not the
+        // active one. Costing an attempt for it would burn the budget while the
+        // user is simply reading another screen.
         if (result === undefined) return
         if (isNetworkDocumentCommit(result, target)) {
-          this.clear()
+          this.release(target)
+          this.stop()
           return
         }
-        this.failedAttempt(undefined)
+        this.failedAttempt(target, undefined)
       },
-      (error: unknown) => this.failedAttempt(error),
+      (error: unknown) => this.failedAttempt(target, error),
     )
   }
 
-  private failedAttempt(error: unknown): void {
-    if (this.disposed || this.target === undefined) return
+  private failedAttempt(target: string, error: unknown): void {
+    if (this.disposed) return
+    const obligation = this.obligations.get(target)
+    if (!obligation) return
     if (error !== undefined) {
-      this.lastError = error instanceof Error ? error : new RequestError("Cable recovery failed")
+      obligation.lastError =
+        error instanceof Error ? error : new RequestError("Cable recovery failed")
     }
-    this.attempts += 1
-    if (this.attempts >= this.maxAttempts) {
+    obligation.attempts += 1
+    if (obligation.attempts >= this.maxAttempts) {
       // One report per obligation, not one per attempt: a reconnect that needs
       // retrying is ordinary, and only the permanent failure is actionable.
+      const cause = obligation.lastError
+      this.release(target)
       this.report(
         new RequestError(
-          `Cable reconnect recovery could not refresh the document after ${this.attempts} attempts`,
+          `Cable reconnect recovery could not refresh the document after ${obligation.attempts} attempts`,
           { method: "GET" },
-          // A standard cause chain, so tools that walk `.cause` still reach the
-          // transport failure that ended it.
-          this.lastError ? { cause: this.lastError } : undefined,
+          cause ? { cause } : undefined,
         ),
       )
-      this.clear()
+      this.stop()
       return
     }
     this.schedule(this.backoffDelay(), true)
@@ -237,9 +311,9 @@ export class CableDocumentRecovery {
   private watch(): void {
     if (this.disposed) return
     this.unsubscribe ??= this.visits.subscribe(() => {
-      if (this.disposed || this.target === undefined) return
+      if (this.disposed || this.obligations.size === 0) return
       if (this.visits.state.status === "started") return
-      // Resume a suspended recovery once the document is settled again.
+      // Resume suspended obligations once the document is settled again.
       this.schedule(this.backoffDelay(), false)
     })
   }

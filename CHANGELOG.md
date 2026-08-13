@@ -43,6 +43,13 @@ All notable public package, gem, and protocol changes will be recorded here.
   are bounded with exponential backoff spanning roughly a minute, and exhausting
   them reports once through `onBackgroundError`, with the transport failure
   attached as the error's `cause`.
+
+  Obligations are held per document URL, not one at a time: a reconnect for one
+  document must not erase a suspended obligation for another, or the first
+  document shows stale content for the rest of the session. At most eight
+  documents are retained, and passing that evicts the least recently requested
+  one — reported, not dropped, because an obligation that ends without a fresh
+  fetch has to end loudly.
 - Add `cache` to `TurboRequest`. `"no-store"` means the response must come from
   the origin rather than any cache the adapter or platform keeps, and adapters
   that maintain or sit in front of a cache must honor it. The packaged transport
