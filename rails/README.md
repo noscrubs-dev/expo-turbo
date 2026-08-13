@@ -13,10 +13,10 @@ style tokens it may render. Its optional protected Cable boundary delegates all
 credentials and resource policy to the host.
 
 > [!IMPORTANT]
-> Version [`0.2.0`](https://rubygems.org/gems/expo_turbo-rails) is the stable
-> release published on 2026-08-12. Manual VoiceOver, TalkBack, and browser
+> Version [`0.3.0`](https://rubygems.org/gems/expo_turbo-rails) is the stable
+> release published on 2026-08-13. Manual VoiceOver, TalkBack, and browser
 > screen-reader evidence remains an explicit follow-up and is not claimed by
-> the `0.2.0` compatibility surface.
+> the `0.3.0` compatibility surface.
 
 ```ruby
 gem "expo_turbo-rails"

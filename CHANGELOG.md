@@ -2,7 +2,7 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
-## 0.3.0
+## 0.3.0 - 2026-08-13
 
 - **Breaking:** Replace four client compatibility headers with
   `X-Expo-Turbo-Client: v=1; proto=<protocol>; rt=<runtime>;

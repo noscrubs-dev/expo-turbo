@@ -187,7 +187,7 @@ describe("typed component registry", () => {
 
     expect(registry.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
     expect(serializeClientDescriptor(registry.capabilities.hash)).toMatch(
-      /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
+      /^v=1; proto=0\.1; rt=0\.3\.0; vocab=sha256-128:[0-9a-f]{32}$/,
     )
   })
 

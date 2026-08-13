@@ -33,7 +33,7 @@ const { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } = await import("./demo-registry")
 test("the example registry keeps its server negotiation identity", () => {
   expect(DEMO_REGISTRY.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
   expect(DEMO_MODULE_VERSIONS).toMatch(
-    /^v=1; proto=0\.1; rt=0\.2\.0; vocab=sha256-128:[0-9a-f]{32}$/,
+    /^v=1; proto=0\.1; rt=0\.3\.0; vocab=sha256-128:[0-9a-f]{32}$/,
   )
   expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea")
 })

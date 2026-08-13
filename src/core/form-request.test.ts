@@ -49,7 +49,7 @@ describe("form request construction", () => {
     expect(built.request).toEqual({
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
-        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.2.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",
@@ -88,7 +88,7 @@ describe("form request construction", () => {
     expect(built.request.headers).toEqual({
       Accept: streamAccept,
       "Turbo-Frame": "form-frame",
-      "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.2.0",
+      "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
       "X-Turbo-Request-Id": "request-stream",
     })
     expect(plan({ submitter: { streamAttributePresent: true } }).request.headers.Accept).toBe(
@@ -191,7 +191,7 @@ describe("form request construction", () => {
       },
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
-        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.2.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "POST",

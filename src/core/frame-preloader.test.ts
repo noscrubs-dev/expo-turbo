@@ -161,7 +161,7 @@ describe("Frame preloader", () => {
       cache,
       {
         clientDescriptor:
-          "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+          "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
       },
     )
 
@@ -183,7 +183,7 @@ describe("Frame preloader", () => {
       Accept: EXPO_TURBO_MIME_TYPE,
       "Turbo-Frame": "details",
       "X-Expo-Turbo-Client":
-        "v=1; proto=0.1; rt=0.2.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+        "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
       "X-Sec-Purpose": "prefetch",
       "X-Turbo-Request-Id": "frame-preload-1",
     })
