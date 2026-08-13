@@ -226,8 +226,9 @@ describe("Expo Turbo runtime", () => {
 
     // A deliberate, documented gap rather than an oversight: anything broadcast
     // while the socket was down stays missing until something else refreshes
-    // the document. Reconnect recovery is tracked separately; when it lands,
-    // this expectation flips to a second request for `documentUrl`.
+    // the document. Recovery is tracked in
+    // https://github.com/noscrubs-dev/expo-turbo/pull/418; when it lands, this
+    // expectation flips to a second request for `documentUrl`.
     expect(requests).toEqual([documentUrl])
 
     runtime.dispose()
@@ -313,9 +314,7 @@ describe("Expo Turbo runtime", () => {
     await new Promise((resolve) => setTimeout(resolve, DOCUMENT_REFRESH_DEBOUNCE_MS + 200))
 
     // Without an observer this is an uncaught microtask throw: invisible to the
-    // host and impossible for it to catch. The bounded give-up report for a
-    // failing reconnect recovery is covered deterministically in
-    // cable-recovery-internal.test.ts rather than by waiting out real backoff.
+    // host and impossible for it to catch.
     expect(reported).toHaveLength(1)
     expect(reported[0]).toBeInstanceOf(Error)
 

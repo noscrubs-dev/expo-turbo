@@ -138,10 +138,11 @@ without leaving `ExpoTurboApp`. Supplying `cable` is what enables
 releases it on unmount.
 
 Cable delivers Stream actions, `refresh` included, for as long as the socket is
-up. It does **not** yet recover the document after a reconnect: anything
-broadcast while the socket was down stays missing, so a mounted document can be
-stale after a dropped connection. Refresh it yourself on reconnect if that
-matters for your screens.
+up. It does **not** recover the document after a reconnect: anything broadcast
+while the socket was down stays missing, so a mounted document can be stale
+after a dropped connection. Refresh it yourself on reconnect if that matters for
+your screens — `useDocumentReload()` from `expo-turbo/react` does it. Recovery
+is tracked in [pull request 418](https://github.com/noscrubs-dev/expo-turbo/pull/418).
 
 Supply `focus` once. When the object also satisfies `AutofocusAdapter`, the
 library hands the same instance to form validation and to the renderer, so an

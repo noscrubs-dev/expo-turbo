@@ -30,8 +30,8 @@ All notable public package, gem, and protocol changes will be recorded here.
   while the socket was down stays missing until something else refreshes it, so
   a mounted document can be stale after a dropped connection. This matches the
   behavior before `cable` existed — the adapter adds live Streams without
-  changing what a disconnect costs — and reconnect recovery is tracked
-  separately rather than shipped half-verified.
+  changing what a disconnect costs — and reconnect recovery is tracked in pull
+  request 418 rather than shipped half-verified.
 - The Expo Router bridge no longer imports `useUnstableGlobalHref` statically.
   It is a private Expo Router export, and a static named import of a missing
   export is a module-level `SyntaxError` that would take the whole

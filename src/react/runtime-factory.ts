@@ -73,11 +73,11 @@ export interface CreateExpoTurboRuntimeOptions {
   readonly history?: DocumentHistoryHostAdapter
   readonly navigation?: NavigationAdapter
   /**
-   * Receives faults from background work: Cable subscription and dispatch,
-   * document refresh, and Cable reconnect recovery. These are not document
-   * faults, so they are reported rather than replacing the mounted document
-   * with an error surface — but they must be reported, because the alternative
-   * is an uncaught microtask throw the host can neither see nor catch.
+   * Receives faults from background work: Cable subscription and dispatch, and
+   * document refresh. These are not document faults, so they are reported
+   * rather than replacing the mounted document with an error surface — but they
+   * must be reported, because the alternative is an uncaught microtask throw
+   * the host can neither see nor catch.
    */
   readonly onBackgroundError?: (error: Error) => void
   readonly registry: ComponentRegistry<RegistryComponent>
@@ -151,10 +151,12 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     submissionController: submission,
   })
   // Cable delivers Stream actions, including `refresh`, for as long as the
-  // socket is up. It does NOT yet recover the document after a reconnect: a
+  // socket is up. It does NOT recover the document after a reconnect: a
   // broadcast missed while the socket was down leaves the mounted document
-  // stale until something else refreshes it. That recovery is deliberately not
-  // part of this runtime yet — see the 0.3.0 changelog.
+  // stale until something else refreshes it. That is a known limitation rather
+  // than an oversight — it matches the behavior before `cable` existed — and
+  // `runtime.test.ts` pins it. Recovery is tracked in
+  // https://github.com/noscrubs-dev/expo-turbo/pull/418.
   const streamSources = options.cable
     ? new CableStreamSourceRegistry(session, options.cable, {
         // This registry requires an observer, so the fallback has to be the
