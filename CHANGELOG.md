@@ -15,7 +15,10 @@ All notable public package, gem, and protocol changes will be recorded here.
   the registry does not know still refuses and still sends nothing, so the
   fail-closed guarantee is unchanged. A host composing the provider by hand is
   unaffected: one passing its own `formLinks` keeps it, and one passing none
-  keeps the previous behaviour.
+  keeps the previous behaviour. Runtime-owned form-link submissions now cancel
+  on disposal, and a submission started after disposal is refused, so unmounting
+  can no longer let an in-flight submission mutate a disposed session. A
+  host-supplied controller stays host-owned and is never disposed by the runtime.
 
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
