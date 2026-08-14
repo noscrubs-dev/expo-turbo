@@ -24,9 +24,11 @@ appId: dev.noscrubs.expoturbo.example
 # `input keyevent 4` unconditionally for both pressKey: BACK and hideKeyboard, so
 # with the keyboard already down the same key left the app and every later step
 # reported a missing element instead of the navigation that caused it. This block
-# establishes that precondition instead of assuming it. Measured on this AVD:
-# keyboard up in 4/10 samples when left to the initial document autofocus, but
-# 8/8 after the two taps below. See issue #408.
+# establishes that precondition instead of assuming it. Sampled on this AVD with
+# dumpsys immediately before the key event: left to the initial document
+# autofocus the keyboard was up in 6 of 10 trials, and in all 4 trials where it
+# was down, BACK reached the launcher. After the two taps below it was up 8/8.
+# See issue #408.
 #
 # First tap: a non-interactive element, which puts the keyboard down whatever
 # autofocus did, so the field below is never hidden behind it.
@@ -47,8 +49,12 @@ appId: dev.noscrubs.expoturbo.example
       platform: Android
     commands:
       - pressKey: BACK
-      # Fails in about a second, naming a real element, if BACK ever does leave
-      # the app, instead of the 53s misleading submitter timeout it used to give.
+      # Here for the diagnostic rather than the speed: if BACK ever does leave
+      # the app this fails naming Form ready, which this screen genuinely owns,
+      # instead of blaming the submitter further down. It is also
+      # somewhat faster. Forcing an app exit at this point, it failed in 26.4s
+      # where the old submitter path took 40.9s; both figures were measured
+      # during review of PR #424, not by the pass-rate arms.
       - assertVisible: Form ready
 - runFlow:
     when:
@@ -88,8 +94,10 @@ appId: dev.noscrubs.expoturbo.example
     when:
       platform: Android
     commands:
-      # Safe here for the same reason: the assertion above already established
-      # that this field holds focus, so inputText left the keyboard up.
+      # Safe for the same reason: the assertion above establishes that this
+      # field holds focus, and inputText types into it. This site was not
+      # sampled with dumpsys the way the first one was; the support for it is
+      # that no run in the 20-run arm failed after this point.
       - pressKey: BACK
       - assertVisible: Form ready
 - runFlow:
