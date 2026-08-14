@@ -10302,6 +10302,86 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("rejects generated form-link metadata drift before any request or delegation", async () => {
+    for (const fixture of [
+      {
+        after: '<DocumentLink id="link" href="/danger" />',
+        before: '<DocumentLink id="link" href="/danger" data-turbo-method="post" data-turbo-stream="" />',
+      },
+      {
+        after: '<DocumentLink id="link" href="/danger" data-turbo-method="post" />',
+        before: '<DocumentLink id="link" href="/danger" />',
+      },
+    ]) {
+      const documentRequests: TurboRequest[] = []
+      const generatedRequests: TurboRequest[] = []
+      const navigation: string[] = []
+      const errors: ExpoTurboRenderError[] = []
+      const surfaces: ExpoTurboRenderError[] = []
+      const harness = renderDocumentLinks(
+        `<Gallery id="gallery">${fixture.before}</Gallery>`,
+        async (request) => {
+          documentRequests.push(request)
+          throw new Error("metadata drift must not become a document GET")
+        },
+        "https://example.test/gallery",
+        {
+          back() {},
+          openExternal(url) {
+            navigation.push(url)
+          },
+          visit(url) {
+            navigation.push(url)
+          },
+        },
+        undefined,
+        (session, formSemantics) =>
+          new FormLinkSubmissionController(
+            session,
+            new FormSubmissionController(session, {
+              async fetch(request) {
+                generatedRequests.push(request)
+                throw new Error("metadata drift must not submit a generated form")
+              },
+            }),
+            { next: () => "drifted-generated-link" },
+            { formSemantics },
+          ),
+        undefined,
+        () => ({
+          onError: (event) => errors.push(event),
+          renderError: (event) => {
+            surfaces.push(event)
+            return null
+          },
+        }),
+      )
+      const staleActivation = harness.activation("/danger")
+
+      await act(async () => {
+        await dispatchTurboStreamFragment(
+          harness.session,
+          `<turbo-stream action="update" target="gallery" method="morph"><template>${fixture.after}</template></turbo-stream>`,
+        )
+      })
+
+      let activation: Promise<unknown> | undefined
+      expect(() => {
+        activation = staleActivation()
+      }).not.toThrow()
+      await expect(activation!).rejects.toEqual(
+        new TargetError("Generated form link metadata changed before activation"),
+      )
+      expect(documentRequests).toEqual([])
+      expect(generatedRequests).toEqual([])
+      expect(navigation).toEqual([])
+      expect(errors).toEqual([])
+      expect(surfaces).toEqual([])
+      expect(harness.controller.state.status).toBe("initialized")
+      act(() => harness.renderer.unmount())
+    }
+  })
+
   test("uses Turbo Frame destinations for generated form links without the Frame loader", async () => {
     const documentRequests: TurboRequest[] = []
     const frameRequests: TurboRequest[] = []
