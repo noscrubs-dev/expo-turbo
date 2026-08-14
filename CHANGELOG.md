@@ -4,6 +4,19 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Handle generated form links on the zero-config host. `createExpoTurboRuntime`
+  now builds a `FormLinkSubmissionController` and passes its own registry as
+  `formSemantics`, and `ExpoTurbo` gives it to the provider, so a Rails server
+  rendering an ordinary `link_to "Delete", path, data: { turbo_method: :delete }`
+  works against `<ExpoTurboApp origin registry />` with no extra wiring.
+  Previously that link threw `TargetError` inside the activation promise, sent
+  no request, and reported to neither `onError` nor `renderError` — an
+  application saw a dead button with no signal anywhere. A link whose owner tag
+  the registry does not know still refuses and still sends nothing, so the
+  fail-closed guarantee is unchanged. A host composing the provider by hand is
+  unaffected: one passing its own `formLinks` keeps it, and one passing none
+  keeps the previous behaviour.
+
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
   component registry as `formSemantics`; no resolver, the old resolver-free
