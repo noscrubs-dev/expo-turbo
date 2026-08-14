@@ -7,8 +7,9 @@ All notable public package, gem, and protocol changes will be recorded here.
 - Refuse a generated form-link activation held by a handler captured before the
   link's `data-turbo-method` or `data-turbo-stream` changed. A link that lost its
   method previously performed a plain document GET — silently doing an ordinary
-  visit where the markup at render time had asked for a form submission. The
-  stale handler now rejects with `TargetError` as a promise rejection, issuing no
+  visit where the markup at render time had asked for a form submission — and a
+  link that gained one submitted a form the rendered markup had not asked for.
+  The stale handler now rejects with `TargetError` as a promise rejection, issuing no
   form request and no document error state, and reporting to neither `onError`
   nor `renderError`. This matches the three drift guards already in that
   activation path for a changed `href`, a changed anchor, and a link outside the
