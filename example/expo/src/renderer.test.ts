@@ -14433,12 +14433,12 @@ describe("React protocol renderer", () => {
   })
 
   test("reports again when the document goes blank on different vocabulary", async () => {
-    // The blank is identified by the vocabulary that failed to render, not just
+    // The blank is identified by the tags the document is built from, not just
     // by the circumstances around it. Swapping the root element's tag for
     // another unrecognised one leaves the generation, the registry, the root
     // element key and the production count all untouched, so nothing except the
-    // vocabulary set distinguishes this blank from the one already reported --
-    // and it is a different blank, with a different cause.
+    // tag set distinguishes this blank from the one already reported -- and it
+    // is a different blank, with a different cause.
     const errors: ExpoTurboRenderError[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument(
@@ -14464,35 +14464,24 @@ describe("React protocol renderer", () => {
 
     // The element keeps its id, so the root key the error targets is unchanged,
     // and a same-document mutation moves neither the generation nor the
-    // production count. Only the vocabulary set moved.
+    // production count. Only the tag set moved.
     expect(session.tree.getElementById("shell")?.key).toBe(shell.key)
     expect(session.treeGeneration).toBe(generationBefore)
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
     expect(errors).toHaveLength(2)
   })
 
-  test("delivers the changed cause on the vocabulary channel while the blank report is deduped", async () => {
-    // The blank-root payload cannot express a cause: the class and the message
-    // are fixed and the only keys in it are the document's and the root
-    // element's. When the document keeps rendering nothing but a different tag
-    // becomes the reason, the condition `onError` describes has genuinely not
-    // changed, and the new cause reaches the host on the vocabulary channel.
-    //
-    // Honest label, because the two halves of this test are not the same kind
-    // of evidence. The `onError` assertion is a regression test for the dedupe:
-    // remove the dedupe and it fails, because the report fires twice. The
-    // vocabulary assertion is a characterisation test -- it holds under every
-    // dedupe variant tried, including one that moves the report gate ahead of
-    // the guard's own diagnostic delivery, because each unrecognised element
-    // reports its vocabulary through its own boundary, which the guard's gate
-    // never runs in. Delivery is independent of the gate by construction rather
-    // than by statement order, and that is what makes it safe to answer a
-    // repeated condition with silence.
+  test("reports again when a nested tag changes under a document that stays blank", async () => {
+    // The structural analysis cannot see this one. `BlankingPreview` is
+    // registered, so the walk that collects diagnostics stops at it and never
+    // reaches the sibling that changed; both raises record diagnostics for
+    // `FutureRoot` and nothing else. The document is nonetheless blank for a
+    // new reason, and the tag set of the tree the guard already holds says so.
     const registry = blankingRefusalFixture()
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
-        { url: "https://example.test/changed-cause" },
+        { url: "https://example.test/nested-tag-change" },
       ),
     )
     const errors: ExpoTurboRenderError[] = []
@@ -14507,23 +14496,72 @@ describe("React protocol renderer", () => {
     })
 
     expect(errors).toHaveLength(1)
-    expect(vocabulary.map(({ tag }) => tag).sort()).toEqual(["FutureForm", "FutureRoot"])
+    const generationBefore = session.treeGeneration
 
     const form = session.tree.getElementById("form")
     const replacement = parseExpoTurboDocument(
       '<DifferentFutureForm id="form" action="/danger" method="post" />',
     ).getElementById("form")
-    if (!form || !replacement) throw new Error("changed-cause fixtures are missing")
+    if (!form || !replacement) throw new Error("nested-tag-change fixtures are missing")
     act(() => {
       session.mutate((tree) => tree.replaceNodeWithClones(form, [replacement]))
     })
 
-    // The document is still blank and still showing the same surface, so the
-    // repeated report would have carried the same bytes as the first.
+    // Still blank, still the same root element, same generation: only the tag
+    // deep in the document moved.
+    expect(session.treeGeneration).toBe(generationBefore)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(errors).toHaveLength(2)
+    expect(vocabulary.map(({ tag }) => tag)).toContain("DifferentFutureForm")
+  })
+
+  test("delivers vocabulary for a new node while the blank report stays deduped", async () => {
+    // Growing the document with another element of a tag it already contains
+    // leaves the tag set alone, so the blank is the same one and the report is
+    // deduped. The new node is still unrenderable, and the host is still told
+    // about it -- on the channel that carries causes.
+    //
+    // Honest label, because the two halves are not the same kind of evidence.
+    // The `onError` assertion is a regression test for the dedupe: remove the
+    // dedupe and it fails, because the report fires twice. The vocabulary
+    // assertion is a characterisation test -- it holds under every dedupe
+    // variant tried, including one that moves the report gate ahead of the
+    // guard's own diagnostic delivery, because each unrecognised element
+    // reports its vocabulary through its own boundary, which the guard's gate
+    // never runs in. Delivery is independent of the gate by construction rather
+    // than by statement order, and that is what makes it safe to answer a
+    // repeated condition with silence.
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Unknown id="shell"><Unknown id="inner"><!-- empty --></Unknown></Unknown>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(errors).toHaveLength(1)
+    const deliveredBefore = vocabulary.length
+
+    const shell = session.tree.getElementById("shell")
+    const grown = parseExpoTurboDocument(
+      '<Unknown id="shell"><Unknown id="inner"><!-- empty --></Unknown><Unknown id="extra"><!-- empty --></Unknown></Unknown>',
+    ).getElementById("shell")
+    if (!shell || !grown) throw new Error("same-tag growth fixtures are missing")
+    act(() => {
+      session.mutate((tree) => tree.replaceNodeWithClones(shell, [grown]))
+    })
+
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
     expect(errors).toHaveLength(1)
-    // The tag that changed is what the host needs, and it arrives.
-    expect(vocabulary.map(({ tag }) => tag)).toContain("DifferentFutureForm")
+    expect(vocabulary.length).toBeGreaterThan(deliveredBefore)
+    expect(vocabulary.map(({ nodeKey }) => nodeKey)).toContain("id:extra")
   })
 
   test("keeps form scope active when a required form-owner attribute unwraps", async () => {
