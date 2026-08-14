@@ -4,6 +4,22 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Refuse a generated form-link activation held by a handler captured before the
+  link's `data-turbo-method` or `data-turbo-stream` changed. A link that lost its
+  method previously performed a plain document GET — silently doing an ordinary
+  visit where the markup at render time had asked for a form submission — and a
+  link that gained one submitted a form the rendered markup had not asked for.
+  The stale handler now rejects with `TargetError` as a promise rejection, issuing no
+  form request and no document error state, and reporting to neither `onError`
+  nor `renderError`. This matches the three drift guards already in that
+  activation path for a changed `href`, a changed anchor, and a link outside the
+  active document.
+
+  The refusal is scoped to stale handlers. A handler obtained after the change
+  submits normally, so a Turbo Stream that upgrades a link in place keeps
+  working. Links that never reach the form-link path — cross-origin, non-HTTP
+  schemes, or anything under `data-turbo="false"` — are unaffected and still
+  delegate to the host.
 - Handle generated form links on the zero-config host. `createExpoTurboRuntime`
   now builds a `FormLinkSubmissionController` and passes its own registry as
   `formSemantics`, and `ExpoTurbo` gives it to the provider, so a Rails server

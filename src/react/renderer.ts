@@ -1763,6 +1763,8 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
   const node = nodeKey ? session.tree.getNodeByKey(nodeKey) : undefined
   const link = node && isElement(node) ? node : undefined
   const rawHref = link ? attributeValue(link, "href") : undefined
+  const rawTurboMethod = link ? attributeValue(link, "data-turbo-method") : undefined
+  const rawTurboStream = link ? attributeValue(link, "data-turbo-stream") : undefined
   useAutomaticDocumentPreloadRevision(
     session,
     link,
@@ -2204,11 +2206,18 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
         url: disposition.url,
       })
     }
+    const turboMethod = attributeValue(node, "data-turbo-method")
+    const turboStream = attributeValue(node, "data-turbo-stream")
     if (
       !optedOut &&
-      (attributeValue(node, "data-turbo-method") !== undefined ||
-        attributeValue(node, "data-turbo-stream") !== undefined)
+      (rawTurboMethod !== undefined ||
+        rawTurboStream !== undefined ||
+        turboMethod !== undefined ||
+        turboStream !== undefined)
     ) {
+      if (turboMethod !== rawTurboMethod || turboStream !== rawTurboStream) {
+        throw new TargetError("Generated form link metadata changed before activation")
+      }
       if (!formLinks) {
         throw new TargetError("Generated form links require provider form-link submissions")
       }
@@ -2301,6 +2310,8 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     node,
     nodeKey,
     rawHref,
+    rawTurboMethod,
+    rawTurboStream,
     session,
   ])
   if (!documentController) {
