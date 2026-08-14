@@ -2702,14 +2702,13 @@ interface DocumentOutputLedger {
   drops: number
   readonly listeners: Set<() => void>
   output: number
-  productions: number
   version: number
 }
 
 const DocumentOutputContext = createContext<DocumentOutputLedger | undefined>(undefined)
 
 function createDocumentOutputLedger(): DocumentOutputLedger {
-  return { drops: 0, listeners: new Set(), output: 0, productions: 0, version: 0 }
+  return { drops: 0, listeners: new Set(), output: 0, version: 0 }
 }
 
 function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
@@ -2720,22 +2719,10 @@ function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
  * Only a change in the blank verdict is worth a notification. Registering the
  * second component in a healthy document cannot change it, and waking the root
  * for that would re-render every node on every mount.
- *
- * `productions` counts the commits in which the document went from rendering
- * nothing to rendering something. It is what separates a document that has
- * re-entered the blank state from one that is merely being re-observed in it:
- * clearing the surface is how the guard retries, and if that retry re-blanks,
- * nothing was produced in between. Counting transitions rather than holding a
- * flag means nothing has to agree on when to reset it -- the count only ever
- * goes up, and a reader compares it against the value it last saw. A flag would
- * have to be cleared by whoever notices recovery, and the only component in a
- * position to notice is the one whose surface is being retried on every commit.
  */
 function updateDocumentOutput(ledger: DocumentOutputLedger, apply: () => void): void {
   const before = documentOutputIsBlank(ledger)
-  const producingBefore = ledger.output > 0
   apply()
-  if (!producingBefore && ledger.output > 0) ledger.productions += 1
   if (documentOutputIsBlank(ledger) === before) return
   ledger.version += 1
   for (const listener of [...ledger.listeners]) listener()
@@ -2780,104 +2767,8 @@ interface UnknownVocabularyStructuralMetadata {
   readonly diagnostics: readonly RegistryStructuralOutputDiagnostic[]
   readonly generation: number
   readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
-  readonly productions: number
-  readonly registry: unknown
   readonly root: ProtocolElement
   readonly session: DocumentSession
-}
-
-/**
- * What makes one raise of the blank-root surface a different occasion from the
- * last one.
- *
- * `tags` is the identity of the blank: the set of element tags the document is
- * built from, which is what changes when the reason it cannot render changes.
- * The other four fields are the circumstances that make a repeat of the same
- * tags worth hearing anyway -- a new document (`generation`), newly installed
- * vocabulary (`registry`), a different root element (`rootKey`), or the
- * document having rendered something real and gone blank again
- * (`productions`).
- *
- * Naming the tags is what keeps this a dedupe rather than a mute. The payload
- * the surface hands `onError` cannot express the difference -- the class and
- * the message are constants of this file, and the only keys in it are the
- * document's and the root element's -- so two blanks with different causes
- * arrive byte-identical. Keying on the payload alone would therefore answer a
- * document that went blank for a genuinely new reason with silence, and leave
- * the host holding the first explanation for the second failure.
- *
- * The tags are taken from the tree rather than from the structural analysis
- * because the analysis is deliberately incomplete: it stops walking at the
- * first node that renders, so a document that went blank because a component
- * declined at commit time records diagnostics for the prefix before that
- * component and nothing after it -- and the tag that changed can sit in the
- * unrecorded remainder. The tree the guard already holds has no such gap.
- *
- * Deliberately absent: `session.revision`. The revision answers "should the
- * verdict be retried", and it bumps on every unrelated attribute write, which
- * is the traffic this dedupe exists to survive. Rewriting an attribute does not
- * change which tags the document is built from, so the noise stays deduped
- * while a changed cause does not.
- *
- * Nothing here is predicted. Every field is a value the renderer has already
- * computed for this commit -- the tag set is a walk of the root element the
- * guard already carries to explain itself -- so the discriminator adds no new
- * guess about what a mutation might have meant. Widening the key can only make
- * the guard report more often, never less, which is the safe direction: a
- * swallowed report is worse than a duplicated one.
- *
- * Known bound: only the last reported condition is remembered, so a document
- * that alternates between two unrenderable shapes reports on each transition.
- * Each of those reports names a genuinely different blank, so the guarantee is
- * one report per change of cause rather than one per revision -- which is the
- * property the noise this dedupe removes was violating.
- */
-interface ReportedBlankCondition {
-  readonly generation: number
-  readonly productions: number
-  readonly registry: unknown
-  readonly rootKey: string
-  readonly tags: string
-}
-
-/**
- * The set of element tags the blank document is made of, as a comparable
- * string.
- *
- * `analyzeRegistryStructuralOutput` stops walking at the first node that
- * renders, because diagnostics only matter when nothing does. A document that
- * went blank because a component declined at commit time therefore records
- * diagnostics for whatever preceded that component and nothing after it, and
- * the tag that actually changed can sit in the unrecorded remainder. The tree
- * the guard already holds has no such gap: `root` is the live root element and
- * its children are the document as it stands in this commit.
- *
- * Tags only, deduplicated and sorted. Attributes and text are deliberately left
- * out: a document being driven by a stream of Turbo Streams has its attributes
- * and text rewritten constantly, and surviving that traffic is the whole point
- * of this dedupe. Which tags the document is built from is what moves when the
- * reason it cannot render moves.
- *
- * `template` and `stream` subtrees are skipped for the reason the structural
- * analysis skips them: their contents are payloads to be applied later, not
- * vocabulary this document is currently failing to render.
- */
-function blankDocumentTagKey(root: ProtocolElement): string {
-  const tags = new Set<string>([root.tagName])
-  // Iterative rather than recursive: a document deep enough to overflow the
-  // stack would crash the guard while it reports that it cannot render.
-  const pending: (readonly ProtocolNode[])[] = [root.children]
-  while (pending.length > 0) {
-    const nodes = pending.pop()
-    if (!nodes) continue
-    for (const node of nodes) {
-      if (!isElement(node)) continue
-      if (node.kind === "template" || node.kind === "stream") continue
-      tags.add(node.tagName)
-      if (node.children.length > 0) pending.push(node.children)
-    }
-  }
-  return [...tags].sort().join("\u0001")
 }
 
 const unknownVocabularyStructuralMetadata = new WeakMap<
@@ -2990,19 +2881,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
         )
       }
     }
-    if (!this.shouldReportCaughtError(error, structuralMetadata)) return
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
-  }
-
-  /**
-   * Every caught error reports. Only the blank-root guard narrows this, and
-   * only for the one error class it raises itself.
-   */
-  protected shouldReportCaughtError(
-    _error: Error,
-    _structural: UnknownVocabularyStructuralMetadata | undefined,
-  ): boolean {
-    return true
   }
 
   render(): ReactNode {
@@ -3042,68 +2921,8 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
  * its surface as output. Every reachable mistake lands on the safe side.
  */
 class DocumentBlankGuardBoundary extends NodeErrorBoundary {
-  private reportedBlankCondition: ReportedBlankCondition | undefined
-
   protected override countsRenderedErrorAsOutput(error: Error): boolean {
     return !(error instanceof UnknownVocabularyStructuralError)
-  }
-
-  /**
-   * A retry that lands back on the same blank document must not report again.
-   *
-   * Clearing the surface is how the guard retries: it has to let the document
-   * render to find out whether it produces anything now, and if it still does
-   * not, the guard raises again. That round trip happens on every session
-   * revision while the document is blank -- which is exactly the traffic a
-   * Cable-driven stream of Streams produces while trying to recover one -- so
-   * reporting each one would make this channel loudest at the moment it is
-   * least informative. `onError` is the only signal a host has here, and a
-   * report that fires more often than it carries information trains hosts to
-   * ignore it.
-   *
-   * Suppression is narrow in three ways, because swallowing a report is worse
-   * than duplicating one. It applies only to the class this guard raises
-   * itself, so any other error reaching this boundary reports. It applies only
-   * while the condition is carried, so an instance whose metadata has already
-   * been consumed -- a host that kept the error and threw it again -- reports.
-   * And it requires every field to match, so a document blank on different
-   * vocabulary than last time, a new document, newly installed vocabulary, a
-   * different root element, or the document having produced real output and
-   * gone blank again each report.
-   *
-   * The vocabulary set is what makes this the identity of the blank rather than
-   * a proxy for it. Two blanks with different causes deliver an identical
-   * `onError` payload, so without it the guard would answer a document that
-   * went blank for a new reason with silence, and leave the host holding the
-   * previous explanation.
-   *
-   * The condition is remembered rather than cleared on recovery. Nothing is in
-   * a position to clear it: this boundary's error state is reset on every retry
-   * by design, so a clear-on-recovery rule would fire on each retry and dedupe
-   * nothing at all.
-   */
-  protected override shouldReportCaughtError(
-    error: Error,
-    structural: UnknownVocabularyStructuralMetadata | undefined,
-  ): boolean {
-    if (!(error instanceof UnknownVocabularyStructuralError) || !structural) return true
-    const reported = this.reportedBlankCondition
-    const condition: ReportedBlankCondition = Object.freeze({
-      generation: structural.generation,
-      productions: structural.productions,
-      registry: structural.registry,
-      rootKey: structural.root.key,
-      tags: blankDocumentTagKey(structural.root),
-    })
-    this.reportedBlankCondition = condition
-    return !(
-      reported !== undefined &&
-      reported.generation === condition.generation &&
-      reported.productions === condition.productions &&
-      reported.registry === condition.registry &&
-      reported.rootKey === condition.rootKey &&
-      reported.tags === condition.tags
-    )
   }
 }
 
@@ -4355,8 +4174,6 @@ function DocumentStructuralOutputGuard(
     children?: ReactNode
     generation: number
     handler: ExpoTurboUnknownVocabularyHandler | undefined
-    productions: number
-    registry: unknown
     root: ProtocolElement
     session: DocumentSession
   }>,
@@ -4367,8 +4184,6 @@ function DocumentStructuralOutputGuard(
         diagnostics: props.analysis.diagnostics,
         generation: props.generation,
         handler: props.handler,
-        productions: props.productions,
-        registry: props.registry,
         root: props.root,
         session: props.session,
       }),
@@ -4500,11 +4315,6 @@ export function ExpoTurboRoot(): ReactNode {
           blank,
           generation: session.treeGeneration,
           handler: context.onUnknownVocabulary,
-          // Read from the commit the guard is acting on: the surface is being
-          // raised because that commit produced nothing, so this is the count
-          // of productions the document had reached when it went blank.
-          productions: outputLedger.productions,
-          registry: context.registry,
           root: rootDirectionElement,
           session,
         },
