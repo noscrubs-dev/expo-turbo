@@ -4,6 +4,17 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Refuse a generated form-link activation when the link's `data-turbo-method` or
+  `data-turbo-stream` changes between render and activation. A link that lost
+  its method previously performed a plain document GET, silently doing an
+  ordinary visit where the markup at render time had asked for a form
+  submission; a link that gained one performed a form submission the rendered
+  markup had not asked for. Both now reject with `TargetError` as a promise
+  rejection, issuing no request, no navigation delegation, no error observer
+  call, and no document error state. This matches the three drift guards already
+  in that activation path for a changed `href`, a changed anchor, and a link
+  outside the active document.
+
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
   component registry as `formSemantics`; no resolver, the old resolver-free
