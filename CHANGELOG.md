@@ -20,6 +20,21 @@ All notable public package, gem, and protocol changes will be recorded here.
   working. Links that never reach the form-link path — cross-origin, non-HTTP
   schemes, or anything under `data-turbo="false"` — are unaffected and still
   delegate to the host.
+- Handle generated form links on the zero-config host. `createExpoTurboRuntime`
+  now builds a `FormLinkSubmissionController` and passes its own registry as
+  `formSemantics`, and `ExpoTurbo` gives it to the provider, so a Rails server
+  rendering an ordinary `link_to "Delete", path, data: { turbo_method: :delete }`
+  works against `<ExpoTurboApp origin registry />` with no extra wiring.
+  Previously that link threw `TargetError` inside the activation promise, sent
+  no request, and reported to neither `onError` nor `renderError` — an
+  application saw a dead button with no signal on either host error channel. A link whose owner tag
+  the registry does not know still refuses and still sends nothing, so the
+  fail-closed guarantee is unchanged. A host composing the provider by hand is
+  unaffected: one passing its own `formLinks` keeps it, and one passing none
+  keeps the previous behaviour. Runtime-owned form-link submissions now cancel
+  on disposal, and a submission started after disposal is refused, so unmounting
+  can no longer let an in-flight submission mutate a disposed session. A
+  host-supplied controller stays host-owned and is never disposed by the runtime.
 
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { ComponentType } from "react"
 import { z } from "zod"
 
-import type { CableCallbacks, TurboResponse } from "../adapters/index.js"
+import type { CableCallbacks, TurboRequest, TurboResponse } from "../adapters/index.js"
 import {
   attributeValue,
   DOCUMENT_REFRESH_DEBOUNCE_MS,
@@ -360,5 +360,236 @@ describe("Expo Turbo runtime", () => {
     expect(placeholder?.tagName).toBe("turbo-frame")
     if (!placeholder) throw new Error("missing runtime placeholder")
     expect(attributeValue(placeholder, "data-turbo-cache-control")).toBe("no-cache")
+  })
+})
+
+describe("Expo Turbo runtime generated form links", () => {
+  const DOCUMENT_URL = "https://example.test/document"
+
+  interface SpiedTransport {
+    readonly fetch: { fetch: (request: TurboRequest) => Promise<TurboResponse> }
+    readonly requests: TurboRequest[]
+  }
+
+  /**
+   * Records every request and answers unsafe methods with a redirect, which is
+   * what Turbo requires of a document-level form response.
+   */
+  function spiedTransport(xml: string): SpiedTransport {
+    const requests: TurboRequest[] = []
+    return {
+      fetch: {
+        fetch: async (request: TurboRequest) => {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: request.method !== "GET",
+            status: 200,
+            text: async () => xml,
+            url: request.url,
+          }
+        },
+      },
+      requests,
+    }
+  }
+
+  test("dispatches a generated form-link submission the host never wired up", async () => {
+    const transport = spiedTransport(
+      '<TestDocument><TestField id="destroy" data-turbo-method="post" /></TestDocument>',
+    )
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    expect(transport.requests.map((request) => request.method)).toEqual(["GET"])
+
+    // Issue #428: reverting the runtime hand-off leaves `formLinks` undefined
+    // here, and the renderer throws TargetError("Generated form links require
+    // provider form-link submissions") on the first Rails delete button.
+    await runtime.formLinks.submit("id:destroy", "/danger?field=A")
+
+    expect(transport.requests).toHaveLength(2)
+    const submission = transport.requests[1]
+    expect(submission?.method).toBe("POST")
+    // The query pairs become form entries, exactly as Turbo's temporary form does.
+    expect(submission?.url).toBe("https://example.test/danger")
+    expect(submission?.body?.value).toBe("field=A")
+    // The registry digest reaches the link submission too, so the server sees
+    // one client descriptor across documents, forms, and form links.
+    expect(submission?.headers["X-Expo-Turbo-Client"]).toBe(
+      `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`,
+    )
+
+    runtime.dispose()
+  })
+
+  test("still refuses a generated form link whose tag the registry does not know", async () => {
+    const transport = spiedTransport(
+      '<TestDocument><UnregisteredLink id="destroy" data-turbo-method="post" /></TestDocument>',
+    )
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+
+    // #427's guarantee has to survive the #428 wiring: a controller that exists
+    // must still refuse vocabulary it cannot interpret rather than build a
+    // request out of it.
+    expect(runtime.formLinks.submissionInterception("id:destroy")).toEqual({
+      intercept: false,
+      reason: "unknown-vocabulary",
+    })
+    await expect(runtime.formLinks.submit("id:destroy", "/danger?field=A")).rejects.toThrow(
+      "Expo Turbo generated form-link submission requires known vocabulary",
+    )
+
+    // The refusal is the whole point: nothing left the device.
+    expect(transport.requests.map((request) => request.url)).toEqual([DOCUMENT_URL])
+
+    runtime.dispose()
+  })
+
+  const LINK_DOCUMENT =
+    '<TestDocument><TestField id="destroy" data-turbo-method="delete" /></TestDocument>'
+
+  /** Holds every unsafe response open so a submission can be caught in flight. */
+  function heldTransport(): SpiedTransport & { release: () => void } {
+    const requests: TurboRequest[] = []
+    let resolvePending: ((value: TurboResponse) => void) | undefined
+    return {
+      fetch: {
+        fetch: async (request: TurboRequest) => {
+          requests.push(request)
+          if (request.method === "GET") {
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () => LINK_DOCUMENT,
+              url: request.url,
+            }
+          }
+          return new Promise<TurboResponse>((resolve) => {
+            resolvePending = resolve
+          })
+        },
+      },
+      release: () =>
+        resolvePending?.({
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: true,
+          status: 200,
+          text: async () => "<TestDocument />",
+          url: "https://example.test/after-delete",
+        }),
+      requests,
+    }
+  }
+
+  test("aborts an in-flight generated form-link submission when the runtime is disposed", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    const urlBeforeDispose = runtime.session.tree.document.url
+
+    const submitting = runtime.formLinks.submit("id:destroy", "/danger?field=A")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.method).toBe("DELETE")
+    expect(transport.requests[1]?.signal?.aborted).toBe(false)
+
+    // `ExpoTurbo` calls this on unmount.
+    runtime.dispose()
+
+    // Without the runtime owning the controller's lifetime the signal stays
+    // live here, the released response reports "applied", and the disposed
+    // session's document URL moves to /after-delete.
+    expect(transport.requests[1]?.signal?.aborted).toBe(true)
+
+    transport.release()
+    const report = await submitting
+
+    expect(report.status).toBe("canceled")
+    expect(report.status).not.toBe("applied")
+    expect(runtime.session.tree.document.url).toBe(urlBeforeDispose)
+  })
+
+  test("refuses a generated form-link submission started after disposal", async () => {
+    // A transport that answers, not one that holds: without the guard this test
+    // must fail on its assertions rather than hang on a leaked request.
+    const transport = spiedTransport(LINK_DOCUMENT)
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    runtime.dispose()
+
+    // The other half of the same hole: an activation that starts late would
+    // commit into the disposed session just as surely as one already running.
+    expect(() => runtime.formLinks.submit("id:destroy", "/danger?field=A")).toThrow(
+      "Generated form links have been disposed",
+    )
+    expect(transport.requests.map((request) => request.url)).toEqual([DOCUMENT_URL])
+  })
+
+  test("disposes the form-link controller it built exactly once", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    const formLinks = runtime.formLinks
+    const disposeOnce = formLinks.dispose.bind(formLinks)
+    let disposals = 0
+    formLinks.dispose = () => {
+      disposals += 1
+      disposeOnce()
+    }
+
+    runtime.dispose()
+    runtime.dispose()
+
+    // Not zero, or the request outlives the unmount. Not twice: #412 showed two
+    // owners calling dispose() on one object, which is harmless only for as
+    // long as both stay idempotent.
+    expect(disposals).toBe(1)
+    expect(formLinks.isDisposed).toBe(true)
+  })
+
+  test("disposes cleanly with no generated form-link submission in flight", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    expect(transport.requests).toHaveLength(1)
+
+    expect(() => runtime.dispose()).not.toThrow()
+    expect(() => runtime.dispose()).not.toThrow()
+
+    expect(runtime.formLinks.isDisposed).toBe(true)
+    expect(runtime.state.isDisposed).toBe(true)
+    expect(runtime.scopes.isDisposed).toBe(true)
   })
 })

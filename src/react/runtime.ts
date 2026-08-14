@@ -295,6 +295,11 @@ export function ExpoTurbo({
         : {}),
       ...(adapters.formAnnouncements ? { formAnnouncements: adapters.formAnnouncements } : {}),
       ...(boundaries.form ? { formComponent: boundaries.form } : {}),
+      // Issue #428: the renderer reads generated form-link submissions from
+      // context, so a runtime that never receives them fails every link
+      // carrying `data-turbo-method` — the Rails delete button — with a
+      // TargetError that reaches neither `onError` nor `renderError`.
+      formLinks: runtime.formLinks,
       forms: runtime.forms,
       ...(adapters.frameAutoscroll ? { frameAutoscroll: adapters.frameAutoscroll } : {}),
       ...(boundaries.frame ? { frameComponent: boundaries.frame } : {}),

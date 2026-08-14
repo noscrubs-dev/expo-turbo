@@ -5,7 +5,12 @@ import type {
   FetchAdapter,
   FocusAdapter,
   NavigationAdapter,
+  RequestIdAdapter,
 } from "../adapters/index.js"
+import {
+  type ExactFormSubmissionActivity,
+  formSubmissionActivity,
+} from "../core/form-submission-activity.js"
 import {
   CableStreamSourceRegistry,
   DocumentFormControls,
@@ -19,11 +24,17 @@ import {
   DocumentVisitController,
   DocumentVisitLifecycle,
   type DocumentVisitResult,
+  FormLinkSubmissionController,
+  type FormLinkSubmissionControllerOptions,
   FormSubmissionController,
+  type FormSubmissionControllerSubmitOptions,
+  type FormSubmissionReport,
   FrameControllerRegistry,
   FrameHistoryCoordinator,
   FrameRequestLoader,
+  isElement,
   parseExpoTurboDocument,
+  StateError,
 } from "../core/index.js"
 import { serializeClientDescriptor } from "../core/protocol-request.js"
 import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
@@ -44,8 +55,104 @@ function rethrowUnobserved(error: Error): void {
 const PLACEHOLDER_DOCUMENT =
   '<turbo-frame id="expo-turbo-placeholder" disabled="" data-turbo-cache-control="no-cache" />'
 
+/**
+ * The generated form-link controller a runtime builds for itself, plus the
+ * disposal the base controller does not have.
+ *
+ * A form submission keeps its abort controller inside the submitting node's
+ * activity, and the base class records no activity of its own. The only handle
+ * on an in-flight generated form-link request is therefore the one whoever
+ * constructed the controller keeps. Without it, unmount leaves the request
+ * running and its response commits into a session nobody renders any more:
+ * the document URL moves under a disposed runtime.
+ *
+ * A host that builds its own controller and passes it to `ExpoTurboProvider`
+ * keeps the plain base class. The runtime disposes only what the runtime made.
+ */
+export class ExpoTurboFormLinkSubmissions extends FormLinkSubmissionController {
+  private readonly active = new Map<ExactFormSubmissionActivity, number>()
+  private disposed = false
+
+  constructor(
+    private readonly linkSession: DocumentSession,
+    submissionController: Pick<FormSubmissionController, "submit">,
+    requestIds: RequestIdAdapter,
+    options: FormLinkSubmissionControllerOptions = {},
+  ) {
+    super(linkSession, submissionController, requestIds, options)
+  }
+
+  get isDisposed(): boolean {
+    return this.disposed
+  }
+
+  /**
+   * Aborts every generated form-link request this controller still has in
+   * flight. Idempotent: the runtime calls it once, and a second call has
+   * nothing left to cancel.
+   */
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    for (const activity of [...this.active.keys()]) {
+      this.active.delete(activity)
+      activity.cancelActive()
+    }
+  }
+
+  submit(
+    linkNodeKey: string,
+    href: string,
+    options: FormSubmissionControllerSubmitOptions = {},
+  ): Promise<FormSubmissionReport> {
+    // Refusing after disposal closes the other half of the same hole: an
+    // activation that starts late would commit into the disposed session just
+    // as surely as one that was already running.
+    if (this.disposed) {
+      throw new StateError("Generated form links have been disposed", { target: linkNodeKey })
+    }
+    const activity = this.activityFor(linkNodeKey)
+    if (!activity) return super.submit(linkNodeKey, href, options)
+    this.retain(activity)
+    return super.submit(linkNodeKey, href, options).finally(() => this.release(activity))
+  }
+
+  /**
+   * The activity is keyed on the exact link node, which is what the base
+   * controller hands the submission as the proposal's activity owner.
+   */
+  private activityFor(linkNodeKey: string): ExactFormSubmissionActivity | undefined {
+    if (typeof linkNodeKey !== "string" || linkNodeKey === "") return undefined
+    const link = this.linkSession.tree.getNodeByKey(linkNodeKey)
+    if (!link || !isElement(link) || !this.linkSession.tree.contains(link)) return undefined
+    return formSubmissionActivity(this.linkSession, link)
+  }
+
+  /**
+   * Counted, not a set membership: one link can supersede its own submission,
+   * and the superseded attempt settles while the replacement is still running.
+   */
+  private retain(activity: ExactFormSubmissionActivity): void {
+    this.active.set(activity, (this.active.get(activity) ?? 0) + 1)
+  }
+
+  private release(activity: ExactFormSubmissionActivity): void {
+    const remaining = (this.active.get(activity) ?? 0) - 1
+    if (remaining > 0) this.active.set(activity, remaining)
+    else this.active.delete(activity)
+  }
+}
+
 export interface ExpoTurboRuntime {
   readonly controller: DocumentVisitController
+  /**
+   * Turbo's temporary-form path for links carrying `data-turbo-method` or
+   * `data-turbo-stream` — the ordinary Rails delete-button idiom. The runtime
+   * builds it because it is the only party holding both the submission
+   * controller and the registry the controller needs to read link vocabulary.
+   * Having built it, the runtime also owns its disposal.
+   */
+  readonly formLinks: ExpoTurboFormLinkSubmissions
   readonly forms: DocumentFormControls
   readonly frames: FrameControllerRegistry
   readonly scopes: DocumentStateScopes
@@ -148,6 +255,16 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     moduleVersions: clientDescriptor,
     submissionController: submission,
   })
+  // `data-turbo-method` on a link is the ordinary Rails delete-button idiom, so
+  // a server rendering standard Turbo markup expects a client that can act on
+  // it. The registry has to arrive with the controller: since #427 this one
+  // fails closed without `formSemantics`, so constructing it bare would trade a
+  // loud refusal for a silent one. The runtime holds the registry already,
+  // which is exactly why the host never has to hand one over.
+  const formLinks = new ExpoTurboFormLinkSubmissions(session, submission, requestIds, {
+    formSemantics: options.registry,
+    moduleVersions: clientDescriptor,
+  })
   // Cable delivers Stream actions, including `refresh`, for as long as the
   // socket is up. It does NOT recover the document after a reconnect: a
   // broadcast missed while the socket was down leaves the mounted document
@@ -167,6 +284,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
 
   return Object.freeze({
     controller,
+    formLinks,
     forms,
     frames,
     scopes,
@@ -176,6 +294,10 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     dispose(): void {
       if (disposed) return
       disposed = true
+      // Before the rest of the teardown: an aborted request settles as
+      // canceled, so nothing downstream is asked to apply a response into
+      // controllers that are about to go away.
+      formLinks.dispose()
       forms.dispose()
       frames.dispose()
       streamSources?.dispose()
