@@ -4193,6 +4193,46 @@ interface DocumentBlankVerdict {
   readonly revision: number
 }
 
+const EMPTY_DOCUMENT_CHILDREN: readonly ProtocolNode[] = Object.freeze([])
+
+/**
+ * The session revision, observed while the blank-root guard could be holding a
+ * surface.
+ *
+ * The guard replaces the whole subtree with its error surface, so once it is up
+ * no subscription survives below it. The root's own two node subscriptions --
+ * the document and the root element -- wake it for a Stream that targets the
+ * root, and for nothing else. A Stream that restores content to a nested node
+ * notifies that node's key, nobody is listening, and the surface stays up for
+ * the life of the process.
+ *
+ * Session revision is the closed set that covers this. Every mutation path in
+ * `DocumentSession` -- `commit`, `installTree` and `morphCurrentDocument` --
+ * bumps the revision and notifies revision listeners in the same step, so
+ * observing it cannot miss a mutation and cannot drift from one. It is also
+ * already the token the verdict is keyed on: the guard was reading
+ * `session.revision` to decide whether its verdict had gone stale without
+ * subscribing to the value it was reading. Subscribing to whichever keys a
+ * Stream might target instead would mean predicting an open-ended set, which is
+ * the mistake this guard has already been rewritten once to stop making.
+ *
+ * The subscription is gated because a root that re-renders on every commit
+ * re-renders every node in the document, and a document that can raise this
+ * guard at all is the rare case. The gate is deliberately wider than the guard:
+ * `blank` implies this predicate, so the subscription is live whenever a
+ * surface is up, and at worst stays live for a document that went blank once
+ * and recovered. Under-subscribing would restore the bug; over-subscribing
+ * costs renders on a document that has already shown a protocol error.
+ */
+function useDocumentBlankRetryRevision(session: DocumentSession, guarded: boolean): number {
+  const subscribe = useCallback(
+    (listener: () => void) => (guarded ? session.subscribeRevision(listener) : () => undefined),
+    [guarded, session],
+  )
+  const snapshot = useCallback(() => session.revision, [session])
+  return useSyncExternalStore(subscribe, snapshot, snapshot)
+}
+
 export function ExpoTurboRoot(): ReactNode {
   const context = useRenderer()
   const { session } = context
@@ -4204,10 +4244,21 @@ export function ExpoTurboRoot(): ReactNode {
     root?.node.kind === "document" ? root.node.children.find(isElement) : undefined
   const rootElementSnapshot = useProtocolNode(rootElement?.key ?? session.tree.document.key)
   const generation = session.treeGeneration
+  const structuralOutput = analyzeRegistryStructuralOutput(
+    context.registry,
+    root?.node.kind === "document" ? root.node.children : EMPTY_DOCUMENT_CHILDREN,
+  )
+  // A tree that cannot render anything is decided from the tree, which involves
+  // no component lifetime at all. Everything else is decided from what the last
+  // commit actually produced.
+  const blankByTree = !structuralOutput.hasOutput && structuralOutput.hasVocabularyIssues
   // Any tree mutation retries the verdict. The token can be broader than the
   // cause without harm: a retry that changes nothing costs one render, and the
-  // commit it retries into is observed rather than predicted.
-  const revision = session.revision
+  // commit it retries into is observed rather than predicted. The read is
+  // subscribed while a surface could be up, because otherwise a mutation that
+  // does not touch the root never re-renders this component to notice that its
+  // verdict has gone stale.
+  const revision = useDocumentBlankRetryRevision(session, blankByTree || verdict !== undefined)
   const settled =
     verdict &&
     verdict.generation === generation &&
@@ -4248,11 +4299,6 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
-  const structuralOutput = analyzeRegistryStructuralOutput(context.registry, root.node.children)
-  // A tree that cannot render anything is decided from the tree, which involves
-  // no component lifetime at all. Everything else is decided from what the last
-  // commit actually produced.
-  const blankByTree = !structuralOutput.hasOutput && structuralOutput.hasVocabularyIssues
   const blank = blankByTree || settled !== undefined
   const guardedRendered = !blank
     ? rendered

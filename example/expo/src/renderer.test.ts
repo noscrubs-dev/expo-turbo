@@ -14171,6 +14171,94 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
   })
 
+  test("clears the blank-root error once a Stream restores content to a nested node", async () => {
+    // The root element is `shell`, so a Stream aimed at `inner` notifies a key
+    // nothing is subscribed to once the guard has replaced the subtree. Only a
+    // root-targeted Stream used to reach the boundary holding the surface.
+    const errors: ExpoTurboRenderError[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Unknown id="shell"><Unknown id="inner"><!-- empty --></Unknown></Unknown>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(errors).toHaveLength(1)
+    // Nothing else is rendering: the surface is the whole document, so the
+    // assertions below cannot be satisfied by a sibling that kept the tree
+    // non-empty.
+    expect(renderer.toJSON()).toEqual({ type: "protocol-error", props: {}, children: null })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="inner"><template><DemoText>Recovered</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
+    expect(errors).toHaveLength(1)
+  })
+
+  test("clears the blank-root error once a Stream restores content three levels down", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Unknown id="shell"><Unknown id="mid"><Unknown id="deep"><!-- empty --></Unknown></Unknown></Unknown>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(renderer.toJSON()).toEqual({ type: "protocol-error", props: {}, children: null })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="deep"><template><DemoText>Deep recovery</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Deep recovery")
+    expect(errors).toHaveLength(1)
+  })
+
+  test("keeps the blank-root error when a nested mutation restores nothing renderable", async () => {
+    // Waking the guard on every session revision must not let it clear itself
+    // on a mutation that produced no output. The attribute write below commits
+    // a new revision against a nested node and nothing else.
+    const errors: ExpoTurboRenderError[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Unknown id="shell"><Unknown id="inner"><!-- empty --></Unknown></Unknown>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(errors).toHaveLength(1)
+    const revisionBefore = session.revision
+
+    act(() => {
+      session.setAttribute("id:inner", "data-nested", "1")
+    })
+
+    expect(session.revision).toBeGreaterThan(revisionBefore)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    // The retry must not report the same blank document a second time.
+    expect(errors).toHaveLength(1)
+  })
+
   test("keeps form scope active when a required form-owner attribute unwraps", async () => {
     function CaptureFallbackForm(): ReactNode {
       const binding = useExpoTurboForm()
