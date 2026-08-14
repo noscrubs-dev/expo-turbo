@@ -201,26 +201,32 @@ blank screen has to read both:
 />
 ```
 
-`onError` fires once per blank condition, not once per document revision.
-While a document stays blank, a Turbo Stream trying to recover it commits a
-revision each time it arrives and the surface is retried on every one;
-reporting each retry would make the channel loudest exactly when it carries the
-least. A repeat is reported when the blank is genuinely a new one: different
-vocabulary failed, a new document installed, a different registry was supplied,
-or the document rendered real content and went blank again. "Different
-vocabulary" means the set of element tags the document is built from changed,
-including a tag deep inside it that never rendered — not only the tag the
-failure was attributed to.
+`onError` fires once for each distinct blank condition it can name, not once
+per document revision. While a document stays blank, a Turbo Stream trying to
+recover it commits a revision each time it arrives and the surface is retried on
+every one; reporting each retry would make the channel loudest exactly when it
+carries the least. A condition is named by six things: the document generation,
+the installed registry, the root element key, how many times the document has
+produced real output, the set of element tags in the live root subtree, and the
+vocabulary issues the structural analysis recorded — their kind, tag, and
+attribute. A raise matching a condition already reported is silent; anything
+else reports. So the same tag failing on a different required attribute does
+report, and so does a blank on newly-failing vocabulary.
+
+Two limits are worth knowing rather than discovering. The guard remembers the
+eight most recently reported conditions, so a document cycling through more than
+eight distinct ones evicts the oldest and reports it again on its next
+appearance. And a cause can move without being named: the structural analysis
+stops at the first renderable node and the tag walk starts at the first element
+child, so a change confined to both blind spots is answered with silence.
 
 `onUnknownVocabulary` is never deduplicated alongside it: each unrecognised
-element reports through its own boundary, which this gate does not run in. Two
-limits are worth knowing rather than discovering. Only the most recent condition
-is remembered, so a document alternating between two unrenderable shapes reports
-on each transition rather than once — the guarantee is one report per change of
-cause, not one per document. And neither channel is a complete record of every
-blank: a document can reach a blank state without re-raising at all, so a host
-that must detect emptiness itself should check the rendered tree rather than
-rely on these callbacks alone.
+element reports through its own boundary, which this gate does not run in, so
+every cause is reported there even when the condition report is suppressed.
+Neither channel is a complete record of every blank, though — a document can
+reach a blank state without re-raising at all — so a host that must detect
+emptiness itself should check the rendered tree rather than rely on these
+callbacks alone.
 
 Pass `loading` or `renderError` to replace either surface.
 

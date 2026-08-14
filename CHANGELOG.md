@@ -4,6 +4,16 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Report a blank document again when its cause changes but its element tags do
+  not. The blank-root report is deduplicated on the identity of the blank
+  condition; that identity previously carried the set of element tags in the
+  live root subtree but not the vocabulary issues behind them, so a component
+  going blank on a different required attribute — the same tag failing for a
+  new reason — was silent. The identity now carries both, and the guard
+  remembers the eight most recently reported conditions rather than only the
+  last, so a document alternating between a few unrenderable shapes reports
+  each shape once instead of once per transition.
+
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
   component registry as `formSemantics`; no resolver, the old resolver-free
