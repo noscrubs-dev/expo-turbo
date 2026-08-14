@@ -19,6 +19,12 @@ export interface ExpoTurboErrorContext {
   readonly capabilityHash?: string
   readonly contentType?: string
   readonly documentId?: string
+  /**
+   * Absolute URL of the document the failure happened in. Present where the
+   * failure is a property of the document rather than of one request, which is
+   * the case a host cannot otherwise map back to a screen.
+   */
+  readonly documentUrl?: string
   readonly frameId?: string
   readonly location?: Readonly<{ column?: number; line?: number; offset?: number }>
   readonly method?: string

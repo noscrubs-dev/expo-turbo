@@ -154,6 +154,7 @@ import {
   type ProtocolParentNode,
   renderedTextValue,
 } from "../core/tree.js"
+import { EXPO_TURBO_RUNTIME_VERSION } from "../core/versions.js"
 import { classifyTopLevelLocation } from "../core/visitability.js"
 import type {
   ComponentActionExecutor,
@@ -205,9 +206,72 @@ export type ExpoTurboUnknownVocabularyHandler = (
   event: ExpoTurboUnknownVocabularyEvent,
 ) => void | Promise<void>
 
+/**
+ * What the failure cost, stated by the party that knows: the renderer. It is a
+ * description, not an instruction — but it is the one input a host boundary
+ * needs to decide whether to replace the mounted document, and without it every
+ * host has to guess. `ExpoTurbo` escalates `document` and only `document`.
+ *
+ * - `speculative` — work that existed only to be discarded. A press-in prefetch
+ *   or an automatic preload failing costs nothing the user asked for; the
+ *   navigation it was preparing has not started and still works without it.
+ * - `background` — an accessory to a render that already succeeded: an
+ *   accessibility announcement, autofocus, or a scroll adapter. The document is
+ *   on screen and correct; only the accessory failed.
+ * - `document` — the mounted document, or the navigation the user asked for,
+ *   failed. This is the only severity where replacing what is on screen can be
+ *   the right answer.
+ */
+export type ExpoTurboRenderErrorSeverity = "background" | "document" | "speculative"
+
+/**
+ * A blank document is a state with a duration, not a repeating event. Every
+ * report while one lasts carries this, so a single surviving report states how
+ * long the document has been blank and how many reports preceded it — which is
+ * what separates "blank for 50 ms until the next Stream fixed it" from "blank
+ * until the user force-quit the app".
+ *
+ * Reports are per waking revision and are deliberately not deduplicated; see
+ * issue 433 for why no identity is constructible here. `attempt` is what a host
+ * wanting edge-only telemetry filters on.
+ */
+export interface ExpoTurboDocumentBlankInterval {
+  /** 1-based ordinal of this report inside the interval. */
+  readonly attempt: number
+  /** Document URL when the interval opened. */
+  readonly documentUrl: string
+  /** Root document node key, the same key the matching `onError` carries. */
+  readonly nodeKey: string
+  /** Installed Expo Turbo runtime version — the app-build half of the question. */
+  readonly runtimeVersion: string
+  /** `Date.now()` when the interval opened. */
+  readonly since: number
+}
+
+/**
+ * The falling edge of a blank document. `until - since` is how long the
+ * document was blank.
+ *
+ * The interval is the guard's own state: it opens when the blank-root guard
+ * raises and closes when the next commit produces output. A subtree that
+ * suspends registers neither output nor a drop, so the guard stands down and
+ * this fires; if it raises again afterwards that is a new interval. Reporting
+ * the guard's state rather than a wider notion of emptiness is deliberate,
+ * because the guard's state is exactly what decides whether a surface is up.
+ */
+export interface ExpoTurboDocumentBlankRecovery extends ExpoTurboDocumentBlankInterval {
+  /** `Date.now()` when the document produced output again. */
+  readonly until: number
+}
+
+export type ExpoTurboDocumentBlankRecoveryHandler = (event: ExpoTurboDocumentBlankRecovery) => void
+
 export interface ExpoTurboRenderError {
+  /** Present only on the blank-root guard's reports. */
+  readonly blank?: ExpoTurboDocumentBlankInterval
   readonly error: Error
   readonly nodeKey: string
+  readonly severity: ExpoTurboRenderErrorSeverity
 }
 
 export interface ExpoTurboFrameAccessibilityState {
@@ -321,6 +385,7 @@ interface RendererContextValue {
   readonly formLinks: FormLinkSubmissionController | undefined
   readonly frames: FrameControllerCollection | undefined
   readonly forms: DocumentFormControls | undefined
+  readonly onDocumentBlankRecovery: ExpoTurboDocumentBlankRecoveryHandler | undefined
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
   readonly onUnknownVocabulary: ExpoTurboUnknownVocabularyHandler | undefined
   readonly registry: RenderRegistry
@@ -699,6 +764,16 @@ export interface ExpoTurboProviderProps {
   readonly frames?: FrameControllerCollection
   readonly forms?: DocumentFormControls
   readonly navigation?: NavigationAdapter
+  /**
+   * The falling edge of a blank document. `onError` reports each waking
+   * revision while one lasts; this fires once, when it ends.
+   *
+   * Without it "blank for 50 ms" and "blank until the user force-quit" are the
+   * same signal. It fires only while this provider stays mounted: a host whose
+   * boundary unmounts the provider on the first report has ended the document,
+   * not recovered it, and gets no event.
+   */
+  readonly onDocumentBlankRecovery?: ExpoTurboDocumentBlankRecoveryHandler
   readonly onError?: (event: ExpoTurboRenderError) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   /**
@@ -806,6 +881,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       formLinks: props.formLinks,
       frames: props.frames,
       forms: props.forms,
+      onDocumentBlankRecovery: props.onDocumentBlankRecovery,
       onError: props.onError,
       onUnknownVocabulary: props.onUnknownVocabulary,
       registry: props.registry,
@@ -838,6 +914,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.formLinks,
       props.frames,
       props.forms,
+      props.onDocumentBlankRecovery,
       props.onError,
       props.onUnknownVocabulary,
       props.registry,
@@ -1378,7 +1455,7 @@ function reportFormAnnouncementError(
     return
   }
   try {
-    onError({ error, nodeKey })
+    onError({ error, nodeKey, severity: "background" })
   } catch (reporterError) {
     queueMicrotask(() => {
       throw new AggregateError(
@@ -1403,7 +1480,7 @@ function reportDocumentVisitAnnouncementError(
     return
   }
   try {
-    onError({ error, nodeKey })
+    onError({ error, nodeKey, severity: "background" })
   } catch (reporterError) {
     queueMicrotask(() => {
       throw new AggregateError(
@@ -1869,6 +1946,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
           observer({
             error: new StateError("Automatic document preload policy check failed"),
             nodeKey: linkNodeKey,
+            severity: "speculative",
           })
         } catch {
           queueMicrotask(() => {
@@ -1901,6 +1979,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
                 ? error
                 : new RequestError("Automatic document preload failed"),
             nodeKey: linkNodeKey,
+            severity: "speculative",
           })
         } catch {
           queueMicrotask(() => {
@@ -1986,6 +2065,7 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
                 ? error
                 : new RequestError("Automatic Frame preload failed"),
             nodeKey: linkNodeKey,
+            severity: "speculative",
           })
         } catch {
           queueMicrotask(() => {
@@ -2362,6 +2442,7 @@ function reportDocumentLinkPrefetchError(
           ? error
           : new RequestError("Document link press-in prefetch failed"),
       nodeKey,
+      severity: "speculative",
     })
   } catch {
     queueMicrotask(() => {
@@ -2501,6 +2582,7 @@ export function useExpoTurboDocumentLinkPrefetch(href: string): ExpoTurboDocumen
         observer({
           error: new StateError("Document link prefetch policy check failed"),
           nodeKey,
+          severity: "speculative",
         })
       } catch {
         queueMicrotask(() => {
@@ -2789,7 +2871,13 @@ const unknownVocabularyStructuralMetadata = new WeakMap<
 
 class UnknownVocabularyStructuralError extends StateError {
   constructor(metadata: UnknownVocabularyStructuralMetadata) {
+    // The message is fixed on purpose — trackers group on it. What was missing
+    // is which screen and which app build, and both belong on the payload the
+    // host already keeps: a bare error forwarded by a zero-configuration host
+    // carries its own context even where the event around it is dropped.
     super("Expo Turbo document root has no renderable fallback", {
+      documentUrl: metadata.session.tree.document.url ?? "about:blank",
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
       target: metadata.root.key,
     })
     unknownVocabularyStructuralMetadata.set(this, metadata)
@@ -2800,6 +2888,13 @@ interface ErrorBoundaryProps {
   readonly children?: ReactNode
   readonly nodeKey: string
   readonly onError: ((event: ExpoTurboRenderError) => void) | undefined
+  /**
+   * Supplied by the one call site that has decided this commit is blank, and
+   * only for that commit. The boundary never asks what the error is: when the
+   * guard is in place it is the only thing that can throw below this boundary,
+   * so the position decides, exactly as it does for output accounting.
+   */
+  readonly recordBlankInterval?: () => ExpoTurboDocumentBlankInterval
   readonly renderError: ((event: ExpoTurboRenderError) => ReactNode) | undefined
   readonly resetIdentity?: unknown
   readonly revision: number | string
@@ -2892,7 +2987,13 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
         )
       }
     }
-    this.props.onError?.({ error, nodeKey: this.props.nodeKey })
+    const blank = this.props.recordBlankInterval?.()
+    this.props.onError?.({
+      ...(blank ? { blank } : {}),
+      error,
+      nodeKey: this.props.nodeKey,
+      severity: "document",
+    })
   }
 
   render(): ReactNode {
@@ -2902,8 +3003,15 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     if (vocabularyRenderMetadata.get(this.state.error)?.tolerated) {
       return createElement(DocumentOutputMarker, { kind: "drop" })
     }
+    // Always `document`: this branch is reached only for an error that raises a
+    // surface. The blank interval is deliberately absent — it is a count, and
+    // counting during render would count abandoned renders too.
     const rendered =
-      this.props.renderError?.({ error: this.state.error, nodeKey: this.props.nodeKey }) ?? null
+      this.props.renderError?.({
+        error: this.state.error,
+        nodeKey: this.props.nodeKey,
+        severity: "document",
+      }) ?? null
     // A node-level error surface is real output: a document showing one is not
     // blank, and replacing it with the blank-root surface would hide the error
     // the host is already reporting.
@@ -3434,7 +3542,7 @@ function applyAutofocus(
     const reported = error instanceof Error ? error : new StateError(`${scope} autofocus failed`)
     if (!onError) throw reported
     try {
-      onError({ error: reported, nodeKey })
+      onError({ error: reported, nodeKey, severity: "background" })
     } catch {
       const reportingError = new StateError(
         `${scope} autofocus error reporting failed`,
@@ -3471,7 +3579,7 @@ function applyStandaloneStreamAutofocus(
     const reported = error instanceof Error ? error : new StateError("Stream autofocus failed")
     if (!onError) throw reported
     try {
-      onError({ error: reported, nodeKey })
+      onError({ error: reported, nodeKey, severity: "background" })
     } catch {
       const reportingError = new StateError("Stream autofocus error reporting failed")
       alreadyReportedRenderErrors.add(reportingError)
@@ -3514,7 +3622,7 @@ function applyDocumentRefreshScroll(
       error instanceof Error ? error : new StateError("Document refresh scroll reset failed")
     if (!onError) throw reported
     try {
-      onError({ error: reported, nodeKey })
+      onError({ error: reported, nodeKey, severity: "background" })
     } catch {
       const reportingError = new StateError("Document refresh scroll error reporting failed")
       alreadyReportedRenderErrors.add(reportingError)
@@ -3558,7 +3666,7 @@ function applyDocumentHistoryScroll(
       error instanceof Error ? error : new StateError("Document history scroll restoration failed")
     if (!onError) throw reported
     try {
-      onError({ error: reported, nodeKey })
+      onError({ error: reported, nodeKey, severity: "background" })
     } catch {
       const reportingError = new StateError("Document history scroll error reporting failed")
       alreadyReportedRenderErrors.add(reportingError)
@@ -3609,7 +3717,7 @@ function applyFrameAutoscroll(
     const reported = error instanceof Error ? error : new StateError("Frame autoscroll failed")
     if (!onError) throw reported
     try {
-      onError({ error: reported, nodeKey })
+      onError({ error: reported, nodeKey, severity: "background" })
     } catch {
       const reportingError = new StateError("Frame autoscroll error reporting failed", {
         frameId: intent.frameId,
@@ -3658,7 +3766,10 @@ function ConnectedFrame(props: ConnectedFrameProps): ReactNode {
   useEffect(
     () =>
       controller.subscribeErrors((error) => {
-        props.onError?.({ error, nodeKey: props.node.key })
+        // A Frame that fails to load is navigation the user asked for failing,
+        // not an accessory to a render that succeeded. `document` keeps today's
+        // host behavior exactly.
+        props.onError?.({ error, nodeKey: props.node.key, severity: "document" })
       }),
     [controller, props.node.key, props.onError],
   )
@@ -3786,7 +3897,7 @@ function reportRetainedMorphFocusError(
     error instanceof Error ? error : new StateError("Retained morph focus restoration failed")
   if (!onError) throw reported
   try {
-    onError({ error: reported, nodeKey })
+    onError({ error: reported, nodeKey, severity: "background" })
   } catch {
     const reportingError = new StateError("Retained morph focus error reporting failed")
     alreadyReportedRenderErrors.add(reportingError)
@@ -4030,7 +4141,9 @@ function ConnectedDocument(props: ConnectedDocumentProps): ReactNode {
   useEffect(
     () =>
       props.controller.subscribeErrors((error) => {
-        props.onError?.({ error, nodeKey: props.nodeKey })
+        // A failed visit is the navigation the user asked for failing.
+        // `document` keeps today's host behavior exactly.
+        props.onError?.({ error, nodeKey: props.nodeKey, severity: "document" })
       }),
     [props.controller, props.nodeKey, props.onError],
   )
@@ -4210,6 +4323,38 @@ interface DocumentBlankVerdict {
   readonly revision: number
 }
 
+/** The open interval, mutated in place so no render is scheduled from it. */
+interface OpenDocumentBlankInterval {
+  attempt: number
+  readonly documentUrl: string
+  readonly nodeKey: string
+  readonly since: number
+}
+
+function reportDocumentBlankRecovery(
+  handler: ExpoTurboDocumentBlankRecoveryHandler | undefined,
+  interval: OpenDocumentBlankInterval,
+  until: number,
+): void {
+  if (!handler) return
+  try {
+    handler(
+      Object.freeze({
+        attempt: interval.attempt,
+        documentUrl: interval.documentUrl,
+        nodeKey: interval.nodeKey,
+        runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+        since: interval.since,
+        until,
+      }),
+    )
+  } catch {
+    queueMicrotask(() => {
+      throw new StateError("Document blank recovery reporting failed")
+    })
+  }
+}
+
 const EMPTY_DOCUMENT_CHILDREN: readonly ProtocolNode[] = Object.freeze([])
 
 /**
@@ -4283,6 +4428,39 @@ export function ExpoTurboRoot(): ReactNode {
     verdict.revision === revision
       ? verdict
       : undefined
+  const blank = blankByTree || settled !== undefined
+  const documentUrl = session.tree.document.url ?? "about:blank"
+  const documentKey = session.tree.document.key
+  // The interval belongs here rather than to the boundary that raises the
+  // guard, for two reasons this codebase has already paid for. A component the
+  // guard unmounts can never signal its own recovery, and this component is
+  // above the boundary the guard replaces, so it survives the whole interval.
+  // And a ref rather than state means the falling edge schedules no render, so
+  // the guard cannot observe an effect of its own reporting.
+  const openBlankInterval = useRef<OpenDocumentBlankInterval | undefined>(undefined)
+  // Read at record time so the interval is stamped with the document that was
+  // on screen when it opened, and keeps that identity if a later commit is
+  // blank too. A recovery ends the interval; nothing else re-stamps it.
+  const blankDocument = useRef({ documentUrl, nodeKey: documentKey })
+  blankDocument.current = { documentUrl, nodeKey: documentKey }
+  const recordBlankInterval = useCallback((): ExpoTurboDocumentBlankInterval => {
+    const open = openBlankInterval.current ?? {
+      attempt: 0,
+      documentUrl: blankDocument.current.documentUrl,
+      nodeKey: blankDocument.current.nodeKey,
+      since: Date.now(),
+    }
+    open.attempt += 1
+    openBlankInterval.current = open
+    return Object.freeze({
+      attempt: open.attempt,
+      documentUrl: open.documentUrl,
+      nodeKey: open.nodeKey,
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+      since: open.since,
+    })
+  }, [])
+  const onDocumentBlankRecovery = context.onDocumentBlankRecovery
   // Runs after every descendant effect in the commit, so it reads what this
   // commit produced rather than predicting it. The verdict is sticky for its
   // token: once the guard is up the subtree is gone and would observe as empty
@@ -4290,6 +4468,16 @@ export function ExpoTurboRoot(): ReactNode {
   // stale retry costs one render and cannot produce a wrong verdict, because
   // the commit it retries into is observed too.
   useLayoutEffect(() => {
+    // The render-time verdict alone is not the blank state: a retry renders
+    // with `blank` false so the subtree can be observed again, and that commit
+    // is still blank if everything in it dropped. Reading both is what keeps a
+    // retry from being reported as a recovery.
+    const stillBlank = blank || documentOutputIsBlank(outputLedger)
+    const open = openBlankInterval.current
+    if (open && !stillBlank) {
+      openBlankInterval.current = undefined
+      reportDocumentBlankRecovery(onDocumentBlankRecovery, open, Date.now())
+    }
     // Sticky for its token: once the guard is up the subtree is unmounted and
     // would observe as empty forever, so only a new revision, generation or
     // registry retries it. Nothing is stored for a healthy document, so the
@@ -4316,7 +4504,6 @@ export function ExpoTurboRoot(): ReactNode {
         children,
       )
     : children
-  const blank = blankByTree || settled !== undefined
   const guardedRendered = !blank
     ? rendered
     : createElement(
@@ -4354,6 +4541,11 @@ export function ExpoTurboRoot(): ReactNode {
           {
             nodeKey: root.node.key,
             onError: context.onError,
+            // Only while the guard is in place, which is the same positional
+            // decision that keeps the guard's own surface out of the output
+            // ledger: with the guard rendered, it is the only thing below this
+            // boundary that can throw.
+            ...(blank ? { recordBlankInterval } : {}),
             renderError: context.renderError,
             resetIdentity: context.registry,
             // The blank verdict participates in the reset key so restoring

@@ -23,10 +23,13 @@ import type {
 } from "../adapters/index.js"
 import type { StyleAdapter } from "../adapters/styles.js"
 import {
+  type ExpoTurboDocumentBlankInterval,
   type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFormBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
   ExpoTurboProvider,
+  type ExpoTurboRenderError,
+  type ExpoTurboRenderErrorSeverity,
   ExpoTurboRoot,
   type ExpoTurboUnknownVocabularyHandler,
 } from "./renderer.js"
@@ -78,11 +81,44 @@ export interface ExpoTurboBoundaries {
   readonly frame?: ComponentType<ExpoTurboFrameBoundaryProps>
 }
 
+/**
+ * Everything about a failure that is not the `Error` itself.
+ *
+ * It arrives as a second argument so that a host written against
+ * `(error) => void` keeps compiling and keeps working. Before this, the whole
+ * event was dropped on the way to the host: a zero-configuration adopter's
+ * error tracker received a fixed string and nothing else.
+ */
+export interface ExpoTurboErrorReport {
+  /** Present only on the blank-root guard's reports. */
+  readonly blank?: ExpoTurboDocumentBlankInterval
+  /** Absent for failures that belong to no protocol node, such as configuration. */
+  readonly nodeKey?: string
+  readonly severity: ExpoTurboRenderErrorSeverity
+}
+
+const BACKGROUND_REPORT: ExpoTurboErrorReport = Object.freeze({ severity: "background" })
+const DOCUMENT_REPORT: ExpoTurboErrorReport = Object.freeze({ severity: "document" })
+
+function errorReport(event: ExpoTurboRenderError): ExpoTurboErrorReport {
+  return Object.freeze({
+    ...(event.blank ? { blank: event.blank } : {}),
+    nodeKey: event.nodeKey,
+    severity: event.severity,
+  })
+}
+
 export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
   readonly adapters?: ExpoTurboRenderAdapters
   readonly boundaries?: ExpoTurboBoundaries
   readonly loading?: ReactNode
-  readonly onError?: (error: Error) => void
+  /**
+   * Receives every failure the renderer reports, whether or not it replaces the
+   * document. `report.severity` says which: only `document` raises
+   * `renderError`, so a failed press-in prefetch or a failed accessibility
+   * announcement is observable here and invisible on screen.
+   */
+  readonly onError?: (error: Error, report: ExpoTurboErrorReport) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   /**
    * Required. A host-neutral component has no primitives to draw with, so it
@@ -150,7 +186,13 @@ export function ExpoTurbo({
     (event) => onUnknownVocabularyRef.current?.(event),
     [],
   )
-  const forwardBackgroundError = useCallback((error: Error) => onErrorRef.current?.(error), [])
+  // Cable subscription and dispatch, and document refresh. The runtime factory
+  // already treats these as reportable rather than fatal, so they carry the
+  // severity that says so.
+  const forwardBackgroundError = useCallback(
+    (error: Error) => onErrorRef.current?.(error, BACKGROUND_REPORT),
+    [],
+  )
   const hasOnError = onError !== undefined
   const [status, setStatus] = useState<
     | Readonly<{ state: "loading" }>
@@ -171,7 +213,7 @@ export function ExpoTurbo({
   const fail = useCallback((reason: unknown) => {
     const error =
       reason instanceof Error ? reason : new Error("Expo Turbo document could not be loaded")
-    onErrorRef.current?.(error)
+    onErrorRef.current?.(error, DOCUMENT_REPORT)
     setStatus({ error, state: "error" })
   }, [])
 
@@ -308,10 +350,16 @@ export function ExpoTurbo({
       // that never receives it here fails every external-scheme, cross-origin,
       // and unvisitable link with a TargetError.
       ...(navigation ? { navigation } : {}),
-      onError: ({ error }) => {
+      // Issue #435: this is the first consumer forced to decide "is this
+      // fatal?". It used to have nothing to decide with, so it escalated
+      // everything — including speculative and background failures, which
+      // replaced a healthy screen the user was looking at and, with the
+      // provider, released every live Cable stream-source subscription.
+      onError: (event) => {
         if (currentRuntimeRef.current !== runtime) return
-        onErrorRef.current?.(error)
-        setStatus({ error, state: "error" })
+        onErrorRef.current?.(event.error, errorReport(event))
+        if (event.severity !== "document") return
+        setStatus({ error: event.error, state: "error" })
       },
       onUnknownVocabulary: forwardUnknownVocabulary,
       // The runtime created scopes and state and disposes them in its own

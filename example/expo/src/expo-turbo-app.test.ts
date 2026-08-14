@@ -7,10 +7,12 @@ import {
   DocumentStateScopes,
   DocumentStateStore,
   EXPO_TURBO_MIME_TYPE,
+  EXPO_TURBO_RUNTIME_VERSION,
+  type ExpoTurboError,
   type FormLinkSubmissionController,
   TargetError,
 } from "expo-turbo/core"
-import type { ExpoTurboDocumentBoundaryProps } from "expo-turbo/react"
+import type { ExpoTurboDocumentBoundaryProps, ExpoTurboErrorReport } from "expo-turbo/react"
 import {
   createExpoTurboRuntime,
   ExpoTurboProvider,
@@ -47,6 +49,8 @@ const announcements: string[] = []
 let routerPath = "/catalog/shoes"
 /** Set to override what `useUnstableGlobalHref` reports; defaults to routerPath. */
 let routerHref: string | undefined
+/** Set to make the packaged accessibility adapter fail, then clear it. */
+let announceFailure: Error | undefined
 
 mock.module("expo-router", () => ({
   usePathname: () => routerPath,
@@ -63,6 +67,7 @@ mock.module("react-native", () => ({
   AccessibilityInfo: {
     announceForAccessibility: (message: string) => {
       announcements.push(message)
+      if (announceFailure) throw announceFailure
     },
   },
   ActivityIndicator: (props: Readonly<Record<string, unknown>>) =>
@@ -1205,5 +1210,196 @@ describe("ExpoTurboApp generated form links", () => {
     expect(hostDisposals).toBe(0)
     expect(runtime.formLinks.isDisposed).toBe(true)
     expect(runtime.formLinks).not.toBe(hostFormLinks)
+  })
+})
+
+describe("ExpoTurboApp failure severity", () => {
+  const LINKED_XML = '<AppDoc><AppDocLink href="/catalog/boots" /></AppDoc>'
+
+  /** Per-subscription state, because a document swap legitimately retires one. */
+  function trackingCable() {
+    const subscriptions: { identifier: string; live: boolean }[] = []
+    return {
+      adapter: {
+        subscribe(identifier: string) {
+          const record = { identifier, live: true }
+          subscriptions.push(record)
+          return {
+            unsubscribe() {
+              record.live = false
+            },
+          }
+        },
+      },
+      get live() {
+        return subscriptions.filter((entry) => entry.live).length
+      },
+      subscriptions,
+    }
+  }
+
+  /**
+   * Drives a real navigation whose accessibility announcement fails. The visit
+   * itself succeeds: the failure is an accessory to a render that worked, which
+   * is exactly the case issue #435 says must not replace the screen.
+   */
+  async function navigateWithFailingAnnouncement(
+    adapters: Record<string, unknown>,
+    reported: [Error, ExpoTurboErrorReport][],
+  ) {
+    routerPath = "/catalog"
+    announcements.length = 0
+    activations.clear()
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters,
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeUndefined()
+    const activate = activations.get("/catalog/boots")
+    if (!activate) throw new Error("the fixture link never mounted")
+    announceFailure = new Error("private announcement failure")
+    let result: unknown
+    await act(async () => {
+      result = await activate()
+    })
+    await act(async () => {
+      await nextTurn()
+    })
+    announceFailure = undefined
+    return { renderer, result }
+  }
+
+  test("reports a failed announcement without replacing the healthy document", async () => {
+    // Reverted, this navigation succeeds and the app shows "Something went
+    // wrong" anyway, because every renderer error was escalated to fatal.
+    const transport = stubTransport(LINKED_XML)
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const { renderer, result } = await navigateWithFailingAnnouncement(
+      { fetch: transport.fetch },
+      reported,
+    )
+
+    // The navigation the user asked for completed, and the adapter really was
+    // called and really threw. Without these three the assertions below would
+    // hold on a fixture where nothing happened at all.
+    expect(result).toMatchObject({ status: "committed" })
+    expect(transport.urls).toContain(`${ORIGIN}/catalog/boots`)
+    expect(announcements.length).toBeGreaterThan(0)
+    expect(reported.length).toBeGreaterThan(0)
+    expect(reported[0]?.[0].message).toBe("private announcement failure")
+
+    // Reported as background, and the document is still on screen.
+    expect(new Set(reported.map(([, report]) => report.severity))).toEqual(new Set(["background"]))
+    expect(reported[0]?.[1].nodeKey).toBeDefined()
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeUndefined()
+    expect(JSON.stringify(renderer.toJSON())).toContain("doc")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("keeps a live Cable subscription when a background failure is reported", async () => {
+    // The severest part of #435: escalating a background failure unmounts the
+    // provider, and that unmount releases every Stream-source subscription.
+    // Reverted, `live` is 0 here and the screen is the error card.
+    const cable = trackingCable()
+    const transport = stubTransport(
+      '<AppDoc><turbo-cable-stream-source channel="ClientChannel" signed-stream-name="cart" /><AppDocLink href="/catalog/boots" /></AppDoc>',
+    )
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const { renderer } = await navigateWithFailingAnnouncement(
+      { cable: cable.adapter, fetch: transport.fetch },
+      reported,
+    )
+
+    // The transport really served a Stream source, and the failure really
+    // happened: neither half of the claim below rests on nothing.
+    expect(cable.subscriptions.length).toBeGreaterThan(0)
+    expect(cable.subscriptions[0]?.identifier).toContain("ClientChannel")
+    expect(reported.length).toBeGreaterThan(0)
+    expect(reported[0]?.[1].severity).toBe("background")
+    // A subscription is still live and the document is still on screen.
+    expect(cable.live).toBeGreaterThan(0)
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeUndefined()
+
+    await act(async () => {
+      renderer.unmount()
+      await nextTurn()
+    })
+    // Unmounting the host still releases them, so `live` above is not a
+    // subscription the runtime simply never lets go of.
+    expect(cable.live).toBe(0)
+  })
+
+  test("still replaces the document when the document itself fails", async () => {
+    // The control for the two tests above: without it they would both pass on a
+    // host that had simply stopped escalating everything.
+    routerPath = "/catalog"
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: {
+          fetch: {
+            fetch: async () => {
+              throw new TargetError("private transport failure")
+            },
+          },
+        },
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.[1].severity).toBe("document")
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeDefined()
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("hands the adopter the node key, the severity and the blank interval", async () => {
+    // Issue #436, item 5. Reverted, this handler is called with one argument
+    // and the tracker receives a fixed string and nothing else.
+    routerPath = "/catalog"
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: stubTransport("<FutureRoot><FutureThing /></FutureRoot>").fetch },
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    // The document really did go blank, which the surface proves.
+    expect(findByTestID(renderer.toJSON(), "expo-turbo-error")).toBeDefined()
+    expect(reported).toHaveLength(1)
+    const [error, report] = reported[0] ?? []
+    expect(error?.message).toBe("Expo Turbo document root has no renderable fallback")
+    expect(report?.severity).toBe("document")
+    expect(report?.nodeKey).toBeDefined()
+    expect(report?.blank).toMatchObject({
+      attempt: 1,
+      documentUrl: `${ORIGIN}/catalog`,
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+    })
+    // The same two facts ride on the bare error, for a host that forwards only
+    // the first argument.
+    expect((error as ExpoTurboError | undefined)?.context).toMatchObject({
+      documentUrl: `${ORIGIN}/catalog`,
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+    })
+
+    await act(async () => {
+      renderer.unmount()
+    })
   })
 })

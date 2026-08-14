@@ -28,6 +28,7 @@ import { useExpoRouterAdapters, useExpoRouterDocumentPath } from "../expo-router
 import {
   ExpoTurbo,
   type ExpoTurboBoundaries,
+  type ExpoTurboErrorReport,
   type ExpoTurboRenderAdapters,
   type ExpoTurboUnknownVocabularyHandler,
 } from "../react/index.js"
@@ -97,7 +98,13 @@ export interface ExpoTurboAppProps {
   readonly boundaries?: ExpoTurboBoundaries
   /** Replaces the packaged spinner. */
   readonly loading?: ReactNode
-  readonly onError?: (error: Error) => void
+  /**
+   * Receives every failure Expo Turbo reports, with a second argument saying
+   * what it cost. Only `report.severity === "document"` raises the error
+   * surface; a failed prefetch or accessibility announcement is reported here
+   * and left invisible on screen.
+   */
+  readonly onError?: (error: Error, report: ExpoTurboErrorReport) => void
   readonly onUnknownVocabulary?: ExpoTurboUnknownVocabularyHandler
   /** Absolute origin of the Rails application, such as `https://example.com`. */
   readonly origin: string
@@ -117,6 +124,8 @@ const DEFAULT_FETCH: FetchAdapter = createDefaultFetchAdapter()
 const DEFAULT_LOADING: ReactNode = createElement(ExpoTurboLoadingSurface)
 /** A configuration failure has nothing to retry; the host must change the code. */
 const NO_RETRY = () => undefined
+/** A configuration failure belongs to no protocol node and is always fatal. */
+const CONFIGURATION_REPORT: ExpoTurboErrorReport = Object.freeze({ severity: "document" })
 
 const DOCUMENT_ANNOUNCEMENTS: Readonly<Record<string, string>> = Object.freeze({
   canceled: "Navigation canceled",
@@ -344,7 +353,7 @@ export function ExpoTurboApp({
   }, [fetchAdapter, target])
 
   useEffect(() => {
-    if ("error" in resolved) onErrorRef.current?.(resolved.error)
+    if ("error" in resolved) onErrorRef.current?.(resolved.error, CONFIGURATION_REPORT)
   }, [resolved])
 
   if ("error" in resolved) return surface(resolved.error, NO_RETRY)

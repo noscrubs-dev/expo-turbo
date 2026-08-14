@@ -56,6 +56,7 @@ import {
   type DocumentVisitControllerOptions,
   DocumentVisitLifecycle,
   EXPO_TURBO_MIME_TYPE,
+  EXPO_TURBO_RUNTIME_VERSION,
   FormLinkSubmissionController,
   FormSubmissionController,
   type FormRequestPlan,
@@ -96,6 +97,7 @@ import {
 } from "expo-turbo/registry"
 import {
   createComponentStyleHook,
+  type ExpoTurboDocumentBlankRecovery,
   type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboDocumentLinkPrefetch,
   type ExpoTurboFormBinding,
@@ -219,6 +221,7 @@ function render(
     frames?: FrameControllerCollection
     forms?: ExpoTurboProviderProps["forms"]
     navigation?: NavigationAdapter
+    onDocumentBlankRecovery?: ExpoTurboProviderProps["onDocumentBlankRecovery"]
     onError?: (event: ExpoTurboRenderError) => void
     onUnknownVocabulary?: ExpoTurboProviderProps["onUnknownVocabulary"]
     renderError?: (event: ExpoTurboRenderError) => ReactNode
@@ -7213,6 +7216,90 @@ describe("React protocol renderer", () => {
     expect(errors.map((event) => event.error.message)).toEqual([
       "Document link press-in prefetch failed",
       "Document link press-in prefetch failed",
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
+  test("marks a failed press-in prefetch speculative while the document stays mounted", async () => {
+    // Issue #435. Reverted, `severity` is absent and the only thing a host
+    // boundary can read from this event is that something failed, which is what
+    // made a discardable request replace a healthy screen.
+    const preloaded: string[] = []
+    const errors: ExpoTurboRenderError[] = []
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async () => {
+        throw new Error("document activation must not run")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentPreloader: {
+          preload(source: string) {
+            preloaded.push(source)
+            return Promise.reject(new RequestError("prefetch transport failed"))
+          },
+        },
+        onError: (event) => errors.push(event),
+      }),
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    // The request genuinely went out and genuinely failed: without both halves
+    // this test would pass on a fixture where no prefetch ever started.
+    expect(preloaded).toEqual(["https://example.test/next"])
+    expect(errors.map((event) => event.error.message)).toEqual(["prefetch transport failed"])
+    expect(errors.map((event) => event.severity)).toEqual(["speculative"])
+    // And the link the user pressed is still on screen.
+    expect(harness.renderer.root.findAll((node) => String(node.type) === "link")).toHaveLength(1)
+    act(() => harness.renderer.unmount())
+  })
+
+  test("marks a failed prefetch policy check speculative", async () => {
+    // Reverted, this event is indistinguishable from a document failure.
+    const errors: ExpoTurboRenderError[] = []
+    let asked = 0
+    const harness = renderDocumentLinks(
+      '<Gallery><DocumentLink href="/next" /></Gallery>',
+      async () => {
+        throw new Error("document activation must not run")
+      },
+      "https://example.test/gallery",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => ({
+        documentPrefetchPolicy: {
+          canPrefetch: () => {
+            asked += 1
+            return undefined as unknown as boolean
+          },
+        },
+        documentPreloader: {
+          preload: () => {
+            throw new Error("a refused prefetch must not reach the preloader")
+          },
+        },
+        onError: (event) => errors.push(event),
+      }),
+    )
+
+    act(() => harness.prefetch("/next"))
+    await act(async () => {
+      await nextTurn()
+    })
+
+    expect(asked).toBe(1)
+    expect(errors.map((event) => [event.error.message, event.severity])).toEqual([
+      ["Document link prefetch policy check failed", "speculative"],
     ])
     act(() => harness.renderer.unmount())
   })
@@ -14418,17 +14505,20 @@ describe("React protocol renderer", () => {
     // nothing is subscribed to once the guard has replaced the subtree. Only a
     // root-targeted Stream used to reach the boundary holding the surface.
     const errors: ExpoTurboRenderError[] = []
+    const recoveries: ExpoTurboDocumentBlankRecovery[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<Unknown id="shell"><Unknown id="inner"><!-- empty --></Unknown></Unknown>',
       ),
     )
     const renderer = render(session, registryWithCounters(), {
+      onDocumentBlankRecovery: (event) => recoveries.push(event),
       onError: (event) => errors.push(event),
       renderError: () => createElement("protocol-error"),
     })
 
     expect(errors).toHaveLength(1)
+    expect(recoveries).toHaveLength(0)
     // Nothing else is rendering: the surface is the whole document, so the
     // assertions below cannot be satisfied by a sibling that kept the tree
     // non-empty.
@@ -14444,21 +14534,31 @@ describe("React protocol renderer", () => {
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
     expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
     expect(errors).toHaveLength(1)
+    // The recovery this test already proved is now also reported, and it names
+    // the interval the single `onError` above opened.
+    expect(recoveries).toHaveLength(1)
+    expect(recoveries[0]?.attempt).toBe(1)
+    // `-1` can never equal a real timestamp, so a missing rising edge fails here.
+    expect(recoveries[0]?.since).toBe(errors[0]?.blank?.since ?? -1)
+    expect(recoveries[0]?.until).toBeGreaterThanOrEqual(recoveries[0]?.since ?? 0)
   })
 
   test("clears the blank-root error once a Stream restores content three levels down", async () => {
     const errors: ExpoTurboRenderError[] = []
+    const recoveries: ExpoTurboDocumentBlankRecovery[] = []
     const session = new DocumentSession(
       parseExpoTurboDocument(
         '<Unknown id="shell"><Unknown id="mid"><Unknown id="deep"><!-- empty --></Unknown></Unknown></Unknown>',
       ),
     )
     const renderer = render(session, registryWithCounters(), {
+      onDocumentBlankRecovery: (event) => recoveries.push(event),
       onError: (event) => errors.push(event),
       renderError: () => createElement("protocol-error"),
     })
 
     expect(errors).toHaveLength(1)
+    expect(recoveries).toHaveLength(0)
     expect(renderer.toJSON()).toEqual({ type: "protocol-error", props: {}, children: null })
 
     await act(async () => {
@@ -14471,6 +14571,9 @@ describe("React protocol renderer", () => {
     expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
     expect(JSON.stringify(renderer.toJSON())).toContain("Deep recovery")
     expect(errors).toHaveLength(1)
+    expect(recoveries).toHaveLength(1)
+    // `-1` can never equal a real timestamp, so a missing rising edge fails here.
+    expect(recoveries[0]?.since).toBe(errors[0]?.blank?.since ?? -1)
   })
 
   test("keeps the blank-root error when a nested mutation restores nothing renderable", async () => {
@@ -15074,6 +15177,92 @@ describe("React protocol renderer", () => {
   function blankingRefusalFixture() {
     return registryWithCounters().use(blankingRefusalModule())
   }
+
+  test("states the interval on every blank report and signals the falling edge once", async () => {
+    // Issue #436. Reverted, `event.blank` is absent — so "blank for one commit"
+    // and "blank until the user force-quit" are the same signal — and there is
+    // no recovery handler to pass at all.
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /><FutureNote id="note" /><DemoText id="sibling">Visible</DemoText></FutureRoot>',
+        { url: "https://example.test/blank-interval" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const recoveries: ExpoTurboDocumentBlankRecovery[] = []
+    const registry = blankingRefusalFixture()
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onDocumentBlankRecovery: (event) => recoveries.push(event),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // The sibling is real output, so nothing has gone blank yet. Without this
+    // half the assertions below could pass on a guard that fires regardless.
+    expect(errors).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Visible")
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="sibling"></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(errors).toHaveLength(1)
+    const opened = errors[0]?.blank
+    expect(opened?.attempt).toBe(1)
+    expect(opened?.documentUrl).toBe("https://example.test/blank-interval")
+    expect(opened?.nodeKey).toBe(session.tree.document.key)
+    expect(opened?.runtimeVersion).toBe(EXPO_TURBO_RUNTIME_VERSION)
+    expect(typeof opened?.since).toBe("number")
+    // The same two facts are on the error itself, which is what a host
+    // forwarding the bare error still receives.
+    expect((errors[0]?.error as StateError).context).toMatchObject({
+      documentUrl: "https://example.test/blank-interval",
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+    })
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="note"></turbo-stream>',
+      )
+    })
+
+    // Per-retry reporting stays, and the second report says it belongs to the
+    // interval the first one opened.
+    expect(errors).toHaveLength(2)
+    expect(errors[1]?.blank?.attempt).toBe(2)
+    expect(errors[1]?.blank?.since).toBe(opened?.since ?? -1)
+    // A retry renders with the guard down so the subtree can be observed again.
+    // That transient commit is not a recovery, and the document is still blank
+    // here, which the surface above proves.
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(recoveries).toHaveLength(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="form"><template><BlankingOwner id="form" /></template></turbo-stream>',
+      )
+    })
+
+    // The document genuinely recovered: the previously dropped node renders and
+    // the guard surface is gone.
+    expect(renderer.root.findAll((node) => String(node.type) === "blanking-preview")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(recoveries).toHaveLength(1)
+    expect(recoveries[0]?.attempt).toBe(2)
+    expect(recoveries[0]?.since).toBe(opened?.since ?? -1)
+    expect(recoveries[0]?.until).toBeGreaterThanOrEqual(opened?.since ?? 0)
+    expect(recoveries[0]?.documentUrl).toBe("https://example.test/blank-interval")
+    expect(recoveries[0]?.runtimeVersion).toBe(EXPO_TURBO_RUNTIME_VERSION)
+    // Recovery is not an error, and reporting it must not raise a new one.
+    expect(errors).toHaveLength(2)
+  })
 
   test("keeps a drop in force when an unrelated node is removed", async () => {
     const session = new DocumentSession(
