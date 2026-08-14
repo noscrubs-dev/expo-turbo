@@ -14259,6 +14259,179 @@ describe("React protocol renderer", () => {
     expect(errors).toHaveLength(1)
   })
 
+  test("reports the same blank document once across unrelated revision bumps", async () => {
+    // Waking the guard on every session revision means every unrelated write
+    // clears the surface, re-renders, finds the document still blank and raises
+    // again. Each of those raises carries the identical payload -- same class,
+    // same message, same target, same nodeKey -- so reporting them makes the
+    // channel loudest on the traffic a Cable-driven recovery generates.
+    const registry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/repeat-blank" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+    const revisionBefore = session.revision
+
+    for (let index = 0; index < 4; index += 1) {
+      act(() => {
+        session.setAttribute("id:form", `data-review-${index}`, "1")
+      })
+    }
+
+    // The bumps really happened and the guard really re-raised: the surface is
+    // still up, so this is one report of a live condition rather than a guard
+    // that quietly stopped running.
+    expect(session.revision).toBeGreaterThan(revisionBefore)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(errors).toHaveLength(1)
+  })
+
+  test("reports a different error raised in place of the blank-root surface", async () => {
+    // The dedupe would be unfalsifiable without this: a guard that suppressed
+    // every report while the document is blank passes every other test in this
+    // file. A retry renders the document again to find out whether it produces
+    // anything, and whatever that render throws lands on the same boundary the
+    // blank-root surface does. A host document controller whose state read
+    // fails is such an error, and it must not be swallowed by a dedupe aimed at
+    // the guard's own repeat.
+    const registry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/foreign-error" },
+      ),
+    )
+    const controller = new DocumentVisitController(
+      new DocumentRequestLoader(
+        session,
+        { fetch: () => new Promise<TurboResponse>(() => undefined) },
+        { next: () => "foreign-error-request" },
+      ),
+      { clearTimeout: () => undefined, now: () => 0, setTimeout: () => Object.freeze({}) },
+      {},
+    )
+    const settledState = controller.state
+    let failing = false
+    Object.defineProperty(controller, "state", {
+      configurable: true,
+      get: () => {
+        if (failing) throw new StateError("document chrome failure")
+        return settledState
+      },
+    })
+    const errors: ExpoTurboRenderError[] = []
+    render(session, registry, {
+      documentController: controller,
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+    ])
+
+    failing = true
+    act(() => {
+      session.setAttribute("id:form", "data-review", "1")
+    })
+
+    // The blank condition is unchanged by that write, so the guard's own repeat
+    // stays deduped. The new failure is a different error and reports.
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+      "document chrome failure",
+    ])
+  })
+
+  test("reports again when the document renders content and goes blank a second time", async () => {
+    // A document that recovered and then lost its content again is a new blank
+    // episode, not the old one re-observed. Suppressing it would trade the
+    // duplication for a silence, which is the worse failure: the host would be
+    // holding a blank screen it was never told about.
+    const registry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/reblank" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="form"><template><DemoText id="rescue">Recovered</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
+    expect(errors).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="rescue"></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(errors).toHaveLength(2)
+  })
+
+  test("reports again when a second document installs blank", async () => {
+    // A new document that cannot render is a different failure from the one
+    // before it, even though the surface reads the same. Nothing about the
+    // first document's report tells a host that the page it just navigated to
+    // is also blank.
+    const registry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/first-blank" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+
+    act(() => {
+      session.replaceTree(
+        parseExpoTurboDocument(
+          '<FutureRoot><BlankingPreview form="other" /><FutureForm id="other" action="/danger" method="post" /></FutureRoot>',
+          { url: "https://example.test/second-blank" },
+        ),
+      )
+    })
+
+    expect(session.treeGeneration).toBeGreaterThan(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(errors).toHaveLength(2)
+  })
+
   test("keeps form scope active when a required form-owner attribute unwraps", async () => {
     function CaptureFallbackForm(): ReactNode {
       const binding = useExpoTurboForm()

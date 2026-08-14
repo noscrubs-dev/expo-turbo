@@ -2696,13 +2696,14 @@ interface DocumentOutputLedger {
   drops: number
   readonly listeners: Set<() => void>
   output: number
+  productions: number
   version: number
 }
 
 const DocumentOutputContext = createContext<DocumentOutputLedger | undefined>(undefined)
 
 function createDocumentOutputLedger(): DocumentOutputLedger {
-  return { drops: 0, listeners: new Set(), output: 0, version: 0 }
+  return { drops: 0, listeners: new Set(), output: 0, productions: 0, version: 0 }
 }
 
 function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
@@ -2713,10 +2714,22 @@ function documentOutputIsBlank(ledger: DocumentOutputLedger): boolean {
  * Only a change in the blank verdict is worth a notification. Registering the
  * second component in a healthy document cannot change it, and waking the root
  * for that would re-render every node on every mount.
+ *
+ * `productions` counts the commits in which the document went from rendering
+ * nothing to rendering something. It is what separates a document that has
+ * re-entered the blank state from one that is merely being re-observed in it:
+ * clearing the surface is how the guard retries, and if that retry re-blanks,
+ * nothing was produced in between. Counting transitions rather than holding a
+ * flag means nothing has to agree on when to reset it -- the count only ever
+ * goes up, and a reader compares it against the value it last saw. A flag would
+ * have to be cleared by whoever notices recovery, and the only component in a
+ * position to notice is the one whose surface is being retried on every commit.
  */
 function updateDocumentOutput(ledger: DocumentOutputLedger, apply: () => void): void {
   const before = documentOutputIsBlank(ledger)
+  const producingBefore = ledger.output > 0
   apply()
+  if (!producingBefore && ledger.output > 0) ledger.productions += 1
   if (documentOutputIsBlank(ledger) === before) return
   ledger.version += 1
   for (const listener of [...ledger.listeners]) listener()
@@ -2761,8 +2774,43 @@ interface UnknownVocabularyStructuralMetadata {
   readonly diagnostics: readonly RegistryStructuralOutputDiagnostic[]
   readonly generation: number
   readonly handler: ExpoTurboUnknownVocabularyHandler | undefined
+  readonly productions: number
+  readonly registry: unknown
   readonly root: ProtocolElement
   readonly session: DocumentSession
+}
+
+/**
+ * What makes one raise of the blank-root surface a different occasion from the
+ * last one.
+ *
+ * The payload this surface hands `onError` carries no varying detail: the class
+ * and the message are constants of this file, `nodeKey` is the document's own
+ * key, and the error's `target` is the root element's key. Neither key can move
+ * without a new document, so within one document two raises agreeing on
+ * `rootKey` deliver the same payload twice and the second carries nothing the
+ * first did not. The remaining three fields are not needed to keep the payload
+ * honest -- they make the guard speak up more often than payload identity alone
+ * would require, because a repeat is worth hearing when the document is a new
+ * one (`generation`), when different vocabulary is installed (`registry`), or
+ * when the document rendered something real and went blank again
+ * (`productions`).
+ *
+ * Deliberately absent: `session.revision`. The revision answers "should the
+ * verdict be retried", and it bumps on every unrelated attribute write, which
+ * is the traffic this dedupe exists to survive. `productions` answers the
+ * different question of whether a retry ever succeeded, which is what makes one
+ * blank episode distinct from the next.
+ *
+ * Nothing here is predicted. Each field is a value the renderer has already
+ * observed and already keys the blank verdict on, so the discriminator adds no
+ * new guess about what a mutation might have meant.
+ */
+interface ReportedBlankCondition {
+  readonly generation: number
+  readonly productions: number
+  readonly registry: unknown
+  readonly rootKey: string
 }
 
 const unknownVocabularyStructuralMetadata = new WeakMap<
@@ -2875,7 +2923,19 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
         )
       }
     }
+    if (!this.shouldReportCaughtError(error, structuralMetadata)) return
     this.props.onError?.({ error, nodeKey: this.props.nodeKey })
+  }
+
+  /**
+   * Every caught error reports. Only the blank-root guard narrows this, and
+   * only for the one error class it raises itself.
+   */
+  protected shouldReportCaughtError(
+    _error: Error,
+    _structural: UnknownVocabularyStructuralMetadata | undefined,
+  ): boolean {
+    return true
   }
 
   render(): ReactNode {
@@ -2915,8 +2975,59 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
  * its surface as output. Every reachable mistake lands on the safe side.
  */
 class DocumentBlankGuardBoundary extends NodeErrorBoundary {
+  private reportedBlankCondition: ReportedBlankCondition | undefined
+
   protected override countsRenderedErrorAsOutput(error: Error): boolean {
     return !(error instanceof UnknownVocabularyStructuralError)
+  }
+
+  /**
+   * A retry that lands back on the same blank document must not report again.
+   *
+   * Clearing the surface is how the guard retries: it has to let the document
+   * render to find out whether it produces anything now, and if it still does
+   * not, the guard raises again. That round trip happens on every session
+   * revision while the document is blank -- which is exactly the traffic a
+   * Cable-driven stream of Streams produces while trying to recover one -- so
+   * reporting each one would make this channel loudest at the moment it is
+   * least informative. `onError` is the only signal a host has here, and a
+   * report that fires more often than it carries information trains hosts to
+   * ignore it.
+   *
+   * Suppression is narrow in three ways, because swallowing a report is worse
+   * than duplicating one. It applies only to the class this guard raises
+   * itself, so any other error reaching this boundary reports. It applies only
+   * while the condition is carried, so an instance whose metadata has already
+   * been consumed -- a host that kept the error and threw it again -- reports.
+   * And it requires every field to match, so a new document, newly installed
+   * vocabulary, a different root element, or the document having produced real
+   * output and gone blank again each report.
+   *
+   * The condition is remembered rather than cleared on recovery. Nothing is in
+   * a position to clear it: this boundary's error state is reset on every retry
+   * by design, so a clear-on-recovery rule would fire on each retry and dedupe
+   * nothing at all.
+   */
+  protected override shouldReportCaughtError(
+    error: Error,
+    structural: UnknownVocabularyStructuralMetadata | undefined,
+  ): boolean {
+    if (!(error instanceof UnknownVocabularyStructuralError) || !structural) return true
+    const reported = this.reportedBlankCondition
+    const condition: ReportedBlankCondition = Object.freeze({
+      generation: structural.generation,
+      productions: structural.productions,
+      registry: structural.registry,
+      rootKey: structural.root.key,
+    })
+    this.reportedBlankCondition = condition
+    return !(
+      reported !== undefined &&
+      reported.generation === condition.generation &&
+      reported.productions === condition.productions &&
+      reported.registry === condition.registry &&
+      reported.rootKey === condition.rootKey
+    )
   }
 }
 
@@ -4168,6 +4279,8 @@ function DocumentStructuralOutputGuard(
     children?: ReactNode
     generation: number
     handler: ExpoTurboUnknownVocabularyHandler | undefined
+    productions: number
+    registry: unknown
     root: ProtocolElement
     session: DocumentSession
   }>,
@@ -4178,6 +4291,8 @@ function DocumentStructuralOutputGuard(
         diagnostics: props.analysis.diagnostics,
         generation: props.generation,
         handler: props.handler,
+        productions: props.productions,
+        registry: props.registry,
         root: props.root,
         session: props.session,
       }),
@@ -4309,6 +4424,11 @@ export function ExpoTurboRoot(): ReactNode {
           blank,
           generation: session.treeGeneration,
           handler: context.onUnknownVocabulary,
+          // Read from the commit the guard is acting on: the surface is being
+          // raised because that commit produced nothing, so this is the count
+          // of productions the document had reached when it went blank.
+          productions: outputLedger.productions,
+          registry: context.registry,
           root: rootDirectionElement,
           session,
         },
