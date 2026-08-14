@@ -207,10 +207,20 @@ revision each time it arrives and the surface is retried on every one;
 reporting each retry would make the channel loudest exactly when it carries the
 least. A repeat is reported when the blank is genuinely a new one: different
 vocabulary failed, a new document installed, a different registry was supplied,
-or the document rendered real content and went blank again.
-`onUnknownVocabulary` is never deduplicated alongside it — each unrecognised
-element reports through its own boundary — so the cause channel stays complete
-while the condition channel is quiet.
+or the document rendered real content and went blank again. "Different
+vocabulary" means the set of element tags the document is built from changed,
+including a tag deep inside it that never rendered — not only the tag the
+failure was attributed to.
+
+`onUnknownVocabulary` is never deduplicated alongside it: each unrecognised
+element reports through its own boundary, which this gate does not run in. Two
+limits are worth knowing rather than discovering. Only the most recent condition
+is remembered, so a document alternating between two unrenderable shapes reports
+on each transition rather than once — the guarantee is one report per change of
+cause, not one per document. And neither channel is a complete record of every
+blank: a document can reach a blank state without re-raising at all, so a host
+that must detect emptiness itself should check the rendered tree rather than
+rely on these callbacks alone.
 
 Pass `loading` or `renderError` to replace either surface.
 
