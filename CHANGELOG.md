@@ -2,7 +2,7 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
-## 0.3.1 - 2026-08-14
+## Unreleased
 
 - **Breaking:** Make `FormLinkSubmissionController` fail closed when link
   vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
