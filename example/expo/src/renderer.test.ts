@@ -542,7 +542,10 @@ function renderDocumentLinks(
   url = "https://example.test/gallery",
   navigation?: NavigationAdapter,
   frameFetch?: (request: TurboRequest) => Promise<TurboResponse>,
-  createFormLinks?: (session: DocumentSession) => FormLinkSubmissionController,
+  createFormLinks?: (
+    session: DocumentSession,
+    formSemantics: ExpoTurboProviderProps["registry"],
+  ) => FormLinkSubmissionController,
   controllerOptions?: DocumentVisitControllerOptions,
   createProviderOptions?: (session: DocumentSession) => Readonly<{
     autofocus?: AutofocusAdapter
@@ -601,7 +604,6 @@ function renderDocumentLinks(
   const session = new DocumentSession(parseExpoTurboDocument(xml, { url }))
   const configuredProviderOptions = createProviderOptions?.(session) ?? {}
   const { framePreloadCache, ...providerOptions } = configuredProviderOptions
-  const formLinks = createFormLinks?.(session)
   const controller = new DocumentVisitController(
     new DocumentRequestLoader(
       session,
@@ -637,6 +639,7 @@ function renderDocumentLinks(
       version: "0.1.0",
     }),
   )
+  const formLinks = createFormLinks?.(session, componentRegistry)
   const rendererOptions = {
     documentController: controller,
     formLinks,
@@ -10224,7 +10227,7 @@ describe("React protocol renderer", () => {
       "https://example.test/gallery",
       undefined,
       undefined,
-      (session) =>
+      (session, formSemantics) =>
         new FormLinkSubmissionController(
           session,
           new FormSubmissionController(session, {
@@ -10250,6 +10253,7 @@ describe("React protocol renderer", () => {
             },
           }),
           { next: () => `generated-link-${++requestId}` },
+          { formSemantics },
         ),
       { visitLifecycle },
     )
@@ -10327,7 +10331,7 @@ describe("React protocol renderer", () => {
         frameRequests.push(request)
         throw new Error("generated form links must not use the Frame GET loader")
       },
-      (session) =>
+      (session, formSemantics) =>
         new FormLinkSubmissionController(
           session,
           new FormSubmissionController(session, {
@@ -10343,6 +10347,7 @@ describe("React protocol renderer", () => {
             },
           }),
           { next: () => `generated-frame-link-${++requestId}` },
+          { formSemantics },
         ),
     )
 
@@ -10389,7 +10394,7 @@ describe("React protocol renderer", () => {
         frameRequests.push(request)
         throw new Error("generated form links must not use the Frame GET loader")
       },
-      (session) =>
+      (session, formSemantics) =>
         new FormLinkSubmissionController(
           session,
           new FormSubmissionController(session, {
@@ -10405,6 +10410,7 @@ describe("React protocol renderer", () => {
             },
           }),
           { next: () => "generated-replacement-link" },
+          { formSemantics },
         ),
     )
 

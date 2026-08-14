@@ -12,7 +12,7 @@ import {
   type DocumentHistoryWriteMethod,
 } from "./document-history"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { StateError, TargetError } from "./errors"
+import { RegistryError, StateError, TargetError } from "./errors"
 import {
   FormLinkSubmissionController,
   type FormLinkSubmissionControllerOptions,
@@ -43,17 +43,25 @@ function emptyResponse(request: TurboRequest): TurboResponse {
   }
 }
 
+const FORM_LINK_SEMANTICS = Object.freeze({
+  resolve(tagOrAlias: string) {
+    return tagOrAlias === "DemoLink" ? Object.freeze({}) : undefined
+  },
+})
+
 function harness(
   document: DocumentSession,
   options: {
     confirmation?: FormConfirmationAdapter
     controller?: FormLinkSubmissionControllerOptions
     requestIds?: RequestIdAdapter
+    requests?: TurboRequest[]
     response?: (request: TurboRequest) => TurboResponse | Promise<TurboResponse>
     submission?: FormSubmissionControllerOptions
+    useDefaultSemantics?: boolean
   } = {},
 ) {
-  const requests: TurboRequest[] = []
+  const requests = options.requests ?? []
   let allocated = 0
   const requestIds =
     options.requestIds ??
@@ -75,7 +83,10 @@ function harness(
   )
   return {
     allocated: () => allocated,
-    links: new FormLinkSubmissionController(document, submissions, requestIds, options.controller),
+    links: new FormLinkSubmissionController(document, submissions, requestIds, {
+      ...(options.useDefaultSemantics === false ? {} : { formSemantics: FORM_LINK_SEMANTICS }),
+      ...options.controller,
+    }),
     requests,
   }
 }
@@ -132,6 +143,77 @@ function mountedFrameHistory(document: DocumentSession, frameId: string) {
 }
 
 describe("FormLinkSubmissionController", () => {
+  test("fails closed for unknown or unavailable link vocabulary before transport", async () => {
+    const document = session(
+      `<Gallery>
+        <FutureLink id="future" data-turbo-method="post" />
+        <DemoLink id="known" data-turbo-method="post" />
+      </Gallery>`,
+    )
+    const requests: TurboRequest[] = []
+    const absent = harness(document, { requests, useDefaultSemantics: false })
+    const legacySemantics = Object.freeze({ formContainerRole: () => undefined })
+    const unavailable = [
+      absent,
+      harness(document, {
+        controller: { formSemantics: legacySemantics },
+        requests,
+        useDefaultSemantics: false,
+      }),
+      harness(document, {
+        controller: { formSemantics: { resolve: () => undefined } },
+        requests,
+        useDefaultSemantics: false,
+      }),
+      harness(document, {
+        controller: {
+          formSemantics: {
+            resolve() {
+              throw new Error("resolver failed")
+            },
+          },
+        },
+        requests,
+        useDefaultSemantics: false,
+      }),
+    ]
+
+    const failures: unknown[] = []
+    for (const { links } of unavailable) {
+      expect(links.shouldInterceptSubmission("id:future")).toBe(false)
+      for (const attempt of [
+        () => links.submissionProposal("id:future", "/danger?field=A"),
+        () => links.submit("id:future", "/danger?field=A"),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(unavailable.map(({ allocated }) => allocated())).toEqual([0, 0, 0, 0])
+    expect(failures).toHaveLength(8)
+    for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+
+    const known = harness(document, { requests })
+    expect(known.links.shouldInterceptSubmission("id:known")).toBe(true)
+    await known.links.submit("id:known", "/safe?field=B")
+    expect(requests).toEqual([
+      expect.objectContaining({
+        body: {
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          value: "field=B",
+        },
+        method: "POST",
+        url: "https://example.test/safe",
+      }),
+    ])
+  })
+
   test("admits only generated-form metadata under the configured Turbo form mode", () => {
     const document = session(
       `<Gallery>

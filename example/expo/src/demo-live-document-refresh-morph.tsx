@@ -134,7 +134,7 @@ export async function createDemoLiveDocumentRefreshMorphRuntime(
     {
       next: () => `demo-live-document-refresh-morph-link-${++streamRequestId}`,
     },
-    { moduleVersions: DEMO_MODULE_VERSIONS },
+    { formSemantics: DEMO_REGISTRY, moduleVersions: DEMO_MODULE_VERSIONS },
   );
   let disposed = false;
 

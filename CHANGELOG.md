@@ -2,6 +2,20 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## 0.3.1 - 2026-08-14
+
+- **Breaking:** Make `FormLinkSubmissionController` fail closed when link
+  vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
+  component registry as `formSemantics`; no resolver, the old resolver-free
+  interface, an unresolved tag, or a resolver failure refuses interception,
+  proposal creation, and submission before a request ID or request is built.
+  Migration: add `formSemantics: registry` to the controller options. The
+  package-owned `data-turbo="false"` opt-out still stops first and needs no
+  resolver. `data-turbo-confirm` remains a narrowing safety gate. Method,
+  Stream, Frame, and visit-action metadata remain gated on known vocabulary.
+  `ExpoTurboApp` does not construct this advanced-path controller, so ordinary
+  facade consumers have no new option to pass.
+
 ## 0.3.0 - 2026-08-13
 
 - **Breaking:** Replace four client compatibility headers with

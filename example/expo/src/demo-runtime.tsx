@@ -172,7 +172,7 @@ export function createDemoRuntime(options: DemoRuntimeOptions = {}): DemoRuntime
     {
       next: () => `demo-generated-form-link-${++formLinkRequestId}`,
     },
-    { moduleVersions: DEMO_MODULE_VERSIONS },
+    { formSemantics: DEMO_REGISTRY, moduleVersions: DEMO_MODULE_VERSIONS },
   );
   const unsubscribeTraversal = subscribeDocumentHistoryTraversal(
     navigation,
