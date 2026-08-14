@@ -201,26 +201,25 @@ blank screen has to read both:
 />
 ```
 
-`onError` fires once per blank condition, not once per document revision.
-While a document stays blank, a Turbo Stream trying to recover it commits a
-revision each time it arrives and the surface is retried on every one;
-reporting each retry would make the channel loudest exactly when it carries the
-least. A repeat is reported when the blank is genuinely a new one: different
-vocabulary failed, a new document installed, a different registry was supplied,
-or the document rendered real content and went blank again. "Different
-vocabulary" means the set of element tags the document is built from changed,
-including a tag deep inside it that never rendered — not only the tag the
-failure was attributed to.
+While a document stays blank, `onError` fires again on every session revision
+that wakes the root — so a Cable-driven stream of Streams trying to recover a
+blank document produces one report per revision, not one per document. The
+payload is identical each time, because its message is fixed and the only keys
+it carries are the document's and the root element's. Treat the repeats as a
+retry count, not as new information, and read `onUnknownVocabulary` for what
+actually failed.
 
-`onUnknownVocabulary` is never deduplicated alongside it: each unrecognised
-element reports through its own boundary, which this gate does not run in. Two
-limits are worth knowing rather than discovering. Only the most recent condition
-is remembered, so a document alternating between two unrenderable shapes reports
-on each transition rather than once — the guarantee is one report per change of
-cause, not one per document. And neither channel is a complete record of every
-blank: a document can reach a blank state without re-raising at all, so a host
-that must detect emptiness itself should check the rendered tree rather than
-rely on these callbacks alone.
+Two documents behave differently and are worth knowing rather than discovering.
+A document blank because its tree contains nothing the registry can render
+reports **once**: its verdict holds and the guard is never re-raised. And a
+document that recovers and goes blank again reports the new blank.
+
+`onUnknownVocabulary` is the channel that names *which* vocabulary failed. Each
+unrecognised element reports through its own boundary, independently of the
+blank-root surface. Neither channel is a complete record of every blank, though
+— a document can reach a blank state without re-raising at all — so a host that
+must detect emptiness itself should check the rendered tree rather than rely on
+these callbacks alone.
 
 Pass `loading` or `renderError` to replace either surface.
 
