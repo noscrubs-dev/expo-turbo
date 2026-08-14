@@ -38,6 +38,29 @@ All notable public package, gem, and protocol changes will be recorded here.
   it to tell the four refusal causes apart; the query allocates no request ID,
   dispatches no request, and grants no ability to submit a link that would
   otherwise be refused.
+- The blank-root error surface now clears when a Turbo Stream restores content
+  to any node, not only to the document root element. Previously the guard's
+  verdict was keyed on the session revision while the root component read that
+  value without subscribing to it, so a Stream targeting a nested node advanced
+  the tree without ever waking the boundary holding the error. The document
+  stayed on the protocol-error surface permanently, which on a native client is
+  an unrecoverable blank screen requiring an app restart.
+
+- `onError` no longer repeats the blank-root report for a blank condition it has
+  already reported. The report is keyed on the identity of that condition — the
+  set of element tags the document is built from, plus the root element, the
+  tree generation, the registry, and whether the document has rendered real
+  content since — so an unrelated attribute or text rewrite on a blank document
+  is silent, while a changed tag anywhere in it, a new document, a different
+  registry, or a recovery followed by a fresh blank each report again. The
+  blank-root payload is a fixed message carrying only the document and root
+  keys, so a repeat carried nothing a host could act on. `onUnknownVocabulary`
+  is not deduplicated by this gate: each unrecognised element reports through
+  its own boundary, which the gate does not run in. `onError` names the
+  condition, `onUnknownVocabulary` names the cause, and a host diagnosing a
+  blank screen should read both. Only the most recent condition is remembered,
+  so a document alternating between two unrenderable shapes reports on each
+  transition rather than once.
 
 ## 0.3.0 - 2026-08-13
 
