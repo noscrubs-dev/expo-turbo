@@ -2,6 +2,16 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## Unreleased
+
+- The blank-root error surface now clears when a Turbo Stream restores content
+  to any node, not only to the document root element. Previously the guard's
+  verdict was keyed on the session revision while the root component read that
+  value without subscribing to it, so a Stream targeting a nested node advanced
+  the tree without ever waking the boundary holding the error. The document
+  stayed on the protocol-error surface permanently, which on a native client is
+  an unrecoverable blank screen requiring an app restart.
+
 ## 0.3.0 - 2026-08-13
 
 - **Breaking:** Replace four client compatibility headers with
