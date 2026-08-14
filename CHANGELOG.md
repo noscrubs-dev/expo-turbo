@@ -11,7 +11,7 @@ All notable public package, gem, and protocol changes will be recorded here.
   works against `<ExpoTurboApp origin registry />` with no extra wiring.
   Previously that link threw `TargetError` inside the activation promise, sent
   no request, and reported to neither `onError` nor `renderError` — an
-  application saw a dead button with no signal anywhere. A link whose owner tag
+  application saw a dead button with no signal on either host error channel. A link whose owner tag
   the registry does not know still refuses and still sends nothing, so the
   fail-closed guarantee is unchanged. A host composing the provider by hand is
   unaffected: one passing its own `formLinks` keeps it, and one passing none
