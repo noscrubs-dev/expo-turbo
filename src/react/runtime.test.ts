@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { ComponentType } from "react"
 import { z } from "zod"
 
-import type { CableCallbacks, TurboResponse } from "../adapters/index.js"
+import type { CableCallbacks, TurboRequest, TurboResponse } from "../adapters/index.js"
 import {
   attributeValue,
   DOCUMENT_REFRESH_DEBOUNCE_MS,
@@ -360,5 +360,99 @@ describe("Expo Turbo runtime", () => {
     expect(placeholder?.tagName).toBe("turbo-frame")
     if (!placeholder) throw new Error("missing runtime placeholder")
     expect(attributeValue(placeholder, "data-turbo-cache-control")).toBe("no-cache")
+  })
+})
+
+describe("Expo Turbo runtime generated form links", () => {
+  const DOCUMENT_URL = "https://example.test/document"
+
+  interface SpiedTransport {
+    readonly fetch: { fetch: (request: TurboRequest) => Promise<TurboResponse> }
+    readonly requests: TurboRequest[]
+  }
+
+  /**
+   * Records every request and answers unsafe methods with a redirect, which is
+   * what Turbo requires of a document-level form response.
+   */
+  function spiedTransport(xml: string): SpiedTransport {
+    const requests: TurboRequest[] = []
+    return {
+      fetch: {
+        fetch: async (request: TurboRequest) => {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: request.method !== "GET",
+            status: 200,
+            text: async () => xml,
+            url: request.url,
+          }
+        },
+      },
+      requests,
+    }
+  }
+
+  test("dispatches a generated form-link submission the host never wired up", async () => {
+    const transport = spiedTransport(
+      '<TestDocument><TestField id="destroy" data-turbo-method="post" /></TestDocument>',
+    )
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    expect(transport.requests.map((request) => request.method)).toEqual(["GET"])
+
+    // Issue #428: reverting the runtime hand-off leaves `formLinks` undefined
+    // here, and the renderer throws TargetError("Generated form links require
+    // provider form-link submissions") on the first Rails delete button.
+    await runtime.formLinks.submit("id:destroy", "/danger?field=A")
+
+    expect(transport.requests).toHaveLength(2)
+    const submission = transport.requests[1]
+    expect(submission?.method).toBe("POST")
+    // The query pairs become form entries, exactly as Turbo's temporary form does.
+    expect(submission?.url).toBe("https://example.test/danger")
+    expect(submission?.body?.value).toBe("field=A")
+    // The registry digest reaches the link submission too, so the server sees
+    // one client descriptor across documents, forms, and form links.
+    expect(submission?.headers["X-Expo-Turbo-Client"]).toBe(
+      `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`,
+    )
+
+    runtime.dispose()
+  })
+
+  test("still refuses a generated form link whose tag the registry does not know", async () => {
+    const transport = spiedTransport(
+      '<TestDocument><UnregisteredLink id="destroy" data-turbo-method="post" /></TestDocument>',
+    )
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+
+    // #427's guarantee has to survive the #428 wiring: a controller that exists
+    // must still refuse vocabulary it cannot interpret rather than build a
+    // request out of it.
+    expect(runtime.formLinks.submissionInterception("id:destroy")).toEqual({
+      intercept: false,
+      reason: "unknown-vocabulary",
+    })
+    await expect(runtime.formLinks.submit("id:destroy", "/danger?field=A")).rejects.toThrow(
+      "Expo Turbo generated form-link submission requires known vocabulary",
+    )
+
+    // The refusal is the whole point: nothing left the device.
+    expect(transport.requests.map((request) => request.url)).toEqual([DOCUMENT_URL])
+
+    runtime.dispose()
   })
 })

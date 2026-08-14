@@ -19,6 +19,7 @@ import {
   DocumentVisitController,
   DocumentVisitLifecycle,
   type DocumentVisitResult,
+  FormLinkSubmissionController,
   FormSubmissionController,
   FrameControllerRegistry,
   FrameHistoryCoordinator,
@@ -46,6 +47,13 @@ const PLACEHOLDER_DOCUMENT =
 
 export interface ExpoTurboRuntime {
   readonly controller: DocumentVisitController
+  /**
+   * Turbo's temporary-form path for links carrying `data-turbo-method` or
+   * `data-turbo-stream` — the ordinary Rails delete-button idiom. The runtime
+   * builds it because it is the only party holding both the submission
+   * controller and the registry the controller needs to read link vocabulary.
+   */
+  readonly formLinks: FormLinkSubmissionController
   readonly forms: DocumentFormControls
   readonly frames: FrameControllerRegistry
   readonly scopes: DocumentStateScopes
@@ -148,6 +156,16 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     moduleVersions: clientDescriptor,
     submissionController: submission,
   })
+  // `data-turbo-method` on a link is the ordinary Rails delete-button idiom, so
+  // a server rendering standard Turbo markup expects a client that can act on
+  // it. The registry has to arrive with the controller: since #427 this one
+  // fails closed without `formSemantics`, so constructing it bare would trade a
+  // loud refusal for a silent one. The runtime holds the registry already,
+  // which is exactly why the host never has to hand one over.
+  const formLinks = new FormLinkSubmissionController(session, submission, requestIds, {
+    formSemantics: options.registry,
+    moduleVersions: clientDescriptor,
+  })
   // Cable delivers Stream actions, including `refresh`, for as long as the
   // socket is up. It does NOT recover the document after a reconnect: a
   // broadcast missed while the socket was down leaves the mounted document
@@ -167,6 +185,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
 
   return Object.freeze({
     controller,
+    formLinks,
     forms,
     frames,
     scopes,

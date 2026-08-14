@@ -1,16 +1,22 @@
 /// <reference types="bun" />
 
 import { describe, expect, mock, test } from "bun:test"
-import type { DocumentLinkAdapter, TurboResponse } from "expo-turbo/adapters"
+import type { DocumentLinkAdapter, TurboRequest, TurboResponse } from "expo-turbo/adapters"
 import {
   CableStreamSourceRegistry,
   DocumentStateScopes,
   DocumentStateStore,
   EXPO_TURBO_MIME_TYPE,
+  type FormLinkSubmissionController,
   TargetError,
 } from "expo-turbo/core"
 import type { ExpoTurboDocumentBoundaryProps } from "expo-turbo/react"
-import { useExpoTurboDocumentLink } from "expo-turbo/react"
+import {
+  createExpoTurboRuntime,
+  ExpoTurboProvider,
+  ExpoTurboRoot,
+  useExpoTurboDocumentLink,
+} from "expo-turbo/react"
 import {
   createRegistry,
   defineComponent,
@@ -951,5 +957,184 @@ describe("ExpoTurboApp boundary containment", () => {
     await act(async () => {
       renderer.unmount()
     })
+  })
+})
+
+describe("ExpoTurboApp generated form links", () => {
+  const DELETE_XML = '<AppDoc><AppDocLink href="/danger?field=A" data-turbo-method="post" /></AppDoc>'
+
+  interface SubmittingTransport {
+    readonly fetch: { fetch: (request: TurboRequest) => Promise<TurboResponse> }
+    readonly requests: TurboRequest[]
+  }
+
+  /**
+   * Records whole requests, not just URLs, and answers unsafe methods with a
+   * redirect the way Turbo requires of a document-level form response.
+   */
+  function submittingTransport(xml: string): SubmittingTransport {
+    const requests: TurboRequest[] = []
+    return {
+      fetch: {
+        fetch: async (request: TurboRequest) => {
+          requests.push(request)
+          return {
+            headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+            redirected: request.method !== "GET",
+            status: 200,
+            text: async () => xml,
+            url: request.url,
+          }
+        },
+      },
+      requests,
+    }
+  }
+
+  test("activates a data-turbo-method link the host never configured", async () => {
+    routerPath = "/catalog"
+    activations.clear()
+    openedUrls.length = 0
+    const reported: Error[] = []
+    const surfaced: Error[] = []
+    const transport = submittingTransport(DELETE_XML)
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: transport.fetch },
+        onError: (error: Error) => reported.push(error),
+        origin: ORIGIN,
+        registry,
+        renderError: (error: Error) => {
+          surfaced.push(error)
+          return null
+        },
+      }),
+    )
+
+    const activate = activations.get("/danger?field=A")
+    if (!activate) throw new Error("the fixture link never mounted")
+    await act(async () => {
+      await activate()
+      await nextTurn()
+    })
+
+    // Issue #428: before the runtime built and handed over a form-link
+    // controller this threw TargetError("Generated form links require provider
+    // form-link submissions"), reached neither error channel, and sent nothing.
+    expect(transport.requests).toHaveLength(2)
+    const submission = transport.requests[1]
+    expect(submission?.method).toBe("POST")
+    expect(submission?.url).toBe(`${ORIGIN}/danger`)
+    expect(submission?.body?.value).toBe("field=A")
+    expect(reported).toEqual([])
+    expect(surfaced).toEqual([])
+    // The link is a submission, not a browsing-context hand-off.
+    expect(openedUrls).toEqual([])
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("keeps a hand-composed provider on the form-link controller it supplied", async () => {
+    routerPath = "/catalog"
+    activations.clear()
+    const transport = submittingTransport(DELETE_XML)
+    const hostSubmissions: Readonly<{ href: string; nodeKey: string }>[] = []
+    const hostFormLinks = {
+      shouldInterceptSubmission: () => true,
+      submissionInterception: () => ({ intercept: true }),
+      submit: async (nodeKey: string, href: string) => {
+        hostSubmissions.push({ href, nodeKey })
+        return { status: "applied" }
+      },
+    } as unknown as FormLinkSubmissionController
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: `${ORIGIN}/catalog`,
+    })
+    await runtime.load()
+
+    const renderer = await mount(
+      createElement(
+        ExpoTurboProvider,
+        {
+          documentController: runtime.controller,
+          formLinks: hostFormLinks,
+          forms: runtime.forms,
+          frames: runtime.frames,
+          ownsStateDisposal: false,
+          registry,
+          scopes: runtime.scopes,
+          session: runtime.session,
+          state: runtime.state,
+        },
+        createElement(ExpoTurboRoot),
+      ),
+    )
+
+    const activate = activations.get("/danger?field=A")
+    if (!activate) throw new Error("the fixture link never mounted")
+    await act(async () => {
+      await activate()
+      await nextTurn()
+    })
+
+    // The advanced path is unchanged: the host's controller is the one that
+    // runs, and the runtime's own controller never shadows it.
+    expect(hostSubmissions).toHaveLength(1)
+    expect(hostSubmissions[0]?.href).toBe("/danger?field=A")
+    expect(hostSubmissions[0]?.nodeKey).toBeTruthy()
+    expect(transport.requests.map((request) => request.method)).toEqual(["GET"])
+
+    await act(async () => {
+      renderer.unmount()
+    })
+    runtime.dispose()
+  })
+
+  test("does not slip a form-link controller into a hand-composed provider", async () => {
+    routerPath = "/catalog"
+    activations.clear()
+    const transport = submittingTransport(DELETE_XML)
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: `${ORIGIN}/catalog`,
+    })
+    await runtime.load()
+
+    const renderer = await mount(
+      createElement(
+        ExpoTurboProvider,
+        {
+          documentController: runtime.controller,
+          forms: runtime.forms,
+          frames: runtime.frames,
+          ownsStateDisposal: false,
+          registry,
+          scopes: runtime.scopes,
+          session: runtime.session,
+          state: runtime.state,
+        },
+        createElement(ExpoTurboRoot),
+      ),
+    )
+
+    const activate = activations.get("/danger?field=A")
+    if (!activate) throw new Error("the fixture link never mounted")
+
+    // A host that composed the provider by hand and passed no `formLinks` keeps
+    // exactly today's behaviour. Quietly gaining a controller here would change
+    // what an existing host's link does without that host asking for it.
+    await expect(activate()).rejects.toBeInstanceOf(TargetError)
+    expect(transport.requests.map((request) => request.method)).toEqual(["GET"])
+
+    await act(async () => {
+      renderer.unmount()
+    })
+    runtime.dispose()
   })
 })
