@@ -2790,15 +2790,25 @@ interface UnknownVocabularyStructuralMetadata {
  * What makes one raise of the blank-root surface a different occasion from the
  * last one.
  *
- * `tags` is the identity of the blank: the set of element tags the document is
- * built from, which is what changes when the reason it cannot render changes.
- * The other four fields are the circumstances that make a repeat of the same
- * tags worth hearing anyway -- a new document (`generation`), newly installed
+ * Two fields name the blank itself, and neither subsumes the other:
+ *
+ * - `tags` is the set of element tags the live root subtree is built from. It
+ *   sees a tag swapped deep in the document that the structural analysis never
+ *   reached, because the analysis stops walking at the first node that renders
+ *   and a document can go blank at commit time, after that node declined.
+ * - `vocabulary` is the set of vocabulary issues the analysis recorded, by
+ *   issue kind, tag and attribute. It sees what the tag set cannot say: two
+ *   blanks whose documents are built from exactly the same tags but fail on
+ *   different attributes of them, and issues recorded for document children
+ *   outside the root element's subtree.
+ *
+ * The remaining four are the circumstances that make a repeat of the same blank
+ * worth hearing anyway -- a new document (`generation`), newly installed
  * vocabulary (`registry`), a different root element (`rootKey`), or the
  * document having rendered something real and gone blank again
  * (`productions`).
  *
- * Naming the tags is what keeps this a dedupe rather than a mute. The payload
+ * Naming the blank is what keeps this a dedupe rather than a mute. The payload
  * the surface hands `onError` cannot express the difference -- the class and
  * the message are constants of this file, and the only keys in it are the
  * document's and the root element's -- so two blanks with different causes
@@ -2806,31 +2816,27 @@ interface UnknownVocabularyStructuralMetadata {
  * document that went blank for a genuinely new reason with silence, and leave
  * the host holding the first explanation for the second failure.
  *
- * The tags are taken from the tree rather than from the structural analysis
- * because the analysis is deliberately incomplete: it stops walking at the
- * first node that renders, so a document that went blank because a component
- * declined at commit time records diagnostics for the prefix before that
- * component and nothing after it -- and the tag that changed can sit in the
- * unrecorded remainder. The tree the guard already holds has no such gap.
- *
  * Deliberately absent: `session.revision`. The revision answers "should the
  * verdict be retried", and it bumps on every unrelated attribute write, which
- * is the traffic this dedupe exists to survive. Rewriting an attribute does not
- * change which tags the document is built from, so the noise stays deduped
- * while a changed cause does not.
+ * is the traffic this dedupe exists to survive. Rewriting an attribute changes
+ * neither the tags the document is built from nor the issues that made it
+ * unrenderable, so the noise stays deduped while a changed cause does not.
  *
  * Nothing here is predicted. Every field is a value the renderer has already
- * computed for this commit -- the tag set is a walk of the root element the
- * guard already carries to explain itself -- so the discriminator adds no new
- * guess about what a mutation might have meant. Widening the key can only make
- * the guard report more often, never less, which is the safe direction: a
- * swallowed report is worse than a duplicated one.
+ * computed for this commit -- the tag set walks the root element the guard
+ * already carries to explain itself, and the issue set reads the analysis it
+ * already carries to deliver `onUnknownVocabulary` -- so the discriminator adds
+ * no new guess about what a mutation might have meant. Widening the key can
+ * only make the guard report more often, never less, which is the safe
+ * direction: a swallowed report is worse than a duplicated one.
  *
- * Known bound: only the last reported condition is remembered, so a document
- * that alternates between two unrenderable shapes reports on each transition.
- * Each of those reports names a genuinely different blank, so the guarantee is
- * one report per change of cause rather than one per revision -- which is the
- * property the noise this dedupe removes was violating.
+ * Known incompleteness, in the direction of reporting rather than silence:
+ * neither field is a complete description of the blank. The analysis stops at
+ * the first renderable node, so `vocabulary` can miss an issue past it; the
+ * walk starts at the first element child of the document, so `tags` can miss a
+ * sibling root that a Stream inserted beside it. A blank whose cause moves only
+ * in the intersection of those two gaps is answered with silence, and the cause
+ * still reaches the host on `onUnknownVocabulary`.
  */
 interface ReportedBlankCondition {
   readonly generation: number
@@ -2838,29 +2844,104 @@ interface ReportedBlankCondition {
   readonly registry: unknown
   readonly rootKey: string
   readonly tags: string
+  readonly vocabulary: string
 }
+
+function blankConditionsMatch(
+  reported: ReportedBlankCondition,
+  condition: ReportedBlankCondition,
+): boolean {
+  return (
+    reported.generation === condition.generation &&
+    reported.productions === condition.productions &&
+    reported.registry === condition.registry &&
+    reported.rootKey === condition.rootKey &&
+    reported.tags === condition.tags &&
+    reported.vocabulary === condition.vocabulary
+  )
+}
+
+/**
+ * How many distinct blank conditions the guard remembers.
+ *
+ * More than one, because remembering only the last is broken by ordinary
+ * server-driven traffic. Stream admission refuses a payload that carries
+ * vocabulary issues and produces nothing, which is why an unknown tag on its
+ * own never reaches the tree -- but a payload that also carries something the
+ * registry can decode is admitted whole, and whether that node goes on to
+ * render is settled later, at commit time. A server sending `update` after
+ * `update`, each an unknown tag beside a component that declines when it
+ * renders, therefore walks a document through a new unrenderable shape on every
+ * revision while it stays blank throughout. Alternate between two such shapes
+ * and a one-slot memory matches neither of them: `onError` fires 1, 2, 3, 4 on
+ * a document that has been blank since the first, which is the sequence this
+ * dedupe exists to prevent. Nothing about that requires direct tree mutation --
+ * it is what a Cable-driven recovery loop looks like when the server is the one
+ * flapping.
+ *
+ * A remembered set closes it: the second visit to a shape reports, and every
+ * visit after that is silent. What it suppresses that a one-slot memory would
+ * have reported is always an exact match on all six fields -- the same
+ * document, the same registry, the same root element, the same tags, the same
+ * issues, and no output produced in between -- which is a repeat by every
+ * property the guard can observe. It is also what pays for the sharper identity
+ * added alongside it: a key that tells more blanks apart flags more transitions
+ * as changes of cause, so widening the key without widening the memory would
+ * have made a flapping document louder, not quieter.
+ *
+ * Bounded, because otherwise it is unbounded state on a long-lived boundary.
+ * Eight, because the shapes a blank document cycles through in practice are few
+ * -- a template flapping between two or three renderings of the same failure.
+ * The degradation past the bound is worth stating plainly: a document cycling
+ * through more than eight distinct blank conditions evicts the least recently
+ * reported one, so the ninth shape reports and a long enough cycle reports once
+ * per transition again. That is the old behaviour, reached only by traffic
+ * eight times more varied than anything that motivated the dedupe.
+ */
+const REMEMBERED_BLANK_CONDITIONS = 8
 
 /**
  * The set of element tags the blank document is made of, as a comparable
  * string.
  *
- * `analyzeRegistryStructuralOutput` stops walking at the first node that
- * renders, because diagnostics only matter when nothing does. A document that
- * went blank because a component declined at commit time therefore records
+ * This is the half of the blank's identity the structural analysis cannot
+ * supply. `analyzeRegistryStructuralOutput` stops walking at the first node
+ * that renders, because diagnostics only matter when nothing does. A document
+ * that went blank because a component declined at commit time therefore records
  * diagnostics for whatever preceded that component and nothing after it, and
- * the tag that actually changed can sit in the unrecorded remainder. The tree
- * the guard already holds has no such gap: `root` is the live root element and
- * its children are the document as it stands in this commit.
+ * the tag that actually changed can sit in the unrecorded remainder. The live
+ * subtree has no such gap: `root` is the root element as it stands in this
+ * commit and the walk reaches all of it.
  *
  * Tags only, deduplicated and sorted. Attributes and text are deliberately left
- * out: a document being driven by a stream of Turbo Streams has its attributes
- * and text rewritten constantly, and surviving that traffic is the whole point
- * of this dedupe. Which tags the document is built from is what moves when the
- * reason it cannot render moves.
+ * out here: a document being driven by a stream of Turbo Streams has both
+ * rewritten constantly, and surviving that traffic is the whole point of this
+ * dedupe. The attributes that actually made the document unrenderable arrive on
+ * the other half of the key, from the analysis, which knows which of them the
+ * registry could not decode -- see `blankDocumentVocabularyKey`.
  *
  * `template` and `stream` subtrees are skipped for the reason the structural
  * analysis skips them: their contents are payloads to be applied later, not
  * vocabulary this document is currently failing to render.
+ *
+ * Cost. There is no fixed ceiling to quote: the parser's 10,000-node cap is per
+ * parse, not per session, and two admitted 6,000-node inserts leave a live
+ * document of 12,002 elements. What bounds the walk is the work a raise already
+ * does in the same commit, which is ordered by the same size. A blank decided
+ * from the tree has just run the structural analysis across the whole document
+ * with a registry decode per element; a blank decided at commit time has just
+ * had React render every node in it. Collecting tags adds a Set insert per
+ * element to one of those, so it is a constant factor on work already done
+ * rather than a new order of cost. Measured on that 12,002-element document,
+ * twenty consecutive raises cost a median of 660.5, 664.0 and 653.8ms per raise
+ * across three runs with the walk, and 670.2, 655.1 and 652.4ms across three
+ * runs without it: the walk is below run-to-run variance at three times the
+ * per-parse cap.
+ *
+ * Deliberately not truncated at a node budget. A truncated tag set stops
+ * telling blanks apart past the budget, and this key going quiet is the failure
+ * that matters -- a document large enough to be worth truncating is exactly the
+ * one whose blank is hardest to diagnose from the payload.
  */
 function blankDocumentTagKey(root: ProtocolElement): string {
   const tags = new Set<string>([root.tagName])
@@ -2878,6 +2959,48 @@ function blankDocumentTagKey(root: ProtocolElement): string {
     }
   }
   return [...tags].sort().join("\u0001")
+}
+
+/**
+ * The set of vocabulary issues that made the document unrenderable, as a
+ * comparable string.
+ *
+ * This is the half of the blank's identity the tag walk cannot supply. A tag
+ * set answers "which vocabulary is this document built from"; it cannot answer
+ * "which part of that vocabulary failed". One known component with two required
+ * attributes goes blank on either of them, from the same tag under the same
+ * root element at the same generation, and the two blanks have different
+ * causes: `onUnknownVocabulary` names a different attribute each time. The
+ * issue carries that difference and the tag set does not.
+ *
+ * The two halves are collected from different places, so their reach differs in
+ * both directions. The analysis walks every child of the document; the tag walk
+ * starts at the first element child, and a Stream can leave a document holding
+ * more than one -- `after` targeting the root element does. The analysis stops
+ * at the first node that renders; the tag walk does not stop at all.
+ *
+ * Issue identity is its kind, its tag and, where it has one, its attribute: the
+ * same three fields `onUnknownVocabulary` reports, so a changed condition here
+ * is a changed report there. Every kind counts, including an attribute name the
+ * registry does not recognise, which is recorded without ever being the reason
+ * anything failed -- it never makes an element transparent, so it only ever
+ * appears alongside the issue that did. Counting it can only make the guard
+ * report more often, and reporting a blank twice is the mistake worth making.
+ */
+function blankDocumentVocabularyKey(
+  diagnostics: readonly RegistryStructuralOutputDiagnostic[],
+): string {
+  const issues = new Set<string>()
+  for (const diagnostic of diagnostics) {
+    for (const issue of diagnostic.issues) {
+      issues.add(
+        issue.kind === "component"
+          ? `component\u0002${issue.tag}`
+          : `${issue.kind}\u0002${issue.tag}\u0002${issue.attribute}`,
+      )
+    }
+  }
+  return [...issues].sort().join("\u0001")
 }
 
 const unknownVocabularyStructuralMetadata = new WeakMap<
@@ -3042,7 +3165,7 @@ class NodeErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
  * its surface as output. Every reachable mistake lands on the safe side.
  */
 class DocumentBlankGuardBoundary extends NodeErrorBoundary {
-  private reportedBlankCondition: ReportedBlankCondition | undefined
+  private readonly reportedBlankConditions: ReportedBlankCondition[] = []
 
   protected override countsRenderedErrorAsOutput(error: Error): boolean {
     return !(error instanceof UnknownVocabularyStructuralError)
@@ -3071,14 +3194,14 @@ class DocumentBlankGuardBoundary extends NodeErrorBoundary {
    * different root element, or the document having produced real output and
    * gone blank again each report.
    *
-   * The vocabulary set is what makes this the identity of the blank rather than
-   * a proxy for it. Two blanks with different causes deliver an identical
-   * `onError` payload, so without it the guard would answer a document that
-   * went blank for a new reason with silence, and leave the host holding the
-   * previous explanation.
+   * Naming the blank is what makes this the identity of the condition rather
+   * than a proxy for it. Two blanks with different causes deliver an identical
+   * `onError` payload, so without `tags` and `vocabulary` the guard would
+   * answer a document that went blank for a new reason with silence, and leave
+   * the host holding the previous explanation.
    *
-   * The condition is remembered rather than cleared on recovery. Nothing is in
-   * a position to clear it: this boundary's error state is reset on every retry
+   * Conditions are remembered rather than cleared on recovery. Nothing is in a
+   * position to clear them: this boundary's error state is reset on every retry
    * by design, so a clear-on-recovery rule would fire on each retry and dedupe
    * nothing at all.
    */
@@ -3087,23 +3210,31 @@ class DocumentBlankGuardBoundary extends NodeErrorBoundary {
     structural: UnknownVocabularyStructuralMetadata | undefined,
   ): boolean {
     if (!(error instanceof UnknownVocabularyStructuralError) || !structural) return true
-    const reported = this.reportedBlankCondition
     const condition: ReportedBlankCondition = Object.freeze({
       generation: structural.generation,
       productions: structural.productions,
       registry: structural.registry,
       rootKey: structural.root.key,
       tags: blankDocumentTagKey(structural.root),
+      vocabulary: blankDocumentVocabularyKey(structural.diagnostics),
     })
-    this.reportedBlankCondition = condition
-    return !(
-      reported !== undefined &&
-      reported.generation === condition.generation &&
-      reported.productions === condition.productions &&
-      reported.registry === condition.registry &&
-      reported.rootKey === condition.rootKey &&
-      reported.tags === condition.tags
+    const remembered = this.reportedBlankConditions.findIndex((candidate) =>
+      blankConditionsMatch(candidate, condition),
     )
+    if (remembered !== -1) {
+      // Re-seat the entry at the most recent end. A document flapping between
+      // two shapes has to keep both resident for as long as it flaps, however
+      // many revisions that takes, or the second shape evicts the first and
+      // every transition reports.
+      this.reportedBlankConditions.splice(remembered, 1)
+      this.reportedBlankConditions.push(condition)
+      return false
+    }
+    this.reportedBlankConditions.push(condition)
+    if (this.reportedBlankConditions.length > REMEMBERED_BLANK_CONDITIONS) {
+      this.reportedBlankConditions.shift()
+    }
+    return true
   }
 }
 

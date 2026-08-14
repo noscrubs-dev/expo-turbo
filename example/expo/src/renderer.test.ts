@@ -14638,6 +14638,128 @@ describe("React protocol renderer", () => {
     expect(vocabulary.map(({ nodeKey }) => nodeKey)).toContain("id:extra")
   })
 
+  test("reports again when the same tag goes blank on a different required attribute", async () => {
+    // The tag set cannot express this one. `DualRequired` is a known component
+    // with two required integer attributes, so a document built from it alone
+    // goes blank on either of them: same tag, same root element key, same
+    // generation, same production count. Every field the tree can supply is
+    // equal across the two raises, and the two blanks still have different
+    // causes -- `onUnknownVocabulary` names `first` and then `second`, which is
+    // the difference `onError` has to match.
+    //
+    // On revert -- keying the blank on the tag set alone, without the issues the
+    // structural analysis recorded -- the second raise matches the first in
+    // every field, `errors` stays at 1, and the host is left holding the
+    // explanation for `first` while the document is blank on `second`.
+    const registry = registryWithCounters().use(
+      defineComponentModule({
+        components: [
+          defineComponent({
+            attributes: { first: attr(integerCodec), second: attr(integerCodec) },
+            children: "none",
+            component: (props: Readonly<{ first: number; second: number }>) =>
+              createElement("dual-required", { first: props.first, second: props.second }),
+            tag: "DualRequired",
+          }),
+        ],
+        name: "dual-required",
+        version: "1.0.0",
+      }),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<DualRequired id="shell" first="bad" second="1" />'),
+    )
+    const renderer = render(session, registry, {
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(vocabulary.map(({ attribute }) => attribute)).toEqual(["first"])
+    const generationBefore = session.treeGeneration
+
+    const shell = session.tree.getElementById("shell")
+    const replacement = parseExpoTurboDocument(
+      '<DualRequired id="shell" first="1" second="bad" />',
+    ).getElementById("shell")
+    if (!shell || !replacement) throw new Error("required-attribute fixtures are missing")
+    // One mutation, so the document never passes through a renderable state: a
+    // pair of attribute writes would decode in between, render, and count as a
+    // production, which is a different report for a different reason.
+    act(() => {
+      session.mutate((tree) => tree.replaceNodeWithClones(shell, [replacement]))
+    })
+
+    expect(session.tree.getElementById("shell")?.key).toBe(shell.key)
+    expect(session.treeGeneration).toBe(generationBefore)
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    expect(vocabulary.map(({ attribute }) => attribute)).toEqual(["first", "second"])
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+      "Expo Turbo document root has no renderable fallback",
+    ])
+  })
+
+  test("reports two alternating blank shapes twice, not once per revision", async () => {
+    // Stream admission refuses a payload that carries vocabulary issues and
+    // produces nothing, which is why an unknown tag on its own never reaches the
+    // tree. A payload that also carries something the registry can decode is
+    // admitted whole, and whether that node renders is settled later:
+    // `BlankingPreview` decodes and then declines at commit time. So this is an
+    // ordinary server-driven `update` sequence, with no direct tree mutation
+    // anywhere, walking a blank document through two unrenderable shapes and
+    // back again.
+    //
+    // The first visit to each shape is a genuinely different blank and reports.
+    // Every visit after that repeats a condition the host has already been
+    // handed, and stays silent: three reports across five raises.
+    //
+    // On revert -- remembering only the last reported condition -- the two
+    // shapes evict each other, and `onError` fires 1, 2, 3, 4, 5 on a document
+    // that has been blank since the first of them. That is the sequence this
+    // dedupe exists to prevent.
+    const registry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/alternating-blank" },
+      ),
+    )
+    const errors: ExpoTurboRenderError[] = []
+    const renderer = render(session, registry, {
+      forms: new DocumentFormControls(session, { formSemantics: registry }),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    expect(errors).toHaveLength(1)
+
+    for (const tag of ["AlternatingA", "AlternatingB", "AlternatingA", "AlternatingB"]) {
+      const revisionBefore = session.revision
+      await act(async () => {
+        await dispatchTurboStreamFragment(
+          session,
+          `<turbo-stream action="update" target="form"><template><${tag} /><BlankingPreview form="form" /></template></turbo-stream>`,
+        )
+      })
+      // A refused payload leaves the revision alone, so this is the difference
+      // between a dedupe that works and a Stream that never landed.
+      expect(session.revision).toBeGreaterThan(revisionBefore)
+      expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(1)
+    }
+
+    expect(errors.map((event) => event.error.message)).toEqual([
+      "Expo Turbo document root has no renderable fallback",
+      "Expo Turbo document root has no renderable fallback",
+      "Expo Turbo document root has no renderable fallback",
+    ])
+  })
+
   test("keeps form scope active when a required form-owner attribute unwraps", async () => {
     function CaptureFallbackForm(): ReactNode {
       const binding = useExpoTurboForm()
