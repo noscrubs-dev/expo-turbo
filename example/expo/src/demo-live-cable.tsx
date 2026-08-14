@@ -409,7 +409,7 @@ async function createDemoLiveCableRuntimeFor(
     {
       next: () => `demo-live-http-stream-${++formLinkRequestId}`,
     },
-    { moduleVersions: DEMO_MODULE_VERSIONS },
+    { formSemantics: DEMO_REGISTRY, moduleVersions: DEMO_MODULE_VERSIONS },
   );
   let sources: CableStreamSourceRegistry | undefined;
   const sourceConnections = Object.freeze({

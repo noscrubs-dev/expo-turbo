@@ -1,5 +1,5 @@
 import type { RequestIdAdapter, VisitAction } from "../adapters/index.js"
-import { PropsError, RequestError, StateError, TargetError } from "./errors.js"
+import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors.js"
 import { buildFormRequest, type FormRequestPlan } from "./form-request.js"
 import { formSubmissionActivity } from "./form-submission-activity.js"
 import type {
@@ -11,7 +11,7 @@ import {
   admitFormSubmissionProposal,
   type FormSubmissionProposal,
 } from "./form-submission-proposal.js"
-import type { FormMode, SuccessfulFormEntry } from "./forms.js"
+import type { FormControlSemantics, FormMode, SuccessfulFormEntry } from "./forms.js"
 import { type FormSubmissionDestination, resolveFormSubmissionDestination } from "./frames.js"
 import type { DocumentSession } from "./session.js"
 import { attributeValue, isElement, type ProtocolElement, type ProtocolNode } from "./tree.js"
@@ -20,12 +20,22 @@ import { classifyTopLevelLocation } from "./visitability.js"
 export interface FormLinkSubmissionControllerOptions {
   readonly capabilityHash?: string
   readonly formMode?: FormMode
+  readonly formSemantics?: FormLinkSemantics
   readonly moduleVersions?: string
 }
+
+export type FormLinkSemantics = Partial<FormControlSemantics>
 
 export interface FormLinkSubmissionProposalOptions {
   readonly signal?: AbortSignal
 }
+
+export type FormLinkSubmissionInterception =
+  | Readonly<{ readonly intercept: true }>
+  | Readonly<{
+      readonly intercept: false
+      readonly reason: "form-mode-off" | "missing-metadata" | "opt-out" | "unknown-vocabulary"
+    }>
 
 interface GeneratedFormLinkMetadata {
   readonly action: string
@@ -122,6 +132,7 @@ function generatedEntries(
 export class FormLinkSubmissionController {
   private readonly capabilityHash: string | undefined
   private readonly formMode: FormMode
+  private readonly formSemantics: FormLinkSemantics | undefined
   private readonly moduleVersions: string | undefined
 
   constructor(
@@ -149,13 +160,44 @@ export class FormLinkSubmissionController {
     if (options.moduleVersions !== undefined && typeof options.moduleVersions !== "string") {
       throw new PropsError("Generated form-link module versions must be a string")
     }
+    if (
+      options.formSemantics !== undefined &&
+      (!options.formSemantics ||
+        typeof options.formSemantics !== "object" ||
+        Array.isArray(options.formSemantics) ||
+        (options.formSemantics.resolve !== undefined &&
+          typeof options.formSemantics.resolve !== "function"))
+    ) {
+      throw new PropsError("Generated form-link semantics must provide an optional resolver")
+    }
     this.capabilityHash = options.capabilityHash
     this.formMode = normalizeFormMode(options.formMode)
+    this.formSemantics = options.formSemantics
     this.moduleVersions = options.moduleVersions
   }
 
   shouldInterceptSubmission(linkNodeKey: string): boolean {
-    return this.shouldInterceptLink(this.activeLink(linkNodeKey))
+    return this.submissionInterception(linkNodeKey).intercept
+  }
+
+  submissionInterception(linkNodeKey: string): FormLinkSubmissionInterception {
+    const link = this.activeLink(linkNodeKey)
+    if (!hasAttribute(link, "data-turbo-method") && !hasAttribute(link, "data-turbo-stream")) {
+      return Object.freeze({ intercept: false, reason: "missing-metadata" })
+    }
+    if (this.formMode === "off") {
+      return Object.freeze({ intercept: false, reason: "form-mode-off" })
+    }
+    if (closestTurboSetting(link) === "false") {
+      return Object.freeze({ intercept: false, reason: "opt-out" })
+    }
+    try {
+      return this.resolveLinkVocabulary(link) === undefined
+        ? Object.freeze({ intercept: false, reason: "unknown-vocabulary" })
+        : Object.freeze({ intercept: true })
+    } catch {
+      return Object.freeze({ intercept: false, reason: "unknown-vocabulary" })
+    }
   }
 
   submissionProposal(
@@ -242,11 +284,12 @@ export class FormLinkSubmissionController {
         target: link.key,
       })
     }
-    if (!this.shouldInterceptLink(link)) {
+    if (!this.linkPolicyAllowsInterception(link)) {
       throw new TargetError("Generated form link is not interceptable", {
         target: link.key,
       })
     }
+    this.assertKnownLinkVocabulary(link)
 
     const streamAttributePresent = hasAttribute(link, "data-turbo-stream")
     const methodValue = attributeValue(link, "data-turbo-method")
@@ -335,11 +378,36 @@ export class FormLinkSubmissionController {
     }
   }
 
-  private shouldInterceptLink(link: ProtocolElement): boolean {
+  private linkPolicyAllowsInterception(link: ProtocolElement): boolean {
     if (!hasAttribute(link, "data-turbo-method") && !hasAttribute(link, "data-turbo-stream")) {
       return false
     }
+    // data-turbo is package-owned, tag-independent vocabulary. Keep the safety
+    // opt-out effective before raw link vocabulary is resolved.
     return this.formMode !== "off" && closestTurboSetting(link) !== "false"
+  }
+
+  private assertKnownLinkVocabulary(link: ProtocolElement): void {
+    if (this.resolveLinkVocabulary(link) !== undefined) return
+    throw new RegistryError("Expo Turbo generated form-link submission requires known vocabulary", {
+      target: link.key,
+    })
+  }
+
+  private resolveLinkVocabulary(link: ProtocolElement): Readonly<object> | undefined {
+    const resolve = this.formSemantics?.resolve
+    if (!resolve) return undefined
+    try {
+      const definition: unknown = resolve.call(this.formSemantics, link.tagName)
+      if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+        return undefined
+      }
+      return definition
+    } catch {
+      throw new RegistryError("Expo Turbo generated form-link vocabulary could not be resolved", {
+        target: link.key,
+      })
+    }
   }
 
   private requestPlan(
