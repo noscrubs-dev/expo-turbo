@@ -30,6 +30,13 @@ export interface FormLinkSubmissionProposalOptions {
   readonly signal?: AbortSignal
 }
 
+export type FormLinkSubmissionInterception =
+  | Readonly<{ readonly intercept: true }>
+  | Readonly<{
+      readonly intercept: false
+      readonly reason: "form-mode-off" | "missing-metadata" | "opt-out" | "unknown-vocabulary"
+    }>
+
 interface GeneratedFormLinkMetadata {
   readonly action: string
   readonly confirmationMessage?: string
@@ -170,7 +177,27 @@ export class FormLinkSubmissionController {
   }
 
   shouldInterceptSubmission(linkNodeKey: string): boolean {
-    return this.shouldInterceptLink(this.activeLink(linkNodeKey))
+    return this.submissionInterception(linkNodeKey).intercept
+  }
+
+  submissionInterception(linkNodeKey: string): FormLinkSubmissionInterception {
+    const link = this.activeLink(linkNodeKey)
+    if (!hasAttribute(link, "data-turbo-method") && !hasAttribute(link, "data-turbo-stream")) {
+      return Object.freeze({ intercept: false, reason: "missing-metadata" })
+    }
+    if (this.formMode === "off") {
+      return Object.freeze({ intercept: false, reason: "form-mode-off" })
+    }
+    if (closestTurboSetting(link) === "false") {
+      return Object.freeze({ intercept: false, reason: "opt-out" })
+    }
+    try {
+      return this.resolveLinkVocabulary(link) === undefined
+        ? Object.freeze({ intercept: false, reason: "unknown-vocabulary" })
+        : Object.freeze({ intercept: true })
+    } catch {
+      return Object.freeze({ intercept: false, reason: "unknown-vocabulary" })
+    }
   }
 
   submissionProposal(
@@ -351,15 +378,6 @@ export class FormLinkSubmissionController {
     }
   }
 
-  private shouldInterceptLink(link: ProtocolElement): boolean {
-    if (!this.linkPolicyAllowsInterception(link)) return false
-    try {
-      return this.resolveLinkVocabulary(link) !== undefined
-    } catch {
-      return false
-    }
-  }
-
   private linkPolicyAllowsInterception(link: ProtocolElement): boolean {
     if (!hasAttribute(link, "data-turbo-method") && !hasAttribute(link, "data-turbo-stream")) {
       return false
@@ -380,7 +398,11 @@ export class FormLinkSubmissionController {
     const resolve = this.formSemantics?.resolve
     if (!resolve) return undefined
     try {
-      return resolve.call(this.formSemantics, link.tagName)
+      const definition: unknown = resolve.call(this.formSemantics, link.tagName)
+      if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+        return undefined
+      }
+      return definition
     } catch {
       throw new RegistryError("Expo Turbo generated form-link vocabulary could not be resolved", {
         target: link.key,

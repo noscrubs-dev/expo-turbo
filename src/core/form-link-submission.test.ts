@@ -12,7 +12,7 @@ import {
   type DocumentHistoryWriteMethod,
 } from "./document-history"
 import { DocumentSnapshotCache } from "./document-snapshot-cache"
-import { RegistryError, StateError, TargetError } from "./errors"
+import { PropsError, RegistryError, StateError, TargetError } from "./errors"
 import {
   FormLinkSubmissionController,
   type FormLinkSubmissionControllerOptions,
@@ -143,6 +143,188 @@ function mountedFrameHistory(document: DocumentSession, frameId: string) {
 }
 
 describe("FormLinkSubmissionController", () => {
+  test("applies package opt-outs before unknown link vocabulary", async () => {
+    const document = session(
+      `<Gallery>
+        <FutureLink id="opted-out" data-turbo="false" data-turbo-method="post" />
+        <FutureLink id="mode-off" data-turbo-method="post" />
+        <DemoLink id="known" data-turbo-method="post" />
+      </Gallery>`,
+    )
+    const requests: TurboRequest[] = []
+    const optedOut = harness(document, { requests })
+    const modeOff = harness(document, { controller: { formMode: "off" }, requests })
+    const failures: unknown[] = []
+
+    expect(optedOut.links.submissionInterception("id:opted-out")).toEqual({
+      intercept: false,
+      reason: "opt-out",
+    })
+    expect(modeOff.links.submissionInterception("id:mode-off")).toEqual({
+      intercept: false,
+      reason: "form-mode-off",
+    })
+
+    for (const [links, nodeKey] of [
+      [optedOut.links, "id:opted-out"],
+      [modeOff.links, "id:mode-off"],
+    ] as const) {
+      for (const attempt of [
+        () => links.submissionProposal(nodeKey, "/danger?field=A"),
+        () => links.submit(nodeKey, "/danger?field=A"),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect([optedOut.allocated(), modeOff.allocated()]).toEqual([0, 0])
+    expect(failures).toHaveLength(4)
+    for (const failure of failures) {
+      expect(failure).toBeInstanceOf(TargetError)
+      expect(failure).not.toBeInstanceOf(RegistryError)
+    }
+
+    const known = harness(document, { requests })
+    await known.links.submit("id:known", "/safe?field=B")
+    expect(requests).toEqual([
+      expect.objectContaining({ method: "POST", url: "https://example.test/safe" }),
+    ])
+  })
+
+  test("keeps resolver failures distinct from unresolved vocabulary", async () => {
+    const document = session(
+      `<Gallery>
+        <FutureLink id="future" data-turbo-method="post" />
+        <DemoLink id="known" data-turbo-method="post" />
+      </Gallery>`,
+    )
+    const requests: TurboRequest[] = []
+    const throwing = harness(document, {
+      controller: {
+        formSemantics: {
+          resolve() {
+            throw new Error("resolver failed")
+          },
+        },
+      },
+      requests,
+      useDefaultSemantics: false,
+    })
+    const failures: unknown[] = []
+
+    expect(throwing.links.submissionInterception("id:future")).toEqual({
+      intercept: false,
+      reason: "unknown-vocabulary",
+    })
+    expect(throwing.links.shouldInterceptSubmission("id:future")).toBe(false)
+    for (const attempt of [
+      () => throwing.links.submissionProposal("id:future", "/danger?field=A"),
+      () => throwing.links.submit("id:future", "/danger?field=A"),
+    ]) {
+      try {
+        await attempt()
+        failures.push(undefined)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(throwing.allocated()).toBe(0)
+    expect(failures.map((failure) => (failure as Error).message)).toEqual([
+      "Expo Turbo generated form-link vocabulary could not be resolved",
+      "Expo Turbo generated form-link vocabulary could not be resolved",
+    ])
+    for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+
+    const known = harness(document, { requests })
+    await known.links.submit("id:known", "/safe?field=B")
+    expect(requests).toEqual([
+      expect.objectContaining({ method: "POST", url: "https://example.test/safe" }),
+    ])
+  })
+
+  test("validates form-link semantics before use", async () => {
+    const document = session('<Gallery><DemoLink id="known" data-turbo-method="post" /></Gallery>')
+    const requests: TurboRequest[] = []
+    const failures: unknown[] = []
+
+    for (const formSemantics of [null, [], { resolve: true }]) {
+      try {
+        harness(document, {
+          controller: { formSemantics: formSemantics as never },
+          requests,
+          useDefaultSemantics: false,
+        })
+        failures.push(undefined)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(failures).toHaveLength(3)
+    for (const failure of failures) expect(failure).toBeInstanceOf(PropsError)
+
+    const known = harness(document, { requests })
+    await known.links.submit("id:known", "/safe?field=B")
+    expect(requests).toEqual([
+      expect.objectContaining({ method: "POST", url: "https://example.test/safe" }),
+    ])
+  })
+
+  test("refuses non-object resolver results before request construction", async () => {
+    const document = session(
+      `<Gallery>
+        <FutureLink id="future" data-turbo-method="post" />
+        <DemoLink id="known" data-turbo-method="post" />
+      </Gallery>`,
+    )
+    const requests: TurboRequest[] = []
+    const unavailable = [null, false, 0, "", Number.NaN].map((definition) =>
+      harness(document, {
+        controller: { formSemantics: { resolve: () => definition as never } },
+        requests,
+        useDefaultSemantics: false,
+      }),
+    )
+    const interceptions: boolean[] = []
+    const failures: unknown[] = []
+
+    for (const { links } of unavailable) {
+      interceptions.push(links.shouldInterceptSubmission("id:future"))
+      for (const attempt of [
+        () => links.submissionProposal("id:future", "/danger?field=A"),
+        () => links.submit("id:future", "/danger?field=A"),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(interceptions).toEqual([false, false, false, false, false])
+    expect(unavailable.map(({ allocated }) => allocated())).toEqual([0, 0, 0, 0, 0])
+    expect(failures).toHaveLength(10)
+    for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+
+    const known = harness(document, { requests })
+    await known.links.submit("id:known", "/safe?field=B")
+    expect(requests).toEqual([
+      expect.objectContaining({ method: "POST", url: "https://example.test/safe" }),
+    ])
+  })
+
   test("fails closed for unknown or unavailable link vocabulary before transport", async () => {
     const document = session(
       `<Gallery>

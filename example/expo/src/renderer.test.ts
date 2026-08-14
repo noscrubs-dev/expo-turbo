@@ -10496,6 +10496,73 @@ describe("React protocol renderer", () => {
     act(() => harness.renderer.unmount())
   })
 
+  test("distinguishes unknown generated links from authored opt-outs without escalation", async () => {
+    const documentRequests: TurboRequest[] = []
+    const generatedRequests: TurboRequest[] = []
+    const navigation: Readonly<{ action: string; url: string }>[] = []
+    const errors: ExpoTurboRenderError[] = []
+    let requestIds = 0
+    const harness = renderDocumentLinks(
+      `<Gallery>
+        <DocumentLink href="/generated-unknown" data-turbo-method="post" />
+        <DocumentLink href="/generated-opt-out" data-turbo="false" data-turbo-method="post" />
+      </Gallery>`,
+      async (request) => {
+        documentRequests.push(request)
+        throw new Error("refused generated form links must not become document GETs")
+      },
+      "https://example.test/gallery",
+      {
+        back() {},
+        openExternal() {
+          throw new Error("same-origin refused generated form links must not open externally")
+        },
+        visit(url, action) {
+          navigation.push({ action, url })
+        },
+      },
+      undefined,
+      (session) =>
+        new FormLinkSubmissionController(
+          session,
+          new FormSubmissionController(session, {
+            async fetch(request) {
+              generatedRequests.push(request)
+              throw new Error("refused generated form links must not fetch")
+            },
+          }),
+          { next: () => `refused-generated-link-${++requestIds}` },
+        ),
+      undefined,
+      () => ({ onError: (event) => errors.push(event) }),
+    )
+
+    await expect(harness.activation("/generated-unknown")()).resolves.toEqual({
+      action: "advance",
+      kind: "navigation",
+      reason: "unknown-vocabulary",
+      status: "delegated",
+      url: "https://example.test/generated-unknown",
+    })
+    await expect(harness.activation("/generated-opt-out")()).resolves.toEqual({
+      action: "advance",
+      kind: "navigation",
+      reason: "opt-out",
+      status: "delegated",
+      url: "https://example.test/generated-opt-out",
+    })
+    expect(requestIds).toBe(0)
+    expect(documentRequests).toEqual([])
+    expect(generatedRequests).toEqual([])
+    expect(errors).toEqual([])
+    expect(harness.controller.state.status).toBe("initialized")
+    expect(navigation).toEqual([
+      { action: "advance", url: "https://example.test/generated-unknown" },
+      { action: "advance", url: "https://example.test/generated-opt-out" },
+    ])
+    act(() => harness.renderer.unmount())
+  })
+
   test("requires host navigation when generated form-link interception is disabled", async () => {
     const documentRequests: TurboRequest[] = []
     const generatedRequests: TurboRequest[] = []
@@ -10652,6 +10719,7 @@ describe("React protocol renderer", () => {
     )
     const formLinks = {
       shouldInterceptSubmission: () => true,
+      submissionInterception: () => ({ intercept: true }),
       submit: async (nodeKey: string, href: string) => {
         submitted.push({ href, nodeKey })
         return {}
