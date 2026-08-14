@@ -30,11 +30,14 @@ All notable public package, gem, and protocol changes will be recorded here.
   them and a real `ComponentRegistry` cannot produce them, so this affects
   untyped hosts only.
 
-- **Breaking:** Raise `TargetError` when a generated form link loses its
-  `data-turbo-method` and `data-turbo-stream` attributes between render and
-  activation. That race previously delegated to host navigation as
-  `"form-mode-off"`, silently performing an ordinary visit where the markup at
-  render time had asked for a form submission.
+- Add `FormLinkSubmissionController#submissionInterception()`, a read-only query
+  returning either `{ intercept: true }` or `{ intercept: false, reason }` with
+  `reason` one of `"form-mode-off"`, `"missing-metadata"`, `"opt-out"`, or
+  `"unknown-vocabulary"`. `shouldInterceptSubmission()` is unchanged and now
+  reads its boolean from this query. Direct `expo-turbo/core` consumers can use
+  it to tell the four refusal causes apart; the query allocates no request ID,
+  dispatches no request, and grants no ability to submit a link that would
+  otherwise be refused.
 
 ## 0.3.0 - 2026-08-13
 
