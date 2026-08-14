@@ -455,4 +455,141 @@ describe("Expo Turbo runtime generated form links", () => {
 
     runtime.dispose()
   })
+
+  const LINK_DOCUMENT =
+    '<TestDocument><TestField id="destroy" data-turbo-method="delete" /></TestDocument>'
+
+  /** Holds every unsafe response open so a submission can be caught in flight. */
+  function heldTransport(): SpiedTransport & { release: () => void } {
+    const requests: TurboRequest[] = []
+    let resolvePending: ((value: TurboResponse) => void) | undefined
+    return {
+      fetch: {
+        fetch: async (request: TurboRequest) => {
+          requests.push(request)
+          if (request.method === "GET") {
+            return {
+              headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+              redirected: false,
+              status: 200,
+              text: async () => LINK_DOCUMENT,
+              url: request.url,
+            }
+          }
+          return new Promise<TurboResponse>((resolve) => {
+            resolvePending = resolve
+          })
+        },
+      },
+      release: () =>
+        resolvePending?.({
+          headers: { "Content-Type": EXPO_TURBO_MIME_TYPE },
+          redirected: true,
+          status: 200,
+          text: async () => "<TestDocument />",
+          url: "https://example.test/after-delete",
+        }),
+      requests,
+    }
+  }
+
+  test("aborts an in-flight generated form-link submission when the runtime is disposed", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    const urlBeforeDispose = runtime.session.tree.document.url
+
+    const submitting = runtime.formLinks.submit("id:destroy", "/danger?field=A")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(transport.requests).toHaveLength(2)
+    expect(transport.requests[1]?.method).toBe("DELETE")
+    expect(transport.requests[1]?.signal?.aborted).toBe(false)
+
+    // `ExpoTurbo` calls this on unmount.
+    runtime.dispose()
+
+    // Without the runtime owning the controller's lifetime the signal stays
+    // live here, the released response reports "applied", and the disposed
+    // session's document URL moves to /after-delete.
+    expect(transport.requests[1]?.signal?.aborted).toBe(true)
+
+    transport.release()
+    const report = await submitting
+
+    expect(report.status).toBe("canceled")
+    expect(report.status).not.toBe("applied")
+    expect(runtime.session.tree.document.url).toBe(urlBeforeDispose)
+  })
+
+  test("refuses a generated form-link submission started after disposal", async () => {
+    // A transport that answers, not one that holds: without the guard this test
+    // must fail on its assertions rather than hang on a leaked request.
+    const transport = spiedTransport(LINK_DOCUMENT)
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    runtime.dispose()
+
+    // The other half of the same hole: an activation that starts late would
+    // commit into the disposed session just as surely as one already running.
+    expect(() => runtime.formLinks.submit("id:destroy", "/danger?field=A")).toThrow(
+      "Generated form links have been disposed",
+    )
+    expect(transport.requests.map((request) => request.url)).toEqual([DOCUMENT_URL])
+  })
+
+  test("disposes the form-link controller it built exactly once", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    const formLinks = runtime.formLinks
+    const disposeOnce = formLinks.dispose.bind(formLinks)
+    let disposals = 0
+    formLinks.dispose = () => {
+      disposals += 1
+      disposeOnce()
+    }
+
+    runtime.dispose()
+    runtime.dispose()
+
+    // Not zero, or the request outlives the unmount. Not twice: #412 showed two
+    // owners calling dispose() on one object, which is harmless only for as
+    // long as both stay idempotent.
+    expect(disposals).toBe(1)
+    expect(formLinks.isDisposed).toBe(true)
+  })
+
+  test("disposes cleanly with no generated form-link submission in flight", async () => {
+    const transport = heldTransport()
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: DOCUMENT_URL,
+    })
+
+    await runtime.load()
+    expect(transport.requests).toHaveLength(1)
+
+    expect(() => runtime.dispose()).not.toThrow()
+    expect(() => runtime.dispose()).not.toThrow()
+
+    expect(runtime.formLinks.isDisposed).toBe(true)
+    expect(runtime.state.isDisposed).toBe(true)
+    expect(runtime.scopes.isDisposed).toBe(true)
+  })
 })

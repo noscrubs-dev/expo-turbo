@@ -961,7 +961,9 @@ describe("ExpoTurboApp boundary containment", () => {
 })
 
 describe("ExpoTurboApp generated form links", () => {
-  const DELETE_XML = '<AppDoc><AppDocLink href="/danger?field=A" data-turbo-method="post" /></AppDoc>'
+  // What `link_to "Delete", path, data: { turbo_method: :delete }` renders.
+  const DELETE_XML =
+    '<AppDoc><AppDocLink href="/danger?field=A" data-turbo-method="delete" /></AppDoc>'
 
   interface SubmittingTransport {
     readonly fetch: { fetch: (request: TurboRequest) => Promise<TurboResponse> }
@@ -1024,7 +1026,9 @@ describe("ExpoTurboApp generated form links", () => {
     // form-link submissions"), reached neither error channel, and sent nothing.
     expect(transport.requests).toHaveLength(2)
     const submission = transport.requests[1]
-    expect(submission?.method).toBe("POST")
+    // The Rails delete button sends DELETE directly, not a POST carrying
+    // `_method`: a generated form link uses the exact declared method.
+    expect(submission?.method).toBe("DELETE")
     expect(submission?.url).toBe(`${ORIGIN}/danger`)
     expect(submission?.body?.value).toBe("field=A")
     expect(reported).toEqual([])
@@ -1136,5 +1140,70 @@ describe("ExpoTurboApp generated form links", () => {
       renderer.unmount()
     })
     runtime.dispose()
+  })
+
+  test("never disposes a form-link controller the host supplied itself", async () => {
+    routerPath = "/catalog"
+    activations.clear()
+    const transport = submittingTransport(DELETE_XML)
+    let hostDisposals = 0
+    let hostSubmissions = 0
+    const hostFormLinks = {
+      dispose: () => {
+        hostDisposals += 1
+      },
+      shouldInterceptSubmission: () => true,
+      submissionInterception: () => ({ intercept: true }),
+      submit: async () => {
+        hostSubmissions += 1
+        return { status: "applied" }
+      },
+    } as unknown as FormLinkSubmissionController
+    const runtime = createExpoTurboRuntime({
+      fetch: transport.fetch,
+      registry,
+      url: `${ORIGIN}/catalog`,
+    })
+    await runtime.load()
+
+    const renderer = await mount(
+      createElement(
+        ExpoTurboProvider,
+        {
+          documentController: runtime.controller,
+          formLinks: hostFormLinks,
+          forms: runtime.forms,
+          frames: runtime.frames,
+          ownsStateDisposal: false,
+          registry,
+          scopes: runtime.scopes,
+          session: runtime.session,
+          state: runtime.state,
+        },
+        createElement(ExpoTurboRoot),
+      ),
+    )
+
+    const activate = activations.get("/danger?field=A")
+    if (!activate) throw new Error("the fixture link never mounted")
+    await act(async () => {
+      await activate()
+      await nextTurn()
+    })
+    // The host's object is live inside the provider, not an unreachable stub.
+    // That is what gives the disposal count below its teeth.
+    expect(hostSubmissions).toBe(1)
+
+    await act(async () => {
+      renderer.unmount()
+    })
+    runtime.dispose()
+
+    // The runtime disposes only what the runtime constructed. Disposing a
+    // caller's object is worse than leaking your own: the host may still be
+    // using it on another screen.
+    expect(hostDisposals).toBe(0)
+    expect(runtime.formLinks.isDisposed).toBe(true)
+    expect(runtime.formLinks).not.toBe(hostFormLinks)
   })
 })
