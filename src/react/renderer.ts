@@ -2784,33 +2784,70 @@ interface UnknownVocabularyStructuralMetadata {
  * What makes one raise of the blank-root surface a different occasion from the
  * last one.
  *
- * The payload this surface hands `onError` carries no varying detail: the class
- * and the message are constants of this file, `nodeKey` is the document's own
- * key, and the error's `target` is the root element's key. Neither key can move
- * without a new document, so within one document two raises agreeing on
- * `rootKey` deliver the same payload twice and the second carries nothing the
- * first did not. The remaining three fields are not needed to keep the payload
- * honest -- they make the guard speak up more often than payload identity alone
- * would require, because a repeat is worth hearing when the document is a new
- * one (`generation`), when different vocabulary is installed (`registry`), or
- * when the document rendered something real and went blank again
+ * `vocabulary` is the identity of the blank: the set of vocabulary the registry
+ * could not render, which is the reason the document produced nothing. The
+ * other four fields are the circumstances that make a repeat of the same
+ * vocabulary worth hearing anyway -- a new document (`generation`), newly
+ * installed vocabulary (`registry`), a different root element (`rootKey`), or
+ * the document having rendered something real and gone blank again
  * (`productions`).
+ *
+ * Naming the vocabulary is what keeps this a dedupe rather than a mute. The
+ * payload the surface hands `onError` cannot express the difference -- the
+ * class and the message are constants of this file, and the only keys in it are
+ * the document's and the root element's -- so two blanks with different causes
+ * arrive byte-identical. Keying on the payload alone would therefore suppress a
+ * document that went blank for a genuinely new reason, and the host would be
+ * left holding the first explanation for the second failure.
  *
  * Deliberately absent: `session.revision`. The revision answers "should the
  * verdict be retried", and it bumps on every unrelated attribute write, which
- * is the traffic this dedupe exists to survive. `productions` answers the
- * different question of whether a retry ever succeeded, which is what makes one
- * blank episode distinct from the next.
+ * is the traffic this dedupe exists to survive. Writing an attribute does not
+ * change which vocabulary failed to render, so the noise stays deduped while a
+ * changed cause does not.
  *
- * Nothing here is predicted. Each field is a value the renderer has already
- * observed and already keys the blank verdict on, so the discriminator adds no
- * new guess about what a mutation might have meant.
+ * Nothing here is predicted. Every field is a value the renderer has already
+ * computed for this commit -- the vocabulary set is the structural analysis the
+ * guard already carries to explain itself -- so the discriminator adds no new
+ * guess about what a mutation might have meant. Widening the key can only make
+ * the guard report more often, never less, which is the safe direction: a
+ * swallowed report is worse than a duplicated one.
  */
 interface ReportedBlankCondition {
   readonly generation: number
   readonly productions: number
   readonly registry: unknown
   readonly rootKey: string
+  readonly vocabulary: string
+}
+
+/**
+ * The set of vocabulary a blank document could not render, as a comparable
+ * string.
+ *
+ * Deduplicated and sorted, so the same failure reported by two nodes, or in a
+ * different tree order, is the same condition. Multiplicity is deliberately
+ * dropped: removing one of two nodes that fail on the same tag leaves the
+ * document blank for exactly the reason it already reported.
+ *
+ * The separators are control characters, which cannot occur in an XML name or
+ * an attribute name, so no tag can spell a delimiter and collide with another
+ * pair.
+ */
+function unknownVocabularyConditionKey(
+  diagnostics: readonly RegistryStructuralOutputDiagnostic[],
+): string {
+  const identities = new Set<string>()
+  for (const diagnostic of diagnostics) {
+    for (const issue of diagnostic.issues) {
+      identities.add(
+        "attribute" in issue
+          ? `${issue.kind}\u0000${issue.tag}\u0000${issue.attribute}`
+          : `${issue.kind}\u0000${issue.tag}`,
+      )
+    }
+  }
+  return [...identities].sort().join("\u0001")
 }
 
 const unknownVocabularyStructuralMetadata = new WeakMap<
@@ -2999,9 +3036,16 @@ class DocumentBlankGuardBoundary extends NodeErrorBoundary {
    * itself, so any other error reaching this boundary reports. It applies only
    * while the condition is carried, so an instance whose metadata has already
    * been consumed -- a host that kept the error and threw it again -- reports.
-   * And it requires every field to match, so a new document, newly installed
-   * vocabulary, a different root element, or the document having produced real
-   * output and gone blank again each report.
+   * And it requires every field to match, so a document blank on different
+   * vocabulary than last time, a new document, newly installed vocabulary, a
+   * different root element, or the document having produced real output and
+   * gone blank again each report.
+   *
+   * The vocabulary set is what makes this the identity of the blank rather than
+   * a proxy for it. Two blanks with different causes deliver an identical
+   * `onError` payload, so without it the guard would answer a document that
+   * went blank for a new reason with silence, and leave the host holding the
+   * previous explanation.
    *
    * The condition is remembered rather than cleared on recovery. Nothing is in
    * a position to clear it: this boundary's error state is reset on every retry
@@ -3019,6 +3063,7 @@ class DocumentBlankGuardBoundary extends NodeErrorBoundary {
       productions: structural.productions,
       registry: structural.registry,
       rootKey: structural.root.key,
+      vocabulary: unknownVocabularyConditionKey(structural.diagnostics),
     })
     this.reportedBlankCondition = condition
     return !(
@@ -3026,7 +3071,8 @@ class DocumentBlankGuardBoundary extends NodeErrorBoundary {
       reported.generation === condition.generation &&
       reported.productions === condition.productions &&
       reported.registry === condition.registry &&
-      reported.rootKey === condition.rootKey
+      reported.rootKey === condition.rootKey &&
+      reported.vocabulary === condition.vocabulary
     )
   }
 }

@@ -182,6 +182,36 @@ createDefaultFetchAdapter({
 })
 ```
 
+One error deserves the same precision. When a document renders nothing at all
+— every element unrecognised, or the only component that could have rendered
+declining to — Expo Turbo replaces the document with a blank-root surface and
+reports `StateError("Expo Turbo document root has no renderable fallback")`.
+That payload names the **condition**, not the **cause**: its message is fixed
+and the only keys it carries are the document's and the root element's, so two
+blanks with entirely different causes arrive identical. Which tag failed to
+render is reported separately, on `onUnknownVocabulary`. A host debugging a
+blank screen has to read both:
+
+```tsx
+<ExpoTurboApp
+  origin="https://example.com"
+  registry={registry}
+  onError={(error) => telemetry.captureException(error)}
+  onUnknownVocabulary={(event) => telemetry.captureMessage("unknown vocabulary", event)}
+/>
+```
+
+`onError` fires once per blank condition, not once per document revision.
+While a document stays blank, a Turbo Stream trying to recover it commits a
+revision each time it arrives and the surface is retried on every one;
+reporting each retry would make the channel loudest exactly when it carries the
+least. A repeat is reported when the blank is genuinely a new one: different
+vocabulary failed, a new document installed, a different registry was supplied,
+or the document rendered real content and went blank again.
+`onUnknownVocabulary` is never deduplicated alongside it — each unrecognised
+element reports through its own boundary — so the cause channel stays complete
+while the condition channel is quiet.
+
 Pass `loading` or `renderError` to replace either surface.
 
 ### Transport
