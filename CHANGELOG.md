@@ -12,6 +12,18 @@ All notable public package, gem, and protocol changes will be recorded here.
   stayed on the protocol-error surface permanently, which on a native client is
   an unrecoverable blank screen requiring an app restart.
 
+- `onError` no longer repeats the blank-root report for a blank condition it has
+  already reported. The report is keyed on the identity of that condition — root
+  element, tree generation, registry, the count of times the document has
+  produced output, and the unknown vocabulary the guard recorded — so an
+  unrelated write to a blank document is silent while a new document, new
+  vocabulary, or a recovery followed by a fresh blank each report again. The
+  blank-root payload is a constant, so a repeat carried no information a host
+  could act on. `onUnknownVocabulary` is unaffected: it reports every
+  unrecognised element from that element's own boundary, independently of this
+  gate. `onError` names the condition, `onUnknownVocabulary` names the cause,
+  and a host diagnosing a blank screen should read both.
+
 ## 0.3.0 - 2026-08-13
 
 - **Breaking:** Replace four client compatibility headers with
