@@ -10306,7 +10306,16 @@ describe("React protocol renderer", () => {
     for (const fixture of [
       {
         after: '<DocumentLink id="link" href="/danger" />',
-        before: '<DocumentLink id="link" href="/danger" data-turbo-method="post" data-turbo-stream="" />',
+        before: '<DocumentLink id="link" href="/danger" data-turbo-method="post" />',
+      },
+      {
+        after: '<DocumentLink id="link" href="/danger" />',
+        before: '<DocumentLink id="link" href="/danger" data-turbo-stream="" />',
+      },
+      {
+        after: '<DocumentLink id="link" href="/danger" data-turbo-method="post" />',
+        before:
+          '<DocumentLink id="link" href="/danger" data-turbo-method="post" data-turbo-stream="" />',
       },
       {
         after: '<DocumentLink id="link" href="/danger" data-turbo-method="post" />',
@@ -10369,6 +10378,9 @@ describe("React protocol renderer", () => {
       expect(() => {
         activation = staleActivation()
       }).not.toThrow()
+      // Loss-to-plain fixtures pin the widened outer condition. If the comparison throw
+      // is removed, the pre-existing missing-metadata branch produces the same rejection.
+      // The retained-method loss and gain fixtures pin the comparison throw itself.
       await expect(activation!).rejects.toEqual(
         new TargetError("Generated form link metadata changed before activation"),
       )
@@ -10378,6 +10390,82 @@ describe("React protocol renderer", () => {
       expect(errors).toEqual([])
       expect(surfaces).toEqual([])
       expect(harness.controller.state.status).toBe("initialized")
+      act(() => harness.renderer.unmount())
+    }
+  })
+
+  test("refreshes generated form-link activations after method or Stream metadata changes", async () => {
+    for (const fixture of [
+      {
+        after: '<DocumentLink id="link" href="/danger" data-turbo-method="post" />',
+        before: '<DocumentLink id="link" href="/danger" />',
+        method: "POST",
+      },
+      {
+        after: '<DocumentLink id="link" href="/danger" data-turbo-stream="" />',
+        before: '<DocumentLink id="link" href="/danger" />',
+        method: "GET",
+      },
+    ]) {
+      const documentRequests: TurboRequest[] = []
+      const generatedRequests: TurboRequest[] = []
+      let requestId = 0
+      const harness = renderDocumentLinks(
+        `<Gallery id="gallery">${fixture.before}</Gallery>`,
+        async (request) => {
+          documentRequests.push(request)
+          throw new Error("refreshed generated form links must not become document GETs")
+        },
+        "https://example.test/gallery",
+        undefined,
+        undefined,
+        (session, formSemantics) =>
+          new FormLinkSubmissionController(
+            session,
+            new FormSubmissionController(session, {
+              async fetch(request) {
+                generatedRequests.push(request)
+                return {
+                  headers: {},
+                  redirected: false,
+                  status: 204,
+                  text: async () => "",
+                  url: request.url,
+                }
+              },
+            }),
+            { next: () => `refreshed-generated-link-${++requestId}` },
+            { formSemantics },
+          ),
+      )
+      const rendersBeforeMorph = harness.renderCount()
+      const staleActivation = harness.activation("/danger")
+
+      await act(async () => {
+        await dispatchTurboStreamFragment(
+          harness.session,
+          `<turbo-stream action="update" target="gallery" method="morph"><template>${fixture.after}</template></turbo-stream>`,
+        )
+      })
+
+      const freshActivation = harness.activation("/danger")
+      expect(harness.renderCount()).toBeGreaterThan(rendersBeforeMorph)
+      expect(freshActivation).not.toBe(staleActivation)
+      await expect(staleActivation()).rejects.toEqual(
+        new TargetError("Generated form link metadata changed before activation"),
+      )
+      await act(async () => {
+        await expect(freshActivation()).resolves.toMatchObject({
+          effectiveMethod: fixture.method,
+          status: "empty",
+        })
+      })
+      expect(documentRequests).toEqual([])
+      expect(generatedRequests).toHaveLength(1)
+      expect(generatedRequests[0]).toMatchObject({
+        method: fixture.method,
+        url: "https://example.test/danger",
+      })
       act(() => harness.renderer.unmount())
     }
   })
