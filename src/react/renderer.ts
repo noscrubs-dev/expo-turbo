@@ -1715,7 +1715,7 @@ export type ExpoTurboDocumentLinkDelegation =
   | Readonly<{
       action: "advance"
       kind: "navigation"
-      reason: "form-mode-off" | "opt-out"
+      reason: "form-mode-off" | "opt-out" | "unknown-vocabulary"
       status: "delegated"
       url: string
     }>
@@ -2162,7 +2162,9 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
     const resolved = linkUrl.resolution
     const documentVisitOptions = navigation ? { navigation } : {}
     const disposition = classifyTopLevelLocation(session.tree, resolved.url)
-    const delegateNativeNavigation = async (reason: "form-mode-off" | "opt-out") => {
+    const delegateNativeNavigation = async (
+      reason: "form-mode-off" | "opt-out" | "unknown-vocabulary",
+    ) => {
       if (!navigation) throw new TargetError("Document link delegation requires host navigation")
       if (reason === "opt-out" && resolved.urlOrigin !== resolved.documentOrigin) {
         await navigation.openExternal(resolved.url)
@@ -2210,8 +2212,12 @@ export function useExpoTurboDocumentLink(href: string): ExpoTurboDocumentLinkAct
       if (!formLinks) {
         throw new TargetError("Generated form links require provider form-link submissions")
       }
-      if (!formLinks.shouldInterceptSubmission(node.key)) {
-        return delegateNativeNavigation("form-mode-off")
+      const interception = formLinks.submissionInterception(node.key)
+      if (!interception.intercept) {
+        if (interception.reason === "missing-metadata") {
+          throw new TargetError("Generated form link metadata changed before activation")
+        }
+        return delegateNativeNavigation(interception.reason)
       }
       return formLinks.submit(node.key, href)
     }

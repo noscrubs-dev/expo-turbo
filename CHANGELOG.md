@@ -2,6 +2,43 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
+## Unreleased
+
+- **Breaking:** Make `FormLinkSubmissionController` fail closed when link
+  vocabulary is unknown. Direct `expo-turbo/core` callers must now pass their
+  component registry as `formSemantics`; no resolver, the old resolver-free
+  interface, an unresolved tag, or a resolver failure refuses interception,
+  proposal creation, and submission before a request ID or request is built.
+  Migration: add `formSemantics: registry` to the controller options. The
+  package-owned `data-turbo="false"` opt-out still stops first and needs no
+  resolver. `data-turbo-confirm` remains a narrowing safety gate. Method,
+  Stream, Frame, and visit-action metadata remain gated on known vocabulary.
+  `ExpoTurboApp` does not construct this advanced-path controller, so ordinary
+  facade consumers have no new option to pass.
+
+- **Breaking:** Add `"unknown-vocabulary"` to the document-link delegation
+  reason union. A generated form link that cannot be interpreted previously
+  delegated with `reason: "form-mode-off"` even when form mode was on, so a
+  host could not tell a missing `formSemantics` registry from a deliberate
+  opt-out. Hosts that switch exhaustively on the reason need one new case; this
+  repository contained none.
+
+- **Breaking:** Refuse generated form-link interception when a JavaScript host
+  passes a `formSemantics` resolver that returns a falsy-but-defined value
+  (`null`, `false`, `0`, `""`, `NaN`). Those returns previously counted as known
+  vocabulary and the request was built and sent. TypeScript already forbade
+  them and a real `ComponentRegistry` cannot produce them, so this affects
+  untyped hosts only.
+
+- Add `FormLinkSubmissionController#submissionInterception()`, a read-only query
+  returning either `{ intercept: true }` or `{ intercept: false, reason }` with
+  `reason` one of `"form-mode-off"`, `"missing-metadata"`, `"opt-out"`, or
+  `"unknown-vocabulary"`. `shouldInterceptSubmission()` is unchanged and now
+  reads its boolean from this query. Direct `expo-turbo/core` consumers can use
+  it to tell the four refusal causes apart; the query allocates no request ID,
+  dispatches no request, and grants no ability to submit a link that would
+  otherwise be refused.
+
 ## 0.3.0 - 2026-08-13
 
 - **Breaking:** Replace four client compatibility headers with

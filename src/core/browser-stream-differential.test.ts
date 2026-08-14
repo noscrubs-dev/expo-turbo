@@ -1144,9 +1144,14 @@ test("matches upstream Turbo generated-form link method and ordered query body",
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-link",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-link",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit(
     "id:delete-link",
     "/orders/7?tag=one&tag=two+words&_method=post&empty=",
@@ -1230,9 +1235,14 @@ test("matches upstream Turbo generated-form Stream link response", async () => {
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-stream-link",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-stream-link",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:stream-link", "/updates?scope=profile")
   let browserRequestUrl: string | undefined
   let browserRequestMethod: string | undefined
@@ -1299,9 +1309,14 @@ test("matches upstream Turbo generated-form GET document response", async () => 
       }
     },
   })
-  const expoResult = await new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-get-document",
-  }).submit("id:search-link", "/profile?source=generated&tag=one&tag=two+words")
+  const expoResult = await new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-get-document",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  ).submit("id:search-link", "/profile?source=generated&tag=one&tag=two+words")
 
   let browserRequestUrl: string | undefined
   let browserRequestMethod: string | undefined
@@ -1390,9 +1405,14 @@ test("matches upstream Turbo generated-form link destination Frame response", as
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-frame-link",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-frame-link",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:save-link", "/save?value=invalid")
   let browserRequestUrl: string | undefined
   let browserRequestMethod: string | undefined
@@ -1508,9 +1528,14 @@ test("matches upstream Turbo prevented missing-Frame handling for a generated-fo
     },
     { frameLifecycle: lifecycle },
   )
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-frame-missing",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-frame-missing",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:save-link", "/save?value=missing")
 
   const browserEvents: unknown[] = []
@@ -1652,9 +1677,14 @@ test("matches upstream Turbo generated-form Frame visit-control response promoti
     },
     { frameLifecycle: lifecycle },
   )
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-frame-promoted",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-frame-promoted",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:promote-link", "/save?value=promoted")
 
   let browserFetches = 0
@@ -1811,9 +1841,14 @@ test("matches upstream Turbo for an empty generated-form Frame 204 response", as
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-frame-204",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-frame-204",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:save-link", "/save?value=no-content")
 
   let browserRequestUrl: string | undefined
@@ -1904,9 +1939,14 @@ test("matches upstream Turbo redirected generated-form Frame success", async () 
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-frame-redirect",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-frame-redirect",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:save-link", "/save?value=accepted")
   let browserRequestUrl: string | undefined
   let browserRequestMethod: string | undefined
@@ -2008,9 +2048,14 @@ test("matches upstream Turbo for a redirected generated-form document response",
       }
     },
   })
-  const links = new FormLinkSubmissionController(session, submissions, {
-    next: () => "request-generated-document-redirect",
-  })
+  const links = new FormLinkSubmissionController(
+    session,
+    submissions,
+    {
+      next: () => "request-generated-document-redirect",
+    },
+    { formSemantics: FORM_SEMANTICS },
+  )
   const expoResult = await links.submit("id:search-link", "/search?query=shirts&scope=all")
 
   let browserRequestUrl: string | undefined
@@ -2099,9 +2144,14 @@ test("matches upstream Turbo generated-form document redirect safety", async () 
         }
       },
     })
-    await new FormLinkSubmissionController(session, submissions, {
-      next: () => "request-generated-document-unsafe",
-    }).submit("id:save-link", "/profile?source=generated")
+    await new FormLinkSubmissionController(
+      session,
+      submissions,
+      {
+        next: () => "request-generated-document-unsafe",
+      },
+      { formSemantics: FORM_SEMANTICS },
+    ).submit("id:save-link", "/profile?source=generated")
   } catch (error) {
     expoError = error
   }
@@ -2196,9 +2246,14 @@ for (const responseStatus of [201, 204] as const) {
         }
       },
     })
-    const expoResult = await new FormLinkSubmissionController(session, submissions, {
-      next: () => `request-generated-document-empty-${responseStatus}`,
-    }).submit("id:save-link", "/profile?source=generated")
+    const expoResult = await new FormLinkSubmissionController(
+      session,
+      submissions,
+      {
+        next: () => `request-generated-document-empty-${responseStatus}`,
+      },
+      { formSemantics: FORM_SEMANTICS },
+    ).submit("id:save-link", "/profile?source=generated")
 
     let browserRequestUrl: string | undefined
     let browserRequestMethod: string | undefined
@@ -2301,9 +2356,14 @@ for (const responseStatus of [422, 500] as const) {
         }
       },
     })
-    const links = new FormLinkSubmissionController(session, submissions, {
-      next: () => `request-generated-document-${responseStatus}`,
-    })
+    const links = new FormLinkSubmissionController(
+      session,
+      submissions,
+      {
+        next: () => `request-generated-document-${responseStatus}`,
+      },
+      { formSemantics: FORM_SEMANTICS },
+    )
     const expoResult = await links.submit("id:save-link", "/profile?source=generated")
 
     let browserRequestUrl: string | undefined
