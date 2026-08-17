@@ -197,16 +197,28 @@ describe("Android lane cleanup", () => {
     expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("3\n")
   })
 
+  test("keeps the real resource sampler loop connected to the SIGPIPE-safe helper", async () => {
+    const lane = await readFile(laneScript, "utf8")
+    const samplerLoop = extractResourceSamplerLoop(lane)
+
+    assertSamplerLoopUsesHelper(samplerLoop)
+
+    const oldHeadLoop = samplerLoop.replace(
+      "    sample_top_processes",
+      "    ps -eo pid,ppid,rss,%cpu,comm,args --sort=-rss | head -20",
+    )
+    expect(oldHeadLoop).not.toBe(samplerLoop)
+    expect(() => assertSamplerLoopUsesHelper(oldHeadLoop)).toThrow("sample_top_processes")
+  })
+
   test("proves the old head consumer exits from SIGPIPE on a large ps report", async () => {
     const fixture = await createFixture()
     const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
     const bin = await setupFakePs(fixture)
-    const oldPipeline = sampler
-      .split("\n")
-      .find((line) => line.includes("ps -eo pid,ppid,rss,%cpu,comm,args"))
-      ?.replace("awk 'NR <= 20'", "head -20")
+    const oldHeadSampler = sampler.replace("awk 'NR <= 20'", "head -20")
 
-    expect(oldPipeline).toBeDefined()
+    expect(oldHeadSampler).not.toBe(sampler)
+    const oldPipeline = extractPsPipeline(oldHeadSampler)
     const result = await runBoundedBash(`set -euo pipefail\n${oldPipeline}\n`, {
       FIXTURE: fixture,
       PATH: `${bin}:${process.env.PATH}`,
@@ -214,10 +226,30 @@ describe("Android lane cleanup", () => {
     })
 
     expect(result.timedOut).toBe(false)
-    expect([141, 1]).toContain(result.status)
+    if (result.status !== 141) {
+      const pipeStatus = await runBoundedBash(
+        `set -uo pipefail
+set +e
+${oldPipeline}
+producer_status="${"$"}{PIPESTATUS[0]}"
+set -e
+printf 'producer_status=%s\\n' "$producer_status"
+`,
+        {
+          FIXTURE: fixture,
+          PATH: `${bin}:${process.env.PATH}`,
+          PS_MODE: "success",
+        },
+      )
+
+      expect(pipeStatus.status).toBe(0)
+      expect(pipeStatus.stdout).toContain("producer_status=141")
+    } else {
+      expect(result.status).toBe(141)
+    }
   })
 
-  test("records a ps warning and continues sampling on the next iteration", async () => {
+  test("records a ps warning and continues three standalone sampler iterations", async () => {
     const fixture = await createFixture()
     const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
     const result = await runResourceSampler(fixture, sampler, "fail-once")
@@ -226,8 +258,23 @@ describe("Android lane cleanup", () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("iteration=1 rows=0")
     expect(result.stdout).toContain("iteration=2 rows=20")
+    expect(result.stdout).toContain("iteration=3 rows=20")
     expect(result.stderr).toContain("WARNING: resource sampler: ps exited 23; continuing.")
-    expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("2\n")
+    expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("3\n")
+  })
+
+  test("exits 23 on the first standalone sampler failure when its strict-mode guard is deleted", async () => {
+    const fixture = await createFixture()
+    const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
+    const mutation = sampler.replace("  set +e\n", "").replace("  set -e\n", "")
+
+    expect(mutation).not.toBe(sampler)
+    const result = await runResourceSampler(fixture, mutation, "fail-once")
+
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(23)
+    expect(result.stdout).toBe("")
+    expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("1\n")
   })
 })
 
@@ -300,9 +347,10 @@ async function runResourceSampler(
 set -euo pipefail
 ${sampler}
 for iteration in 1 2 3; do
-  rows="$(sample_top_processes | wc -l | tr -d '[:space:]')"
+  sample_output="$FIXTURE/sampler-${"$"}{iteration}.txt"
+  sample_top_processes >"$sample_output"
+  rows="$(wc -l <"$sample_output" | tr -d '[:space:]')"
   printf 'iteration=%s rows=%s\\n' "$iteration" "$rows"
-  if [ "$PS_MODE" = "fail-once" ] && [ "$iteration" -eq 2 ]; then break; fi
 done
 `
   return runBoundedBash(harness, {
@@ -437,6 +485,36 @@ function extractFunction(lane: string, name: string): string {
     }
   }
   throw new Error(`${name}: function end not found`)
+}
+
+function extractResourceSamplerLoop(lane: string): string {
+  const start = lane.indexOf("(\n  while true; do", lane.indexOf("sample_top_processes() {"))
+  const end = lane.indexOf('\n) >>"$resource_log" 2>&1 &', start)
+  if (start < 0 || end < 0) {
+    throw new Error("resource sampler loop not found")
+  }
+  return lane.slice(start, end + 1)
+}
+
+function assertSamplerLoopUsesHelper(loop: string): void {
+  if (!/^ {4}sample_top_processes$/m.test(loop)) {
+    throw new Error(
+      "resource sampler loop must invoke sample_top_processes as a standalone command",
+    )
+  }
+  if (/^\s*ps\b[^\n]*\|\s*head(?:\s|$)/m.test(loop)) {
+    throw new Error("resource sampler loop must not use a direct ps to head pipeline")
+  }
+}
+
+function extractPsPipeline(sampler: string): string {
+  const pipeline = sampler
+    .split("\n")
+    .find((line) => line.includes("ps -eo pid,ppid,rss,%cpu,comm,args"))
+  if (!pipeline) {
+    throw new Error("sampler ps pipeline not found")
+  }
+  return pipeline.trim()
 }
 
 function assertNoBareWait(body: string): void {
