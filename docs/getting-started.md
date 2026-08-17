@@ -163,9 +163,26 @@ given, so a release build still has a diagnostic path:
 <ExpoTurboApp
   origin="https://example.com"
   registry={registry}
-  onError={(error) => telemetry.captureException(error)}
+  onError={(error, report) => telemetry.captureException(error, { extra: report })}
 />
 ```
+
+The second argument says what the failure cost, and it is the same value the
+library switches on to decide whether to raise the surface at all:
+
+| `report.severity` | What failed | On screen |
+| --- | --- | --- |
+| `speculative` | A press-in prefetch or an automatic preload — a request whose whole purpose was to be discardable | Nothing changes |
+| `background` | An accessory to a render that already succeeded: an accessibility announcement, autofocus, a scroll adapter | Nothing changes |
+| `document` | The mounted document, or the navigation the user asked for | The error card replaces the document |
+
+Only `document` replaces the document. Every failure used to, so a prefetch that
+failed while the user pressed a link replaced the screen they were already
+reading — and the unmount that came with it released every live
+`turbo-cable-stream-source` subscription on that screen.
+
+`report.nodeKey` is the protocol node the failure belongs to. It is absent only
+for a configuration failure, which belongs to no node.
 
 Be precise about what that error is. Expo Turbo redacts transport causes on
 purpose: a socket or DNS failure is reported as
@@ -186,33 +203,64 @@ One error deserves the same precision. When a document renders nothing at all
 — every element unrecognised, or the only component that could have rendered
 declining to — Expo Turbo replaces the document with a blank-root surface and
 reports `StateError("Expo Turbo document root has no renderable fallback")`.
-That payload names the **condition**, not the **cause**: its message is fixed
-and the only keys it carries are the document's and the root element's, so two
-blanks with entirely different causes arrive identical. Which tag failed to
-render is reported separately, on `onUnknownVocabulary`. A host debugging a
-blank screen has to read both:
+The message names the **condition**, not the **cause**, and it stays fixed so
+trackers group on it. Which tag failed to render is reported separately, on
+`onUnknownVocabulary`. A host debugging a blank screen has to read both:
 
 ```tsx
 <ExpoTurboApp
   origin="https://example.com"
   registry={registry}
-  onError={(error) => telemetry.captureException(error)}
+  onError={(error, report) => telemetry.captureException(error, { extra: report })}
   onUnknownVocabulary={(event) => telemetry.captureMessage("unknown vocabulary", event)}
 />
 ```
 
+A blank screen is a **state with a duration**, so the operative question is
+which screens go blank, for how long, on which app build. `report.blank`
+answers all three:
+
+| Field | Meaning |
+| --- | --- |
+| `documentUrl` | The screen, as of when the blank started |
+| `runtimeVersion` | The installed Expo Turbo build |
+| `since` | `Date.now()` when the blank started |
+| `attempt` | 1-based ordinal of this report inside that blank |
+
+`documentUrl` and `runtimeVersion` also ride on the error's own `context`, so a
+host that forwards only the bare error still gets them.
+
 While a document stays blank, `onError` fires again on every session revision
 that wakes the root — so a Cable-driven stream of Streams trying to recover a
-blank document produces one report per revision, not one per document. The
-payload is identical each time, because its message is fixed and the only keys
-it carries are the document's and the root element's. Treat the repeats as a
-retry count, not as new information, and read `onUnknownVocabulary` for what
-actually failed.
+blank document produces one report per revision, not one per document. Every
+one of them carries the same `since` and a rising `attempt`, so a single
+surviving report states how long the document has been blank so far. Reports
+are deliberately **not** deduplicated: a blank has no identity beyond the state
+itself. Filter on `attempt` if you want edge-only telemetry, and read
+`onUnknownVocabulary` for what actually failed.
 
 Two documents behave differently and are worth knowing rather than discovering.
 A document blank because its tree contains nothing the registry can render
 reports **once**: its verdict holds and the guard is never re-raised. And a
-document that recovers and goes blank again reports the new blank.
+document that recovers and goes blank again reports the new blank, as a new
+interval with a new `since`.
+
+The falling edge is on the renderer. `ExpoTurboProvider` takes
+`onDocumentBlankRecovery`, which fires once when a blank document produces
+output again, carrying the interval it closes plus `until`; `until - since` is
+how long the screen was blank. It fires only while the provider stays mounted,
+so a host whose boundary replaces the provider on the first report — which
+`ExpoTurbo` and `ExpoTurboApp` do, because a blank document is a `document`
+failure — has ended the document rather than recovered it, and gets no event.
+
+```tsx
+<ExpoTurboProvider
+  onDocumentBlankRecovery={(event) =>
+    telemetry.captureMessage("blank recovered", { ...event, ms: event.until - event.since })
+  }
+  {...rest}
+/>
+```
 
 `onUnknownVocabulary` is the channel that names *which* vocabulary failed. Each
 unrecognised element reports through its own boundary, independently of the
