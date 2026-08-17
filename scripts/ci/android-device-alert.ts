@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises"
 export const ANDROID_WORKFLOW = "android-device.yml"
 export const ALERT_LABEL = "android-device-ci-alert"
 export const ALERT_MARKER = "<!-- expo-turbo-android-device-alert:v1 -->"
-export const STATE_PREFIX = "<!-- expo-turbo-android-device-alert-state:"
+export const STATE_PREFIX = "<!-- expo-turbo-android-device-alert-state:v2:"
 export const DUPLICATE_MARKER = "<!-- expo-turbo-android-device-alert:duplicate -->"
+export const RECOVERY_MARKER = "<!-- expo-turbo-android-device-alert:recovery -->"
 export const WORKFLOW_TIMEOUT_MINUTES = 90
 export const RUN_STALE_HOURS = 3
 export const COMPLETED_STALE_HOURS = 24
@@ -29,6 +30,7 @@ export interface WorkflowRun {
   id: number
   status: string
   conclusion: string | null
+  headBranch: string
   headSha: string
   createdAt: string
   updatedAt: string
@@ -134,6 +136,7 @@ export async function determineDecision(
       "workflow_run.id",
     )
     const run = parseRun(await api.request("GET", `${base}/actions/runs/${eventRunId}`))
+    if (run.headBranch !== "main") return ignored("The event run is not from main.")
     if (run.status !== "completed") return ignored("The event run is not complete.")
 
     const completed = parseRuns(
@@ -176,7 +179,7 @@ export async function determineDecision(
   }
 
   const classified = await classifyCompleted(api, repository, newest)
-  if (classified.state !== "green") return classified
+  if (classified.state === "red") return classified
 
   const completedAge = now.getTime() - dateMs(newest.updatedAt)
   if (completedAge < COMPLETED_STALE_HOURS * 60 * 60 * 1000) return classified
@@ -190,7 +193,10 @@ export async function determineDecision(
       newest,
     )
   }
-  return green("The last Android run is old, but main has no newer commit.", newest)
+  if (classified.state === "green") {
+    return green("The last Android run is old, but main has no newer commit.", newest)
+  }
+  return classified
 }
 
 export async function classifyCompleted(
@@ -288,7 +294,7 @@ export function buildIssueBody(
         } |`,
     )
     .join("\n")
-  const encodedState = JSON.stringify(state).replaceAll("--", "- -")
+  const encodedState = Buffer.from(JSON.stringify(state), "utf8").toString("base64url")
 
   return `${ALERT_MARKER}
 ${STATE_PREFIX}${encodedState} -->
@@ -320,6 +326,9 @@ export function sanitizeCodeSpan(value: string): string {
     if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) safe += " "
     else if (character === "`") safe += "\u02cb"
     else if (character === "|") safe += "\u00a6"
+    else if (character === "@") safe += "\uff20"
+    else if (character === "<") safe += "\u2039"
+    else if (character === ">") safe += "\u203a"
     else safe += character
   }
   return safe.replace(/\s+/g, " ").trim().slice(0, 240)
@@ -379,9 +388,13 @@ export async function runAlert(
       const runUrl = decision.run
         ? makeRunUrl(serverUrl, config.repository, decision.run.id)
         : `${serverUrl}/${config.repository}/actions/workflows/${ANDROID_WORKFLOW}`
-      await api.request("POST", `/repos/${config.repository}/issues/${operation.issue}/comments`, {
-        body: `Recovered: the Android device workflow is green again. ${runUrl}`,
-      })
+      const commentPath = `/repos/${config.repository}/issues/${operation.issue}/comments`
+      const comments = await api.request("GET", `${commentPath}?per_page=100`)
+      if (!hasRecoveryComment(comments)) {
+        await api.request("POST", commentPath, {
+          body: `${RECOVERY_MARKER}\nRecovered: the Android device workflow is green again. ${runUrl}`,
+        })
+      }
     } else if (operation.kind === "duplicate-comment") {
       await api.request("POST", `/repos/${config.repository}/issues/${operation.issue}/comments`, {
         body: `${DUPLICATE_MARKER}\nDuplicate alert. Canonical issue: #${operation.canonical}.`,
@@ -424,7 +437,11 @@ function parseStoredState(body: string | undefined): ParsedState {
   const end = body.indexOf(" -->", start)
   if (end < 0) return { value: empty, corrupt: true }
   try {
-    const parsed: unknown = JSON.parse(body.slice(start + STATE_PREFIX.length, end))
+    const encoded = body.slice(start + STATE_PREFIX.length, end)
+    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("bad state encoding")
+    const decoded = Buffer.from(encoded, "base64url")
+    if (decoded.toString("base64url") !== encoded) throw new Error("noncanonical state encoding")
+    const parsed: unknown = JSON.parse(decoded.toString("utf8"))
     if (!isRecord(parsed) || parsed.version !== 1) throw new Error("bad version")
     const redCount = nonnegativeInteger(parsed.redCount, "redCount")
     const recoveryCount = nonnegativeInteger(parsed.recoveryCount, "recoveryCount")
@@ -436,17 +453,28 @@ function parseStoredState(body: string | undefined): ParsedState {
   }
 }
 
+function hasRecoveryComment(payload: unknown): boolean {
+  if (!Array.isArray(payload)) throw new Error("issue comments must be an array")
+  return payload.some(
+    (raw) => isRecord(raw) && typeof raw.body === "string" && raw.body.includes(RECOVERY_MARKER),
+  )
+}
+
 function parseHistoryRow(raw: unknown): HistoryRow {
   if (!isRecord(raw)) throw new Error("history row must be an object")
   const state = raw.state
   if (state !== "red" && state !== "green") throw new Error("bad history state")
-  if (typeof raw.reason !== "string" || (raw.runId !== null && !Number.isSafeInteger(raw.runId))) {
+  if (
+    typeof raw.reason !== "string" ||
+    raw.reason.length > 240 ||
+    (raw.runId !== null && !Number.isSafeInteger(raw.runId))
+  ) {
     throw new Error("bad history text")
   }
   return {
     at: validIso(raw.at, "history.at"),
     state,
-    reason: sanitizeCodeSpan(raw.reason),
+    reason: raw.reason,
     runId: raw.runId === null ? null : positiveInteger(raw.runId, "history.runId"),
   }
 }
@@ -471,10 +499,12 @@ function parseRun(raw: unknown): WorkflowRun {
   }
   const headSha = stringField(raw, "head_sha")
   if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error("workflow run head_sha is invalid")
+  const headBranch = stringField(raw, "head_branch")
   return {
     id: positiveInteger(raw.id, "workflow run id"),
     status,
     conclusion,
+    headBranch,
     headSha,
     createdAt: validIso(raw.created_at, "workflow run created_at"),
     updatedAt: validIso(raw.updated_at, "workflow run updated_at"),

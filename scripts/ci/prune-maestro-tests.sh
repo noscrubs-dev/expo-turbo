@@ -18,7 +18,8 @@ readonly keep_count="$2"
 readonly mode="$3"
 
 case "$keep_count" in
-  ''|*[!0-9]*|0)
+  [1-9]|[1-9][0-9]*) ;;
+  *)
     echo "Refusing to prune: keep_count must be a positive integer." >&2
     exit 2
     ;;
@@ -70,13 +71,21 @@ if [ ! -d "$tests_root" ]; then
 fi
 
 timestamp_names=()
+is_timestamp_name() {
+  local name="$1"
+  case "$name" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  [[ "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]
+}
+
 for entry in "$tests_root"/*; do
   [ -e "$entry" ] || [ -L "$entry" ] || continue
   [ -d "$entry" ] || continue
   [ ! -L "$entry" ] || continue
 
   name="${entry##*/}"
-  if printf '%s\n' "$name" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$'; then
+  if is_timestamp_name "$name"; then
     timestamp_names+=("$name")
   fi
 done
@@ -96,7 +105,7 @@ if [ "$remove_count" -gt 0 ]; then
 
     # Recheck the exact name and object type immediately before removal. This
     # keeps a changed entry or a symlink outside the deletion boundary.
-    if ! printf '%s\n' "$name" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' ||
+    if ! is_timestamp_name "$name" ||
       [ ! -d "$candidate" ] || [ -L "$candidate" ]; then
       echo "WARNING: skipped changed Maestro entry: $candidate" >&2
       continue
@@ -110,10 +119,13 @@ if [ "$remove_count" -gt 0 ]; then
   done < <(printf '%s\n' "${timestamp_names[@]}" | sort)
 fi
 
-root_kib="$(du -sk "$tests_root" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+if ! root_kib="$(du -sk "$tests_root" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
+  echo "WARNING: could not measure Maestro test storage after retention: $tests_root" >&2
+  exit 0
+fi
 case "$root_kib" in
   ''|*[!0-9]*)
-    echo "WARNING: could not measure Maestro test storage: $tests_root" >&2
+    echo "WARNING: could not measure Maestro test storage after retention: $tests_root" >&2
     ;;
   *)
     if [ "$root_kib" -gt 524288 ]; then

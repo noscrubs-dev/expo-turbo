@@ -96,19 +96,23 @@ deduplicated issue with the `android-device-ci-alert` label and a private body
 marker. No extra secret is required. It uses `GITHUB_TOKEN` with only
 `actions: read`, `contents: read`, and `issues: write`.
 
+The completion trigger ignores runs whose fetched `head_branch` is not `main`.
 The alert becomes red for `failure`, `timed_out`, or `startup_failure`. A
 `cancelled` workflow becomes red only when an actual job ran for at least the
 workflow's 90-minute timeout. This excludes superseded runs with no jobs and
 shorter human cancellations. On the hourly check, a noncompleted run older
-than three hours is red. A completed run older than 24 hours is red only when
-`main` has a newer commit. A quiet repository does not get a stale alert.
+than three hours is red. Any completed result older than 24 hours is red when
+`main` has a newer commit, including a short cancellation or another ignored
+conclusion. A quiet repository does not get a stale alert.
 
 On red, the workflow creates one issue or updates its body without repeated
 comments. If duplicate marked issues exist, it keeps the lowest issue number
-and closes the others. On recovery, it comments once with the successful run
-URL and closes all marked alert issues, with the lowest issue number closed
-last. The body keeps no more than ten sanitized observations. If its stored
-state is corrupt, the workflow restarts its counters and records that fact.
+and closes the others. On recovery, it checks for a fixed recovery marker,
+comments once with the successful run URL, and closes all marked alert issues,
+with the lowest issue number closed last. A failed close is retried without a
+second recovery comment. The body keeps no more than ten sanitized observations.
+Its stored state uses a strict base64url comment payload. A corrupt or prior
+format payload resets the counters and records that fact.
 
 A manual `workflow_dispatch` is always a dry run. It reads live state and logs
 the planned operations, but its API client does not send `POST`, `PATCH`, or

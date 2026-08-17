@@ -81,6 +81,18 @@ describe.serial("Maestro test retention", () => {
     expect(await timestampEntries(root)).toEqual([])
   })
 
+  test("rejects noncanonical decimal keep counts without deletion", async () => {
+    for (const count of ["012", "00", "08", "09"]) {
+      const root = await fixtureRoot()
+      await addTimestamps(root, 13)
+      const before = await timestampEntries(root)
+      const result = await runPruner(pruneScript, root, count, "apply")
+      expect(result.status).toBe(2)
+      expect(result.stderr).toContain("keep_count must be a positive integer")
+      expect(await timestampEntries(root)).toEqual(before)
+    }
+  })
+
   test("rejects a root file and a root symlink", async () => {
     const fixture = await mkdtemp(join(tmpdir(), "maestro-prune-roots-"))
     fixtures.push(fixture)
@@ -116,6 +128,30 @@ describe.serial("Maestro test retention", () => {
     expect(await readFile(join(outside, "sentinel"), "utf8")).toBe("safe")
     expect(await readdir(root)).toContain("not-a-maestro-run")
     expect(await readdir(root)).toContain("2026-8-01_000000")
+  })
+
+  test("rejects newline, carriage return, spaces, and symlinks as run names", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 12)
+    const hostileNames = [
+      "0000-00-00_000000\n2026-08-01_999999",
+      "0000-00-00_000000\r2026-08-01_999998",
+      "2026-08-01_999997 extra",
+    ]
+    for (const name of hostileNames) await mkdir(join(root, name))
+    const outside = join(dirname(dirname(root)), "newline-outside")
+    await mkdir(outside)
+    await writeFile(join(outside, "sentinel"), "safe")
+    await symlink(outside, join(root, "0000-00-00_000000"))
+
+    const result = await runPruner(pruneScript, root, "12", "apply")
+
+    expect(result.status).toBe(0)
+    expect(
+      (await readdir(root)).filter((name) => timestampNames(12).includes(name)).sort(),
+    ).toEqual(timestampNames(12))
+    expect(await readFile(join(outside, "sentinel"), "utf8")).toBe("safe")
+    for (const name of hostileNames) expect(await readdir(root)).toContain(name)
   })
 
   test("dry-run prints the same candidates as apply and changes nothing", async () => {
@@ -165,6 +201,26 @@ describe.serial("Maestro test retention", () => {
     expect(result.stderr).toContain("No extra entries were deleted")
   })
 
+  test("keeps completed pruning when du fails or returns unparseable output", async () => {
+    for (const script of ["#!/bin/sh\nexit 7\n", "#!/bin/sh\nprintf 'unknown\\n'\n"]) {
+      const root = await fixtureRoot()
+      await addTimestamps(root, 13)
+      const tools = await mkdtemp(join(tmpdir(), "maestro-prune-tools-"))
+      fixtures.push(tools)
+      await writeFile(join(tools, "du"), script)
+      await chmod(join(tools, "du"), 0o755)
+
+      const result = await runPruner(pruneScript, root, "12", "apply", {
+        ...process.env,
+        PATH: `${tools}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      })
+
+      expect(result.status).toBe(0)
+      expect(await timestampEntries(root)).toHaveLength(12)
+      expect(result.stderr).toContain("could not measure Maestro test storage after retention")
+    }
+  })
+
   test("the exact-name guard is load-bearing", async () => {
     const root = await fixtureRoot()
     await addTimestamps(root, 13)
@@ -172,13 +228,14 @@ describe.serial("Maestro test retention", () => {
     const source = await readFile(pruneScript, "utf8")
     const mutation = source
       .replace(
-        "  if printf '%s\\n' \"$name\" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$'; then\n    timestamp_names+=(\"$name\")\n  fi",
+        '  if is_timestamp_name "$name"; then\n    timestamp_names+=("$name")\n  fi',
         '  timestamp_names+=("$name")',
       )
       .replace(
-        "    if ! printf '%s\\n' \"$name\" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$' ||\n      [ ! -d \"$candidate\" ]",
+        '    if ! is_timestamp_name "$name" ||\n      [ ! -d "$candidate" ]',
         '    if [ ! -d "$candidate" ]',
       )
+    expect(mutation).not.toBe(source)
     const mutatedScript = await writeMutation(mutation)
 
     const result = await runPruner(mutatedScript, root, "12", "apply")
