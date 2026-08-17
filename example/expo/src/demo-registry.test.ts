@@ -1,4 +1,6 @@
 import { expect, mock, test } from "bun:test"
+import { readFile } from "node:fs/promises"
+import { resolve } from "node:path"
 import { isElement, parseExpoTurboDocument } from "expo-turbo/core"
 import { component, defineRegistry, none } from "expo-turbo/registry"
 import { memo } from "react"
@@ -30,12 +32,33 @@ mock.module("react-native", () => ({
 
 const { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } = await import("./demo-registry")
 
-test("the example registry keeps its server negotiation identity", () => {
+test("the registry, committed manifest, and current Rails lock keep one identity", async () => {
+  const repositoryRoot = resolve(import.meta.dir, "../../..")
+  const manifestPath = resolve(repositoryRoot, "example/rails/config/expo_turbo_manifest.json")
+  const [manifestSource, lockSource] = await Promise.all([
+    readFile(manifestPath, "utf8"),
+    readFile(resolve(repositoryRoot, "expo-turbo.lock.json"), "utf8"),
+  ])
+  const manifest = JSON.parse(manifestSource)
+  const lock = JSON.parse(lockSource)
+  const currentRecords = lock.history.filter(
+    (record: { digest?: unknown }) => record.digest === lock.current,
+  )
+
   expect(DEMO_REGISTRY.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
   expect(DEMO_MODULE_VERSIONS).toMatch(
     /^v=1; proto=0\.1; rt=0\.3\.0; vocab=sha256-128:[0-9a-f]{32}$/,
   )
-  expect(DEMO_REGISTRY.capabilities.hash).toBe("sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea")
+  expect(manifestSource).toBe(DEMO_REGISTRY.capabilityManifestJSON())
+  expect(lock.current).toBe(DEMO_REGISTRY.capabilities.hash)
+  expect(currentRecords).toEqual([
+    expect.objectContaining({
+      digest: DEMO_REGISTRY.capabilities.hash,
+      manifest: "example/rails/config/expo_turbo_manifest.json",
+      package: manifest.modules[0].name,
+      published: false,
+    }),
+  ])
 })
 
 // The Rails demo serves /api/expo_turbo/demo/shared_greeting from one

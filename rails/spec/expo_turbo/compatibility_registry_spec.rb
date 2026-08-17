@@ -5,8 +5,8 @@ require "spec_helper"
 require "tmpdir"
 
 RSpec.describe ExpoTurbo::Rails::CompatibilityRegistry do
-  let(:digest) { "sha256-128:f04ab2d6529c683a1094a0b8ddc8d5ea" }
   let(:manifest_path) { File.expand_path("../../../example/rails/config/expo_turbo_manifest.json", __dir__) }
+  let(:digest) { JSON.parse(File.read(manifest_path)).fetch("hash") }
 
   it "rejects duplicate digests before a hash key can collapse them" do
     lock = {

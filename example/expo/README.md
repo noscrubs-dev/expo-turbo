@@ -58,7 +58,12 @@ bun run start
 exported file bytes match the current root build. It does not prove that all
 unexported `dist/` files are identical. If this check reports a stale install,
 repair it with `cd ../.. && bun run build && cd example/expo && bun install --frozen-lockfile`.
-The check then runs uncached lint, types, fixture tests, and
+After a registry component, alias, or attribute changes, run
+`bun run capabilities:write`. It generates the Rails manifest from
+`DEMO_REGISTRY` and updates only the one current unpublished lock record.
+It refuses to change a published record or release history. The read-only
+`bun run capabilities:check` gate fails when either artifact is stale.
+The full check then runs uncached lint, types, fixture tests, and
 static web, iOS, and Android exports. The individual `export:web`, `export:ios`,
 and `export:android` scripts are available when one platform needs a focused
 bundle-admission check. Those native exports produce Hermes bytecode and catch

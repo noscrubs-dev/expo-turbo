@@ -42,6 +42,8 @@
     "web": "expo start --web",
     "postinstall": "node scripts/link-react-peer.mjs",
     "verify:installed-package": "node scripts/verify-installed-expo-turbo.mjs",
+    "capabilities:write": "bun scripts/sync-capability-manifest.ts --write",
+    "capabilities:check": "bun scripts/sync-capability-manifest.ts --check",
     "lint": "expo lint --no-cache",
     "typecheck": "tsc --noEmit",
     "test": "bun test --isolate",
@@ -49,6 +51,6 @@
     "export:ios": "expo export --platform ios",
     "export:web": "expo export --platform web",
     "export:all": "bun run export:web && bun run export:ios && bun run export:android",
-    "check": "bun run verify:installed-package && bun run lint && bun run typecheck && bun run test && bun run export:all"
+    "check": "bun run verify:installed-package && bun run capabilities:check && bun run lint && bun run typecheck && bun run test && bun run export:all"
   }
 }

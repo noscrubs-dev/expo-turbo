@@ -591,6 +591,13 @@ expo_turbo_template_capabilities(
 )
 ```
 
+The repository example produces both artifacts with
+`cd example/expo && bun run capabilities:write`. It reads
+`DEMO_REGISTRY.capabilityManifestJSON()`, writes the manifest, and changes only
+the digest of the one current unpublished lock record. It refuses missing or
+duplicate current records and published records. It does not create or rewrite
+release history. `bun run capabilities:check` is the read-only CI gate.
+
 Without `lockfile:`, the gem warns when a native descriptor arrives and all
 gates fail closed. Deploy the 0.3 gem before the 0.3 client. The new gem reads
 the old modules header, but the old gem cannot read the new descriptor.
