@@ -38,13 +38,14 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "postinstall": "node scripts/link-react-peer.mjs",
-    "lint": "expo lint",
+    "verify:installed-package": "node scripts/verify-installed-expo-turbo.mjs",
+    "lint": "expo lint --no-cache",
     "typecheck": "tsc --noEmit",
     "test": "bun test --isolate",
     "export:android": "expo export --platform android",
     "export:ios": "expo export --platform ios",
     "export:web": "expo export --platform web",
     "export:all": "bun run export:web && bun run export:ios && bun run export:android",
-    "check": "bun run lint && bun run typecheck && bun run test && bun run export:all"
+    "check": "bun run verify:installed-package && bun run lint && bun run typecheck && bun run test && bun run export:all"
   }
 }

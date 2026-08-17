@@ -54,7 +54,16 @@ bun run check
 bun run start
 ```
 
-`bun run check` runs lint, types, fixture tests, and static web, iOS, and Android exports. The individual `export:web`, `export:ios`, and `export:android` scripts are available when one platform needs a focused bundle-admission check. Those native exports produce Hermes bytecode and catch Metro/runtime dependency regressions; they are not release-build, simulator, or physical-device evidence.
+`bun run check` first proves that the installed `expo-turbo` export metadata and
+exported file bytes match the current root build. It does not prove that all
+unexported `dist/` files are identical. If this check reports a stale install,
+repair it with `cd ../.. && bun run build && cd example/expo && bun install --frozen-lockfile`.
+The check then runs uncached lint, types, fixture tests, and
+static web, iOS, and Android exports. The individual `export:web`, `export:ios`,
+and `export:android` scripts are available when one platform needs a focused
+bundle-admission check. Those native exports produce Hermes bytecode and catch
+Metro/runtime dependency regressions; they are not release-build, simulator,
+or physical-device evidence.
 
 CI adds the two-stage [Expo dependency validation](../../docs/expo-ci-validation.md).
 Its pinned base check uses the SDK package map that comes from this lockfile.
