@@ -1564,7 +1564,10 @@ export class FormControlRegistry {
     const resolve = this.formSemantics?.resolve
     if (!resolve) return undefined
     try {
-      return resolve.call(this.formSemantics, element.tagName)
+      // Untyped hosts return null where the declared contract stops at
+      // undefined. Both mean the vocabulary is unresolved, so neither may
+      // reach a property read.
+      return resolve.call(this.formSemantics, element.tagName) ?? undefined
     } catch {
       throw new RegistryError("Expo Turbo form vocabulary could not be resolved", {
         target: element.key,

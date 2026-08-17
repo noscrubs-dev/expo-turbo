@@ -390,6 +390,83 @@ describe("native form control registry", () => {
     ])
   })
 
+  test("fails closed before transport when a form-owner resolver returns null", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="future" action="/danger" method="post">
+            <DemoInput id="future-field" />
+          </DemoForm>
+          <DemoForm id="known" action="/safe" method="post">
+            <DemoInput id="known-field" />
+          </DemoForm>
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        requests.push(
+          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+        )
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const forms = new DocumentFormControls(session, {
+      formSemantics: {
+        formContainerRole: FORM_SEMANTICS.formContainerRole,
+        resolve: () => null as never,
+      },
+      submissionController: controller,
+    })
+    const future = forms.controlsFor("id:future")
+    future.register("id:future-field", { kind: "value", name: "field", value: "A" })
+
+    expect(future.successfulEntries()).toEqual([{ name: "field", value: "A" }])
+    expect(future.shouldInterceptSubmission()).toBe(false)
+    const failures: unknown[] = []
+    for (const attempt of [
+      () => future.requestPlan({ protocol: { requestId: "null-plan" } }),
+      () => future.submissionProposal({ protocol: { requestId: "null-proposal" } }),
+      () => future.submit({ protocol: { requestId: "null-submit" } }),
+      () => future.retryFailure({ protocol: { requestId: "null-retry" } }),
+    ]) {
+      try {
+        await attempt()
+        failures.push(undefined)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+
+    expect(requests).toEqual([])
+    expect(failures).toHaveLength(4)
+    for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+    expect(failures.map((failure) => (failure as Error).message)).toEqual([
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+    ])
+
+    const known = new DocumentFormControls(session, {
+      formSemantics: FORM_SEMANTICS,
+      submissionController: controller,
+    }).controlsFor("id:known")
+    known.register("id:known-field", { kind: "value", name: "field", value: "B" })
+    await known.submit({ protocol: { requestId: "known-owner" } })
+    expect(requests).toEqual([
+      { body: "field=B", method: "POST", url: "https://example.test/safe" },
+    ])
+  })
+
   test("does not read request overrides from an unknown registered submitter", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
