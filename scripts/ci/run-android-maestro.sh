@@ -30,6 +30,18 @@ export MAESTRO_CLI_NO_ANALYTICS=1
 export MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED=true
 export PATH="$GEM_HOME/bin:$PATH"
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly script_dir
+
+# The last preflight guard, and the one reason it sits below the exports rather
+# than beside the guards above: maestro resolves through the PATH they set. It
+# still runs before any install, build, emulator, Rails, or suite work, so a
+# runner whose Maestro drifted from the pin fails in seconds with an
+# expected/actual message instead of quietly changing what the flows mean.
+# The resolved version is kept for the run's environment evidence.
+maestro_version="$("$script_dir/check-maestro-version.sh")"
+readonly maestro_version
+
 readonly adb_serial="emulator-5580"
 readonly avd_name="expo-turbo-api35"
 readonly rails_origin="http://127.0.0.1:3001"
@@ -290,7 +302,9 @@ cleanup() {
     echo "bun=$(bun --version)"
     echo "ruby=$(ruby --version)"
     echo "java=$(java -version 2>&1 | head -1)"
-    echo "maestro=$(maestro --version)"
+    # The version preflight asserted, not a second reading taken after the
+    # suite, so the evidence names the Maestro the run actually used.
+    echo "maestro=$maestro_version"
     echo "emulator=$(grep '^Pkg.Revision=' "$ANDROID_HOME/emulator/source.properties")"
     df -h /
     free -h

@@ -54,7 +54,8 @@ need to resize from a single slow dependency download.
 - Node.js: 20.19.2
 - Java: OpenJDK 21
 - Bun: 1.3.14
-- Maestro: 2.7.0
+- Maestro: 2.7.0, pinned by `scripts/ci/check-maestro-version.sh` and asserted
+  before every run
 
 The VM is intentionally not a general-purpose build host. Do not add Docker,
 deployment credentials, signing keys, product secrets, additional repositories,
@@ -82,6 +83,40 @@ upstream archives. Android SDK packages are pinned in the provisioning record.
 When changing a pinned tool, update this document and rerun the full shared
 suite before accepting the change.
 
+The Maestro CLI is pinned in the repository rather than in the runner image.
+`scripts/ci/check-maestro-version.sh` holds the expected version, and
+`scripts/ci/run-android-maestro.sh` asserts it in preflight beside the root,
+passwordless-sudo, and `/dev/kvm` guards, before any install, build, emulator,
+Rails, or suite work. A missing or different CLI therefore fails in seconds
+with the expected and actual versions, instead of changing what the flows mean
+with no diff and no failing build. `environment.txt` then records the version
+preflight asserted instead of a second reading taken at cleanup, so a run that
+fails part way through still reports the Maestro it was proven against. A run
+that fails the pin itself writes no evidence and needs none: it prints the
+expected and actual versions and stops. `scripts/ci/check-maestro-version.test.ts`
+proves the matching, missing, and mismatched cases against a fake CLI, so the
+guard is verified without a device.
+
+Install exactly the pinned version on the runner, as `expo-ci`:
+
+```sh
+export MAESTRO_VERSION=2.7.0
+curl -fsSL https://get.maestro.mobile.dev | bash
+```
+
+The installer writes to `$HOME/.maestro` and edits an interactive shell
+profile. The lane runs in a non-interactive shell and puts `$HOME/.local/bin`
+first on `PATH`, so make the installed entrypoint reachable there:
+
+```sh
+ln -sf "$HOME/.maestro/bin/maestro" "$HOME/.local/bin/maestro"
+```
+
+Changing the Maestro version means editing the pin in
+`scripts/ci/check-maestro-version.sh`, updating the inventory above, installing
+that version on the runner, and rerunning the full shared suite before
+accepting the change.
+
 If the runner is unavailable, public PR checks remain unaffected. A device-lane
 failure is classified as recoverable infrastructure only when the retained
 Maestro output contains an explicit offline or missing ADB device and the
@@ -89,6 +124,19 @@ remaining flows collapse into zero-second failures. Assertion failures and app
 crashes are product failures and are never hidden by an automatic retry.
 
 ## Changelog
+
+**2026-08-17**:
+
+- Changed: The Android lane now pins the Maestro CLI in the repository and
+  asserts it in preflight, and records the asserted version as its Maestro
+  evidence.
+- Why: The job ran whichever Maestro was installed on the runner. Maestro
+  decides flow semantics, so an update changed the CI contract with no diff and
+  no failing build, and the version was recorded only after the suite, which a
+  run that died early never reached.
+- Impact: A missing or different CLI fails in seconds with expected and actual
+  versions, before install, build, emulator, Rails, or suite work, and every
+  run that reaches cleanup reports the version it was proven against.
 
 **2026-07-31**:
 
