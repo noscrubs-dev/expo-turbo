@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 type DemoDeviceTestListener = () => void;
 
 const listeners = new Set<DemoDeviceTestListener>();
@@ -15,4 +17,12 @@ export function isDemoDeviceTestScenarioActive(): boolean {
 export function subscribeDemoDeviceTestScenario(listener: DemoDeviceTestListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+export function useDemoDeviceTestScenario(): boolean {
+  return useSyncExternalStore(
+    subscribeDemoDeviceTestScenario,
+    isDemoDeviceTestScenarioActive,
+    isDemoDeviceTestScenarioActive,
+  );
 }

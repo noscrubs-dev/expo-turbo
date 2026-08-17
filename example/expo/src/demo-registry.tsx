@@ -47,6 +47,11 @@ import {
   DEMO_STYLE_TOKENS,
 } from "./demo-styles";
 import { useDemoDocumentAnchorTarget } from "./demo-document-anchor-scroll";
+import { useDemoDeviceTestScenario } from "./demo-device-test-control";
+import {
+  useDemoDeviceTestFocusProbe,
+  useDemoDeviceTestSubmitProof,
+} from "./demo-device-test-form-probes";
 
 function nativeLayoutDirection(
   direction: ExpoTurboDirection | undefined,
@@ -456,6 +461,7 @@ export const DEMO_REGISTRY = defineRegistry({
       },
       children: none,
       render: function DemoFormInput({ label, name, required, value }) {
+        const deviceTest = useDemoDeviceTestScenario();
         const direction = useExpoTurboDirection();
         const [current, setCurrent] = useState(value);
         const inputRef = useRef<TextInput>(null);
@@ -481,6 +487,10 @@ export const DEMO_REGISTRY = defineRegistry({
           control.nodeKey,
           inputRef,
         );
+        const focusProbe = useDemoDeviceTestFocusProbe(
+          deviceTest,
+          `demo-form-focus-probe-${control.nodeKey.replaceAll(":", "-")}`,
+        );
         return (
           <View style={{ direction: nativeLayoutDirection(direction), gap: 6 }}>
             <Text
@@ -500,11 +510,13 @@ export const DEMO_REGISTRY = defineRegistry({
               onBlur={() => {
                 autofocusScroll.onBlur();
                 focusHandlers.onBlur();
+                focusProbe.onActualBlur();
               }}
               onChangeText={setCurrent}
               onFocus={() => {
                 focusHandlers.onFocus();
                 autofocusScroll.onFocus();
+                focusProbe.onActualFocus();
               }}
               onLayout={autofocusScroll.onLayout}
               ref={inputRef}
@@ -521,6 +533,7 @@ export const DEMO_REGISTRY = defineRegistry({
               testID={`demo-form-input-${control.nodeKey.replaceAll(":", "-")}`}
               value={current}
             />
+            {focusProbe.probe}
             {!validity.valid ? (
               <Text
                 accessibilityLiveRegion="polite"
@@ -774,6 +787,7 @@ export const DEMO_REGISTRY = defineRegistry({
       },
       children: none,
       render: function DemoFormSubmitter(props) {
+        const deviceTest = useDemoDeviceTestScenario();
         const { label, name, value } = props;
         const formBinding = useExpoTurboForm();
         const control = useExpoTurboFormControl({
@@ -785,6 +799,10 @@ export const DEMO_REGISTRY = defineRegistry({
           `demo-submission-loading-observed:${control.nodeKey}`,
         );
         const requestId = useRef(0);
+        const submitProof = useDemoDeviceTestSubmitProof(
+          deviceTest,
+          `demo-form-submit-proof-${control.nodeKey.replaceAll(":", "-")}`,
+        );
         useEffect(() => {
           if (control.submitsWith) loadingObserved.set(true);
         }, [control.submitsWith, loadingObserved]);
@@ -799,14 +817,15 @@ export const DEMO_REGISTRY = defineRegistry({
                 const submitter = control.selection();
                 if (!formBinding.shouldInterceptSubmission({ submitter }))
                   return;
-                void formBinding
-                  .submit({
-                    protocol: {
-                      requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}`,
-                    },
-                    submitter,
-                  })
-                  .catch(() => undefined);
+                const submission = formBinding.submit({
+                  protocol: {
+                    requestId: `demo-form-${encodeURIComponent(control.nodeKey)}-${++requestId.current}`,
+                  },
+                  submitter,
+                });
+                void (deviceTest ? submitProof.observe(submission) : submission).catch(
+                  () => undefined,
+                );
               }}
               testID={`demo-form-submitter-${control.nodeKey.replaceAll(":", "-")}`}
               style={({ pressed }) => ({
@@ -820,6 +839,7 @@ export const DEMO_REGISTRY = defineRegistry({
                 {control.submitsWith ?? label}
               </Text>
             </Pressable>
+            {submitProof.probe}
             {loadingObserved.value ? (
               <Text
                 accessibilityLiveRegion="polite"

@@ -418,6 +418,12 @@ readonly picker_fixture="$PWD/.maestro/fixtures/expo-turbo-android-picked.txt"
 test -f "$picker_fixture"
 
 start_and_prepare_emulator() {
+  local attempt="$1"
+  local bootstrap_output="$artifacts/maestro-tests-bootstrap-attempt-$attempt"
+  local bootstrap_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt"
+  local bootstrap_retry_output="$artifacts/maestro-tests-bootstrap-attempt-$attempt-retry"
+  local bootstrap_retry_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt-retry"
+
   echo "=== Starting clean Android emulator ===" >>"$emulator_log"
   "$ANDROID_HOME/emulator/emulator" \
     -avd "$avd_name" \
@@ -449,11 +455,17 @@ start_and_prepare_emulator() {
     -d file:///sdcard/Download/expo-turbo-android-picked.txt >/dev/null
 
   wait_for_stable_device
-  if ! maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml; then
+  if ! maestro --device "$adb_serial" test \
+    --test-output-dir "$bootstrap_output" \
+    --debug-output "$bootstrap_debug" \
+    scripts/ci/bootstrap-android-browser.yaml; then
     echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
     adb reconnect offline >/dev/null 2>&1 || true
     wait_for_stable_device
-    maestro --device "$adb_serial" test scripts/ci/bootstrap-android-browser.yaml
+    maestro --device "$adb_serial" test \
+      --test-output-dir "$bootstrap_retry_output" \
+      --debug-output "$bootstrap_retry_debug" \
+      scripts/ci/bootstrap-android-browser.yaml
   fi
 
   wait_for_stable_device
@@ -471,12 +483,16 @@ run_maestro_suite() {
   local attempt="$1"
   local junit="$artifacts/maestro-junit-attempt-$attempt.xml"
   local run_log="$artifacts/maestro-attempt-$attempt.log"
+  local test_output="$artifacts/maestro-tests-attempt-$attempt"
+  local debug_output="$artifacts/maestro-debug-attempt-$attempt"
   local status
 
   set +e
   maestro --device "$adb_serial" test \
     --format junit \
     --output "$junit" \
+    --test-output-dir "$test_output" \
+    --debug-output "$debug_output" \
     "$maestro_flow_path" 2>&1 | tee "$run_log"
   status="${PIPESTATUS[0]}"
   set -e
@@ -487,7 +503,7 @@ run_maestro_suite() {
   return "$status"
 }
 
-start_and_prepare_emulator
+start_and_prepare_emulator 1
 
 if run_maestro_suite 1; then
   exit 0
@@ -503,7 +519,7 @@ fi
 echo "Maestro lost ADB transport and cascaded into zero-second failures; restarting the emulator and retrying the full suite once." >&2
 timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat-attempt-1.txt" 2>&1 || true
 stop_emulator_for_retry
-start_and_prepare_emulator
+start_and_prepare_emulator 2
 
 if run_maestro_suite 2; then
   exit 0

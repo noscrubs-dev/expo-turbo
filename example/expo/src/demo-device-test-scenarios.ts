@@ -18,7 +18,7 @@ export const DEMO_DEVICE_TEST_SCENARIOS = Object.freeze({
     <DemoCard id="device-test-native-form" title="Live native form controls" style-tokens="tone:info space:compact">
       <DemoForm id="native-form" action="/demo/profile" dir="rtl" method="post">
         <DemoFormSubmitter id="collect-form" data-turbo-confirm="Send this immutable preview?" data-turbo-submits-with="Submitting preview…" formaction="/demo/profile/preview" formmethod="get" label="Confirm and submit immutable request" name="commit" value="preview" />
-        <DemoFormInput id="first-name" autofocus="" dir="auto" dirname="profile[first_name].dir" label="First name" name="profile[first_name]" required="" value="Ada" />
+        <DemoFormInput id="first-name" dir="auto" dirname="profile[first_name].dir" label="First name" name="profile[first_name]" required="" value="Ada" />
         <DemoFormInput id="city" label="City" name="profile[city]" value="London" />
         <DemoFormFieldset id="disabled-profile-group" disabled="false">
           <DemoFormLegend>

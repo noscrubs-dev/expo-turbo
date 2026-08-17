@@ -12,6 +12,10 @@ The physical-iOS execution used Appium/XCUITest and is recorded in
 The checked-in release flows form one union suite. Platform columns below record
 executions of that same suite; they do not define different contract sets.
 
+The historical totals below predate the issue #425 correction. The prior row 9
+pass was false-green and is not current evidence. The new flow requires a real
+Android and iOS run before row 9 can return to `Pass`.
+
 | Platform execution | Device | Shared contracts | Atomic observations | Union suite result | Artifact |
 | --- | --- | ---: | ---: | --- | --- |
 | Android | OnePlus `65c6e2cf` | **71/71 Pass** | **115/115 Pass** | **15/15 flows Pass** | `2026-07-25_091034` |
@@ -27,7 +31,7 @@ executions of that same suite; they do not define different contract sets.
 | 6 | Direct Stream update mutates the static renderer | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
 | 7 | Stream completion is accessibility-visible | Pass — `release-gallery-static-action.yaml`, artifact `2026-07-25_091034` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
 | 8 | Required native first-name field blocks empty submission | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
-| 9 | Invalid native field is focused and announced | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
+| 9 | Actual invalid submit emits a React Native focus event after a prior blur | **Not run** — nine-cycle shared event-probe flow; Android native selector is an additional check | **Not run** — same shared event-probe flow; no iOS native-focused selector |
 | 10 | Restoring a valid native first name re-enables submission | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
 | 11 | Host confirmation can cancel without sending a request | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
 | 12 | Host confirmation approval proceeds | Pass — `release-gallery-native-form.yaml` | Pass — same shared flow; [physical iOS record](../docs/ios-device-release-0.1.0.md) |
@@ -124,6 +128,14 @@ is not counted several times. No inventory item is dropped:
 Atomic item 5 is the cross-cutting accessibility-visible boundary-state
 contract. Its assertions are distributed through interaction rows and row 71,
 and passes with the completed row 71 evidence.
+
+The corrected row 9 flow proves a React Native focus event after each actual
+`invalid; attempt N` result for nine blur-submit-focus cycles. Android also
+checks the native selector before and after each submit. iOS uses the same event
+probe because its retained native `focused` property is not a reliable oracle.
+The checked-in React and static tests prove this contract locally, but no new
+device result is recorded here yet. Spoken TalkBack and VoiceOver output remains
+pending and is not proved by the visible error or focus event probe.
 
 Current Android result: **71/71 grouped contracts Pass** and **115/115 atomic
 observations Pass** on the OnePlus device in artifact `2026-07-25_091034`.

@@ -30,7 +30,14 @@ The initial VM allocation is four host-passthrough vCPUs, 8 GB RAM, and a
 60 GB disk. One workflow runs at a time and queued runs are not canceled. The
 lane runs after every protected-main push and may also be dispatched manually.
 The workflow retains Rails, emulator, Android logcat, JUnit, environment, and
-resource-sampling evidence for 14 days.
+resource-sampling evidence for 14 days. Each Chrome bootstrap, bootstrap retry,
+and full-suite attempt writes to a different directory under
+`artifacts/android-device`. Maestro's test output contains screenshots,
+hierarchy snapshots, and command records. Its debug output and the explicit
+attempt log contain Maestro logs. The same uploaded tree contains Rails,
+emulator, resource, environment, reverse-tunnel, and Android logcat device
+logs. The workflow uses `if: always()`, so this evidence is uploaded after a
+test failure too.
 
 The lane also retains the 12 newest local Maestro test directories. At lane
 entry, after the exact Maestro version check and before install or build work,
@@ -85,6 +92,11 @@ failures, the runner preserves the first attempt's logs and JUnit, restarts and
 reprovisions a clean emulator, and reruns the complete suite once against the
 same APK. Assertion-only failures, app crashes, and a failed second attempt
 remain failures.
+
+The first bootstrap, its one transport retry, suite attempt 1, the second clean
+bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
+`--test-output-dir` and `--debug-output` paths. A retry cannot overwrite the
+screenshots, hierarchy, commands, or logs from the event that caused it.
 
 ## Failure and staleness alert
 

@@ -19,62 +19,75 @@ appId: dev.noscrubs.expoturbo.example
 - extendedWaitUntil:
     visible: Live native form controls
     timeout: 30000
-- assertVisible: Form ready
-# Android BACK is only safe when the soft keyboard is genuinely up: Maestro sends
-# `input keyevent 4` unconditionally for both pressKey: BACK and hideKeyboard, so
-# with the keyboard already down the same key left the app and every later step
-# reported a missing element instead of the navigation that caused it. This block
-# establishes that precondition instead of assuming it. Sampled on this AVD with
-# dumpsys immediately before the key event: left to the initial document
-# autofocus the keyboard was up in 6 of 10 trials, and in all 4 trials where it
-# was down, BACK reached the launcher. After the two taps below it was up 8/8.
-# See issue #408.
-#
-# First tap: a non-interactive element, which puts the keyboard down whatever
-# autofocus did, so the field below is never hidden behind it.
-# Second tap: the field itself, so the keyboard is up and the untargeted
-# eraseText acts on a known control rather than on whatever happened to be
-# focused.
-- runFlow:
-    when:
-      platform: Android
-    commands:
-      - tapOn: Live native form controls
-      - assertVisible: Form ready
-      - tapOn:
-          id: demo-form-input-id-first-name
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+# The shared oracle is the real React Native TextInput event stream. Maestro's
+# retained iOS hierarchy does not report its focused property reliably, so iOS
+# and Android both use this probe. Android keeps its native selector as a second
+# check.
+- tapOn:
+    id: demo-form-input-id-first-name
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 1"
+    timeout: 5000
 - eraseText
+# Invalid submission focus cycle 1 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 2"
+    timeout: 5000
 - runFlow:
     when:
       platform: Android
     commands:
-      - pressKey: BACK
-      # Here for the diagnostic rather than the speed: if BACK ever does leave
-      # the app this fails naming Form ready, which this screen genuinely owns,
-      # instead of blaming the submitter further down. It is also
-      # somewhat faster. Forcing an app exit at this point, it failed in 26.4s
-      # where the old submitter path took 40.9s; both figures were measured
-      # during review of PR #424, not by the pass-rate arms.
-      - assertVisible: Form ready
-- runFlow:
-    when:
-      platform: iOS
-    commands:
-      - hideKeyboard
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
 - scrollUntilVisible:
     element:
       id: demo-form-submitter-id-collect-form
     direction: DOWN
-    timeout: 30000
+    timeout: 5000
     visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
-- scrollUntilVisible:
-    element:
-      id: demo-form-input-id-first-name
-    direction: DOWN
-    timeout: 30000
-    visibilityPercentage: 20
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 1"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 3"
+    timeout: 5000
 - runFlow:
     when:
       platform: Android
@@ -82,13 +95,522 @@ appId: dev.noscrubs.expoturbo.example
       - assertVisible:
           id: demo-form-input-id-first-name
           focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 2 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 4"
+    timeout: 5000
 - runFlow:
     when:
-      platform: iOS
+      platform: Android
     commands:
       - assertVisible:
           id: demo-form-input-id-first-name
-      - assertVisible: First name is required
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 2"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 5"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 3 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 6"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 3"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 7"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 4 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 8"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 4"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 9"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 5 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 10"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 5"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 11"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 6 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 12"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 6"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 13"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 7 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 14"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 7"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 15"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 8 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 16"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 8"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 17"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+# Invalid submission focus cycle 9 of 9.
+- scrollUntilVisible:
+    element:
+      text: Live native form controls
+    direction: UP
+    timeout: 5000
+    visibilityPercentage: 20
+- tapOn:
+    text: Live native form controls
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 18"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: false
+- extendedWaitUntil:
+    visible: Form ready
+    timeout: 5000
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
+- assertNotVisible: Form submission failed. Check the form and retry.
+- assertNotVisible: Form submission complete. Nothing changed.
+- scrollUntilVisible:
+    element:
+      id: demo-form-submitter-id-collect-form
+    direction: DOWN
+    timeout: 5000
+    visibilityPercentage: 20
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submitter-id-collect-form
+    timeout: 5000
+- tapOn:
+    id: demo-form-submitter-id-collect-form
+    waitToSettleTimeoutMs: 100
+- extendedWaitUntil:
+    visible:
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 9"
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 19"
+    timeout: 5000
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - assertVisible:
+          id: demo-form-input-id-first-name
+          focused: true
+- assertVisible: First name is required
+- assertNotVisible: Confirm form submission
+- assertNotVisible: Send this immutable preview?
+- assertNotVisible: Submission loading state observed
 - inputText: Ada
 - runFlow:
     when:
