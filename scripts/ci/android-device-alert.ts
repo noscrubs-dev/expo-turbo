@@ -10,6 +10,7 @@ export const WORKFLOW_TIMEOUT_MINUTES = 90
 export const RUN_STALE_HOURS = 3
 export const COMPLETED_STALE_HOURS = 24
 const MAX_HISTORY = 10
+const MAX_COMMENT_PAGES = 10
 const WRITE_METHODS = new Set(["POST", "PATCH", "DELETE"])
 
 const conclusions = new Set([
@@ -74,7 +75,6 @@ interface HistoryRow {
 interface StoredState {
   version: 1
   redCount: number
-  recoveryCount: number
   history: HistoryRow[]
 }
 
@@ -271,7 +271,6 @@ export function buildIssueBody(
   const parsed = parseStoredState(priorBody)
   const state = parsed.value
   if (decision.state === "red") state.redCount += 1
-  if (decision.state === "green") state.recoveryCount += 1
   const runUrl = decision.run ? makeRunUrl(serverUrl, repository, decision.run.id) : "none"
   state.history = [
     ...state.history,
@@ -306,8 +305,7 @@ Reason: \`${sanitizeCodeSpan(decision.reason)}\`
 
 Run: ${runUrl === "none" ? "none" : `[${decision.run?.id}](${runUrl})`}
 
-Red observations: **${state.redCount}**<br>
-Recoveries: **${state.recoveryCount}**
+Red observations: **${state.redCount}**
 ${corruption}
 ## Recent observations
 
@@ -389,8 +387,7 @@ export async function runAlert(
         ? makeRunUrl(serverUrl, config.repository, decision.run.id)
         : `${serverUrl}/${config.repository}/actions/workflows/${ANDROID_WORKFLOW}`
       const commentPath = `/repos/${config.repository}/issues/${operation.issue}/comments`
-      const comments = await api.request("GET", `${commentPath}?per_page=100`)
-      if (!hasRecoveryComment(comments)) {
+      if (!(await hasRecoveryComment(api, commentPath))) {
         await api.request("POST", commentPath, {
           body: `${RECOVERY_MARKER}\nRecovered: the Android device workflow is green again. ${runUrl}`,
         })
@@ -430,7 +427,7 @@ async function loadAlertIssues(api: GitHubApi, repository: string): Promise<Aler
 }
 
 function parseStoredState(body: string | undefined): ParsedState {
-  const empty: StoredState = { version: 1, redCount: 0, recoveryCount: 0, history: [] }
+  const empty: StoredState = { version: 1, redCount: 0, history: [] }
   if (body === undefined) return { value: empty, corrupt: false }
   const start = body.indexOf(STATE_PREFIX)
   if (start < 0) return { value: empty, corrupt: true }
@@ -444,20 +441,39 @@ function parseStoredState(body: string | undefined): ParsedState {
     const parsed: unknown = JSON.parse(decoded.toString("utf8"))
     if (!isRecord(parsed) || parsed.version !== 1) throw new Error("bad version")
     const redCount = nonnegativeInteger(parsed.redCount, "redCount")
-    const recoveryCount = nonnegativeInteger(parsed.recoveryCount, "recoveryCount")
     if (!Array.isArray(parsed.history)) throw new Error("bad history")
     const history = parsed.history.slice(-MAX_HISTORY).map(parseHistoryRow)
-    return { value: { version: 1, redCount, recoveryCount, history }, corrupt: false }
+    return { value: { version: 1, redCount, history }, corrupt: false }
   } catch {
     return { value: empty, corrupt: true }
   }
 }
 
-function hasRecoveryComment(payload: unknown): boolean {
-  if (!Array.isArray(payload)) throw new Error("issue comments must be an array")
-  return payload.some(
-    (raw) => isRecord(raw) && typeof raw.body === "string" && raw.body.includes(RECOVERY_MARKER),
-  )
+async function hasRecoveryComment(api: GitHubApi, commentPath: string): Promise<boolean> {
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page += 1) {
+    const payload = await api.request("GET", `${commentPath}?per_page=100&page=${page}`)
+    if (!Array.isArray(payload)) throw new Error("issue comments must be an array")
+    const comments = payload.map(parseIssueComment)
+    if (
+      comments.some(
+        (comment) =>
+          comment.author === "github-actions[bot]" && comment.body.includes(RECOVERY_MARKER),
+      )
+    ) {
+      return true
+    }
+    if (comments.length < 100) return false
+  }
+  throw new Error(`issue comments exceeded the ${MAX_COMMENT_PAGES}-page lookup limit`)
+}
+
+function parseIssueComment(raw: unknown): { author: string; body: string } {
+  if (!isRecord(raw)) throw new Error("issue comment must be an object")
+  const user = recordValue(raw.user, "issue comment user")
+  return {
+    author: stringField(user, "login"),
+    body: stringField(raw, "body"),
+  }
 }
 
 function parseHistoryRow(raw: unknown): HistoryRow {

@@ -17,13 +17,10 @@ readonly tests_root="$1"
 readonly keep_count="$2"
 readonly mode="$3"
 
-case "$keep_count" in
-  [1-9]|[1-9][0-9]*) ;;
-  *)
-    echo "Refusing to prune: keep_count must be a positive integer." >&2
-    exit 2
-    ;;
-esac
+if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Refusing to prune: keep_count must be a positive integer." >&2
+  exit 2
+fi
 
 case "$mode" in
   apply|dry-run) ;;

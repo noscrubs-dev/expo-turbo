@@ -254,6 +254,31 @@ describe.serial("Android workflow classification", () => {
     }
   })
 
+  test("selects the newest scheduled run even when the API order is old first", async () => {
+    const olderFailure = run({
+      id: 40,
+      conclusion: "failure",
+      created_at: "2026-08-01T00:00:00Z",
+    })
+    const newerSuccess = run({
+      id: 41,
+      conclusion: "success",
+      created_at: "2026-08-01T01:00:00Z",
+      updated_at: "2026-08-01T02:00:00Z",
+    })
+
+    const result = await determineDecision(
+      scheduleApi([olderFailure, newerSuccess]),
+      "owner/repo",
+      "schedule",
+      {},
+      new Date("2026-08-01T03:00:00Z"),
+    )
+
+    expect(result.state).toBe("green")
+    expect(result.run?.id).toBe(41)
+  })
+
   test("does not let old ignored conclusions bypass newer main commits", async () => {
     for (const conclusion of ["neutral", "skipped", "action_required", "stale", "cancelled"]) {
       const old = run({ id: 31, conclusion, updated_at: "2026-08-01T00:00:00Z" })
@@ -308,24 +333,74 @@ describe.serial("Android workflow classification", () => {
     ).rejects.toThrow("Unexpected request")
   })
 
-  test("rejects untrusted ids, conclusions, SHAs, and timestamps", async () => {
-    const invalid = [
-      run({ id: "1" }),
-      run({ conclusion: "surprise" }),
-      run({ head_sha: "main" }),
-      run({ created_at: "yesterday" }),
-      run({ created_at: "2026-02-31T00:00:00Z" }),
+  test("rejects each untrusted workflow run field with its exact validation error", async () => {
+    const invalid: Array<[Record<string, unknown>, string]> = [
+      [{ id: "1" }, "workflow run id must be positive"],
+      [{ status: "running" }, "workflow run status is invalid"],
+      [{ conclusion: "surprise" }, "workflow run conclusion is invalid"],
+      [{ head_sha: "main" }, "workflow run head_sha is invalid"],
+      [{ head_sha: "A".repeat(40) }, "workflow run head_sha is invalid"],
+      [
+        { head_sha: "0123456789abcdef0123456789abcdef01234567x" },
+        "workflow run head_sha is invalid",
+      ],
+      [{ head_branch: 7 }, "head_branch must be a string"],
+      [{ created_at: "yesterday" }, "workflow run created_at must be an ISO timestamp"],
+      [
+        { created_at: "2026-02-31T00:00:00Z" },
+        "workflow run created_at must be a valid ISO timestamp",
+      ],
+      [
+        { created_at: "2026-08-01T00:00:00.0Z" },
+        "workflow run created_at must be an ISO timestamp",
+      ],
+      [{ updated_at: "tomorrow" }, "workflow run updated_at must be an ISO timestamp"],
+      [
+        { updated_at: "2026-08-01T24:00:00Z" },
+        "workflow run updated_at must be a valid ISO timestamp",
+      ],
     ]
-    for (const raw of invalid) {
+    for (const [overrides, message] of invalid) {
       const api = new GitHubApi(
         "test",
-        routeFetch({ "GET /repos/owner/repo/actions/runs/1": raw }),
+        routeFetch({ "GET /repos/owner/repo/actions/runs/1": run(overrides) }),
         false,
       )
       await expect(
         determineDecision(api, "owner/repo", "workflow_run", { workflow_run: { id: 1 } }),
-      ).rejects.toThrow()
+      ).rejects.toThrow(message)
     }
+  })
+
+  test("accepts only canonical ISO seconds and milliseconds", async () => {
+    for (const timestamp of ["2026-08-01T00:00:00Z", "2026-08-01T00:00:00.123Z"]) {
+      const result = await determineDecision(
+        scheduleApi([run({ created_at: timestamp, updated_at: timestamp })]),
+        "owner/repo",
+        "schedule",
+        {},
+        new Date("2026-08-01T01:00:00Z"),
+      )
+      expect(result.state).toBe("green")
+      expect(result.run?.createdAt).toBe(timestamp)
+      expect(result.run?.updatedAt).toBe(timestamp)
+    }
+  })
+
+  test("rejects an untrusted event id before any request", async () => {
+    let calls = 0
+    const api = new GitHubApi(
+      "test",
+      (() => {
+        calls += 1
+        throw new Error("network must not run")
+      }) as unknown as typeof fetch,
+      false,
+    )
+    await expect(
+      determineDecision(api, "owner/repo", "workflow_run", { workflow_run: { id: "1" } }),
+    ).rejects.toThrow("workflow_run.id must be positive")
+    expect(calls).toBe(0)
   })
 })
 
@@ -389,6 +464,7 @@ describe.serial("alert issue body and filtering", () => {
     )
     expect(body).toContain("Prior alert state was corrupt")
     expect(body).toContain("Red observations: **1**")
+    expect(body).not.toContain("Recoveries:")
   })
 
   test("keeps at most ten history rows", () => {
@@ -437,7 +513,6 @@ describe.serial("alert issue body and filtering", () => {
     const priorState = {
       version: 1,
       redCount: 4,
-      recoveryCount: 2,
       history: [
         {
           at: "2026-08-01T00:00:00Z",
@@ -483,6 +558,32 @@ describe.serial("alert issue body and filtering", () => {
       expect(body).toContain("Red observations: **1**")
     }
   })
+
+  test("rejects a stored reason above the 240-character bound", () => {
+    const priorState = {
+      version: 1,
+      redCount: 4,
+      history: [
+        {
+          at: "2026-08-01T00:00:00Z",
+          state: "red",
+          reason: "x".repeat(241),
+          runId: 1,
+        },
+      ],
+    }
+    const encoded = Buffer.from(JSON.stringify(priorState)).toString("base64url")
+    const body = buildIssueBody(
+      `${ALERT_MARKER}\n${STATE_PREFIX}${encoded} -->`,
+      decision("red"),
+      "https://github.com",
+      "owner/repo",
+      new Date("2026-08-02T00:00:00Z"),
+    )
+
+    expect(body).toContain("Prior alert state was corrupt")
+    expect(body).toContain("Red observations: **1**")
+  })
 })
 
 describe.serial("stub API integration", () => {
@@ -519,7 +620,7 @@ describe.serial("stub API integration", () => {
       },
       calls,
     )
-    await runAlert(config(eventPath, false), fetcher)
+    await runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z"))
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       `GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`,
       `GET ${issuePath}`,
@@ -544,6 +645,31 @@ describe.serial("stub API integration", () => {
       "POST /repos/owner/repo/issues": [response({ number: 4 }, 201)],
     })
     await expect(runAlert(config(eventPath, false), fetcher)).resolves.toBeDefined()
+  })
+
+  test("updates an existing red issue with the new managed body", async () => {
+    const eventPath = await eventFile({})
+    const issuePath = `/repos/owner/repo/issues?state=open&labels=${ALERT_LABEL}&per_page=100`
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const fetcher = queueFetch(
+      {
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          [response({ workflow_runs: [run({ conclusion: "failure" })] })],
+        [`GET ${issuePath}`]: [response([{ number: 3, body: ALERT_MARKER }])],
+        "PATCH /repos/owner/repo/issues/3": [response({ number: 3 })],
+      },
+      calls,
+    )
+
+    await runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z"))
+
+    const patchCall = calls.find((call) => call.method === "PATCH")
+    if (!patchCall) throw new Error("missing red issue update")
+    expect(patchCall.body).toEqual({
+      body: expect.stringContaining("The Android workflow concluded failure."),
+    })
+    expect((patchCall.body as { body?: string }).body).toContain(ALERT_MARKER)
+    expect((patchCall.body as { body?: string }).body).toContain("Red observations: **1**")
   })
 
   test("rejects insecure or credentialed server URLs before any network request", async () => {
@@ -572,7 +698,7 @@ describe.serial("stub API integration", () => {
         [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
           [response({ workflow_runs: [run()] })],
         [`GET ${issuePath}`]: [response(issues)],
-        [`GET ${commentsPath}?per_page=100`]: [response([])],
+        [`GET ${commentsPath}?per_page=100&page=1`]: [response([])],
         [`POST ${commentsPath}`]: [response({ id: 1 }, 201)],
         "PATCH /repos/owner/repo/issues/9": [response({ message: "failed" }, 500)],
       },
@@ -593,8 +719,8 @@ describe.serial("stub API integration", () => {
         [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
           [response({ workflow_runs: [run()] })],
         [`GET ${issuePath}`]: [response(issues)],
-        [`GET ${commentsPath}?per_page=100`]: [
-          response([{ body: `${RECOVERY_MARKER}\nRecovered` }]),
+        [`GET ${commentsPath}?per_page=100&page=1`]: [
+          response([comment(`${RECOVERY_MARKER}\nRecovered`)]),
         ],
         "PATCH /repos/owner/repo/issues/9": [response({ state: "closed" })],
         "PATCH /repos/owner/repo/issues/7": [response({ state: "closed" })],
@@ -609,6 +735,11 @@ describe.serial("stub API integration", () => {
       "/repos/owner/repo/issues/7",
       "/repos/owner/repo/issues/3",
     ])
+    expect(retryCalls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([
+      { state: "closed" },
+      { state: "closed" },
+      { state: "closed" },
+    ])
   })
 
   test("does not close an issue when its recovery comment fails", async () => {
@@ -620,7 +751,7 @@ describe.serial("stub API integration", () => {
         [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
           [response({ workflow_runs: [run()] })],
         [`GET ${issuePath}`]: [response([{ number: 3, body: ALERT_MARKER }])],
-        "GET /repos/owner/repo/issues/3/comments?per_page=100": [response([])],
+        "GET /repos/owner/repo/issues/3/comments?per_page=100&page=1": [response([])],
         "POST /repos/owner/repo/issues/3/comments": [response({ message: "failed" }, 500)],
       },
       calls,
@@ -629,6 +760,121 @@ describe.serial("stub API integration", () => {
       runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z")),
     ).rejects.toThrow("returned 500")
     expect(calls.some((call) => call.method === "PATCH")).toBe(false)
+  })
+
+  test("ignores a spoofed marker and finds the bot marker after page one", async () => {
+    const eventPath = await eventFile({})
+    const issuePath = `/repos/owner/repo/issues?state=open&labels=${ALERT_LABEL}&per_page=100`
+    const commentsPath = "/repos/owner/repo/issues/3/comments"
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const firstPage = [
+      comment(RECOVERY_MARKER, "spoofing-user"),
+      ...Array.from({ length: 99 }, (_, index) => comment(`ordinary ${index}`, `user-${index}`)),
+    ]
+    const fetcher = queueFetch(
+      {
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          [response({ workflow_runs: [run()] })],
+        [`GET ${issuePath}`]: [response([{ number: 3, body: ALERT_MARKER }])],
+        [`GET ${commentsPath}?per_page=100&page=1`]: [response(firstPage)],
+        [`GET ${commentsPath}?per_page=100&page=2`]: [
+          response([comment(RECOVERY_MARKER, "github-actions[bot]")]),
+        ],
+        "PATCH /repos/owner/repo/issues/3": [response({ state: "closed" })],
+      },
+      calls,
+    )
+
+    await runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z"))
+
+    expect(calls.filter((call) => call.method === "GET").map((call) => call.path)).toContain(
+      `${commentsPath}?per_page=100&page=2`,
+    )
+    expect(calls.some((call) => call.method === "POST")).toBe(false)
+    expect(calls.at(-1)?.body).toEqual({ state: "closed" })
+  })
+
+  test("posts one recovery after all comment pages prove no bot marker", async () => {
+    const eventPath = await eventFile({})
+    const issuePath = `/repos/owner/repo/issues?state=open&labels=${ALERT_LABEL}&per_page=100`
+    const commentsPath = "/repos/owner/repo/issues/3/comments"
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const fetcher = queueFetch(
+      {
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          [response({ workflow_runs: [run()] })],
+        [`GET ${issuePath}`]: [response([{ number: 3, body: ALERT_MARKER }])],
+        [`GET ${commentsPath}?per_page=100&page=1`]: [
+          response(Array.from({ length: 100 }, (_, index) => comment(`ordinary ${index}`))),
+        ],
+        [`GET ${commentsPath}?per_page=100&page=2`]: [response([])],
+        [`POST ${commentsPath}`]: [response({ id: 501 }, 201)],
+        "PATCH /repos/owner/repo/issues/3": [response({ state: "closed" })],
+      },
+      calls,
+    )
+
+    await runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z"))
+
+    const posts = calls.filter((call) => call.method === "POST")
+    expect(posts).toHaveLength(1)
+    const post = posts[0]
+    if (!post) throw new Error("missing recovery post")
+    expect((post.body as { body: string }).body).toContain(RECOVERY_MARKER)
+  })
+
+  test("fails closed on a malformed later comment page", async () => {
+    const eventPath = await eventFile({})
+    const issuePath = `/repos/owner/repo/issues?state=open&labels=${ALERT_LABEL}&per_page=100`
+    const commentsPath = "/repos/owner/repo/issues/3/comments"
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const fetcher = queueFetch(
+      {
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          [response({ workflow_runs: [run()] })],
+        [`GET ${issuePath}`]: [response([{ number: 3, body: ALERT_MARKER }])],
+        [`GET ${commentsPath}?per_page=100&page=1`]: [
+          response(Array.from({ length: 100 }, (_, index) => comment(`ordinary ${index}`))),
+        ],
+        [`GET ${commentsPath}?per_page=100&page=2`]: [response({ comments: [] })],
+      },
+      calls,
+    )
+
+    await expect(
+      runAlert(config(eventPath, false), fetcher, new Date("2026-08-01T02:00:00Z")),
+    ).rejects.toThrow("issue comments must be an array")
+    expect(calls.some((call) => call.method === "POST" || call.method === "PATCH")).toBe(false)
+  })
+
+  test("stops after ten full comment pages instead of assuming no marker", async () => {
+    const eventPath = await eventFile({})
+    const issuePath = `/repos/owner/repo/issues?state=open&labels=${ALERT_LABEL}&per_page=100`
+    const commentsPath = "/repos/owner/repo/issues/3/comments"
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const routes: Record<string, unknown> = {
+      [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+        {
+          workflow_runs: [run()],
+        },
+      [`GET ${issuePath}`]: [{ number: 3, body: ALERT_MARKER }],
+    }
+    for (let page = 1; page <= 10; page += 1) {
+      routes[`GET ${commentsPath}?per_page=100&page=${page}`] = Array.from(
+        { length: 100 },
+        (_, index) => comment(`page ${page} comment ${index}`),
+      )
+    }
+
+    await expect(
+      runAlert(
+        config(eventPath, false),
+        routeFetch(routes, calls),
+        new Date("2026-08-01T02:00:00Z"),
+      ),
+    ).rejects.toThrow("issue comments exceeded the 10-page lookup limit")
+    expect(calls.filter((call) => call.path.startsWith(commentsPath))).toHaveLength(10)
+    expect(calls.some((call) => call.method === "POST" || call.method === "PATCH")).toBe(false)
   })
 })
 
@@ -680,6 +926,10 @@ function run(overrides: Record<string, unknown> = {}) {
     updated_at: "2026-08-01T01:00:00Z",
     ...overrides,
   }
+}
+
+function comment(body: string, login = "github-actions[bot]") {
+  return { body, user: { login } }
 }
 
 function scheduleApi(runs: unknown[]): GitHubApi {

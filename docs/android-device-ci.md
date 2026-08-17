@@ -119,12 +119,14 @@ conclusion. A quiet repository does not get a stale alert.
 
 On red, the workflow creates one issue or updates its body without repeated
 comments. If duplicate marked issues exist, it keeps the lowest issue number
-and closes the others. On recovery, it checks for a fixed recovery marker,
-comments once with the successful run URL, and closes all marked alert issues,
-with the lowest issue number closed last. A failed close is retried without a
-second recovery comment. The body keeps no more than ten sanitized observations.
-Its stored state uses a strict base64url comment payload. A corrupt or prior
-format payload resets the counters and records that fact.
+and closes the others. On recovery, it checks all bounded comment pages for a
+fixed recovery marker written by `github-actions[bot]`, comments once with the
+successful run URL, and closes all marked alert issues, with the lowest issue
+number closed last. A failed close is retried without a second recovery comment.
+The body keeps the red observation count and no more than ten sanitized
+observations. Recovery is recorded by the bot comment. Its stored state uses a
+strict base64url comment payload. A corrupt or prior format payload resets the
+red count and records that fact.
 
 A manual `workflow_dispatch` is always a dry run. It reads live state and logs
 the planned operations, but its API client does not send `POST`, `PATCH`, or

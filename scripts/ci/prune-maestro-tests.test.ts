@@ -82,15 +82,44 @@ describe.serial("Maestro test retention", () => {
   })
 
   test("rejects noncanonical decimal keep counts without deletion", async () => {
-    for (const count of ["012", "00", "08", "09"]) {
+    for (const count of ["012", "00", "08", "09", "12abc", "1 ", "+12"]) {
       const root = await fixtureRoot()
       await addTimestamps(root, 13)
       const before = await timestampEntries(root)
       const result = await runPruner(pruneScript, root, count, "apply")
       expect(result.status).toBe(2)
-      expect(result.stderr).toContain("keep_count must be a positive integer")
+      expect(result.stderr).toBe("Refusing to prune: keep_count must be a positive integer.\n")
       expect(await timestampEntries(root)).toEqual(before)
     }
+  })
+
+  test("rejects an arithmetic keep count before command substitution or deletion", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 13)
+    const sentinel = join(dirname(dirname(root)), "arithmetic-side-effect")
+    const result = await runPruner(pruneScript, root, `10*HOME[$(touch ${sentinel})]`, "apply")
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toBe("Refusing to prune: keep_count must be a positive integer.\n")
+    expect(await Bun.file(sentinel).exists()).toBe(false)
+    expect(await timestampEntries(root)).toHaveLength(13)
+  })
+
+  test("the literal keep count validation is load-bearing", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 13)
+    const sentinel = join(dirname(dirname(root)), "mutated-arithmetic-side-effect")
+    const source = await readFile(pruneScript, "utf8")
+    const mutation = source.replace(
+      'if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then\n  echo "Refusing to prune: keep_count must be a positive integer." >&2\n  exit 2\nfi',
+      'case "$keep_count" in\n  [1-9]|[1-9][0-9]*) ;;\n  *)\n    echo "Refusing to prune: keep_count must be a positive integer." >&2\n    exit 2\n    ;;\nesac',
+    )
+    expect(mutation).not.toBe(source)
+    const mutatedScript = await writeMutation(mutation)
+
+    await runPruner(mutatedScript, root, `10*HOME[$(touch ${sentinel})]`, "apply")
+
+    expect(await Bun.file(sentinel).exists()).toBe(true)
   })
 
   test("rejects a root file and a root symlink", async () => {
@@ -136,6 +165,7 @@ describe.serial("Maestro test retention", () => {
     const hostileNames = [
       "0000-00-00_000000\n2026-08-01_999999",
       "0000-00-00_000000\r2026-08-01_999998",
+      "0000-2026-08-01_999996",
       "2026-08-01_999997 extra",
     ]
     for (const name of hostileNames) await mkdir(join(root, name))
@@ -167,6 +197,19 @@ describe.serial("Maestro test retention", () => {
     expect(candidateNames(dry.stdout)).toEqual(candidateNames(applied.stdout))
     expect(await timestampEntries(dryRoot)).toHaveLength(20)
     expect(await timestampEntries(applyRoot)).toHaveLength(12)
+  })
+
+  test("a timestamp-named file does not increase the directory prune count", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 12)
+    await writeFile(join(root, "1999-01-01_000000"), "not a run directory")
+
+    const result = await runPruner(pruneScript, root, "12", "apply")
+
+    expect(result.status).toBe(0)
+    expect(candidateLines(result.stdout)).toEqual([])
+    expect(await timestampEntries(root)).toHaveLength(13)
+    expect(await readFile(join(root, "1999-01-01_000000"), "utf8")).toBe("not a run directory")
   })
 
   test("bounds a 200-directory root to 12 without hanging", async () => {
@@ -242,6 +285,25 @@ describe.serial("Maestro test retention", () => {
 
     expect(result.status).toBe(0)
     expect(await readdir(root)).not.toContain("0000-not-a-timestamp")
+  })
+
+  test("the timestamp start anchor is load-bearing", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 12)
+    const hostile = "0000-2026-08-01_999999"
+    await mkdir(join(root, hostile))
+    const source = await readFile(pruneScript, "utf8")
+    const mutation = source.replace(
+      '[[ "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]',
+      '[[ "$name" =~ [0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]',
+    )
+    expect(mutation).not.toBe(source)
+    const mutatedScript = await writeMutation(mutation)
+
+    const result = await runPruner(mutatedScript, root, "12", "apply")
+
+    expect(result.status).toBe(0)
+    expect(await readdir(root)).not.toContain(hostile)
   })
 
   test("the symlink guards are load-bearing", async () => {
