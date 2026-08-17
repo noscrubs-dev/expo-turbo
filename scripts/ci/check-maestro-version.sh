@@ -65,8 +65,11 @@ fi
 
 # 2.7.0 reports a bare "2.7.0" on its first line. Ignore a trailing update
 # notice, but fail closed if the first line does not identify the installed
-# version. Remove CR so output from a CRLF wrapper has the same meaning.
-resolved="$(printf '%s\n' "$reported" | head -1 | tr -d '\r')"
+# version. Extract it from the captured output without a pipeline: head can
+# SIGPIPE under pipefail when a CLI prints a large trailing notice. Remove one
+# trailing CR so output from a CRLF wrapper has the same meaning.
+resolved="${reported%%$'\n'*}"
+resolved="${resolved%$'\r'}"
 
 if [ "$resolved" != "$expected_version" ]; then
   {

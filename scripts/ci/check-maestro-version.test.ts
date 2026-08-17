@@ -41,6 +41,17 @@ describe.serial("Android Maestro CI", () => {
       expect(result.stdout.trim()).toBe("2.7.0")
     })
 
+    test("accepts the pinned first line before a large trailing CLI notice", async () => {
+      const result = await runCheck(
+        await fakeMaestro(
+          "printf '2.7.0\\n'; dd if=/dev/zero bs=131073 count=1 2>/dev/null | tr '\\0' x",
+        ),
+      )
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe("2.7.0\n")
+    })
+
     test("accepts a CR on the pinned first line", async () => {
       const result = await runCheck(await fakeMaestro("printf '2.7.0\\r\\nupdate available\\n'"))
 

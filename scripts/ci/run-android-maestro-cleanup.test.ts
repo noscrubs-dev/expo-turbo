@@ -58,18 +58,32 @@ describe("Android lane cleanup", () => {
     expect(result.stdout).toContain("survivor=true")
   })
 
-  test("fails the bounded-wait proof when the final live guard becomes an unconditional wait", async () => {
+  test("times out when no KILL leaves the final wait unguarded", async () => {
+    const fixture = await createFixture()
     const source = await readFile(stopProcessScript, "utf8")
-    const guardedWait = `  if kill -0 "$pid" 2>/dev/null; then
+    const finalLiveGuard = `  if kill -0 "$pid" 2>/dev/null; then
     echo "$name still exists after KILL; cleanup will not wait for it." >&2
     return
   fi
   wait "$pid" 2>/dev/null || true`
-    const mutation = source.replace(guardedWait, '  wait "$pid" 2>/dev/null || true')
+    const mutation = source
+      .replace('    kill -KILL "$pid" 2>/dev/null || true', "    : SIGKILL removed")
+      .replace(
+        finalLiveGuard,
+        `  if kill -0 "$pid" 2>/dev/null; then
+    echo "$name still exists after KILL; cleanup will not wait for it." >&2
+    : final live guard return removed
+  fi
+  wait "$pid" 2>/dev/null || true`,
+      )
 
     expect(mutation).not.toBe(source)
-    expect(() => assertFinalWaitIsGuarded(source)).not.toThrow()
-    expect(() => assertFinalWaitIsGuarded(mutation)).toThrow("final wait")
+    expect(source).toContain('    kill -KILL "$pid" 2>/dev/null || true')
+    expect(source).toContain(finalLiveGuard)
+
+    const result = await runStopProcess(fixture, mutation)
+
+    expect(result.timedOut).toBe(true)
   })
 
   test("stops Rails before it asks the emulator to stop", async () => {
@@ -336,14 +350,6 @@ function extractFunction(lane: string, name: string): string {
 function assertNoBareWait(body: string): void {
   if (/^\s*wait(?:\s|$)/m.test(body)) {
     throw new Error("real lane functions must not contain a bare wait")
-  }
-}
-
-function assertFinalWaitIsGuarded(source: string): void {
-  if (
-    !source.includes('if kill -0 "$pid" 2>/dev/null; then\n    echo "$name still exists after KILL')
-  ) {
-    throw new Error("the final wait must have a still-alive guard")
   }
 }
 
