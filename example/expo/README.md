@@ -56,6 +56,11 @@ bun run start
 
 `bun run check` runs lint, types, fixture tests, and static web, iOS, and Android exports. The individual `export:web`, `export:ios`, and `export:android` scripts are available when one platform needs a focused bundle-admission check. Those native exports produce Hermes bytecode and catch Metro/runtime dependency regressions; they are not release-build, simulator, or physical-device evidence.
 
+CI adds the two-stage [Expo dependency validation](../../docs/expo-ci-validation.md).
+Its pinned base check uses the SDK package map that comes from this lockfile.
+Fresh Expo advice can change without a lockfile change: it warns on pull
+requests and blocks `main` and release. This check is not fully offline.
+
 For a source-checkout iOS Release build, keep this ordering before running
 Expo prebuild and the native build:
 

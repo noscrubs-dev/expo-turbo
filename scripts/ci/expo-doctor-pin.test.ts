@@ -1,42 +1,73 @@
 import { expect, test } from "bun:test"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const exampleRoot = join(repositoryRoot, "example/expo")
-const workflowPaths = [
-  join(repositoryRoot, ".github/workflows/ci.yml"),
-  join(repositoryRoot, ".github/workflows/release.yml"),
-]
+const wrapperCall = "bun ../../scripts/ci/check-expo-health.ts"
 
-test("Expo Doctor stays exact, locked, and local in CI", async () => {
-  const [manifestSource, lockfile, ...workflows] = await Promise.all([
+test("Expo checks stay exact, locked, local, and wrapped in every workflow", async () => {
+  const workflowDirectory = join(repositoryRoot, ".github/workflows")
+  const workflowNames = (await readdir(workflowDirectory))
+    .filter((name) => /\.ya?ml$/.test(name))
+    .sort()
+  const [manifestSource, lockfile, wrapper, ...workflows] = await Promise.all([
     readFile(join(exampleRoot, "package.json"), "utf8"),
     readFile(join(exampleRoot, "bun.lock"), "utf8"),
-    ...workflowPaths.map((path) => readFile(path, "utf8")),
+    readFile(join(repositoryRoot, "scripts/ci/check-expo-health.ts"), "utf8"),
+    ...workflowNames.map(async (name) => ({
+      name,
+      source: await readFile(join(workflowDirectory, name), "utf8"),
+    })),
   ])
   const manifest = JSON.parse(manifestSource) as {
+    dependencies?: Record<string, string>
     devDependencies?: Record<string, string>
   }
-  const version = manifest.devDependencies?.["expo-doctor"]
-
-  expect(version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/)
-  if (version === undefined) throw new Error("expo-doctor must be an exact devDependency")
-
+  const expected = {
+    expo: ["dependencies", "~57.0.14", "57.0.14"],
+    "expo-constants": ["dependencies", "~57.0.12", "57.0.12"],
+    "expo-router": ["dependencies", "~57.0.14", "57.0.14"],
+    "expo-doctor": ["devDependencies", "1.20.2", "1.20.2"],
+  } as const
   const workspaceSection = lockfile.slice(0, lockfile.indexOf('\n  "packages":'))
-  const workspaceVersion = workspaceSection.match(/"expo-doctor":\s*"([^"]+)"/)?.[1]
-  const resolvedVersion = lockfile.match(/^\s*"expo-doctor":\s*\["expo-doctor@([^"]+)"/m)?.[1]
 
-  expect(workspaceVersion).toBe(version)
-  expect(resolvedVersion).toBe(version)
-
-  for (const workflow of workflows) {
-    const doctorLines = workflow.split("\n").filter((line) => line.includes("expo-doctor"))
-
-    expect(doctorLines).toEqual(["      - run: ./node_modules/.bin/expo-doctor"])
-    expect(workflow).toContain(
-      "      - run: ./node_modules/.bin/expo-doctor\n        working-directory: example/expo",
+  for (const [name, [section, declared, resolved]] of Object.entries(expected)) {
+    expect(manifest[section]?.[name]).toBe(declared)
+    expect(workspaceSection.match(new RegExp(`"${name}":\\s*"([^"]+)"`))?.[1]).toBe(declared)
+    expect(lockfile.match(new RegExp(`^\\s*"${name}":\\s*\\["${name}@([^"]+)"`, "m"))?.[1]).toBe(
+      resolved,
     )
   }
+
+  const workflowCalls: Array<{ name: string; call: string }> = []
+  for (const workflow of workflows) {
+    expect(workflow.source).not.toMatch(/\b(?:bunx|npx|npm\s+(?:exec|x))\b/)
+    expect(workflow.source).not.toContain("expo-doctor")
+    expect(workflow.source).not.toContain("expo install --check")
+    for (const line of workflow.source.split("\n")) {
+      if (line.includes(wrapperCall)) workflowCalls.push({ name: workflow.name, call: line.trim() })
+    }
+    if (workflow.source.includes(wrapperCall)) {
+      expect(workflow.source).toMatch(
+        new RegExp(
+          `- run: ${escapeRegExp(wrapperCall)} (?:ci|release)\\n {8}working-directory: example/expo`,
+        ),
+      )
+    }
+  }
+
+  expect(workflowCalls).toEqual([
+    { name: "ci.yml", call: `- run: ${wrapperCall} ci` },
+    { name: "release.yml", call: `- run: ${wrapperCall} release` },
+  ])
+  expect(wrapper).toContain('runLocal("expo-doctor", [], { EXPO_OFFLINE: "1" })')
+  expect(wrapper).toContain('runLocal("expo", ["install", "--check", "--json"], { CI: "1" })')
+  expect(wrapper).toContain('join(process.cwd(), "node_modules/.bin", binary)')
+  expect(wrapper).not.toMatch(/\b(?:bunx|npx|npm\s+(?:exec|x))\b/)
 })
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
