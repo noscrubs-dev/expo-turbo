@@ -293,6 +293,9 @@ cleanup() {
   stop_process "$sampler_pid" "resource sampler" 50 50 0.1
   stop_process "$emulator_pid" "Android emulator" 50 50 0.1
 
+  # Evidence is optional. A missing runner utility or a failed evidence write
+  # must not replace the suite result captured above.
+  set +e
   {
     echo "exit_status=$status"
     echo "commit=$(git rev-parse HEAD)"
@@ -305,9 +308,19 @@ cleanup() {
     # suite, so the evidence names the Maestro the run actually used.
     echo "maestro=$maestro_version"
     echo "emulator=$(grep '^Pkg.Revision=' "$ANDROID_HOME/emulator/source.properties")"
-    df -h /
-    free -h
+    if command -v df >/dev/null 2>&1; then
+      df -h / || echo "disk=(df failed)"
+    else
+      echo "disk=(df is not installed)"
+    fi
+    if command -v free >/dev/null 2>&1; then
+      free -h || echo "memory=(free failed)"
+    else
+      echo "memory=(free is not installed)"
+    fi
+    echo "evidence_complete=true"
   } >"$artifacts/environment.txt"
+  set -e
 
   exit "$status"
 }
@@ -348,7 +361,8 @@ gem install --user-install bundler --version 2.7.2 --no-document
 (
   cd example/rails
   bundle install
-  PORT=3001 RAILS_ENV=development bundle exec rails server -b 127.0.0.1
+  export PORT=3001 RAILS_ENV=development
+  exec bundle exec rails server -b 127.0.0.1
 ) >"$rails_log" 2>&1 &
 rails_pid=$!
 
@@ -421,29 +435,7 @@ start_and_prepare_emulator() {
 
 stop_emulator_for_retry() {
   timeout 15 adb -s "$adb_serial" emu kill >/dev/null 2>&1 || true
-
-  if [ -n "$emulator_pid" ]; then
-    for _ in $(seq 1 30); do
-      if ! kill -0 "$emulator_pid" 2>/dev/null; then
-        break
-      fi
-      sleep 1
-    done
-    if kill -0 "$emulator_pid" 2>/dev/null; then
-      kill "$emulator_pid" 2>/dev/null || true
-      for _ in $(seq 1 15); do
-        if ! kill -0 "$emulator_pid" 2>/dev/null; then
-          break
-        fi
-        sleep 1
-      done
-    fi
-    if kill -0 "$emulator_pid" 2>/dev/null; then
-      kill -KILL "$emulator_pid" 2>/dev/null || true
-    fi
-    wait "$emulator_pid" 2>/dev/null || true
-  fi
-
+  stop_process "$emulator_pid" "Android emulator" 30 15 1
   emulator_pid=""
   adb kill-server >/dev/null 2>&1 || true
 }

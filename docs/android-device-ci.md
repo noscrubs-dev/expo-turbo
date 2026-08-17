@@ -100,9 +100,13 @@ guard is verified without a device.
 Install exactly the pinned version on the runner, as `expo-ci`:
 
 ```sh
+set -euo pipefail
+
 readonly maestro_version="2.7.0"
 readonly maestro_sha256="a4ccab6b604617e7aef6db4f885666056eabe5cfa32befaa3bc994041b8fcbb5"
 readonly maestro_url="https://github.com/mobile-dev-inc/Maestro/releases/download/cli-${maestro_version}/maestro.zip"
+readonly maestro_install="$HOME/.local/opt/maestro-${maestro_version}-${maestro_sha256}"
+readonly maestro_link="$HOME/.local/bin/maestro"
 maestro_tmp="$(mktemp -d)"
 trap 'rm -rf -- "$maestro_tmp"' EXIT
 
@@ -111,21 +115,38 @@ curl --fail --location --silent --show-error \
 printf '%s  %s\n' "$maestro_sha256" "$maestro_tmp/maestro.zip" |
   sha256sum --check --strict -
 unzip -q "$maestro_tmp/maestro.zip" -d "$maestro_tmp/extracted"
+test -d "$maestro_tmp/extracted/maestro"
 test -x "$maestro_tmp/extracted/maestro/bin/maestro"
+test "$("$maestro_tmp/extracted/maestro/bin/maestro" --version)" = "$maestro_version"
 
-readonly maestro_install="$HOME/.local/opt/maestro-${maestro_version}-${maestro_sha256}"
-install -d "$HOME/.local/opt" "$HOME/.local/bin"
-test ! -e "$maestro_install"
-mv "$maestro_tmp/extracted/maestro" "$maestro_install"
-ln -sfn "$maestro_install/bin/maestro" "$HOME/.local/bin/maestro"
-"$HOME/.local/bin/maestro" --version
+if [ -e "$maestro_link" ] && [ ! -L "$maestro_link" ]; then
+  echo "Refusing to replace non-symlink path: $maestro_link" >&2
+  exit 1
+fi
+
+if [ -e "$maestro_install" ] || [ -L "$maestro_install" ]; then
+  if [ -L "$maestro_install" ] || [ ! -d "$maestro_install" ] ||
+    [ ! -x "$maestro_install/bin/maestro" ] ||
+    [ "$("$maestro_install/bin/maestro" --version)" != "$maestro_version" ]; then
+    echo "Existing checksum-addressed Maestro install is invalid: $maestro_install" >&2
+    exit 1
+  fi
+else
+  install -d "$HOME/.local/opt" "$HOME/.local/bin"
+  mv "$maestro_tmp/extracted/maestro" "$maestro_install"
+fi
+
+ln -sfn "$maestro_install/bin/maestro" "$maestro_link"
+test "$("$maestro_link" --version)" = "$maestro_version"
 ```
 
 The URL and SHA-256 are the official `cli-2.7.0` GitHub release asset and its
 `checksums_sha256.txt` value. The lane runs in a non-interactive shell and puts
-`$HOME/.local/bin` first on `PATH`. The checksum gate runs before extraction,
-and the version plus checksum in the install path prevent a partial download
-from replacing another Maestro installation.
+`$HOME/.local/bin` first on `PATH`. The checksum gate runs before extraction.
+The block verifies the extracted layout, executable, and version before it
+moves the checksum-addressed directory or changes the symlink. A second run
+reuses an exact valid install. An invalid or partial existing install fails
+before the symlink changes.
 
 Changing the Maestro version means editing the pin in
 `scripts/ci/check-maestro-version.sh`, updating the inventory above, installing
