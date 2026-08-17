@@ -492,6 +492,97 @@ describe("typed component registry", () => {
     expect(() =>
       defineComponentModule({ components: [], name: "cart😀", version: "1" }),
     ).not.toThrow()
+    expect(
+      createRegistry(defineComponentModule({ components: [card], name: "cart�" })).capabilities
+        .modules,
+    ).toEqual([{ name: "cart�" }])
+  })
+
+  test("rejects noncharacters in every canonical manifest identity field", () => {
+    const invalid = "\uFDD0"
+    const cases: readonly [string, number, () => unknown][] = [
+      ["package.name", 3, () => packageIdentity({ name: `pkg${invalid}` })],
+      [
+        "component.tag",
+        3,
+        () =>
+          defineComponent({
+            attributes: {},
+            children: none,
+            component: () => null,
+            schema: z.object({}),
+            tag: `Tag${invalid}`,
+          }),
+      ],
+      [
+        "component.aliases[]",
+        5,
+        () =>
+          defineComponent({
+            aliases: [`Alias${invalid}`],
+            attributes: {},
+            children: none,
+            component: () => null,
+            schema: z.object({}),
+            tag: "Tag",
+          }),
+      ],
+      [
+        "component.attributes[].name",
+        4,
+        () =>
+          defineComponent({
+            attributes: { [`name${invalid}`]: attr(stringCodec) },
+            children: none,
+            component: () => null,
+            tag: "Tag",
+          }),
+      ],
+      ["attribute.prop", 4, () => attr(stringCodec).prop(`prop${invalid}`)],
+      [
+        "component.attributes[].prop",
+        4,
+        () =>
+          defineComponent({
+            attributes: {
+              title: { codec: stringCodec, prop: `prop${invalid}` as "title" },
+            },
+            children: none,
+            component: () => null,
+            schema: z.object({ title: z.string() }),
+            tag: "Tag",
+          }),
+      ],
+      [
+        "component.attributes[].codec",
+        5,
+        () =>
+          defineComponent({
+            attributes: {
+              title: {
+                codec: { decode: (value: string) => value, name: `codec${invalid}` },
+                prop: "title",
+              },
+            },
+            children: none,
+            component: () => null,
+            schema: z.object({ title: z.string() }),
+            tag: "Tag",
+          }),
+      ],
+    ]
+
+    for (const [path, index, operation] of cases) {
+      expect(operation).toThrow(
+        `Expo Turbo registry identifier ${path} contains Unicode noncharacter U+FDD0 at scalar index ${index}`,
+      )
+      try {
+        operation()
+      } catch (error) {
+        expect(error).toBeInstanceOf(RegistryError)
+        expect(error).toMatchObject({ code: "registry" })
+      }
+    }
   })
 
   test("derives component props from attribute definitions", () => {

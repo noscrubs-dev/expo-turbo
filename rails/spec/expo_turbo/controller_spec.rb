@@ -361,6 +361,21 @@ RSpec.describe ExpoTurbo::Rails::Controller do
     end
   end
 
+  it "drops legacy noncharacter module names but keeps valid U+FFFD through the warning path" do
+    controller = controller_with_request(
+      "HTTP_X_EXPO_TURBO_MODULES" => "v1;bad%EF%B7%90=1,valid%EF%BF%BD=2"
+    )
+    logger = double
+    allow(logger).to receive(:warn)
+    allow(controller).to receive(:logger).and_return(logger)
+
+    expect { controller.expo_turbo_client_modules }.not_to raise_error
+    expect(controller.expo_turbo_client_modules).to eq("valid\uFFFD" => "2")
+    expect(logger).to have_received(:warn).with(
+      "Expo Turbo ignored 1 malformed X-Expo-Turbo-Modules entry"
+    )
+  end
+
   it "supports comma-separated requirement clauses" do
     native = controller_with_request("HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=2")
     web = controller_with_request

@@ -486,7 +486,9 @@ module ExpoTurbo
         name = expo_turbo_decode_module_part(encoded_name).force_encoding(Encoding::UTF_8)
         version = expo_turbo_decode_module_part(encoded_version).force_encoding(Encoding::UTF_8)
         return unless name.valid_encoding? && version.valid_encoding?
-        return if expo_turbo_module_part_has_controls?(name) || expo_turbo_module_part_has_controls?(version)
+        return if expo_turbo_module_part_has_controls?(name) ||
+          !RegistryIdentifier.valid?(name) ||
+          expo_turbo_module_part_has_controls?(version)
 
         name = name.strip
         version = version.strip
@@ -519,7 +521,7 @@ module ExpoTurbo
       end
 
       def expo_turbo_module_part_has_controls?(value)
-        value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 || codepoint.between?(0xFFFE, 0xFFFF) }
+        value.each_codepoint.any? { |codepoint| codepoint <= 31 || codepoint == 127 }
       end
 
       # These warnings are not swallowed. A logger that cannot record a

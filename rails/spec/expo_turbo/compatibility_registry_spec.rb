@@ -43,4 +43,25 @@ RSpec.describe ExpoTurbo::Rails::CompatibilityRegistry do
         .to raise_error(ExpoTurbo::Rails::ConfigurationError, /computed digest/)
     end
   end
+
+  it "rejects noncharacters in direct compatibility vocabulary identities" do
+    lock = {
+      "lockVersion" => 1,
+      "current" => digest,
+      "history" => [{"revision" => 1, "digest" => digest}]
+    }
+
+    expect {
+      described_class.from_data(lock:, vocabularies: {digest => {"Demo\uFDD0" => ["title"]}})
+    }.to raise_error(
+      ExpoTurbo::Rails::ConfigurationError,
+      "Expo Turbo registry identifier components[0].tag contains Unicode noncharacter U+FDD0 at scalar index 4"
+    )
+    expect {
+      described_class.from_data(lock:, vocabularies: {digest => {"Demo" => ["title\uFDD0"]}})
+    }.to raise_error(
+      ExpoTurbo::Rails::ConfigurationError,
+      "Expo Turbo registry identifier components[0].attributes[0].name contains Unicode noncharacter U+FDD0 at scalar index 5"
+    )
+  end
 end

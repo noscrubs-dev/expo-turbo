@@ -1,0 +1,20 @@
+{
+  "validScalarHex": ["FDCF", "FDF0", "FFFD", "10000", "1FFFD", "20000", "10FFFD"],
+  "invalidScalarHex": ["FDD0", "FDEF", "FFFE", "FFFF", "1FFFE", "1FFFF", "10FFFE", "10FFFF"],
+  "validSequenceScalarHex": [
+    {"description": "composed", "scalars": ["0063", "0061", "0066", "00E9"]},
+    {"description": "decomposed", "scalars": ["0063", "0061", "0066", "0065", "0301"]},
+    {"description": "unassigned", "scalars": ["0061", "0378"]},
+    {"description": "private use", "scalars": ["0061", "E000"]},
+    {"description": "variation selector", "scalars": ["2764", "FE0F"]},
+    {"description": "emoji", "scalars": ["1F600"]}
+  ],
+  "javascriptMalformedUtf16Hex": [
+    {"description": "lone high surrogate", "codeUnits": ["0061", "D800", "0062"]},
+    {"description": "lone low surrogate", "codeUnits": ["0061", "DC00", "0062"]}
+  ],
+  "rubyMalformedUtf8Hex": [
+    {"description": "truncated sequence", "bytes": "61E28262"},
+    {"description": "encoded surrogate", "bytes": "61EDA08062"}
+  ]
+}

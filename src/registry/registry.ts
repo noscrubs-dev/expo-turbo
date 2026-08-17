@@ -11,6 +11,10 @@ import {
   decodeRegistryElementForRender,
   decodeRegistryElementStrict,
 } from "./registry-decode-internal.js"
+import {
+  registryIdentifierIssue,
+  validateRegistryIdentifier,
+} from "./registry-identifier-internal.js"
 import { sha256Hex } from "./sha256-internal.js"
 
 const RESERVED_TAGS = new Set([
@@ -28,16 +32,10 @@ function isExpoTurboModuleName(value: unknown): value is string {
     typeof value === "string" &&
     value.trim() === value &&
     value !== "" &&
+    !registryIdentifierIssue(value) &&
     ![...value].some((character) => {
       const codePoint = character.codePointAt(0) ?? 0
-      return (
-        codePoint <= 31 ||
-        codePoint === 127 ||
-        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
-        codePoint === 0xfffe ||
-        codePoint === 0xffff ||
-        codePoint === 0xfffd
-      )
+      return codePoint <= 31 || codePoint === 127
     })
   )
 }
@@ -307,6 +305,7 @@ export interface DefinedComponent<Tag extends string, Schema extends z.ZodObject
 
 function validateTag(tag: string): void {
   if (!tag.trim()) throw new RegistryError("Component tags must not be blank")
+  validateRegistryIdentifier(tag, "component.tag")
   if (RESERVED_TAGS.has(tag)) {
     throw new RegistryError(`Component tag ${JSON.stringify(tag)} is reserved`, { target: tag })
   }
@@ -372,6 +371,9 @@ function deriveComponentSchemaAndBindings(
   if (config.schema !== undefined) {
     for (const [name, value] of Object.entries(config.attributes)) {
       const binding = value as ErasedAttributeBinding
+      validateRegistryIdentifier(name, "component.attributes[].name")
+      validateRegistryIdentifier(binding.prop, "component.attributes[].prop")
+      validateRegistryIdentifier(binding.codec.name, "component.attributes[].codec")
       if (!binding.codec.name.trim()) {
         throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
           target: config.tag,
@@ -416,6 +418,8 @@ function deriveComponentSchemaAndBindings(
         { target: config.tag },
       )
     }
+    validateRegistryIdentifier(name, "component.attributes[].name")
+    validateRegistryIdentifier(definition.codec.name, "component.attributes[].codec")
     if (!definition.codec.name.trim()) {
       throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
         target: config.tag,
@@ -423,6 +427,7 @@ function deriveComponentSchemaAndBindings(
     }
 
     const prop = definition.propName ?? camelCaseAttributeName(name)
+    validateRegistryIdentifier(prop, "component.attributes[].prop")
     if (!prop.trim()) {
       throw new RegistryError(`Attribute ${JSON.stringify(name)} resolves to a blank prop`, {
         target: config.tag,
@@ -487,7 +492,10 @@ function createComponentDefinition(
     })
   }
   const aliases = [...new Set(config.aliases ?? [])]
-  for (const alias of aliases) validateTag(alias)
+  for (const alias of aliases) {
+    validateRegistryIdentifier(alias, "component.aliases[]")
+    validateTag(alias)
+  }
   if (aliases.includes(config.tag)) {
     throw new RegistryError(`Component ${JSON.stringify(config.tag)} aliases itself`, {
       target: config.tag,
@@ -945,8 +953,12 @@ export function packageIdentity(packageManifest: unknown): string {
     packageManifest === null ||
     Array.isArray(packageManifest) ||
     !("name" in packageManifest) ||
-    !isExpoTurboModuleName(packageManifest.name)
+    typeof packageManifest.name !== "string"
   ) {
+    throw new RegistryError("Registry package identity requires a valid package.json name")
+  }
+  validateRegistryIdentifier(packageManifest.name, "package.name")
+  if (!isExpoTurboModuleName(packageManifest.name)) {
     throw new RegistryError("Registry package identity requires a valid package.json name")
   }
   return packageManifest.name

@@ -4,6 +4,8 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Tighten registry identifiers across TypeScript and Ruby to reject Unicode noncharacters and malformed text. This narrow input check now correctly keeps valid U+FFFD and other valid Unicode scalars.
+
 - Keep deferred document reconnect handoffs per canonical document URL instead
   of in one shared slot. Different documents now drain once in first-insertion
   order; a repeat URL keeps its place and uses the newest request. Reentrant

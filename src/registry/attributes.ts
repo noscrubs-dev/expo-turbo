@@ -2,6 +2,7 @@ import type { z } from "zod"
 
 import { RegistryError } from "../core/errors.js"
 import type { AttributeCodec, SchemaAttributeCodec } from "./codecs.js"
+import { validateRegistryIdentifier } from "./registry-identifier-internal.js"
 
 const ATTRIBUTE_DEFINITION = Symbol("expo-turbo.attribute-definition")
 
@@ -74,6 +75,7 @@ function createAttributeDefinition<
     },
     prop<const NextProp extends string>(name: NextProp) {
       if (!name.trim()) throw new RegistryError("Attribute prop names must not be blank")
+      validateRegistryIdentifier(name, "attribute.prop")
       return createAttributeDefinition(codec, decode, schema, name, deprecatedMessage)
     },
     propName,

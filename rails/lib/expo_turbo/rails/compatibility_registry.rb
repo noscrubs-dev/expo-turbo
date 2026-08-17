@@ -30,6 +30,7 @@ module ExpoTurbo
         vocabularies = lock.fetch("history").to_h do |entry|
           manifest_path = path.dirname.join(entry.fetch("manifest"))
           manifest = JSON.parse(File.binread(manifest_path))
+          validate_manifest_identifiers!(manifest)
           unless manifest["hash"] == entry.fetch("digest")
             raise ConfigurationError, "Expo Turbo compatibility manifest digest does not match its lock entry"
           end
@@ -51,6 +52,25 @@ module ExpoTurbo
       rescue SystemCallError, JSON::ParserError, KeyError, TypeError
         raise ConfigurationError, "Expo Turbo compatibility lock could not be loaded"
       end
+
+      def self.validate_manifest_identifiers!(manifest)
+        manifest.fetch("modules").each_with_index do |component_module, module_index|
+          RegistryIdentifier.validate!(component_module.fetch("name"), "modules[#{module_index}].name")
+        end
+        manifest.fetch("components").each_with_index do |component, component_index|
+          RegistryIdentifier.validate!(component.fetch("tag"), "components[#{component_index}].tag")
+          component.fetch("aliases").each_with_index do |alias_name, alias_index|
+            RegistryIdentifier.validate!(alias_name, "components[#{component_index}].aliases[#{alias_index}]")
+          end
+          component.fetch("attributes").each_with_index do |attribute, attribute_index|
+            prefix = "components[#{component_index}].attributes[#{attribute_index}]"
+            %w[name prop codec].each do |field|
+              RegistryIdentifier.validate!(attribute.fetch(field), "#{prefix}.#{field}")
+            end
+          end
+        end
+      end
+      private_class_method :validate_manifest_identifiers!
 
       def self.parse_descriptor(value)
         return unless value.is_a?(String)
@@ -97,6 +117,12 @@ module ExpoTurbo
           digests[digest] = true
           revisions[revision] = true
           components = vocabularies.fetch(digest, {})
+          components.each_with_index do |(tag, attributes), component_index|
+            RegistryIdentifier.validate!(tag, "components[#{component_index}].tag")
+            Array(attributes).each_with_index do |attribute, attribute_index|
+              RegistryIdentifier.validate!(attribute, "components[#{component_index}].attributes[#{attribute_index}].name")
+            end
+          end
           [digest, Entry.new(digest:, revision:, components: components.freeze).freeze]
         end.freeze
         current = lock["current"]

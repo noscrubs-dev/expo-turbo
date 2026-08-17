@@ -133,6 +133,53 @@ RSpec.describe ExpoTurbo::Rails::TemplateCapabilities do
     manifest&.unlink
   end
 
+  it "rejects noncharacters in every manifest identity field with an exact path and scalar index" do
+    base = {
+      manifestVersion: 2,
+      protocolVersion: ExpoTurbo::Rails::PROTOCOL_VERSION,
+      hash: "sha256-128:0123456789abcdef0123456789abcdef",
+      modules: [{name: "demo"}],
+      components: [
+        {
+          tag: "DemoCard",
+          aliases: ["Card"],
+          attributes: [{name: "title", prop: "title", codec: "string"}]
+        }
+      ]
+    }
+    cases = [
+      ["modules[0].name", 4, ->(manifest) { manifest[:modules][0][:name] = "demo\uFDD0" }],
+      ["components[0].tag", 4, ->(manifest) { manifest[:components][0][:tag] = "Demo\uFDD0" }],
+      ["components[0].aliases[0]", 4, ->(manifest) { manifest[:components][0][:aliases][0] = "Card\uFDD0" }],
+      ["components[0].attributes[0].name", 5, ->(manifest) { manifest[:components][0][:attributes][0][:name] = "title\uFDD0" }],
+      ["components[0].attributes[0].prop", 5, ->(manifest) { manifest[:components][0][:attributes][0][:prop] = "title\uFDD0" }],
+      ["components[0].attributes[0].codec", 6, ->(manifest) { manifest[:components][0][:attributes][0][:codec] = "string\uFDD0" }]
+    ]
+
+    cases.each do |path, index, mutate|
+      manifest = Marshal.load(Marshal.dump(base))
+      mutate.call(manifest)
+      file = Tempfile.new(["expo-turbo-identifier", ".json"])
+      file.write(JSON.generate(manifest))
+      file.close
+
+      expect { described_class.new(manifest: file.path) }.to raise_error(
+        ExpoTurbo::Rails::ConfigurationError,
+        "Expo Turbo registry identifier #{path} contains Unicode noncharacter U+FDD0 at scalar index #{index}"
+      )
+      file.unlink
+    end
+  end
+
+  it "uses ConfigurationError for malformed direct component names" do
+    invalid = ("Demo".b + "\xED\xA0\x80".b).force_encoding(Encoding::UTF_8)
+
+    expect { described_class.new(components: {invalid => {}}) }.to raise_error(
+      ExpoTurbo::Rails::ConfigurationError,
+      "Expo Turbo registry identifier component.name is not valid UTF-8"
+    )
+  end
+
   it "rejects absent, conflicting, unreadable, and malformed capability manifests" do
     expect { described_class.new }
       .to raise_error(ExpoTurbo::Rails::ConfigurationError, /exactly one/)

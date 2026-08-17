@@ -100,7 +100,10 @@ module ExpoTurbo
         end
 
         names = {}
-        modules.each do |component_module|
+        modules.each_with_index do |component_module, module_index|
+          if component_module.is_a?(Hash) && component_module["name"].is_a?(String)
+            RegistryIdentifier.validate!(component_module["name"], "modules[#{module_index}].name")
+          end
           valid = component_module.is_a?(Hash) &&
             component_module["name"].is_a?(String) &&
             !component_module["name"].strip.empty? &&
@@ -121,12 +124,16 @@ module ExpoTurbo
           raise ConfigurationError, "Expo Turbo capability manifest requires a component list"
         end
 
-        component_entries.each_with_object({}) do |component, components|
+        component_entries.each_with_index.each_with_object({}) do |(component, component_index), components|
           unless component.is_a?(Hash) && component["tag"].is_a?(String) && component["aliases"].is_a?(Array)
             raise ConfigurationError, "Expo Turbo capability manifest components require tags and aliases"
           end
           unless component["aliases"].all? { |alias_name| alias_name.is_a?(String) }
             raise ConfigurationError, "Expo Turbo capability manifest aliases must be strings"
+          end
+          RegistryIdentifier.validate!(component["tag"], "components[#{component_index}].tag")
+          component["aliases"].each_with_index do |alias_name, alias_index|
+            RegistryIdentifier.validate!(alias_name, "components[#{component_index}].aliases[#{alias_index}]")
           end
           if component.key?("formOwner") && ![true, false].include?(component["formOwner"])
             raise ConfigurationError, "Expo Turbo capability manifest form ownership must be boolean"
@@ -140,6 +147,13 @@ module ExpoTurbo
               (!attribute.key?("required") || [true, false].include?(attribute["required"]))
           end
           raise ConfigurationError, "Expo Turbo capability manifest components require attribute names" unless valid_attributes
+
+          attributes.each_with_index do |attribute, attribute_index|
+            prefix = "components[#{component_index}].attributes[#{attribute_index}]"
+            RegistryIdentifier.validate!(attribute["name"], "#{prefix}.name")
+            RegistryIdentifier.validate!(attribute["prop"], "#{prefix}.prop") if attribute["prop"].is_a?(String)
+            RegistryIdentifier.validate!(attribute["codec"], "#{prefix}.codec") if attribute["codec"].is_a?(String)
+          end
 
           attribute_names = attributes.map { |attribute| attribute["name"] }
           if attribute_names.uniq.length != attribute_names.length
@@ -250,7 +264,11 @@ module ExpoTurbo
       end
 
       def validate_component_name!(name)
-        unless name.is_a?(String) && !javascript_trim(name).empty?
+        unless name.is_a?(String)
+          raise ConfigurationError, "Expo Turbo component names must be nonblank strings"
+        end
+        RegistryIdentifier.validate!(name, "component.name")
+        if javascript_trim(name).empty?
           raise ConfigurationError, "Expo Turbo component names must be nonblank strings"
         end
         if RESERVED_COMPONENT_NAMES.include?(name)
