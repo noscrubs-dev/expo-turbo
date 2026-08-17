@@ -28,13 +28,99 @@ function desktopSmokeJob(workflow: string): string {
   return nextJob === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + nextJob)
 }
 
+function runScripts(job: string): string[] {
+  return Array.from(
+    job.matchAll(/^ {8}run: \|\n((?:(?:^ {10,}.*|^)\n)*)/gm),
+    ([, script]) => script ?? "",
+  )
+}
+
+function shellCommands(script: string): string[] {
+  const commands: string[] = []
+  let command = ""
+
+  for (const line of script.split("\n")) {
+    const trimmed = line.trim()
+    if (!command && (!trimmed || trimmed.startsWith("#"))) continue
+
+    const continues = /\\$/.test(trimmed)
+    command += `${trimmed.replace(/\\$/, "")} `
+    if (!continues) {
+      commands.push(command.trim())
+      command = ""
+    }
+  }
+
+  if (command) throw new Error("Rails desktop smoke command has an unfinished continuation")
+  return commands
+}
+
+function smokeTestCommand(workflow: string): string {
+  const commands = runScripts(desktopSmokeJob(workflow)).flatMap(shellCommands)
+  const candidates = commands.filter((command) => /\bbun\s+test(?:\s|$)/.test(command))
+  const candidate = candidates[0]
+
+  if (candidates.length !== 1 || !candidate) {
+    throw new Error(
+      `Rails desktop smoke must have exactly one bun test command, found ${candidates.length}`,
+    )
+  }
+
+  return candidate
+}
+
+function smokeTestFiles(workflow: string): string[] {
+  const command = smokeTestCommand(workflow)
+  const match = command.match(/\bbun\s+test(?:\s+(.*))?$/)
+  if (!match) throw new Error("Rails desktop smoke bun test command is malformed")
+
+  const argumentsAfterTest = (match[1] ?? "").trim().split(/\s+/).filter(Boolean)
+  if (argumentsAfterTest[0] !== "--isolate") {
+    throw new Error("Rails desktop smoke must put --isolate directly after bun test")
+  }
+
+  return argumentsAfterTest.slice(1)
+}
+
+function expectSmokeFiles(workflow: string, files: string[]): void {
+  const expected = files.map((file) => `src/${file.slice(liveSmokeDirectory.length + 1)}`).sort()
+  expect(smokeTestFiles(workflow).sort()).toEqual(expected)
+}
+
+function firstSmokeFile(files: string[]): string {
+  const file = files[0]
+  if (!file) throw new Error("Rails desktop smoke file list is empty")
+  return `src/${file.slice(liveSmokeDirectory.length + 1)}`
+}
+
 test("Rails desktop smoke runs every live smoke file in isolated Bun workers", async () => {
   const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
-  const smokeJob = desktopSmokeJob(workflow)
 
   expect(files).not.toEqual([])
-  expect(smokeJob).toMatch(/bun test --isolate\s+\\/)
-  for (const file of files) {
-    expect(smokeJob).toContain(`src/${file.slice(liveSmokeDirectory.length + 1)}`)
-  }
+  expectSmokeFiles(workflow, files)
+})
+
+test("Rails desktop smoke wiring rejects missing isolation and incomplete file lists", async () => {
+  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
+  const file = firstSmokeFile(files)
+
+  expect(() =>
+    expectSmokeFiles(workflow.replace("bun test --isolate", "bun test"), files),
+  ).toThrow()
+  expect(() =>
+    expectSmokeFiles(workflow.replace(`                  ${file} \\\n`, ""), files),
+  ).toThrow()
+})
+
+test("Rails desktop smoke wiring ignores file paths outside the Bun command", async () => {
+  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
+  const file = firstSmokeFile(files)
+  const pathInStepName = workflow.replace(
+    "name: Smoke Rails desktop integration",
+    `name: Smoke ${file}`,
+  )
+  const missingCommandFile = pathInStepName.replace(`                  ${file} \\\n`, "")
+
+  expect(missingCommandFile).toContain(file)
+  expect(() => expectSmokeFiles(missingCommandFile, files)).toThrow()
 })
