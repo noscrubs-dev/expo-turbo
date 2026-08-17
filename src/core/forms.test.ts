@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 
 import { isTurboMultipartBody } from "../adapters"
+import {
+  DocumentHistory,
+  type DocumentHistoryEntry,
+  type DocumentHistoryWriteMethod,
+} from "./document-history"
 import { PropsError, RegistryError, RequestError, StateError, TargetError } from "./errors"
 import { FormSubmissionController } from "./form-submission-controller"
 import { assertActiveFormSubmissionProposal } from "./form-submission-proposal"
@@ -632,20 +637,45 @@ describe("native form control registry", () => {
       ),
     )
     const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
-    const controller = new FormSubmissionController(session, {
-      async fetch(request) {
-        requests.push(
-          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
-        )
-        return {
-          headers: {},
-          redirected: false,
-          status: 204,
-          text: async () => "",
-          url: request.url,
-        }
+    const historyWrites: Array<
+      Readonly<{ entry: DocumentHistoryEntry; method: DocumentHistoryWriteMethod }>
+    > = []
+    let historyIdentifier = 0
+    const history = new DocumentHistory(
+      { next: () => `history-${++historyIdentifier}` },
+      {
+        write(method, entry) {
+          historyWrites.push(Object.freeze({ entry, method }))
+          return undefined
+        },
       },
+    )
+    history.initialize({
+      entry: {
+        restorationIdentifier: "history-current",
+        restorationIndex: 0,
+        url: "https://example.test/current",
+      },
+      kind: "managed",
     })
+    const controller = new FormSubmissionController(
+      session,
+      {
+        async fetch(request) {
+          requests.push(
+            Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+          )
+          return {
+            headers: { "Content-Type": `${EXPO_TURBO_MIME_TYPE}; charset=utf-8` },
+            redirected: true,
+            status: 200,
+            text: async () => '<Gallery><Submitted id="submitted" /></Gallery>',
+            url: request.url,
+          }
+        },
+      },
+      { history },
+    )
     const registry = new DocumentFormControls(session, {
       formSemantics: {
         formContainerRole: FORM_SEMANTICS.formContainerRole,
@@ -699,6 +729,16 @@ describe("native form control registry", () => {
     expect(requests).toEqual([
       { body: "field=A&commit=go", method: "POST", url: "https://example.test/safe" },
     ])
+
+    // The submitter's data-turbo-action="replace" must not reach the history
+    // write: the owner form carries no data-turbo-action, so a redirect to a
+    // location other than the current document commits the normal "advance"
+    // (push) history action, never the submitter's "replace".
+    expect(historyWrites).toHaveLength(1)
+    expect(historyWrites[0]).toMatchObject({
+      entry: { url: "https://example.test/safe" },
+      method: "push",
+    })
   })
 
   test("never infers successful controls from server XML without a native registration", () => {
