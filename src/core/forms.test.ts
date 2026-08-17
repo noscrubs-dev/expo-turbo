@@ -610,6 +610,97 @@ describe("native form control registry", () => {
     ])
   })
 
+  test("does not read request overrides from a null-resolved registered submitter", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery>
+          <DemoForm id="form" action="/safe" method="post">
+            <DemoInput id="field" />
+            <FutureButton
+              data-turbo-action="replace"
+              data-turbo-frame="danger-frame"
+              data-turbo-stream=""
+              id="evil"
+              formaction="/danger"
+              formenctype="multipart/form-data"
+              formmethod="delete"
+            />
+          </DemoForm>
+          <turbo-frame id="danger-frame" />
+        </Gallery>`,
+        { url: "https://example.test/current" },
+      ),
+    )
+    const requests: Array<Readonly<{ body: unknown; method: string; url: string }>> = []
+    const controller = new FormSubmissionController(session, {
+      async fetch(request) {
+        requests.push(
+          Object.freeze({ body: request.body?.value, method: request.method, url: request.url }),
+        )
+        return {
+          headers: {},
+          redirected: false,
+          status: 204,
+          text: async () => "",
+          url: request.url,
+        }
+      },
+    })
+    const registry = new DocumentFormControls(session, {
+      formSemantics: {
+        formContainerRole: FORM_SEMANTICS.formContainerRole,
+        // The owner tag resolves while the submitter tag comes back null from
+        // an untyped host, so only the submitter vocabulary is unresolved.
+        resolve: (tagName: string) =>
+          tagName === "DemoForm" ? Object.freeze({ formOwner: true }) : (null as never),
+      },
+      submissionController: controller,
+    }).controlsFor("id:form")
+    registry.register("id:field", { kind: "value", name: "field", value: "A" })
+    const submitter = registry.register("id:evil", {
+      kind: "submitter",
+      name: "commit",
+      value: "go",
+    })
+
+    const proposal = registry.submissionProposal({
+      protocol: { requestId: "null-submitter-proposal" },
+      submitter: submitter.selection,
+    })
+    expect(proposal.destination).toEqual({ kind: "document" })
+    const plan = registry.requestPlan({
+      protocol: { requestId: "null-submitter-plan" },
+      submitter: submitter.selection,
+    }).request
+    expect(plan).toMatchObject({
+      body: { value: "field=A&commit=go" },
+      method: "POST",
+      url: "https://example.test/safe",
+    })
+
+    // A safe owner method keeps the stream Accept header out unless the
+    // submitter's data-turbo-stream is read.
+    session.removeAttribute("id:form", "method")
+    const safePlan = registry.requestPlan({
+      protocol: { requestId: "null-submitter-safe-plan" },
+      submitter: submitter.selection,
+    }).request
+    expect(safePlan).toMatchObject({
+      method: "GET",
+      url: "https://example.test/safe?field=A&commit=go",
+    })
+    expect(safePlan.headers.Accept).toBe(EXPO_TURBO_MIME_TYPE)
+    session.setAttribute("id:form", "method", "post")
+
+    await registry.submit({
+      protocol: { requestId: "null-submitter-submit" },
+      submitter: submitter.selection,
+    })
+    expect(requests).toEqual([
+      { body: "field=A&commit=go", method: "POST", url: "https://example.test/safe" },
+    ])
+  })
+
   test("never infers successful controls from server XML without a native registration", () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
