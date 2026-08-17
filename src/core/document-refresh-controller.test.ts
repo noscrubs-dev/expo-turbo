@@ -405,7 +405,7 @@ describe("document refresh controller", () => {
     }
   })
 
-  test("coalesces canonical aliases to the newest request without changing queue order", () => {
+  test("coalesces fragment aliases but keeps distinct queries in insertion order", () => {
     const visits = new ReconnectVisitStub()
     const requests: unknown[] = []
     const reconciler = new DocumentReconnectReconciler(
@@ -414,18 +414,38 @@ describe("document refresh controller", () => {
     )
 
     visits.setStatus("started")
-    reconciler.request({ baseUrl: "https://example.test:443/a", requestId: "a-older" })
-    reconciler.request({ baseUrl: "https://example.test/b", requestId: "b" })
-    reconciler.request({ baseUrl: "https://example.test/a", requestId: "a-newest" })
+    reconciler.request({ baseUrl: "https://example.test:443/doc#old", requestId: "doc-old" })
+    reconciler.request({
+      baseUrl: "https://example.test/doc?view=one#old",
+      requestId: "query-one-old",
+    })
+    reconciler.request({
+      baseUrl: "https://example.test/doc?view=two#new",
+      requestId: "query-two",
+    })
+    reconciler.request({ baseUrl: "https://example.test/doc#new", requestId: "doc-new" })
+    reconciler.request({
+      baseUrl: "https://example.test/doc?view=one#new",
+      requestId: "query-one-new",
+    })
     visits.setStatus("completed")
 
     expect(requests).toEqual([
-      { baseUrl: "https://example.test/a", requestId: "a-newest", scroll: "reset" },
-      { baseUrl: "https://example.test/b", requestId: "b", scroll: "reset" },
+      { baseUrl: "https://example.test/doc#new", requestId: "doc-new", scroll: "reset" },
+      {
+        baseUrl: "https://example.test/doc?view=one#new",
+        requestId: "query-one-new",
+        scroll: "reset",
+      },
+      {
+        baseUrl: "https://example.test/doc?view=two#new",
+        requestId: "query-two",
+        scroll: "reset",
+      },
     ])
   })
 
-  test("does not starve eligible documents when one handoff fails", () => {
+  test("reports each deferred failure and continues later obligations", () => {
     const visits = new ReconnectVisitStub()
     const requests: string[] = []
     const errors: Error[] = []
@@ -433,7 +453,7 @@ describe("document refresh controller", () => {
       {
         request: (request) => {
           requests.push(request.baseUrl)
-          if (request.baseUrl.endsWith("/b")) throw new Error("private B failure")
+          if (!request.baseUrl.endsWith("/c")) throw new Error("private deferred failure")
         },
       },
       visits,
@@ -451,14 +471,89 @@ describe("document refresh controller", () => {
       "https://example.test/b",
       "https://example.test/c",
     ])
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toEqual(
+    expect(errors).toEqual([
+      new DocumentReconnectReconciliationError("https://example.test/a", "handoff-failed"),
       new DocumentReconnectReconciliationError(
         "https://example.test/b",
         "handoff-failed",
         "b-request",
       ),
+    ])
+  })
+
+  test("does not send an older deferred failure to a direct request listener", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    let reconciler: DocumentReconnectReconciler
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c", requestId: "direct-c" })
+      }
+    })
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/a")) throw new Error("private A failure")
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
     )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "deferred-a" })
+    reconciler.request({ baseUrl: "https://example.test/b", requestId: "deferred-b" })
+
+    expect(() => visits.setStatus("completed")).not.toThrow()
+    expect(requests).toEqual([
+      "https://example.test/a",
+      "https://example.test/b",
+      "https://example.test/c",
+    ])
+    expect(errors).toEqual([
+      new DocumentReconnectReconciliationError(
+        "https://example.test/a",
+        "handoff-failed",
+        "deferred-a",
+      ),
+    ])
+  })
+
+  test("throws only the direct request failure to its listener caller", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    const directFailure = new Error("direct C failure")
+    let reconciler: DocumentReconnectReconciler
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c", requestId: "direct-c" })
+      }
+    })
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/c")) throw directFailure
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a" })
+    reconciler.request({ baseUrl: "https://example.test/b" })
+
+    expect(() => visits.setStatus("completed")).toThrow(directFailure)
+    expect(requests).toEqual([
+      "https://example.test/a",
+      "https://example.test/b",
+      "https://example.test/c",
+    ])
+    expect(errors).toEqual([])
   })
 
   test("keeps a request added during a drain for the next ordered drain", async () => {

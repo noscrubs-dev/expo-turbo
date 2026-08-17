@@ -34,11 +34,14 @@ All notable public package, gem, and protocol changes will be recorded here.
   another. Disposal now reports each obligation that did not start handoff as a
   `DocumentReconnectReconciliationError` with `reason: "disposed"`, the
   canonical `documentUrl`, and its optional `requestId`; repeated disposal does
-  not report twice. A deferred handoff throw uses the same error with
-  `reason: "handoff-failed"`. The reconciler does not retry: the downstream
-  requester owns transport and retry policy. Cable reconnect recovery remains
-  dormant because the runtime still does not supply `reconnectRefresh`; pull
-  request 418 remains the follow-up for that activation.
+  not report twice. URL fragments now share one fetch obligation, while query
+  strings stay distinct. A deferred handoff throw uses the same error with
+  `reason: "handoff-failed"`. Error handling is selected per obligation, so an
+  older deferred failure cannot reject a direct request that starts the drain.
+  The reconciler does not retry: the downstream requester owns transport and
+  retry policy. Cable reconnect recovery remains dormant because the runtime
+  still does not supply `reconnectRefresh`; pull request 418 remains the
+  follow-up for that activation.
 
 - Refuse a generated form-link activation held by a handler captured before the
   link's `data-turbo-method` or `data-turbo-stream` changed. A link that lost its

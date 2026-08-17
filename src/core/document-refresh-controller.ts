@@ -112,10 +112,11 @@ export class DocumentRefreshController implements DocumentRefreshRequester {
 
 /**
  * Defers Cable-recovery reconciliations until the active document visit has
- * settled. Obligations use the protocol's canonical document URL as identity.
- * Different documents keep first-insertion order; a repeat updates that
- * document's request without moving it. A request made during a handoff starts
- * a later drain, so a reentrant requester cannot lose or duplicate it.
+ * settled. Obligations use the protocol's canonical fetch URL, without its
+ * fragment, as identity. Different documents keep first-insertion order; a
+ * repeat updates that document's request without moving it. A request made
+ * during a handoff starts a later drain, so a reentrant requester cannot lose
+ * or duplicate it.
  *
  * A successful `request()` handoff completes an obligation. A handoff throw
  * also completes only that obligation and is thrown to the direct caller or
@@ -148,12 +149,13 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
   request(request: DocumentRefreshRequest): void {
     if (this.disposed) throw new StateError("Document reconnect reconciler is disposed")
     const admitted = admitDocumentRefreshRequest(request)
-    this.pending.set(canonicalDocumentRefreshUrl(admitted.baseUrl), admitted)
+    const directRequestKey = canonicalDocumentRefreshUrl(admitted.baseUrl)
+    this.pending.set(directRequestKey, admitted)
     if (this.draining) {
       this.scheduleDrain()
       return
     }
-    this.reconcile(false)
+    this.reconcile(directRequestKey)
   }
 
   dispose(): void {
@@ -169,7 +171,7 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
     }
   }
 
-  private reconcile(deferred: boolean): void {
+  private reconcile(directRequestKey?: string): void {
     if (this.disposed || this.draining || this.pending.size === 0) return
     if (this.visitStarted()) {
       this.observeCurrentVisit()
@@ -181,6 +183,7 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
     unsubscribe?.()
 
     this.draining = true
+    let directFailed = false
     let directError: unknown
     try {
       // This fixed key list is the atomic drain batch. A repeat for a key that
@@ -195,9 +198,10 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
         try {
           this.refresh.request(request)
         } catch (error) {
-          if (deferred) this.report(request, "handoff-failed", key)
-          else if (directError === undefined) directError = error
-          else this.report(request, "handoff-failed", key)
+          if (key === directRequestKey) {
+            directFailed = true
+            directError = error
+          } else this.report(request, "handoff-failed", key)
         }
       }
     } finally {
@@ -208,7 +212,7 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
       if (this.visitStarted()) this.observeCurrentVisit()
       else this.scheduleDrain()
     }
-    if (directError !== undefined) throw directError
+    if (directFailed) throw directError
   }
 
   private observeCurrentVisit(): void {
@@ -216,14 +220,14 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
     this.subscribing = true
     let unsubscribe: (() => void) | undefined
     try {
-      unsubscribe = this.visits.subscribe(() => this.reconcile(true))
+      unsubscribe = this.visits.subscribe(() => this.reconcile())
     } finally {
       this.subscribing = false
     }
     if (!unsubscribe) return
     if (this.disposed || this.pending.size === 0 || !this.visitStarted()) {
       unsubscribe()
-      this.reconcile(true)
+      this.reconcile()
       return
     }
     this.unsubscribe = unsubscribe
@@ -234,7 +238,7 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
     this.drainScheduled = true
     queueMicrotask(() => {
       this.drainScheduled = false
-      this.reconcile(true)
+      this.reconcile()
     })
   }
 
@@ -270,7 +274,9 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
 }
 
 function canonicalDocumentRefreshUrl(baseUrl: string): string {
-  return resolveProtocolUrl(baseUrl, baseUrl).url
+  const url = new URL(resolveProtocolUrl(baseUrl, baseUrl).url)
+  url.hash = ""
+  return url.href
 }
 
 function admitDocumentRefreshRequest(request: DocumentRefreshRequest): DocumentRefreshRequest {
