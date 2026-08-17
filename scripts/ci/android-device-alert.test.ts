@@ -8,11 +8,13 @@ import {
   ALERT_MARKER,
   type AlertIssue,
   ANDROID_WORKFLOW,
+  ANDROID_WORKFLOW_PATH,
   buildIssueBody,
   COMPLETED_STALE_HOURS,
   classifyCompleted,
   type Decision,
   determineDecision,
+  EXPECTED_REPOSITORY,
   filterAlertIssues,
   GitHubApi,
   planTransition,
@@ -177,6 +179,7 @@ describe.serial("Android workflow classification", () => {
           "GET /repos/owner/repo/actions/runs/20": eventRun,
           [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&status=completed&per_page=20`]:
             { workflow_runs: [eventRun] },
+          "GET /repos/owner/repo/commits/main": { sha: eventRun.head_sha },
         }),
         false,
       )
@@ -211,6 +214,66 @@ describe.serial("Android workflow classification", () => {
       expect(result.reason).toContain("not from main")
       expect(calls).toHaveLength(1)
     }
+  })
+
+  test("never uses a manually dispatched success as recovery evidence", async () => {
+    const dispatched = run({
+      id: 22,
+      event: "workflow_dispatch",
+      head_branch: "main",
+      conclusion: "success",
+    })
+    const calls: Array<{ method: string; path: string; body: unknown }> = []
+    const api = new GitHubApi(
+      "test",
+      routeFetch(
+        {
+          "GET /repos/owner/repo/actions/runs/22": dispatched,
+          [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&status=completed&per_page=20`]:
+            { workflow_runs: [dispatched] },
+        },
+        calls,
+      ),
+      false,
+    )
+
+    const result = await determineDecision(api, EXPECTED_REPOSITORY, "workflow_run", {
+      workflow_run: { id: 22 },
+    })
+
+    expect(result.state).toBe("ignored")
+    expect(result.reason).toContain("eligible main push")
+    expect(calls.some((call) => call.path.endsWith("/commits/main"))).toBe(false)
+  })
+
+  test("keeps a push failure newer than any eligible recovery when dispatch success is latest", async () => {
+    const result = await determineDecision(
+      scheduleApi([
+        run({ id: 24, event: "workflow_dispatch", conclusion: "success" }),
+        run({ id: 23, conclusion: "failure", created_at: "2026-07-31T23:59:59Z" }),
+      ]),
+      EXPECTED_REPOSITORY,
+      "schedule",
+      {},
+    )
+
+    expect(result.state).toBe("red")
+    expect(result.run?.id).toBe(23)
+  })
+
+  test("does not use a success from another workflow path as recovery evidence", async () => {
+    const result = await determineDecision(
+      scheduleApi([
+        run({ id: 26, path: ".github/workflows/other.yml", conclusion: "success" }),
+        run({ id: 25, conclusion: "failure", created_at: "2026-07-31T23:59:59Z" }),
+      ]),
+      EXPECTED_REPOSITORY,
+      "schedule",
+      {},
+    )
+
+    expect(result.state).toBe("red")
+    expect(result.run?.id).toBe(25)
   })
 
   test("marks a run active for over three hours red", async () => {
@@ -300,6 +363,81 @@ describe.serial("Android workflow classification", () => {
     expect(result.run?.id).toBe(41)
   })
 
+  test("uses the higher numeric run ID when runs have the same creation second", async () => {
+    const createdAt = "2026-08-01T01:00:00Z"
+    const result = await determineDecision(
+      scheduleApi([
+        run({ id: 41, conclusion: "success", created_at: createdAt }),
+        run({ id: 42, conclusion: "failure", created_at: createdAt }),
+      ]),
+      EXPECTED_REPOSITORY,
+      "schedule",
+      {},
+      new Date("2026-08-01T03:00:00Z"),
+    )
+
+    expect(result.state).toBe("red")
+    expect(result.run?.id).toBe(42)
+  })
+
+  test("rejects a malformed run ID before same-second ordering", async () => {
+    await expect(
+      determineDecision(
+        scheduleApi([run({ id: "42" }), run({ id: 41 })]),
+        EXPECTED_REPOSITORY,
+        "schedule",
+        {},
+      ),
+    ).rejects.toThrow("workflow run id must be positive")
+  })
+
+  test("does not recover from a recent success for an older main SHA", async () => {
+    const successful = run({ id: 43 })
+    const api = new GitHubApi(
+      "test",
+      routeFetch({
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          { workflow_runs: [successful] },
+        "GET /repos/owner/repo/commits/main": {
+          sha: "fedcba9876543210fedcba9876543210fedcba98",
+        },
+      }),
+      false,
+    )
+
+    const result = await determineDecision(
+      api,
+      EXPECTED_REPOSITORY,
+      "schedule",
+      {},
+      new Date("2026-08-01T02:00:00Z"),
+    )
+    expect(result.state).toBe("ignored")
+    expect(result.reason).toContain("current main commit")
+  })
+
+  test("fails closed with a bounded diagnostic when current main lookup fails", async () => {
+    const api = new GitHubApi(
+      "test",
+      queueFetch({
+        [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+          [response({ workflow_runs: [run()] })],
+        "GET /repos/owner/repo/commits/main": [response({ message: "x".repeat(10_000) }, 500)],
+      }),
+      false,
+    )
+
+    let failure: unknown
+    try {
+      await determineDecision(api, EXPECTED_REPOSITORY, "schedule", {})
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain("main commit lookup failed")
+    expect((failure as Error).message.length).toBeLessThanOrEqual(270)
+  })
+
   test("does not let old ignored conclusions bypass newer main commits", async () => {
     for (const conclusion of ["neutral", "skipped", "action_required", "stale", "cancelled"]) {
       const old = run({ id: 31, conclusion, updated_at: "2026-08-01T00:00:00Z" })
@@ -366,6 +504,8 @@ describe.serial("Android workflow classification", () => {
         "workflow run head_sha is invalid",
       ],
       [{ head_branch: 7 }, "head_branch must be a string"],
+      [{ event: 7 }, "event must be a string"],
+      [{ path: 7 }, "path must be a string"],
       [{ created_at: "yesterday" }, "workflow run created_at must be an ISO timestamp"],
       [
         { created_at: "2026-02-31T00:00:00Z" },
@@ -388,7 +528,9 @@ describe.serial("Android workflow classification", () => {
         false,
       )
       await expect(
-        determineDecision(api, "owner/repo", "workflow_run", { workflow_run: { id: 1 } }),
+        determineDecision(api, "owner/repo", "workflow_run", {
+          workflow_run: { id: 1 },
+        }),
       ).rejects.toThrow(message)
     }
   })
@@ -419,7 +561,9 @@ describe.serial("Android workflow classification", () => {
       false,
     )
     await expect(
-      determineDecision(api, "owner/repo", "workflow_run", { workflow_run: { id: "1" } }),
+      determineDecision(api, "owner/repo", "workflow_run", {
+        workflow_run: { id: "1" },
+      }),
     ).rejects.toThrow("workflow_run.id must be positive")
     expect(calls).toBe(0)
   })
@@ -805,7 +949,7 @@ describe.serial("stub API integration", () => {
     }
   })
 
-  test("rejects malformed GITHUB_REPOSITORY before any network request", async () => {
+  test("rejects a syntax-valid repository other than noscrubs-dev/expo-turbo", async () => {
     const eventPath = await eventFile({})
     let calls = 0
     const fetcher = (() => {
@@ -814,9 +958,35 @@ describe.serial("stub API integration", () => {
     }) as unknown as typeof fetch
 
     await expect(
-      runAlert({ ...config(eventPath, false), repository: "owner/repo/extra" }, fetcher),
+      runAlert({ ...config(eventPath, false), repository: "noscrubs-dev/other" }, fetcher),
     ).rejects.toThrow("repository is invalid")
     expect(calls).toBe(0)
+  })
+
+  test("the exact repository guard is load-bearing", async () => {
+    const source = await readFile(join(directory, "android-device-alert.ts"), "utf8")
+    const mutation = source.replace(
+      '  if (value !== EXPECTED_REPOSITORY) throw new Error("repository is invalid")\n',
+      "",
+    )
+    expect(mutation).not.toBe(source)
+    const mutatedModule = await import(
+      `file://${await writeAlertMutation(mutation)}?exact-repository-guard`
+    )
+    const eventPath = await eventFile({})
+    let calls = 0
+    const fetcher = (() => {
+      calls += 1
+      throw new Error("network reached")
+    }) as unknown as typeof fetch
+
+    await expect(
+      mutatedModule.runAlert(
+        { ...config(eventPath, false), repository: "noscrubs-dev/other" },
+        fetcher,
+      ),
+    ).rejects.toThrow("network reached")
+    expect(calls).toBe(1)
   })
 
   test("does not repeat recovery after a close failure, then retries closes in final order", async () => {
@@ -990,6 +1160,9 @@ describe.serial("stub API integration", () => {
           workflow_runs: [run()],
         },
       [`GET ${issuePath}`]: [{ number: 3, body: ALERT_MARKER }],
+      "GET /repos/owner/repo/commits/main": {
+        sha: "0123456789abcdef0123456789abcdef01234567",
+      },
     }
     for (let page = 1; page <= 10; page += 1) {
       routes[`GET ${commentsPath}?per_page=100&page=${page}`] = Array.from(
@@ -1038,6 +1211,8 @@ function decision(state: Decision["state"]): Decision {
 function parseRunForTest(raw: ReturnType<typeof run>): WorkflowRun {
   return {
     id: Number(raw.id),
+    event: String(raw.event),
+    path: String(raw.path),
     status: String(raw.status),
     conclusion: raw.conclusion === null ? null : String(raw.conclusion),
     headBranch: String(raw.head_branch),
@@ -1050,6 +1225,8 @@ function parseRunForTest(raw: ReturnType<typeof run>): WorkflowRun {
 function run(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
+    event: "push",
+    path: ANDROID_WORKFLOW_PATH,
     status: "completed",
     conclusion: "success",
     head_branch: "main",
@@ -1072,6 +1249,9 @@ function scheduleApi(runs: unknown[]): GitHubApi {
         {
           workflow_runs: runs,
         },
+      "GET /repos/owner/repo/commits/main": {
+        sha: "0123456789abcdef0123456789abcdef01234567",
+      },
     }),
     false,
   )
@@ -1080,7 +1260,7 @@ function scheduleApi(runs: unknown[]): GitHubApi {
 function config(eventPath: string, dryRun: boolean, eventName = "schedule") {
   return {
     token: "test",
-    repository: "owner/repo",
+    repository: EXPECTED_REPOSITORY,
     serverUrl: "https://github.com",
     eventName,
     eventPath,
@@ -1114,8 +1294,9 @@ function routeFetch(
     )
     const method = init?.method ?? "GET"
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ method, path: `${url.pathname}${url.search}`, body })
-    const key = `${method} ${url.pathname}${url.search}`
+    const path = testRoutePath(url)
+    calls.push({ method, path, body })
+    const key = `${method} ${path}`
     if (!(key in routes)) throw new Error(`Unexpected request: ${key}`)
     return response(routes[key])
   }) as typeof fetch
@@ -1131,12 +1312,23 @@ function queueFetch(
     )
     const method = init?.method ?? "GET"
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ method, path: `${url.pathname}${url.search}`, body })
-    const key = `${method} ${url.pathname}${url.search}`
+    const path = testRoutePath(url)
+    calls.push({ method, path, body })
+    const key = `${method} ${path}`
     const next = routes[key]?.shift()
+    if (!next && key === "GET /repos/owner/repo/commits/main" && !(key in routes)) {
+      return response({ sha: "0123456789abcdef0123456789abcdef01234567" })
+    }
     if (!next) throw new Error(`Unexpected request: ${key}`)
     return next
   }) as typeof fetch
+}
+
+function testRoutePath(url: URL): string {
+  return `${url.pathname}${url.search}`.replace(
+    `/repos/${EXPECTED_REPOSITORY}`,
+    "/repos/owner/repo",
+  )
 }
 
 function response(body: unknown, status = 200): Response {

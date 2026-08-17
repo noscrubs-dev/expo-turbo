@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises"
 
 export const ANDROID_WORKFLOW = "android-device.yml"
+export const ANDROID_WORKFLOW_PATH = `.github/workflows/${ANDROID_WORKFLOW}`
+export const EXPECTED_REPOSITORY = "noscrubs-dev/expo-turbo"
 export const ALERT_LABEL = "android-device-ci-alert"
 export const ALERT_MARKER = "<!-- expo-turbo-android-device-alert:v1 -->"
 export const STATE_PREFIX = "<!-- expo-turbo-android-device-alert-state:v2:"
@@ -29,6 +31,8 @@ export type AlertState = "red" | "green" | "ignored"
 
 export interface WorkflowRun {
   id: number
+  event: string
+  path: string
   status: string
   conclusion: string | null
   headBranch: string
@@ -144,7 +148,7 @@ export async function determineDecision(
         "GET",
         `${base}/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&status=completed&per_page=20`,
       ),
-    )
+    ).filter(isRecoveryCandidate)
     if (
       completed.some(
         (candidate) =>
@@ -154,7 +158,10 @@ export async function determineDecision(
     ) {
       return ignored("A newer completed Android run exists.")
     }
-    return classifyCompleted(api, repository, run)
+    if (!isRecoveryCandidate(run)) {
+      return ignored("The event run is not an eligible main push run.")
+    }
+    return verifyGreenRecovery(api, repository, await classifyCompleted(api, repository, run))
   }
 
   if (eventName !== "schedule" && eventName !== "workflow_dispatch") {
@@ -166,7 +173,9 @@ export async function determineDecision(
       "GET",
       `${base}/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`,
     ),
-  ).sort((left, right) => dateMs(right.createdAt) - dateMs(left.createdAt))
+  )
+    .filter(isRecoveryCandidate)
+    .sort(compareRunsNewestFirst)
 
   const newest = runs[0]
   if (!newest) return red("No Android workflow run exists.")
@@ -182,21 +191,70 @@ export async function determineDecision(
   if (classified.state === "red") return classified
 
   const completedAge = now.getTime() - dateMs(newest.updatedAt)
-  if (completedAge < COMPLETED_STALE_HOURS * 60 * 60 * 1000) return classified
-
-  const mainCommit = recordValue(await api.request("GET", `${base}/commits/main`), "main commit")
-  const mainSha = stringField(mainCommit, "sha")
-  if (!/^[0-9a-f]{40}$/.test(mainSha)) throw new Error("main commit sha is invalid")
-  if (mainSha !== newest.headSha) {
-    return red(
-      `The newest completed Android run is over ${COMPLETED_STALE_HOURS} hours old and main has newer commits.`,
-      newest,
-    )
-  }
   if (classified.state === "green") {
+    const current = await verifyGreenRecovery(api, repository, classified)
+    if (current.state !== "green") {
+      if (completedAge >= COMPLETED_STALE_HOURS * 60 * 60 * 1000) {
+        return red(
+          `The newest completed Android run is over ${COMPLETED_STALE_HOURS} hours old and main has newer commits.`,
+          newest,
+        )
+      }
+      return current
+    }
+    if (completedAge < COMPLETED_STALE_HOURS * 60 * 60 * 1000) return current
     return green("The last Android run is old, but main has no newer commit.", newest)
   }
+
+  if (completedAge >= COMPLETED_STALE_HOURS * 60 * 60 * 1000) {
+    const mainSha = await loadMainSha(api, repository)
+    if (mainSha !== newest.headSha) {
+      return red(
+        `The newest completed Android run is over ${COMPLETED_STALE_HOURS} hours old and main has newer commits.`,
+        newest,
+      )
+    }
+  }
   return classified
+}
+
+async function verifyGreenRecovery(
+  api: GitHubApi,
+  repository: string,
+  decision: Decision,
+): Promise<Decision> {
+  if (decision.state !== "green" || !decision.run) return decision
+  const mainSha = await loadMainSha(api, repository)
+  if (mainSha !== decision.run.headSha) {
+    return ignored("The successful Android run does not test the current main commit.")
+  }
+  return decision
+}
+
+async function loadMainSha(api: GitHubApi, repository: string): Promise<string> {
+  try {
+    const mainCommit = recordValue(
+      await api.request("GET", `/repos/${repository}/commits/main`),
+      "main commit",
+    )
+    const mainSha = stringField(mainCommit, "sha")
+    if (!/^[0-9a-f]{40}$/.test(mainSha)) throw new Error("main commit sha is invalid")
+    return mainSha
+  } catch (error) {
+    const diagnostic = sanitizeCodeSpan(error instanceof Error ? error.message : "unknown error")
+    throw new Error(`main commit lookup failed: ${diagnostic}`)
+  }
+}
+
+function isRecoveryCandidate(run: WorkflowRun): boolean {
+  return run.event === "push" && run.path === ANDROID_WORKFLOW_PATH && run.headBranch === "main"
+}
+
+function compareRunsNewestFirst(left: WorkflowRun, right: WorkflowRun): number {
+  const timestampOrder = dateMs(right.createdAt) - dateMs(left.createdAt)
+  if (timestampOrder !== 0) return timestampOrder
+  if (right.id === left.id) return 0
+  return right.id > left.id ? 1 : -1
 }
 
 export async function classifyCompleted(
@@ -518,6 +576,8 @@ function parseRun(raw: unknown): WorkflowRun {
   const headBranch = stringField(raw, "head_branch")
   return {
     id: positiveInteger(raw.id, "workflow run id"),
+    event: stringField(raw, "event"),
+    path: stringField(raw, "path"),
     status,
     conclusion,
     headBranch,
@@ -557,7 +617,7 @@ function makeRunUrl(serverUrl: string, repository: string, id: number): string {
 }
 
 function validateRepository(value: string): void {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) throw new Error("repository is invalid")
+  if (value !== EXPECTED_REPOSITORY) throw new Error("repository is invalid")
 }
 
 function validateServerUrl(value: string): string {
