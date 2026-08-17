@@ -120,7 +120,7 @@ jobs:
       - run: bun run build
       - run: bun install --frozen-lockfile
         working-directory: example/expo
-      - name: Smoke Rails Action Cable, Frame form, and nested Frame morph
+      - name: Smoke Rails desktop integration
         working-directory: example/rails
         run: |
           set -eu
@@ -142,9 +142,11 @@ jobs:
             if curl --fail --silent --show-error --max-time 1 http://127.0.0.1:3001/up >/dev/null 2>&1; then
               (
                 cd ../expo
-                EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test \
+                EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test --isolate \
                   src/demo-live-cable.redis-smoke.test.ts \
+                  src/demo-live-document-refresh-morph.rails-smoke.test.ts \
                   src/demo-live-form.rails-smoke.test.ts \
+                  src/demo-live-http-stream.rails-smoke.test.ts \
                   src/demo-live-morph.rails-smoke.test.tsx \
                   src/demo-live-response-matrix.rails-smoke.test.ts
               )
