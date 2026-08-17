@@ -32,6 +32,16 @@ lane runs after every protected-main push and may also be dispatched manually.
 The workflow retains Rails, emulator, Android logcat, JUnit, environment, and
 resource-sampling evidence for 14 days.
 
+The lane also retains the 12 newest local Maestro test directories. At lane
+entry, after the exact Maestro version check and before install or build work,
+`scripts/ci/prune-maestro-tests.sh` resolves the same state root as Maestro:
+`$XDG_STATE_HOME/maestro/tests` when `XDG_STATE_HOME` is set, or
+`$HOME/.maestro/tests` otherwise. It sorts exact `yyyy-MM-dd_HHmmss` directory
+names and removes only older matching real directories. Files, other directory
+names, and symlinks are outside the deletion boundary. Entry cleanup is used
+because a failed or interrupted Maestro command does not reach Maestro 2.7.0's
+normal age cleanup.
+
 The lane builds only the emulator's x86_64 release APK before starting the
 emulator. This sequencing is intentional: an initial four-ABI build overlapping
 the emulator exhausted 8 GB and the kernel killed QEMU. With the phases
@@ -75,6 +85,41 @@ failures, the runner preserves the first attempt's logs and JUnit, restarts and
 reprovisions a clean emulator, and reruns the complete suite once against the
 same APK. Assertion-only failures, app crashes, and a failed second attempt
 remain failures.
+
+## Failure and staleness alert
+
+`.github/workflows/android-device-alert.yml` runs on GitHub-hosted
+`ubuntu-latest`. It runs after the Android workflow completes and once per
+hour. It does not use or wait for the self-hosted Android job. The workflow
+re-fetches GitHub API state instead of trusting event data and manages one
+deduplicated issue with the `android-device-ci-alert` label and a private body
+marker. No extra secret is required. It uses `GITHUB_TOKEN` with only
+`actions: read`, `contents: read`, and `issues: write`.
+
+The alert becomes red for `failure`, `timed_out`, or `startup_failure`. A
+`cancelled` workflow becomes red only when an actual job ran for at least the
+workflow's 90-minute timeout. This excludes superseded runs with no jobs and
+shorter human cancellations. On the hourly check, a noncompleted run older
+than three hours is red. A completed run older than 24 hours is red only when
+`main` has a newer commit. A quiet repository does not get a stale alert.
+
+On red, the workflow creates one issue or updates its body without repeated
+comments. If duplicate marked issues exist, it keeps the lowest issue number
+and closes the others. On recovery, it comments once with the successful run
+URL and closes all marked alert issues, with the lowest issue number closed
+last. The body keeps no more than ten sanitized observations. If its stored
+state is corrupt, the workflow restarts its counters and records that fact.
+
+A manual `workflow_dispatch` is always a dry run. It reads live state and logs
+the planned operations, but its API client does not send `POST`, `PATCH`, or
+`DELETE` requests. Use this before a workflow change or during operator triage.
+To recover a red alert, repair the runner or product failure and run the full
+Android workflow. A successful full run closes the alert automatically.
+
+GitHub can disable scheduled workflows in a public repository after 60 days
+with no repository activity. The completion trigger continues to cover new
+Android runs, but an operator must re-enable the schedule if GitHub disables
+it.
 
 ## Maintenance
 
@@ -180,7 +225,34 @@ Maestro output contains an explicit offline or missing ADB device and the
 remaining flows collapse into zero-second failures. Assertion failures and app
 crashes are product failures and are never hidden by an automatic retry.
 
+To inspect Maestro cleanup without changing the runner, run:
+
+```sh
+scripts/ci/prune-maestro-tests.sh "$HOME/.maestro/tests" 12 dry-run
+```
+
+The pruner fails closed unless the root is absolute, is named `tests`, has a
+parent named `maestro` or `.maestro`, is not a symlink, and the keep count and
+mode are valid. A missing safe root succeeds. After retention, a root above
+512 MB produces a warning but does not cause broader deletion.
+
 ## Changelog
+
+**2026-08-18**:
+
+- Changed: The Android lane now keeps the 12 newest local Maestro test runs at
+  lane entry, with strict path, name, and symlink guards.
+- Why: Maestro cleans old data after a clean command exit, but interrupted or
+  failed commands can leave timestamp directories that grow without a bound.
+- Impact: Old matching run directories are removed before new output is made.
+  Unrelated files and directories remain untouched. Storage above 512 MB is
+  reported without broader deletion.
+- Changed: A separate GitHub-hosted workflow now manages one GitHub issue for
+  Android failure, timeout-shaped cancellation, and scheduled staleness.
+- Why: The nonrequired self-hosted lane can remain red without blocking a merge
+  or notifying an operator, and cancelled workflows can have no Android job.
+- Impact: Real red states create or update one issue, recovery closes it, and
+  manual dispatch proves the plan without an API write or a new secret.
 
 **2026-08-17**:
 

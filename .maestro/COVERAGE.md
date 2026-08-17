@@ -131,6 +131,14 @@ Current iOS result: **71/71 grouped contracts Pass** and **115/115 atomic
 observations Pass** on the physical iPad in the
 [2026-07-26 evidence record](../docs/ios-device-release-0.1.0.md).
 
+The Android lane retains the 12 newest local Maestro timestamp directories at
+entry. This retention does not remove uploaded workflow evidence and does not
+change the 71 grouped contracts. A separate GitHub-hosted alert workflow
+reports a failed or stale full-suite lane through one deduplicated GitHub
+issue. A cancelled workflow is alertable only when its actual Android job
+reaches the 90-minute workflow timeout. Superseded zero-job runs and shorter
+human cancellations do not change this coverage record.
+
 ## Platform-specific exception
 
 `release-picker-form.android.yaml` is the only checked-in platform-specific

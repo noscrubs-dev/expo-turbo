@@ -43,6 +43,14 @@ source "$script_dir/stop-process.sh"
 maestro_version="$("$script_dir/check-maestro-version.sh")"
 readonly maestro_version
 
+if [ -n "${XDG_STATE_HOME:-}" ]; then
+  maestro_tests_root="$XDG_STATE_HOME/maestro/tests"
+else
+  maestro_tests_root="$HOME/.maestro/tests"
+fi
+readonly maestro_tests_root
+"$script_dir/prune-maestro-tests.sh" "$maestro_tests_root" 12 apply
+
 readonly adb_serial="emulator-5580"
 readonly avd_name="expo-turbo-api35"
 readonly rails_origin="http://127.0.0.1:3001"
