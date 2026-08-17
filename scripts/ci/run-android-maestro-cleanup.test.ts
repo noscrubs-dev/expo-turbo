@@ -182,6 +182,53 @@ describe("Android lane cleanup", () => {
     expect(railsStart).toContain("exec bundle exec rails server")
     expect(() => assertRailsExec(railsStart.replace("exec bundle", "bundle"))).toThrow("exec Rails")
   })
+
+  test("samples three large ps reports without SIGPIPE and keeps only the top 20 rows", async () => {
+    const fixture = await createFixture()
+    const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
+    const result = await runResourceSampler(fixture, sampler, "success")
+
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("iteration=1 rows=20")
+    expect(result.stdout).toContain("iteration=2 rows=20")
+    expect(result.stdout).toContain("iteration=3 rows=20")
+    expect(result.stderr).toBe("")
+    expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("3\n")
+  })
+
+  test("proves the old head consumer exits from SIGPIPE on a large ps report", async () => {
+    const fixture = await createFixture()
+    const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
+    const bin = await setupFakePs(fixture)
+    const oldPipeline = sampler
+      .split("\n")
+      .find((line) => line.includes("ps -eo pid,ppid,rss,%cpu,comm,args"))
+      ?.replace("awk 'NR <= 20'", "head -20")
+
+    expect(oldPipeline).toBeDefined()
+    const result = await runBoundedBash(`set -euo pipefail\n${oldPipeline}\n`, {
+      FIXTURE: fixture,
+      PATH: `${bin}:${process.env.PATH}`,
+      PS_MODE: "success",
+    })
+
+    expect(result.timedOut).toBe(false)
+    expect([141, 1]).toContain(result.status)
+  })
+
+  test("records a ps warning and continues sampling on the next iteration", async () => {
+    const fixture = await createFixture()
+    const sampler = extractFunction(await readFile(laneScript, "utf8"), "sample_top_processes")
+    const result = await runResourceSampler(fixture, sampler, "fail-once")
+
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("iteration=1 rows=0")
+    expect(result.stdout).toContain("iteration=2 rows=20")
+    expect(result.stderr).toContain("WARNING: resource sampler: ps exited 23; continuing.")
+    expect(await readFile(join(fixture, "ps-count"), "utf8")).toBe("2\n")
+  })
 })
 
 async function createFixture(): Promise<string> {
@@ -240,6 +287,51 @@ echo reaped=true
     }
   }
   return result
+}
+
+async function runResourceSampler(
+  fixture: string,
+  sampler: string,
+  mode: "success" | "fail-once",
+): Promise<{ status: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const bin = await setupFakePs(fixture)
+
+  const harness = `
+set -euo pipefail
+${sampler}
+for iteration in 1 2 3; do
+  rows="$(sample_top_processes | wc -l | tr -d '[:space:]')"
+  printf 'iteration=%s rows=%s\\n' "$iteration" "$rows"
+  if [ "$PS_MODE" = "fail-once" ] && [ "$iteration" -eq 2 ]; then break; fi
+done
+`
+  return runBoundedBash(harness, {
+    FIXTURE: fixture,
+    PATH: `${bin}:${process.env.PATH}`,
+    PS_MODE: mode,
+  })
+}
+
+async function setupFakePs(fixture: string): Promise<string> {
+  const bin = join(fixture, "bin")
+  await mkdir(bin)
+  await writeFile(
+    join(bin, "ps"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [ -f "$FIXTURE/ps-count" ]; then count="$(cat "$FIXTURE/ps-count")"; fi
+count=$((count + 1))
+printf '%s\\n' "$count" >"$FIXTURE/ps-count"
+if [ "$PS_MODE" = "fail-once" ] && [ "$count" -eq 1 ]; then
+  echo 'fake ps failed' >&2
+  exit 23
+fi
+/usr/bin/awk 'BEGIN { for (row = 1; row <= 10000; row += 1) printf "%s %s %s %s process arguments-that-make-the-fake-ps-output-larger-than-256-kibibytes\\n", row, row, row, row }'
+`,
+  )
+  await chmod(join(bin, "ps"), 0o755)
+  return bin
 }
 
 async function runBoundedBash(

@@ -328,12 +328,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+sample_top_processes() {
+  local ps_status
+
+  # awk reads the whole ps stream. Unlike head, it does not close the pipe
+  # after row 20 and make a large ps report exit with SIGPIPE under pipefail.
+  # Keep a real ps failure as evidence, but do not let optional sampling stop
+  # the Android lane.
+  set +e
+  ps -eo pid,ppid,rss,%cpu,comm,args --sort=-rss | awk 'NR <= 20'
+  ps_status="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "$ps_status" -ne 0 ]; then
+    echo "WARNING: resource sampler: ps exited ${ps_status}; continuing." >&2
+  fi
+}
+
 (
   while true; do
     date --iso-8601=seconds
     free -m
     df -m /
-    ps -eo pid,ppid,rss,%cpu,comm,args --sort=-rss | head -20
+    sample_top_processes
     sleep 10
   done
 ) >>"$resource_log" 2>&1 &
