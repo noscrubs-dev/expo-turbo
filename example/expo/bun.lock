@@ -29,6 +29,7 @@
         "eslint": "^9.0.0",
         "eslint-config-expo": "~57.0.1",
         "eslint-import-resolver-typescript": "^3.10.1",
+        "expo-doctor": "1.20.2",
         "react-test-renderer": "19.2.3",
         "typescript": "~6.0.3",
       },
@@ -832,6 +833,8 @@
     "expo-asset": ["expo-asset@57.0.11", "", { "dependencies": { "@expo/image-utils": "^0.11.4", "expo-constants": "~57.0.11" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*" } }, "sha512-tDaExt9fOKeSc51mmZNqfejyBt9argzo14XP9OmKEdAk2E/mWKJnUNj6rfUzHC5MhG120xuZC/d1ncqq0aC7Pg=="],
 
     "expo-constants": ["expo-constants@57.0.11", "", { "dependencies": { "@expo/env": "~2.4.2" }, "peerDependencies": { "expo": "*", "react-native": "*" } }, "sha512-gpSZ13Nfx0BOc9ALjG1SMhks5csb8Z6ncEVdhDgv0NRrmJcHPRvyUlWaKjRjzwW730XrQ6PIXFRcnNmAxOLj5A=="],
+
+    "expo-doctor": ["expo-doctor@1.20.2", "", { "bin": { "expo-doctor": "bin/expo-doctor.js" } }, "sha512-KA32iZLrbviecZV0FAIsJHTfa1DomzLH6EjMXHsfbiV5ETQ8llo/cxA6Qga5FhG/5JSlkt23/yeWDaLZQJwnug=="],
 
     "expo-document-picker": ["expo-document-picker@57.0.1", "", { "peerDependencies": { "expo": "*" } }, "sha512-qBwM5oxDZ3I9kwFD3pUE1oK/WNv9artoEKO6UpqhQgNRr0XA1ALRVWYjkF4+ge9lUNDRehjTm/jenINkzqg84g=="],
 

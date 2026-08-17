@@ -171,7 +171,7 @@ jobs:
         working-directory: example/expo
       - run: bun run check
         working-directory: example/expo
-      - run: bunx expo-doctor
+      - run: ./node_modules/.bin/expo-doctor
         working-directory: example/expo
 
   rails-example:
