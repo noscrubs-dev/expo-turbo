@@ -127,3 +127,25 @@ export class SubscriptionError extends ExpoTurboError {
     super("subscription", message, context, options)
   }
 }
+
+/** Why a document reconnect obligation ended without a successful handoff. */
+export type DocumentReconnectFailureReason = "disposed" | "handoff-failed"
+
+/** A document reconnect obligation that could not reach its refresh requester. */
+export class DocumentReconnectReconciliationError extends RequestError {
+  readonly documentUrl: string
+  readonly reason: DocumentReconnectFailureReason
+  readonly requestId: string | undefined
+
+  constructor(documentUrl: string, reason: DocumentReconnectFailureReason, requestId?: string) {
+    super(
+      reason === "disposed"
+        ? "Document reconnect reconciliation was disposed before handoff"
+        : "Document reconnect reconciliation failed",
+      { method: "GET" },
+    )
+    this.documentUrl = documentUrl
+    this.reason = reason
+    this.requestId = requestId
+  }
+}

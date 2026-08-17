@@ -4,6 +4,19 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Keep deferred document reconnect handoffs per canonical document URL instead
+  of in one shared slot. Different documents now drain once in first-insertion
+  order; a repeat URL keeps its place and uses the newest request. Reentrant
+  requests start a later drain, and one failed handoff cannot erase or block
+  another. Disposal now reports each obligation that did not start handoff as a
+  `DocumentReconnectReconciliationError` with `reason: "disposed"`, the
+  canonical `documentUrl`, and its optional `requestId`; repeated disposal does
+  not report twice. A deferred handoff throw uses the same error with
+  `reason: "handoff-failed"`. The reconciler does not retry: the downstream
+  requester owns transport and retry policy. Cable reconnect recovery remains
+  dormant because the runtime still does not supply `reconnectRefresh`; pull
+  request 418 remains the follow-up for that activation.
+
 - Refuse a generated form-link activation held by a handler captured before the
   link's `data-turbo-method` or `data-turbo-stream` changed. A link that lost its
   method previously performed a plain document GET — silently doing an ordinary

@@ -8,7 +8,7 @@ import {
   DocumentRefreshController,
 } from "./document-refresh-controller"
 import { DocumentVisitController, type DocumentVisitSnapshot } from "./document-visit-controller"
-import { RequestError, StateError } from "./errors"
+import { DocumentReconnectReconciliationError, RequestError, StateError } from "./errors"
 import { parseExpoTurboDocument } from "./parser"
 import { EXPO_TURBO_MIME_TYPE } from "./protocol-request"
 import { RequestLifecycle } from "./request-lifecycle"
@@ -378,7 +378,7 @@ describe("document refresh controller", () => {
     expect(errors[0]?.message).toBe("Document request failed")
   })
 
-  test("defers one reconnect reconciliation until the active visit settles", async () => {
+  test("drains distinct deferred documents once in first-insertion order", () => {
     for (const status of ["completed", "failed", "canceled"] as const) {
       const visits = new ReconnectVisitStub()
       const requests: unknown[] = []
@@ -388,20 +388,24 @@ describe("document refresh controller", () => {
       )
 
       visits.setStatus("started")
-      reconciler.request({ baseUrl: "https://example.test/older", scroll: "reset" })
-      reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+      reconciler.request({ baseUrl: "https://example.test/a", scroll: "reset" })
+      reconciler.request({ baseUrl: "https://example.test/b", scroll: "preserve" })
       expect(requests).toEqual([])
 
       visits.setStatus(status)
-      expect(requests).toEqual([{ baseUrl: "https://example.test/current", scroll: "preserve" }])
+      expect(requests).toEqual([
+        { baseUrl: "https://example.test/a", scroll: "reset" },
+        { baseUrl: "https://example.test/b", scroll: "preserve" },
+      ])
       expect(Object.isFrozen(requests[0])).toBe(true)
+      expect(Object.isFrozen(requests[1])).toBe(true)
 
       visits.setStatus(status)
-      expect(requests).toHaveLength(1)
+      expect(requests).toHaveLength(2)
     }
   })
 
-  test("drops a deferred reconnect reconciliation after disposal", async () => {
+  test("coalesces canonical aliases to the newest request without changing queue order", () => {
     const visits = new ReconnectVisitStub()
     const requests: unknown[] = []
     const reconciler = new DocumentReconnectReconciler(
@@ -410,17 +414,84 @@ describe("document refresh controller", () => {
     )
 
     visits.setStatus("started")
-    reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
-    reconciler.dispose()
+    reconciler.request({ baseUrl: "https://example.test:443/a", requestId: "a-older" })
+    reconciler.request({ baseUrl: "https://example.test/b", requestId: "b" })
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "a-newest" })
     visits.setStatus("completed")
 
-    expect(requests).toEqual([])
-    expect(() => reconciler.request({ baseUrl: "https://example.test/current" })).toThrow(
-      StateError,
+    expect(requests).toEqual([
+      { baseUrl: "https://example.test/a", requestId: "a-newest", scroll: "reset" },
+      { baseUrl: "https://example.test/b", requestId: "b", scroll: "reset" },
+    ])
+  })
+
+  test("does not starve eligible documents when one handoff fails", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    const reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/b")) throw new Error("private B failure")
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a" })
+    reconciler.request({ baseUrl: "https://example.test/b", requestId: "b-request" })
+    reconciler.request({ baseUrl: "https://example.test/c" })
+    visits.setStatus("completed")
+
+    expect(requests).toEqual([
+      "https://example.test/a",
+      "https://example.test/b",
+      "https://example.test/c",
+    ])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toEqual(
+      new DocumentReconnectReconciliationError(
+        "https://example.test/b",
+        "handoff-failed",
+        "b-request",
+      ),
     )
   })
 
-  test("waits through a reentrant newer visit before handing off once", async () => {
+  test("keeps a request added during a drain for the next ordered drain", async () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    let reconciler: DocumentReconnectReconciler
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/a")) {
+            reconciler.request({ baseUrl: "https://example.test/c" })
+          }
+        },
+      },
+      visits,
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a" })
+    reconciler.request({ baseUrl: "https://example.test/b" })
+    visits.setStatus("completed")
+
+    expect(requests).toEqual(["https://example.test/a", "https://example.test/b"])
+    await Promise.resolve()
+    expect(requests).toEqual([
+      "https://example.test/a",
+      "https://example.test/b",
+      "https://example.test/c",
+    ])
+  })
+
+  test("waits through reentrant and repeated reconcile callbacks without duplicate work", () => {
     const visits = new ReconnectVisitStub()
     const requests: unknown[] = []
     let startNewerVisit = true
@@ -441,15 +512,24 @@ describe("document refresh controller", () => {
 
     visits.setStatus("completed")
     expect(requests).toEqual([{ baseUrl: "https://example.test/current", scroll: "preserve" }])
+    visits.setStatus("completed")
+    visits.setStatus("failed")
+    expect(requests).toHaveLength(1)
   })
 
-  test("redacts a deferred reconnect handoff failure", async () => {
+  test("a failed obligation can be requested again without duplicating its siblings", () => {
     const visits = new ReconnectVisitStub()
     const errors: Error[] = []
+    const requests: string[] = []
+    let failA = true
     const reconciler = new DocumentReconnectReconciler(
       {
-        request: () => {
-          throw new Error("secret refresh transport details")
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/a") && failA) {
+            failA = false
+            throw new Error("secret refresh transport details")
+          }
         },
       },
       visits,
@@ -457,10 +537,95 @@ describe("document refresh controller", () => {
     )
 
     visits.setStatus("started")
-    reconciler.request({ baseUrl: "https://example.test/current", scroll: "preserve" })
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "first-a" })
+    reconciler.request({ baseUrl: "https://example.test/b" })
+    visits.setStatus("completed")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "retry-a" })
+
+    expect(requests).toEqual([
+      "https://example.test/a",
+      "https://example.test/b",
+      "https://example.test/a",
+    ])
+    expect(errors).toEqual([
+      new DocumentReconnectReconciliationError(
+        "https://example.test/a",
+        "handoff-failed",
+        "first-a",
+      ),
+    ])
+    expect(errors[0]?.cause).toBeUndefined()
+  })
+
+  test("reports zero, one, or many pending obligations exactly once on disposal", () => {
+    for (const count of [0, 1, 3]) {
+      const visits = new ReconnectVisitStub()
+      const errors: Error[] = []
+      const requests: unknown[] = []
+      const reconciler = new DocumentReconnectReconciler(
+        { request: (request) => requests.push(request) },
+        visits,
+        { onError: (error) => errors.push(error) },
+      )
+      visits.setStatus("started")
+      for (let index = 0; index < count; index += 1) {
+        reconciler.request({
+          baseUrl: `https://example.test/${index}`,
+          requestId: `request-${index}`,
+        })
+      }
+
+      reconciler.dispose()
+      reconciler.dispose()
+      visits.setStatus("completed")
+
+      expect(requests).toEqual([])
+      expect(errors).toHaveLength(count)
+      expect(
+        errors.map((error) => ({
+          documentUrl: (error as DocumentReconnectReconciliationError).documentUrl,
+          reason: (error as DocumentReconnectReconciliationError).reason,
+          requestId: (error as DocumentReconnectReconciliationError).requestId,
+        })),
+      ).toEqual(
+        Array.from({ length: count }, (_, index) => ({
+          documentUrl: `https://example.test/${index}`,
+          reason: "disposed",
+          requestId: `request-${index}`,
+        })),
+      )
+      expect(() => reconciler.request({ baseUrl: "https://example.test/later" })).toThrow(
+        StateError,
+      )
+    }
+  })
+
+  test("disposal during a drain reports only obligations that did not start handoff", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: DocumentReconnectReconciliationError[] = []
+    let reconciler: DocumentReconnectReconciler
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.baseUrl)
+          if (request.baseUrl.endsWith("/a")) reconciler.dispose()
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error as DocumentReconnectReconciliationError) },
+    )
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "a" })
+    reconciler.request({ baseUrl: "https://example.test/b", requestId: "b" })
+    reconciler.request({ baseUrl: "https://example.test/c", requestId: "c" })
+
     visits.setStatus("completed")
 
-    expect(errors).toEqual([new RequestError("Document reconnect reconciliation failed")])
-    expect(errors[0]?.cause).toBeUndefined()
+    expect(requests).toEqual(["https://example.test/a"])
+    expect(errors.map((error) => [error.documentUrl, error.requestId, error.reason])).toEqual([
+      ["https://example.test/b", "b", "disposed"],
+      ["https://example.test/c", "c", "disposed"],
+    ])
   })
 })
