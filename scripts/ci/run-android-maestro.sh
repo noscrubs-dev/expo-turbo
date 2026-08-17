@@ -32,6 +32,7 @@ export PATH="$GEM_HOME/bin:$PATH"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
+source "$script_dir/stop-process.sh"
 
 # The last preflight guard, and the one reason it sits below the exports rather
 # than beside the guards above: maestro resolves through the PATH they set. It
@@ -281,18 +282,16 @@ emulator_pid=""
 sampler_pid=""
 
 cleanup() {
-  status=$?
+  local status=$?
   trap - EXIT INT TERM
 
   timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat.txt" 2>&1 || true
+  stop_process "$rails_pid" "Rails" 50 50 0.1
+  rails_pid=""
   timeout 15 adb -s "$adb_serial" emu kill >/dev/null 2>&1 || true
 
-  for pid in "$sampler_pid" "$rails_pid" "$emulator_pid"; do
-    if [ -n "$pid" ]; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-    fi
-  done
+  stop_process "$sampler_pid" "resource sampler" 50 50 0.1
+  stop_process "$emulator_pid" "Android emulator" 50 50 0.1
 
   {
     echo "exit_status=$status"
