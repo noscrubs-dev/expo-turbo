@@ -17,10 +17,17 @@ cycle proves this order:
 1. A neutral heading tap produces the React Native `blurred` event.
 2. The form is ready, and no confirmation, loading, failure, or success result
    is visible.
-3. A real submit resolves as `invalid; attempt N`.
-4. The same React Native event probe then reports `focused`.
-5. `First name is required` is visible, and no confirmation or loading state
+3. The flow reasserts `blurred; revision 2N` immediately before the submit tap.
+4. The submit path synchronously focuses the invalid control, and the same
+   React Native event probe reports `focused; revision 2N+1`.
+5. The real submission promise then resolves as `invalid; attempt N`.
+6. `First name is required` is visible, and no confirmation or loading state
    appeared.
+
+The paired evidence for attempt N is `blurred; revision 2N`, `focused;
+revision 2N+1`, and `invalid; attempt N`. The invalid result does not cause
+focus. It records the result of the same submit attempt after the synchronous
+focus work.
 
 Android also checks Maestro's native `focused:false` and `focused:true`
 selectors. These selectors are additional evidence, not the shared oracle.

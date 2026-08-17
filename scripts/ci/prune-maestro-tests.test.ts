@@ -329,42 +329,15 @@ describe.serial("Maestro test retention", () => {
 })
 
 describe.serial("Android lane retention wiring", () => {
-  test("runs the fixed retention command after the version guard and before lane output", async () => {
+  test("does not prune the default tree when every lane command uses explicit output paths", async () => {
     const lane = await readFile(laneScript, "utf8")
-    assertLaneRetention(lane)
-  })
 
-  test("rejects changes to the fixed count, mode, path resolution, and order", async () => {
-    const lane = await readFile(laneScript, "utf8")
-    const mutations = [
-      lane.replace('"$maestro_tests_root" 12 apply', '"$maestro_tests_root" 20 apply'),
-      lane.replace('"$maestro_tests_root" 12 apply', '"$maestro_tests_root" 12 dry-run'),
-      lane.replace("$XDG_STATE_HOME/maestro/tests", "$XDG_STATE_HOME/.maestro/tests"),
-      lane.replace("$HOME/.maestro/tests", "$HOME/maestro/tests"),
-      lane.replace(
-        '"$script_dir/prune-maestro-tests.sh" "$maestro_tests_root" 12 apply',
-        'bun install --frozen-lockfile\n"$script_dir/prune-maestro-tests.sh" "$maestro_tests_root" 12 apply',
-      ),
-    ]
-
-    for (const mutation of mutations) {
-      expect(() => assertLaneRetention(mutation)).toThrow()
-    }
+    expect(lane).not.toContain("prune-maestro-tests.sh")
+    expect(lane).not.toContain("maestro_tests_root")
+    expect(lane.match(/--test-output-dir/g)).toHaveLength(3)
+    expect(lane.match(/--debug-output/g)).toHaveLength(3)
   })
 })
-
-function assertLaneRetention(lane: string): void {
-  const guard = 'maestro_version="$("$script_dir/check-maestro-version.sh")"'
-  const prune = '"$script_dir/prune-maestro-tests.sh" "$maestro_tests_root" 12 apply'
-  const install = "bun install --frozen-lockfile"
-  expect(lane).toContain('maestro_tests_root="$XDG_STATE_HOME/maestro/tests"')
-  expect(lane).toContain('maestro_tests_root="$HOME/.maestro/tests"')
-  expect(lane.match(/prune-maestro-tests\.sh/g)).toHaveLength(1)
-  expect(lane.indexOf(guard)).toBeGreaterThan(-1)
-  expect(lane.indexOf(prune)).toBeGreaterThan(lane.indexOf(guard))
-  expect(lane.indexOf(prune)).toBeLessThan(lane.indexOf(install))
-  expect(lane.slice(lane.indexOf(guard), lane.indexOf(prune))).not.toMatch(/mkdir|:\s*>/)
-}
 
 async function fixtureRoot(): Promise<string> {
   const fixture = await mkdtemp(join(tmpdir(), "maestro-prune-"))

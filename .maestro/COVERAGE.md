@@ -5,8 +5,9 @@ row is shared unless its contract explicitly names a platform. Android and iOS
 are evidence columns, not separate test families.
 
 Status values are `Pass`, `Fail`, `Pending`, and `Not run`. A flow name is the
-evidence locator; Android Maestro artifacts live under `~/.maestro/tests/`.
-The physical-iOS execution used Appium/XCUITest and is recorded in
+evidence locator. New Android CI evidence uses explicit directories under
+`artifacts/android-device`. The physical-iOS execution used Appium/XCUITest and
+is recorded in
 [the physical-iOS evidence document](../docs/ios-device-release-0.1.0.md).
 
 The checked-in release flows form one union suite. Platform columns below record
@@ -16,10 +17,10 @@ The historical totals below predate the issue #425 correction. The prior row 9
 pass was false-green and is not current evidence. The new flow requires a real
 Android and iOS run before row 9 can return to `Pass`.
 
-| Platform execution | Device | Shared contracts | Atomic observations | Union suite result | Artifact |
-| --- | --- | ---: | ---: | --- | --- |
-| Android | OnePlus `65c6e2cf` | **71/71 Pass** | **115/115 Pass** | **15/15 flows Pass** | `2026-07-25_091034` |
-| iOS | iPad mini (A17 Pro), iPadOS 26.5, `00008130-0011650A0C20001C` | **71/71 Pass** | **115/115 Pass** | **14/14 shared flows + Files provider Pass** | [2026-07-26 physical-iOS record](../docs/ios-device-release-0.1.0.md) |
+| Historical platform execution | Device | Result reported before issue #425 | Historical artifact |
+| --- | --- | --- | --- |
+| Android | OnePlus `65c6e2cf` | 71/71 grouped, 115/115 atomic, and 15/15 flows reported Pass; row 9 is now invalidated | `2026-07-25_091034` |
+| iOS | iPad mini (A17 Pro), iPadOS 26.5, `00008130-0011650A0C20001C` | 71/71 grouped, 115/115 atomic, and 14/14 shared flows plus Files provider reported Pass; row 9 is now invalidated | [2026-07-26 physical-iOS record](../docs/ios-device-release-0.1.0.md) |
 
 | # | Shared user-visible contract | Android evidence | iOS evidence |
 | ---: | --- | --- | --- |
@@ -129,23 +130,23 @@ Atomic item 5 is the cross-cutting accessibility-visible boundary-state
 contract. Its assertions are distributed through interaction rows and row 71,
 and passes with the completed row 71 evidence.
 
-The corrected row 9 flow proves a React Native focus event after each actual
-`invalid; attempt N` result for nine blur-submit-focus cycles. Android also
-checks the native selector before and after each submit. iOS uses the same event
-probe because its retained native `focused` property is not a reliable oracle.
-The checked-in React and static tests prove this contract locally, but no new
-device result is recorded here yet. Spoken TalkBack and VoiceOver output remains
-pending and is not proved by the visible error or focus event probe.
+The corrected row 9 flow pairs `blurred; revision 2N`, `focused; revision
+2N+1`, and `invalid; attempt N` for each of nine attempts. The submit path
+focuses the invalid control synchronously. The submission proof resolves after
+that focus event; it does not cause the focus event. Android also checks the
+native selector before and after each submit. iOS uses the same event probe
+because its retained native `focused` property is not a reliable oracle.
+Checked-in React and static tests verify the instrumentation, but they are not
+device results.
 
-Current Android result: **71/71 grouped contracts Pass** and **115/115 atomic
-observations Pass** on the OnePlus device in artifact `2026-07-25_091034`.
-Current iOS result: **71/71 grouped contracts Pass** and **115/115 atomic
-observations Pass** on the physical iPad in the
-[2026-07-26 evidence record](../docs/ios-device-release-0.1.0.md).
+Current corrected-flow result: row 9 is **Not run** on Android and iOS. The
+other 70 grouped contracts keep their historical evidence; there is no current
+71/71 or 115/115 full-pass claim after the correction. A real Android run, a
+real iOS run, and spoken TalkBack and VoiceOver proof remain required.
 
-The Android lane retains the 12 newest local Maestro timestamp directories at
-entry. This retention does not remove uploaded workflow evidence and does not
-change the 71 grouped contracts. A separate GitHub-hosted alert workflow
+The Android lane writes explicit test and flat debug output below
+`artifacts/android-device`; it does not write Maestro's default global test
+tree and does not prune that tree. A separate GitHub-hosted alert workflow
 reports a failed or stale full-suite lane through one deduplicated GitHub
 issue. A cancelled workflow is alertable only when its actual Android job
 reaches the 90-minute workflow timeout. Superseded zero-job runs and shorter

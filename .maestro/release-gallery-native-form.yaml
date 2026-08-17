@@ -75,18 +75,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 2"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 1"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 3"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 3"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 1"
     timeout: 5000
 - runFlow:
     when:
@@ -139,18 +144,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 4"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 2"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 5"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 5"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 2"
     timeout: 5000
 - runFlow:
     when:
@@ -203,18 +213,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 6"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 3"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 7"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 7"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 3"
     timeout: 5000
 - runFlow:
     when:
@@ -267,18 +282,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 8"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 4"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 9"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 9"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 4"
     timeout: 5000
 - runFlow:
     when:
@@ -331,18 +351,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 10"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 5"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 11"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 11"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 5"
     timeout: 5000
 - runFlow:
     when:
@@ -395,18 +420,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 12"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 6"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 13"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 13"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 6"
     timeout: 5000
 - runFlow:
     when:
@@ -459,18 +489,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 14"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 7"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 15"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 15"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 7"
     timeout: 5000
 - runFlow:
     when:
@@ -523,18 +558,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 16"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 8"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 17"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 17"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 8"
     timeout: 5000
 - runFlow:
     when:
@@ -587,18 +627,23 @@ appId: dev.noscrubs.expoturbo.example
     visible:
       id: demo-form-submitter-id-collect-form
     timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: blurred; revision 18"
+    timeout: 5000
 - tapOn:
     id: demo-form-submitter-id-collect-form
     waitToSettleTimeoutMs: 100
 - extendedWaitUntil:
     visible:
-      id: demo-form-submit-proof-id-collect-form
-      text: "Submit proof: invalid; attempt 9"
+      id: demo-form-focus-probe-id-first-name
+      text: "Focus probe: focused; revision 19"
     timeout: 5000
 - extendedWaitUntil:
     visible:
-      id: demo-form-focus-probe-id-first-name
-      text: "Focus probe: focused; revision 19"
+      id: demo-form-submit-proof-id-collect-form
+      text: "Submit proof: invalid; attempt 9"
     timeout: 5000
 - runFlow:
     when:

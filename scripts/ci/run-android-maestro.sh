@@ -43,14 +43,6 @@ source "$script_dir/stop-process.sh"
 maestro_version="$("$script_dir/check-maestro-version.sh")"
 readonly maestro_version
 
-if [ -n "${XDG_STATE_HOME:-}" ]; then
-  maestro_tests_root="$XDG_STATE_HOME/maestro/tests"
-else
-  maestro_tests_root="$HOME/.maestro/tests"
-fi
-readonly maestro_tests_root
-"$script_dir/prune-maestro-tests.sh" "$maestro_tests_root" 12 apply
-
 readonly adb_serial="emulator-5580"
 readonly avd_name="expo-turbo-api35"
 readonly rails_origin="http://127.0.0.1:3001"
@@ -458,6 +450,7 @@ start_and_prepare_emulator() {
   if ! maestro --device "$adb_serial" test \
     --test-output-dir "$bootstrap_output" \
     --debug-output "$bootstrap_debug" \
+    --flatten-debug-output \
     scripts/ci/bootstrap-android-browser.yaml; then
     echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
     adb reconnect offline >/dev/null 2>&1 || true
@@ -465,6 +458,7 @@ start_and_prepare_emulator() {
     maestro --device "$adb_serial" test \
       --test-output-dir "$bootstrap_retry_output" \
       --debug-output "$bootstrap_retry_debug" \
+      --flatten-debug-output \
       scripts/ci/bootstrap-android-browser.yaml
   fi
 
@@ -493,6 +487,7 @@ run_maestro_suite() {
     --output "$junit" \
     --test-output-dir "$test_output" \
     --debug-output "$debug_output" \
+    --flatten-debug-output \
     "$maestro_flow_path" 2>&1 | tee "$run_log"
   status="${PIPESTATUS[0]}"
   set -e

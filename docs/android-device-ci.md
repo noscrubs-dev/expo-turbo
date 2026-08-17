@@ -34,20 +34,19 @@ resource-sampling evidence for 14 days. Each Chrome bootstrap, bootstrap retry,
 and full-suite attempt writes to a different directory under
 `artifacts/android-device`. Maestro's test output contains screenshots,
 hierarchy snapshots, and command records. Its debug output and the explicit
-attempt log contain Maestro logs. The same uploaded tree contains Rails,
-emulator, resource, environment, reverse-tunnel, and Android logcat device
-logs. The workflow uses `if: always()`, so this evidence is uploaded after a
-test failure too.
+attempt log contain Maestro logs. Maestro 2.7.0 uses
+`--flatten-debug-output`, so each unique debug directory contains its
+`maestro.log` directly. The upload action keeps hidden-file upload disabled;
+no Maestro log depends on the hidden `.maestro/tests` nesting. The same uploaded
+tree contains Rails, emulator, resource, environment, reverse-tunnel, and
+Android logcat device logs. The workflow uses `if: always()`, so this evidence
+is uploaded after a test failure too.
 
-The lane also retains the 12 newest local Maestro test directories. At lane
-entry, after the exact Maestro version check and before install or build work,
-`scripts/ci/prune-maestro-tests.sh` resolves the same state root as Maestro:
-`$XDG_STATE_HOME/maestro/tests` when `XDG_STATE_HOME` is set, or
-`$HOME/.maestro/tests` otherwise. It sorts exact `yyyy-MM-dd_HHmmss` directory
-names and removes only older matching real directories. Files, other directory
-names, and symlinks are outside the deletion boundary. Entry cleanup is used
-because a failed or interrupted Maestro command does not reach Maestro 2.7.0's
-normal age cleanup.
+The lane supplies `--test-output-dir` and `--debug-output` for every Maestro
+command. It does not write Maestro's default global `~/.maestro/tests` tree,
+so it does not prune that tree at lane entry. The guarded
+`scripts/ci/prune-maestro-tests.sh` tool and its tests remain available for
+legacy residue or for another command that uses the default tree.
 
 The lane builds only the emulator's x86_64 release APK before starting the
 emulator. This sequencing is intentional: an initial four-ABI build overlapping
@@ -97,6 +96,8 @@ The first bootstrap, its one transport retry, suite attempt 1, the second clean
 bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
 `--test-output-dir` and `--debug-output` paths. A retry cannot overwrite the
 screenshots, hierarchy, commands, or logs from the event that caused it.
+`--flatten-debug-output` puts each `maestro.log` directly in its already
+unique debug directory.
 
 ## Failure and staleness alert
 
@@ -243,28 +244,28 @@ Maestro output contains an explicit offline or missing ADB device and the
 remaining flows collapse into zero-second failures. Assertion failures and app
 crashes are product failures and are never hidden by an automatic retry.
 
-To inspect Maestro cleanup without changing the runner, run:
+To inspect legacy or default-tree Maestro cleanup without changing files, run:
 
 ```sh
 scripts/ci/prune-maestro-tests.sh "$HOME/.maestro/tests" 12 dry-run
 ```
 
-The pruner fails closed unless the root is absolute, is named `tests`, has a
-parent named `maestro` or `.maestro`, is not a symlink, and the keep count and
-mode are valid. A missing safe root succeeds. After retention, a root above
-512 MB produces a warning but does not cause broader deletion.
+The Android lane does not call this pruner. The pruner fails closed unless the
+root is absolute, is named `tests`, has a parent named `maestro` or `.maestro`,
+is not a symlink, and the keep count and mode are valid. A missing safe root
+succeeds. After retention, a root above 512 MB produces a warning but does not
+cause broader deletion.
 
 ## Changelog
 
 **2026-08-18**:
 
-- Changed: The Android lane now keeps the 12 newest local Maestro test runs at
-  lane entry, with strict path, name, and symlink guards.
-- Why: Maestro cleans old data after a clean command exit, but interrupted or
-  failed commands can leave timestamp directories that grow without a bound.
-- Impact: Old matching run directories are removed before new output is made.
-  Unrelated files and directories remain untouched. Storage above 512 MB is
-  reported without broader deletion.
+- Changed: The guarded retention tool remains for legacy or default-tree
+  residue, but the Android lane no longer calls it.
+- Why: Every lane command supplies explicit test and debug output directories,
+  so the lane does not create the default global tree.
+- Impact: The lane does not delete unrelated global state. The strict retention
+  safeguards and their tests remain available where default output is used.
 - Changed: A separate GitHub-hosted workflow now manages one GitHub issue for
   Android failure, timeout-shaped cancellation, and scheduled staleness.
 - Why: The nonrequired self-hosted lane can remain red without blocking a merge

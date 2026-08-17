@@ -45,6 +45,9 @@ function assertNativeFormContract({
     fixture.indexOf("  form:"),
     fixture.indexOf('  "document-links-primary"'),
   )
+  if (!/DemoFormInput id="first-name"[^>]*\brequired=""/.test(formFixture)) {
+    throw new Error("the device native-form first name must remain required")
+  }
   if (/DemoFormInput id="first-name"[^>]*autofocus/.test(formFixture)) {
     throw new Error("the device native-form fixture must not autofocus first name")
   }
@@ -65,7 +68,7 @@ function assertNativeFormContract({
   if (occurrences(section, "# Invalid submission focus cycle ") !== 9) {
     throw new Error("the flow must contain nine explicit focus cycles")
   }
-  if (occurrences(section, "id: demo-form-focus-probe-id-first-name") !== 19) {
+  if (occurrences(section, "id: demo-form-focus-probe-id-first-name") !== 28) {
     throw new Error("the shared React Native event probe must guard all focus transitions")
   }
   assertBoundedCommands(section)
@@ -77,15 +80,43 @@ function assertNativeFormContract({
     const end = attempt === 9 ? section.length : section.indexOf(nextMarker, start)
     if (start < 0 || end < 0) throw new Error(`focus cycle ${attempt} is missing`)
     const cycle = section.slice(start, end)
+    const commands = cycle.split(/(?=^- )/m)
+    const neutralTap = commands.filter(
+      (command) =>
+        command.startsWith("- tapOn:") &&
+        command.includes("\n    text: Live native form controls\n"),
+    )
+    const submitTapCommands = commands.filter(
+      (command) =>
+        command.startsWith("- tapOn:") &&
+        command.includes("\n    id: demo-form-submitter-id-collect-form\n"),
+    )
+    const submitTapIndex = commands.indexOf(submitTapCommands[0] ?? "")
+    if (neutralTap.length !== 1) {
+      throw new Error(`focus cycle ${attempt} must use one actual neutral-region tapOn`)
+    }
+    if (submitTapCommands.length !== 1 || submitTapIndex < 0) {
+      throw new Error(`focus cycle ${attempt} must use one actual submitter tapOn`)
+    }
+    const preSubmitCommand = commands[submitTapIndex - 1] ?? ""
+    if (
+      !preSubmitCommand.startsWith("- extendedWaitUntil:") ||
+      !preSubmitCommand.includes("id: demo-form-focus-probe-id-first-name") ||
+      !preSubmitCommand.includes(`text: "Focus probe: blurred; revision ${attempt * 2}"`)
+    ) {
+      throw new Error(
+        `focus cycle ${attempt} must reassert its paired blur immediately before submit`,
+      )
+    }
     const ordered = [
-      "text: Live native form controls",
+      "- tapOn:\n    text: Live native form controls",
       `text: "Focus probe: blurred; revision ${attempt * 2}"`,
       "focused: false",
       "visible: Form ready",
       "assertNotVisible: Confirm form submission",
-      "id: demo-form-submitter-id-collect-form",
-      `text: "Submit proof: invalid; attempt ${attempt}"`,
+      "- tapOn:\n    id: demo-form-submitter-id-collect-form",
       `text: "Focus probe: focused; revision ${attempt * 2 + 1}"`,
+      `text: "Submit proof: invalid; attempt ${attempt}"`,
       "focused: true",
       "assertVisible: First name is required",
     ]
@@ -108,7 +139,7 @@ function assertNativeFormContract({
 
   const sharedWait =
     "- extendedWaitUntil:\n    visible:\n      id: demo-form-focus-probe-id-first-name"
-  if (occurrences(section, sharedWait) !== 19 || section.includes("platform: iOS")) {
+  if (occurrences(section, sharedWait) !== 28 || section.includes("platform: iOS")) {
     throw new Error("the React Native focus event oracle must remain shared with iOS")
   }
   if (occurrences(section, "focused: false") !== 9 || occurrences(section, "focused: true") !== 9) {
@@ -151,9 +182,9 @@ describe("native form focus device contract", () => {
     expect(() =>
       assertNativeFormContract({
         ...sources,
-        flow: flow.replace('text: "Focus probe: blurred; revision 2"', "text: blur removed"),
+        flow: flow.replaceAll('text: "Focus probe: blurred; revision 2"', "text: blur removed"),
       }),
-    ).toThrow(/missing text: "Focus probe: blurred/)
+    ).toThrow(/reassert its paired blur/)
     expect(() =>
       assertNativeFormContract({
         ...sources,
@@ -187,5 +218,32 @@ describe("native form focus device contract", () => {
         ),
       }),
     ).toThrow(/shared with iOS/)
+    expect(() =>
+      assertNativeFormContract({
+        ...sources,
+        flow: flow.replace(
+          /- tapOn:\n {4}text: Live native form controls\n {4}waitToSettleTimeoutMs: 100\n/g,
+          "",
+        ),
+      }),
+    ).toThrow(/actual neutral-region tapOn/)
+    expect(() =>
+      assertNativeFormContract({
+        ...sources,
+        flow: flow.replace(
+          /- tapOn:\n {4}id: demo-form-submitter-id-collect-form\n {4}waitToSettleTimeoutMs: 100\n/g,
+          "",
+        ),
+      }),
+    ).toThrow(/actual submitter tapOn/)
+    expect(() =>
+      assertNativeFormContract({
+        ...sources,
+        fixture: fixture.replace(
+          ' id="first-name" dir="auto" dirname="profile[first_name].dir" label="First name" name="profile[first_name]" required=""',
+          ' id="first-name" dir="auto" dirname="profile[first_name].dir" label="First name" name="profile[first_name]"',
+        ),
+      }),
+    ).toThrow(/must remain required/)
   })
 })

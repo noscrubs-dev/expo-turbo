@@ -46,5 +46,8 @@ jobs:
         with:
           name: android-device-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/android-device
+          # Maestro output must stay outside hidden paths. Keep this false so
+          # the evidence upload cannot begin to include unrelated hidden data.
+          include-hidden-files: false
           if-no-files-found: warn
           retention-days: 14

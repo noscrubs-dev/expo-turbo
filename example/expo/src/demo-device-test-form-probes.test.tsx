@@ -181,4 +181,44 @@ describe("device form probes", () => {
     ]);
     act(() => rendered.unmount());
   });
+
+  test("records the status from a resolved non-invalid submission report", async () => {
+    const report = {
+      destination: { kind: "document" as const },
+      effectiveMethod: "POST" as const,
+      requestId: "request-canceled",
+      requestedUrl: "https://example.test/demo/profile",
+      sourceMethod: "POST" as const,
+      status: "canceled" as const,
+      transportMethod: "POST" as const,
+    } satisfies ActiveFormSubmissionReport;
+    function SubmitHarness() {
+      const proof = useDemoDeviceTestSubmitProof(true, "submit-proof");
+      return createElement(
+        "submit-harness",
+        null,
+        createElement("submit-button", {
+          onPress: (): Promise<ActiveFormSubmissionReport> => proof.observe(Promise.resolve(report)),
+        }),
+        proof.probe,
+      );
+    }
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(createElement(SubmitHarness));
+    });
+    if (!renderer) throw new Error("submit harness did not render");
+    const rendered = renderer;
+
+    await act(async () => {
+      await rendered.root.find((node) => String(node.type) === "submit-button").props.onPress();
+    });
+    expect(rendered.root.findByProps({ testID: "submit-proof" }).props.children).toEqual([
+      "Submit proof: ",
+      "canceled",
+      "; attempt ",
+      1,
+    ]);
+    act(() => rendered.unmount());
+  });
 });
