@@ -6,6 +6,10 @@ module ExpoTurbo
       module_function
 
       def validate!(value, field_path, error_class: ConfigurationError)
+        unless value.is_a?(String)
+          raise error_class,
+            "Expo Turbo registry identifier #{field_path} must be a String, got #{value.class}"
+        end
         unless value.valid_encoding?
           raise error_class, "Expo Turbo registry identifier #{field_path} is not valid UTF-8"
         end

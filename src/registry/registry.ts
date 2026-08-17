@@ -303,9 +303,9 @@ export interface DefinedComponent<Tag extends string, Schema extends z.ZodObject
   readonly component: ComponentRenderer<z.output<Schema>>
 }
 
-function validateTag(tag: string): void {
-  if (!tag.trim()) throw new RegistryError("Component tags must not be blank")
+function validateTag(tag: unknown): asserts tag is string {
   validateRegistryIdentifier(tag, "component.tag")
+  if (!tag.trim()) throw new RegistryError("Component tags must not be blank")
   if (RESERVED_TAGS.has(tag)) {
     throw new RegistryError(`Component tag ${JSON.stringify(tag)} is reserved`, { target: tag })
   }
@@ -374,6 +374,12 @@ function deriveComponentSchemaAndBindings(
       validateRegistryIdentifier(name, "component.attributes[].name")
       validateRegistryIdentifier(binding.prop, "component.attributes[].prop")
       validateRegistryIdentifier(binding.codec.name, "component.attributes[].codec")
+      if (binding.deprecated !== undefined) {
+        validateRegistryIdentifier(binding.deprecated, "component.attributes[].deprecated")
+        if (!binding.deprecated.trim()) {
+          throw new RegistryError("Attribute deprecation messages must not be blank")
+        }
+      }
       if (!binding.codec.name.trim()) {
         throw new RegistryError(`Attribute ${JSON.stringify(name)} requires a named codec`, {
           target: config.tag,
@@ -736,15 +742,21 @@ export function createCapabilityManifest(
   const componentCapabilities = definitions
     .map((definition): ComponentCapability => {
       const attributes = Object.entries(definition.attributeBindings)
-        .map(([name, binding]) =>
-          Object.freeze({
+        .map(([name, binding]) => {
+          if (binding.deprecated !== undefined) {
+            validateRegistryIdentifier(binding.deprecated, "component.attributes[].deprecated")
+            if (!binding.deprecated.trim()) {
+              throw new RegistryError("Attribute deprecation messages must not be blank")
+            }
+          }
+          return Object.freeze({
             codec: binding.codec.name,
-            ...(binding.deprecated ? { deprecated: binding.deprecated } : {}),
+            ...(binding.deprecated !== undefined ? { deprecated: binding.deprecated } : {}),
             name,
             prop: binding.prop,
             required: binding.required === true,
-          }),
-        )
+          })
+        })
         .sort((left, right) => compareCodeUnits(left.name, right.name))
       return Object.freeze({
         aliases: Object.freeze([...definition.aliases].sort(compareCodeUnits)),

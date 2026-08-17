@@ -82,4 +82,22 @@ describe("registry identifier scalar grammar", () => {
       expect(error).toMatchObject({ code: "registry" })
     }
   })
+
+  test("rejects non-string values before UTF-16 inspection", () => {
+    for (const [value, type] of [
+      [1, "number"],
+      [Symbol("tag"), "symbol"],
+      [null, "null"],
+    ] as const) {
+      expect(() => validateRegistryIdentifier(value, "component.tag")).toThrow(
+        `Expo Turbo registry identifier component.tag must be a string, got ${type}`,
+      )
+      try {
+        validateRegistryIdentifier(value, "component.tag")
+      } catch (error) {
+        expect(error).toBeInstanceOf(RegistryError)
+        expect(error).toMatchObject({ code: "registry" })
+      }
+    }
+  })
 })

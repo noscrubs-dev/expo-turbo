@@ -538,6 +538,20 @@ describe("typed component registry", () => {
             tag: "Tag",
           }),
       ],
+      [
+        "component.attributes[].name",
+        4,
+        () =>
+          defineComponent({
+            attributes: {
+              [`name${invalid}`]: { codec: stringCodec, prop: "name" },
+            },
+            children: none,
+            component: () => null,
+            schema: z.object({ name: z.string() }),
+            tag: "Tag",
+          }),
+      ],
       ["attribute.prop", 4, () => attr(stringCodec).prop(`prop${invalid}`)],
       [
         "component.attributes[].prop",
@@ -570,6 +584,25 @@ describe("typed component registry", () => {
             tag: "Tag",
           }),
       ],
+      [
+        "component.attributes[].codec",
+        5,
+        () =>
+          defineComponent({
+            attributes: {
+              title: attr(
+                {
+                  decode: (value: string) => value,
+                  name: `codec${invalid}`,
+                },
+                z.string(),
+              ),
+            },
+            children: none,
+            component: () => null,
+            tag: "Tag",
+          }),
+      ],
     ]
 
     for (const [path, index, operation] of cases) {
@@ -583,6 +616,189 @@ describe("typed component registry", () => {
         expect(error).toMatchObject({ code: "registry" })
       }
     }
+  })
+
+  test("rejects non-string identity values in explicit and derived attributes", () => {
+    const cases: readonly [string, string, () => unknown][] = [
+      [
+        "component.tag",
+        "number",
+        () =>
+          defineComponent({
+            attributes: {},
+            children: none,
+            component: () => null,
+            schema: z.object({}),
+            tag: 1 as never,
+          }),
+      ],
+      [
+        "component.aliases[]",
+        "null",
+        () =>
+          defineComponent({
+            aliases: [null as never],
+            attributes: {},
+            children: none,
+            component: () => null,
+            schema: z.object({}),
+            tag: "Tag",
+          }),
+      ],
+      ["attribute.prop", "number", () => attr(stringCodec).prop(1 as never)],
+      [
+        "component.attributes[].prop",
+        "number",
+        () =>
+          defineComponent({
+            attributes: { title: { codec: stringCodec, prop: 1 as never } },
+            children: none,
+            component: () => null,
+            schema: z.object({ title: z.string() }),
+            tag: "Tag",
+          }),
+      ],
+      [
+        "component.attributes[].codec",
+        "number",
+        () =>
+          defineComponent({
+            attributes: {
+              title: { codec: { ...stringCodec, name: 1 as never }, prop: "title" },
+            },
+            children: none,
+            component: () => null,
+            schema: z.object({ title: z.string() }),
+            tag: "Tag",
+          }),
+      ],
+      [
+        "component.attributes[].codec",
+        "number",
+        () =>
+          defineComponent({
+            attributes: {
+              title: attr({ ...stringCodec, name: 1 as never }, z.string()),
+            },
+            children: none,
+            component: () => null,
+            tag: "Tag",
+          }),
+      ],
+    ]
+
+    for (const [path, type, operation] of cases) {
+      expect(operation).toThrow(
+        `Expo Turbo registry identifier ${path} must be a string, got ${type}`,
+      )
+      try {
+        operation()
+      } catch (error) {
+        expect(error).toBeInstanceOf(RegistryError)
+        expect(error).toMatchObject({ code: "registry" })
+      }
+    }
+  })
+
+  test("validates canonical deprecation messages without rejecting prose", () => {
+    const validMessage = "Use title instead: café 😀"
+    const explicit = defineComponent({
+      attributes: {
+        heading: { codec: stringCodec, deprecated: validMessage, prop: "title" },
+      },
+      children: none,
+      component: () => null,
+      schema: z.object({ title: z.string() }),
+      tag: "ExplicitMessage",
+    })
+    const derived = defineComponent({
+      attributes: {
+        heading: attr(stringCodec).prop("title").deprecated(validMessage),
+      },
+      children: none,
+      component: () => null,
+      tag: "DerivedMessage",
+    })
+    const module = defineComponentModule({
+      components: [explicit, derived],
+      name: "messages",
+    })
+    const json = capabilityManifestJSON(module)
+    const changed = defineComponentModule({
+      components: [
+        defineComponent({
+          attributes: {
+            heading: { codec: stringCodec, deprecated: "Use another title", prop: "title" },
+          },
+          children: none,
+          component: () => null,
+          schema: z.object({ title: z.string() }),
+          tag: "ExplicitMessage",
+        }),
+        derived,
+      ],
+      name: "messages",
+    })
+
+    expect(JSON.parse(json)).toEqual(createCapabilityManifest(module))
+    expect(json).toContain(JSON.stringify(validMessage).slice(1, -1))
+    expect(createCapabilityManifest(changed).hash).not.toBe(createCapabilityManifest(module).hash)
+
+    for (const [message, kind, codePoint] of [
+      [`Use title ${"\uD800"}`, "lone surrogate", "D800"],
+      [`Use title ${"\uFDD0"}`, "Unicode noncharacter", "FDD0"],
+    ] as const) {
+      expect(() => attr(stringCodec).deprecated(message)).toThrow(
+        `Expo Turbo registry identifier attribute.deprecated contains ${kind} U+${codePoint} at scalar index 10`,
+      )
+      expect(() =>
+        defineComponent({
+          attributes: {
+            heading: { codec: stringCodec, deprecated: message, prop: "title" },
+          },
+          children: none,
+          component: () => null,
+          schema: z.object({ title: z.string() }),
+          tag: "InvalidMessage",
+        }),
+      ).toThrow(
+        `Expo Turbo registry identifier component.attributes[].deprecated contains ${kind} U+${codePoint} at scalar index 10`,
+      )
+    }
+
+    expect(() => attr(stringCodec).deprecated("normal prose with spaces")).not.toThrow()
+    expect(() => attr(stringCodec).deprecated("   ")).toThrow(
+      "Attribute deprecation messages must not be blank",
+    )
+    expect(() =>
+      defineComponent({
+        attributes: {
+          heading: { codec: stringCodec, deprecated: "   ", prop: "title" },
+        },
+        children: none,
+        component: () => null,
+        schema: z.object({ title: z.string() }),
+        tag: "BlankMessage",
+      }),
+    ).toThrow("Attribute deprecation messages must not be blank")
+
+    const validDefinition = module.components[0]
+    const validBinding = validDefinition?.attributeBindings.heading
+    if (!validDefinition || !validBinding) throw new Error("missing valid test definition")
+    const invalidManifestModule = {
+      components: [
+        {
+          ...validDefinition,
+          attributeBindings: {
+            heading: { ...validBinding, deprecated: `Use title ${"\uFDD0"}` },
+          },
+        },
+      ],
+      name: "invalid-message",
+    }
+    expect(() => createCapabilityManifest(invalidManifestModule)).toThrow(
+      "Expo Turbo registry identifier component.attributes[].deprecated contains Unicode noncharacter U+FDD0 at scalar index 10",
+    )
   })
 
   test("derives component props from attribute definitions", () => {

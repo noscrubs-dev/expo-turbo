@@ -59,6 +59,7 @@ function createAttributeDefinition<
       )
     },
     deprecated(message: string) {
+      validateRegistryIdentifier(message, "attribute.deprecated")
       if (!message.trim())
         throw new RegistryError("Attribute deprecation messages must not be blank")
       return createAttributeDefinition(codec, decode, schema, propName, message)
@@ -74,8 +75,8 @@ function createAttributeDefinition<
       )
     },
     prop<const NextProp extends string>(name: NextProp) {
-      if (!name.trim()) throw new RegistryError("Attribute prop names must not be blank")
       validateRegistryIdentifier(name, "attribute.prop")
+      if (!name.trim()) throw new RegistryError("Attribute prop names must not be blank")
       return createAttributeDefinition(codec, decode, schema, name, deprecatedMessage)
     },
     propName,

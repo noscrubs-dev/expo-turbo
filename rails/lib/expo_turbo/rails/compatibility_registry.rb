@@ -49,7 +49,7 @@ module ExpoTurbo
           [entry.fetch("digest"), components]
         end
         new(lock:, vocabularies:)
-      rescue SystemCallError, JSON::ParserError, KeyError, TypeError
+      rescue SystemCallError, JSON::ParserError, KeyError, NoMethodError, TypeError
         raise ConfigurationError, "Expo Turbo compatibility lock could not be loaded"
       end
 
@@ -64,8 +64,9 @@ module ExpoTurbo
           end
           component.fetch("attributes").each_with_index do |attribute, attribute_index|
             prefix = "components[#{component_index}].attributes[#{attribute_index}]"
-            %w[name prop codec].each do |field|
-              RegistryIdentifier.validate!(attribute.fetch(field), "#{prefix}.#{field}")
+            RegistryIdentifier.validate!(attribute.fetch("name"), "#{prefix}.name")
+            %w[prop codec].each do |field|
+              RegistryIdentifier.validate!(attribute[field], "#{prefix}.#{field}") if attribute.key?(field)
             end
           end
         end

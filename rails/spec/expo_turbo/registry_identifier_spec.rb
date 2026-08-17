@@ -49,4 +49,14 @@ RSpec.describe ExpoTurbo::Rails::RegistryIdentifier do
       )
     end
   end
+
+  it "rejects non-string values before encoding inspection" do
+    {1 => "Integer", :tag => "Symbol", nil => "NilClass"}.each do |value, type|
+      expect { described_class.validate!(value, "component.tag") }.to raise_error(
+        ExpoTurbo::Rails::ConfigurationError,
+        "Expo Turbo registry identifier component.tag must be a String, got #{type}"
+      )
+      expect(described_class.valid?(value)).to be(false)
+    end
+  end
 end

@@ -44,7 +44,16 @@ function formatCodePoint(codePoint: number): string {
   return codePoint.toString(16).toUpperCase().padStart(4, "0")
 }
 
-export function validateRegistryIdentifier(value: string, fieldPath: string): void {
+export function validateRegistryIdentifier(
+  value: unknown,
+  fieldPath: string,
+): asserts value is string {
+  if (typeof value !== "string") {
+    const type = value === null ? "null" : typeof value
+    throw new RegistryError(
+      `Expo Turbo registry identifier ${fieldPath} must be a string, got ${type}`,
+    )
+  }
   const issue = registryIdentifierIssue(value)
   if (!issue) return
   throw new RegistryError(
