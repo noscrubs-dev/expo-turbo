@@ -209,6 +209,15 @@ describe("Android lane cleanup", () => {
     )
     expect(oldHeadLoop).not.toBe(samplerLoop)
     expect(() => assertSamplerLoopUsesHelper(oldHeadLoop)).toThrow("sample_top_processes")
+
+    const directPsLoop = samplerLoop.replace(
+      "    sample_top_processes",
+      "    sample_top_processes\n    ps -eo pid,ppid,rss,%cpu,comm,args --sort=-rss | head -20",
+    )
+    expect(directPsLoop).not.toBe(samplerLoop)
+    expect(() => assertSamplerLoopUsesHelper(directPsLoop)).toThrow(
+      "resource sampler loop must not use a direct ps to head pipeline",
+    )
   })
 
   test("proves the old head consumer exits from SIGPIPE on a large ps report", async () => {
