@@ -5,7 +5,7 @@ set -euo pipefail
 export LC_ALL=C
 
 usage() {
-  echo "Usage: $0 <tests_root> <keep_count> <apply|dry-run>" >&2
+  echo "Usage: $0 <tests_root> <keep_count 1..9999999> <apply|dry-run>" >&2
 }
 
 if [ "$#" -ne 3 ]; then
@@ -17,8 +17,9 @@ readonly tests_root="$1"
 readonly keep_count="$2"
 readonly mode="$3"
 
-if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then
-  echo "Refusing to prune: keep_count must be a positive integer." >&2
+# Keep this small enough for Bash arithmetic on every supported runner.
+if [[ ! "$keep_count" =~ ^[1-9][0-9]{0,6}$ ]]; then
+  echo "Refusing to prune: keep_count must be a positive integer no greater than 9999999." >&2
   exit 2
 fi
 

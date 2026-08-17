@@ -252,7 +252,8 @@ scripts/ci/prune-maestro-tests.sh "$HOME/.maestro/tests" 12 dry-run
 
 The Android lane does not call this pruner. The pruner fails closed unless the
 root is absolute, is named `tests`, has a parent named `maestro` or `.maestro`,
-is not a symlink, and the keep count and mode are valid. A missing safe root
+is not a symlink, and the keep count is a canonical decimal from 1 through
+9,999,999. The mode must also be valid. A missing safe root
 succeeds. After retention, a root above 512 MB produces a warning but does not
 cause broader deletion.
 

@@ -254,6 +254,27 @@ describe.serial("Android workflow classification", () => {
     }
   })
 
+  test("fails safe when an otherwise valid stale check receives a malformed main SHA", async () => {
+    const old = run({ updated_at: "2026-08-01T00:00:00Z" })
+    const routes = {
+      [`GET /repos/owner/repo/actions/workflows/${ANDROID_WORKFLOW}/runs?branch=main&per_page=20`]:
+        {
+          workflow_runs: [old],
+        },
+      "GET /repos/owner/repo/commits/main": { sha: "not-40-hex" },
+    }
+
+    await expect(
+      determineDecision(
+        new GitHubApi("test", routeFetch(routes), false),
+        "owner/repo",
+        "schedule",
+        {},
+        new Date(Date.parse(old.updated_at) + COMPLETED_STALE_HOURS * 60 * 60 * 1000 + 1),
+      ),
+    ).rejects.toThrow("main commit sha is invalid")
+  })
+
   test("selects the newest scheduled run even when the API order is old first", async () => {
     const olderFailure = run({
       id: 40,
@@ -559,6 +580,103 @@ describe.serial("alert issue body and filtering", () => {
     }
   })
 
+  test("rejects valid state JSON that uses a non-base64url charset", () => {
+    const state = { version: 1, redCount: 1, history: [], x: ">" }
+    const encoded = Buffer.from(JSON.stringify(state)).toString("base64url").replace("-", "+")
+    const prior = `${ALERT_MARKER}\n${STATE_PREFIX}${encoded} -->`
+    const body = buildIssueBody(
+      prior,
+      decision("red"),
+      "https://github.com",
+      "owner/repo",
+      new Date("2026-08-01T00:00:00Z"),
+    )
+
+    expect(body).toContain("Prior alert state was corrupt")
+    expect(body).toContain("Red observations: **1**")
+  })
+
+  test("the base64url charset guard is load-bearing", async () => {
+    const state = { version: 1, redCount: 1, history: [], x: ">" }
+    const encoded = Buffer.from(JSON.stringify(state)).toString("base64url").replace("-", "+")
+    const source = await readFile(join(directory, "android-device-alert.ts"), "utf8")
+    const mutation = source.replace(
+      '    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("bad state encoding")\n',
+      "",
+    )
+    expect(mutation).not.toBe(source)
+    const mutatedModule = await import(`file://${await writeAlertMutation(mutation)}?charset-guard`)
+    const originalFrom = Buffer.from
+    Buffer.from = ((value: string, encoding: string) => {
+      if (value === encoded && encoding === "base64url") {
+        const decoded = originalFrom(encoded.replace("+", "-"), "base64url")
+        return {
+          toString: (targetEncoding: string) =>
+            targetEncoding === "base64url"
+              ? encoded
+              : decoded.toString(targetEncoding as BufferEncoding),
+        } as unknown as Buffer
+      }
+      return originalFrom(value, encoding as BufferEncoding)
+    }) as typeof Buffer.from
+    let body: string
+    try {
+      body = mutatedModule.buildIssueBody(
+        `${ALERT_MARKER}\n${STATE_PREFIX}${encoded} -->`,
+        decision("red"),
+        "https://github.com",
+        "owner/repo",
+        new Date("2026-08-01T00:00:00Z"),
+      )
+    } finally {
+      Buffer.from = originalFrom
+    }
+
+    expect(body).not.toContain("Prior alert state was corrupt")
+    expect(body).toContain("Red observations: **2**")
+  })
+
+  test("rejects padded standard-base64 state that otherwise has redCount 999", () => {
+    const state = { version: 1, redCount: 999, history: [] }
+    const encoded = Buffer.from(JSON.stringify(state)).toString("base64")
+    const body = buildIssueBody(
+      `${ALERT_MARKER}\n${STATE_PREFIX}${encoded} -->`,
+      decision("red"),
+      "https://github.com",
+      "owner/repo",
+      new Date("2026-08-01T00:00:00Z"),
+    )
+
+    expect(body).toContain("Prior alert state was corrupt")
+    expect(body).toContain("Red observations: **1**")
+  })
+
+  test("the base64url canonicality guard is load-bearing", async () => {
+    const state = { version: 1, redCount: 999, history: [] }
+    const canonical = Buffer.from(JSON.stringify(state)).toString("base64url")
+    expect(canonical.endsWith("0")).toBe(true)
+    const encoded = `${canonical.slice(0, -1)}1`
+    const source = await readFile(join(directory, "android-device-alert.ts"), "utf8")
+    const mutation = source.replace(
+      '    if (decoded.toString("base64url") !== encoded) throw new Error("noncanonical state encoding")\n',
+      "",
+    )
+    expect(mutation).not.toBe(source)
+    const mutatedModule = await import(
+      `file://${await writeAlertMutation(mutation)}?canonicality-guard`
+    )
+    const body = mutatedModule.buildIssueBody(
+      `${ALERT_MARKER}\n${STATE_PREFIX}${encoded} -->`,
+      decision("red"),
+      "https://github.com",
+      "owner/repo",
+      new Date("2026-08-01T00:00:00Z"),
+    )
+
+    expect(body).not.toContain("Prior alert state was corrupt")
+    expect(body).toContain("Red observations: **1000**")
+  })
+
   test("rejects a stored reason above the 240-character bound", () => {
     const priorState = {
       version: 1,
@@ -685,6 +803,20 @@ describe.serial("stub API integration", () => {
       )
       expect(calls).toBe(0)
     }
+  })
+
+  test("rejects malformed GITHUB_REPOSITORY before any network request", async () => {
+    const eventPath = await eventFile({})
+    let calls = 0
+    const fetcher = (() => {
+      calls += 1
+      throw new Error("network must not run")
+    }) as unknown as typeof fetch
+
+    await expect(
+      runAlert({ ...config(eventPath, false), repository: "owner/repo/extra" }, fetcher),
+    ).rejects.toThrow("repository is invalid")
+    expect(calls).toBe(0)
   })
 
   test("does not repeat recovery after a close failure, then retries closes in final order", async () => {
@@ -961,6 +1093,14 @@ async function eventFile(value: unknown): Promise<string> {
   fixtures.push(fixture)
   const path = join(fixture, "event.json")
   await writeFile(path, JSON.stringify(value))
+  return path
+}
+
+async function writeAlertMutation(source: string): Promise<string> {
+  const fixture = await mkdtemp(join(tmpdir(), "android-alert-mutation-"))
+  fixtures.push(fixture)
+  const path = join(fixture, "android-device-alert.ts")
+  await writeFile(path, source)
   return path
 }
 

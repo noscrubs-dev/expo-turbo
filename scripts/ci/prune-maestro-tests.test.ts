@@ -81,14 +81,26 @@ describe.serial("Maestro test retention", () => {
     expect(await timestampEntries(root)).toEqual([])
   })
 
-  test("rejects noncanonical decimal keep counts without deletion", async () => {
-    for (const count of ["012", "00", "08", "09", "12abc", "1 ", "+12"]) {
+  test("rejects unsafe keep counts without deletion", async () => {
+    for (const count of [
+      "012",
+      "00",
+      "08",
+      "09",
+      "12abc",
+      "1 ",
+      "+12",
+      "10000000",
+      "18446744073709551615",
+    ]) {
       const root = await fixtureRoot()
       await addTimestamps(root, 13)
       const before = await timestampEntries(root)
       const result = await runPruner(pruneScript, root, count, "apply")
       expect(result.status).toBe(2)
-      expect(result.stderr).toBe("Refusing to prune: keep_count must be a positive integer.\n")
+      expect(result.stderr).toBe(
+        "Refusing to prune: keep_count must be a positive integer no greater than 9999999.\n",
+      )
       expect(await timestampEntries(root)).toEqual(before)
     }
   })
@@ -100,7 +112,9 @@ describe.serial("Maestro test retention", () => {
     const result = await runPruner(pruneScript, root, `10*HOME[$(touch ${sentinel})]`, "apply")
 
     expect(result.status).toBe(2)
-    expect(result.stderr).toBe("Refusing to prune: keep_count must be a positive integer.\n")
+    expect(result.stderr).toBe(
+      "Refusing to prune: keep_count must be a positive integer no greater than 9999999.\n",
+    )
     expect(await Bun.file(sentinel).exists()).toBe(false)
     expect(await timestampEntries(root)).toHaveLength(13)
   })
@@ -111,8 +125,8 @@ describe.serial("Maestro test retention", () => {
     const sentinel = join(dirname(dirname(root)), "mutated-arithmetic-side-effect")
     const source = await readFile(pruneScript, "utf8")
     const mutation = source.replace(
-      'if [[ ! "$keep_count" =~ ^[1-9][0-9]*$ ]]; then\n  echo "Refusing to prune: keep_count must be a positive integer." >&2\n  exit 2\nfi',
-      'case "$keep_count" in\n  [1-9]|[1-9][0-9]*) ;;\n  *)\n    echo "Refusing to prune: keep_count must be a positive integer." >&2\n    exit 2\n    ;;\nesac',
+      'if [[ ! "$keep_count" =~ ^[1-9][0-9]{0,6}$ ]]; then\n  echo "Refusing to prune: keep_count must be a positive integer no greater than 9999999." >&2\n  exit 2\nfi',
+      'case "$keep_count" in\n  [1-9]|[1-9][0-9]*) ;;\n  *)\n    echo "Refusing to prune: keep_count must be a positive integer no greater than 9999999." >&2\n    exit 2\n    ;;\nesac',
     )
     expect(mutation).not.toBe(source)
     const mutatedScript = await writeMutation(mutation)
@@ -120,6 +134,17 @@ describe.serial("Maestro test retention", () => {
     await runPruner(mutatedScript, root, `10*HOME[$(touch ${sentinel})]`, "apply")
 
     expect(await Bun.file(sentinel).exists()).toBe(true)
+  })
+
+  test("accepts the documented maximum without deletion", async () => {
+    const root = await fixtureRoot()
+    await addTimestamps(root, 13)
+
+    const result = await runPruner(pruneScript, root, "9999999", "apply")
+
+    expect(result).toMatchObject({ status: 0, timedOut: false })
+    expect(candidateLines(result.stdout)).toEqual([])
+    expect(await timestampEntries(root)).toEqual(timestampNames(13))
   })
 
   test("rejects a root file and a root symlink", async () => {
