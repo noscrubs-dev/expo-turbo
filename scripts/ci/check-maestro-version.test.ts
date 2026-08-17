@@ -41,6 +41,20 @@ describe.serial("Android Maestro CI", () => {
       expect(result.stdout.trim()).toBe("2.7.0")
     })
 
+    test("accepts a CR on the pinned first line", async () => {
+      const result = await runCheck(await fakeMaestro("printf '2.7.0\\r\\nupdate available\\n'"))
+
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toBe("2.7.0")
+    })
+
+    test("rejects a wrong first line even when a later line has the pin", async () => {
+      const result = await runCheck(await fakeMaestro("echo 2.6.0\necho 2.7.0"))
+
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("Actual:   2.6.0")
+    })
+
     test("rejects a runner with no maestro at all", async () => {
       const result = await runCheck(systemPath)
 
@@ -118,6 +132,27 @@ describe.serial("Android Maestro CI", () => {
       expect(() => assertLaneGuard(mutation)).toThrow("maestro --version or -v")
     })
 
+    test("does not let a comment backslash hide a package install above the guard", async () => {
+      const lane = await readLane()
+      const mutation = lane.replace(maestroGuard, `# note \\\nbun install\n${maestroGuard}`)
+
+      expect(() => assertLaneGuard(mutation)).toThrow("package install")
+    })
+
+    test("does not let a comment backslash hide a Maestro version read", async () => {
+      const lane = await readLane()
+      const mutation = lane.replace(maestroGuard, `# note \\\nmaestro --version\n${maestroGuard}`)
+
+      expect(() => assertLaneGuard(mutation)).toThrow("maestro --version or -v")
+    })
+
+    test("protects bunx expo prebuild", async () => {
+      const lane = await readLane()
+      const mutation = lane.replace(maestroGuard, `bunx expo prebuild\n${maestroGuard}`)
+
+      expect(() => assertLaneGuard(mutation)).toThrow("native build")
+    })
+
     test("rejects common protected command equivalents above the guard", async () => {
       const lane = await readLane()
       const equivalents = [
@@ -177,7 +212,7 @@ const protectedCommands: Array<{
   { name: "package build", pattern: /\bbun run build\b/g, mutation: "bun run build" },
   {
     name: "native build",
-    pattern: /\bbun\s+x\s+expo\s+prebuild\b|(?:^|[;&|()\s])(?:\.\/)?gradle(?:w)?(?=\s|$)/g,
+    pattern: /\b(?:bun\s+x|bunx)\s+expo\s+prebuild\b|(?:^|[;&|()\s])(?:\.\/)?gradle(?:w)?(?=\s|$)/g,
     mutation: "./gradlew app:assembleRelease",
   },
   {
@@ -240,12 +275,13 @@ function normalizeShell(source: string): string {
   let pending = ""
 
   for (const physicalLine of source.split("\n")) {
-    if (/\\$/.test(physicalLine)) {
-      pending += `${physicalLine.slice(0, -1)} `
+    const uncommented = stripShellComment(physicalLine)
+    if (/\\$/.test(uncommented)) {
+      pending += `${uncommented.slice(0, -1)} `
       continue
     }
 
-    const executable = stripShellComment(`${pending}${physicalLine}`).trimEnd()
+    const executable = `${pending}${uncommented}`.trimEnd()
     pending = ""
     if (executable.trim().length > 0) {
       logicalLines.push(executable)

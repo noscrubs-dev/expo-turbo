@@ -30,7 +30,11 @@ stop_process() {
   fi
 
   for _ in $(seq 1 "$kill_checks"); do
-    if ! kill -0 "$pid" 2>/dev/null; then
+    # kill -0 also succeeds for an exited child that Bash has not reaped yet.
+    # A zombie is safe to wait for; a running or uninterruptible child is not.
+    local process_state=""
+    process_state="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+    if ! kill -0 "$pid" 2>/dev/null || [[ "$process_state" == *Z* ]]; then
       wait "$pid" 2>/dev/null || true
       return
     fi

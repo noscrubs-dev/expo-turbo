@@ -297,8 +297,10 @@ cleanup() {
   # must not replace the suite result captured above.
   set +e
   {
+    commit=""
+    commit="$(git rev-parse HEAD)"
     echo "exit_status=$status"
-    echo "commit=$(git rev-parse HEAD)"
+    echo "commit=$commit"
     echo "runner=$(hostname)"
     echo "user=$(id)"
     echo "bun=$(bun --version)"

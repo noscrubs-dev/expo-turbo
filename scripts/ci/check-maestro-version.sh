@@ -63,12 +63,10 @@ if [ "$report_status" -ne 0 ]; then
   exit 1
 fi
 
-# 2.7.0 reports a bare "2.7.0". Only a line that is entirely a version counts,
-# so a trailing notice line does not read as a mismatch and a notice that
-# names some other version cannot be read as the installed one. Output in any
-# other shape fails closed and is reported verbatim below.
-resolved="$(printf '%s\n' "$reported" | tr -d '\r' |
-  grep -oE '^[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$' | head -1 || true)"
+# 2.7.0 reports a bare "2.7.0" on its first line. Ignore a trailing update
+# notice, but fail closed if the first line does not identify the installed
+# version. Remove CR so output from a CRLF wrapper has the same meaning.
+resolved="$(printf '%s\n' "$reported" | head -1 | tr -d '\r')"
 
 if [ "$resolved" != "$expected_version" ]; then
   {

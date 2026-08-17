@@ -8,36 +8,68 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const stopProcessScript = join(scriptDirectory, "stop-process.sh")
 const laneScript = join(scriptDirectory, "run-android-maestro.sh")
 const fixtures: string[] = []
-const survivingChildren: Array<ReturnType<typeof Bun.spawn>> = []
+const survivingPids: number[] = []
 
 afterEach(async () => {
-  await Promise.all(
-    survivingChildren.splice(0).map(async (child) => {
-      if (child.exitCode === null) child.kill(9)
-      await child.exited
-    }),
-  )
+  for (const pid of survivingPids.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL")
+    } catch {}
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        process.kill(pid, 0)
+        await Bun.sleep(10)
+      } catch {
+        break
+      }
+    }
+  }
   await Promise.all(fixtures.splice(0).map(cleanFixture))
 })
 
 describe("Android lane cleanup", () => {
-  test("uses a sleeping fixture that ignores TERM and always kills it in test cleanup", async () => {
+  test("the real stop helper kills and reaps a sleeping child that ignores TERM", async () => {
     const fixture = await createFixture()
+    const source = await readFile(stopProcessScript, "utf8")
     const started = performance.now()
-    const target = await startFixture(fixture)
-    target.kill("SIGTERM")
-    const exitedAfterTerm = await Promise.race([
-      target.exited.then(() => true),
-      Bun.sleep(100).then(() => false),
-    ])
+    const result = await runStopProcess(fixture, source)
 
     expect(performance.now() - started).toBeLessThan(2_000)
-    expect(exitedAfterTerm).toBe(false)
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("survivor=false")
+    expect(result.stdout).toContain("reaped=true")
+    expect(result.stderr).toContain("fixture did not stop after TERM; sending KILL.")
+  })
 
-    target.kill(9)
-    await target.exited
-    const targetIndex = survivingChildren.indexOf(target)
-    if (targetIndex >= 0) survivingChildren.splice(targetIndex, 1)
+  test("fails the real execution proof when SIGKILL is removed", async () => {
+    const fixture = await createFixture()
+    const source = await readFile(stopProcessScript, "utf8")
+    const mutation = source.replace(
+      '    kill -KILL "$pid" 2>/dev/null || true',
+      "    : SIGKILL removed",
+    )
+
+    expect(mutation).not.toBe(source)
+    const result = await runStopProcess(fixture, mutation)
+
+    expect(result.timedOut).toBe(false)
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain("survivor=true")
+  })
+
+  test("fails the bounded-wait proof when the final live guard becomes an unconditional wait", async () => {
+    const source = await readFile(stopProcessScript, "utf8")
+    const guardedWait = `  if kill -0 "$pid" 2>/dev/null; then
+    echo "$name still exists after KILL; cleanup will not wait for it." >&2
+    return
+  fi
+  wait "$pid" 2>/dev/null || true`
+    const mutation = source.replace(guardedWait, '  wait "$pid" 2>/dev/null || true')
+
+    expect(mutation).not.toBe(source)
+    expect(() => assertFinalWaitIsGuarded(source)).not.toThrow()
+    expect(() => assertFinalWaitIsGuarded(mutation)).toThrow("final wait")
   })
 
   test("stops Rails before it asks the emulator to stop", async () => {
@@ -82,10 +114,10 @@ describe("Android lane cleanup", () => {
     ).toThrow("bare wait")
   })
 
-  test("executes the real cleanup body, preserves status 37, and finishes evidence without free", async () => {
+  test("runs cleanup as the EXIT trap, preserves status 37, and finishes evidence without free", async () => {
     const fixture = await createFixture()
     const lane = await readFile(laneScript, "utf8")
-    const result = await runRealCleanup(fixture, extractFunction(lane, "cleanup"), 37)
+    const result = await runRealCleanup(fixture, extractFunction(lane, "cleanup"), "free-absent")
     const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
     const events = await readFile(join(fixture, "events.txt"), "utf8")
 
@@ -94,6 +126,36 @@ describe("Android lane cleanup", () => {
     expect(environment).toContain("memory=(free is not installed)")
     expect(environment).toContain("evidence_complete=true")
     expect(events.indexOf("stop:Rails")).toBeLessThan(events.indexOf("emulator:kill"))
+  })
+
+  test("keeps the EXIT status and completes evidence when an evidence tool fails", async () => {
+    const fixture = await createFixture()
+    const lane = await readFile(laneScript, "utf8")
+    const result = await runRealCleanup(fixture, extractFunction(lane, "cleanup"), "git-fails")
+    const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+
+    expect(result.status).toBe(37)
+    expect(environment).toContain("exit_status=37")
+    expect(environment).toContain("commit=")
+    expect(environment).toContain("evidence_complete=true")
+  })
+
+  test("fails if the cleanup evidence strict-mode guard is deleted", async () => {
+    const fixture = await createFixture()
+    const lane = await readFile(laneScript, "utf8")
+    const cleanup = extractFunction(lane, "cleanup")
+    const mutation = cleanup
+      .replace("  set +e", "  : set +e removed")
+      .replace("  set -e", "  : set -e removed")
+
+    expect(mutation).not.toBe(cleanup)
+    const result = await runRealCleanup(fixture, mutation, "git-fails")
+    const environmentPath = join(fixture, "artifacts/environment.txt")
+    const environment = (await Bun.file(environmentPath).exists())
+      ? await readFile(environmentPath, "utf8")
+      : ""
+
+    expect(result.status !== 37 || !environment.includes("evidence_complete=true")).toBe(true)
   })
 
   test("keeps rails_pid attached to Rails by execing the background server", async () => {
@@ -115,36 +177,94 @@ async function createFixture(): Promise<string> {
   const child = join(directory, "ignore-term.sh")
   await writeFile(
     child,
-    '#!/usr/bin/env ruby\nSignal.trap("TERM", "IGNORE")\nFile.write(ARGV.fetch(0), Process.pid)\nloop { sleep 0.1 }\n',
+    '#!/usr/bin/env bash\ntrap "" TERM\nprintf "%s\\n" "$$" >"$1"\nwhile true; do sleep 0.1; done\n',
   )
   await chmod(child, 0o755)
   return directory
 }
 
-async function startFixture(fixture: string): Promise<ReturnType<typeof Bun.spawn>> {
-  const target = Bun.spawn(["ruby", join(fixture, "ignore-term.sh"), join(fixture, "ready")], {
-    stdout: "ignore",
-    stderr: "ignore",
+async function runStopProcess(
+  fixture: string,
+  source: string,
+): Promise<{ status: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const script = join(fixture, "stop-process-under-test.sh")
+  await writeFile(script, source)
+  const harness = `
+set -euo pipefail
+source "$STOP_PROCESS_UNDER_TEST"
+/bin/bash "$FIXTURE/ignore-term.sh" "$FIXTURE/ready" </dev/null >/dev/null 2>&1 &
+target_pid=$!
+printf '%s\\n' "$target_pid" >"$FIXTURE/target-pid"
+for _ in $(seq 1 100); do
+  [ -e "$FIXTURE/ready" ] && break
+  sleep 0.01
+done
+test -e "$FIXTURE/ready"
+stop_process "$target_pid" fixture 3 20 0.01
+if kill -0 "$target_pid" 2>/dev/null; then
+  echo survivor=true
+  exit 71
+fi
+echo survivor=false
+if jobs -p | grep -qx "$target_pid"; then
+  echo reaped=false
+  exit 72
+fi
+echo reaped=true
+`
+  const result = await runBoundedBash(harness, {
+    FIXTURE: fixture,
+    STOP_PROCESS_UNDER_TEST: script,
   })
-  survivingChildren.push(target)
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await Bun.file(join(fixture, "ready")).exists()) return target
-    await Bun.sleep(10)
+  if (await Bun.file(join(fixture, "target-pid")).exists()) {
+    const pid = Number((await readFile(join(fixture, "target-pid"), "utf8")).trim())
+    if (Number.isInteger(pid)) {
+      try {
+        process.kill(pid, 0)
+        survivingPids.push(pid)
+      } catch {}
+    }
   }
-  throw new Error(`TERM-ignoring fixture exited with ${await target.exited} before readiness`)
+  return result
+}
+
+async function runBoundedBash(
+  harness: string,
+  environment: Record<string, string>,
+  bound = 1_500,
+): Promise<{ status: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const outputDirectory = environment.FIXTURE
+  if (!outputDirectory) throw new Error("bounded Bash needs a fixture output directory")
+  const stdoutPath = join(outputDirectory, "bounded-bash.stdout")
+  const stderrPath = join(outputDirectory, "bounded-bash.stderr")
+  const child = Bun.spawn(["/bin/bash", "-c", harness], {
+    env: { ...process.env, ...environment },
+    stdout: Bun.file(stdoutPath),
+    stderr: Bun.file(stderrPath),
+  })
+  const timedOut = await Promise.race([
+    child.exited.then(() => false),
+    Bun.sleep(bound).then(() => true),
+  ])
+  if (timedOut && child.exitCode === null) child.kill(9)
+  const status = await child.exited
+  const [stdout, stderr] = await Promise.all([
+    readFile(stdoutPath, "utf8"),
+    readFile(stderrPath, "utf8"),
+  ])
+  return { status, stdout, stderr, timedOut }
 }
 
 async function runRealCleanup(
   fixture: string,
   cleanup: string,
-  suiteStatus: number,
+  evidenceMode: "free-absent" | "git-fails",
 ): Promise<{ status: number }> {
   await mkdir(join(fixture, "artifacts"), { recursive: true })
   await mkdir(join(fixture, "android/emulator"), { recursive: true })
   await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
   const harness = `
 set -euo pipefail
-source "$STOP_PROCESS_SCRIPT"
 artifacts="$FIXTURE/artifacts"
 ANDROID_HOME="$FIXTURE/android"
 adb_serial="emulator-5580"
@@ -161,7 +281,12 @@ timeout() {
   esac
   return 0
 }
-git() { echo deadbeef; }
+git() {
+  if [ "$EVIDENCE_MODE" = "git-fails" ]; then
+    return 13
+  fi
+  echo deadbeef
+}
 hostname() { echo runner; }
 id() { echo uid=1000; }
 bun() { echo 1.3.14; }
@@ -174,16 +299,14 @@ command() {
   builtin command "$@"
 }
 ${cleanup}
-set +e
-(exit "$SUITE_STATUS")
-cleanup
+trap cleanup EXIT INT TERM
+exit 37
 `
   const child = Bun.spawn(["bash", "-c", harness], {
     env: {
       ...process.env,
+      EVIDENCE_MODE: evidenceMode,
       FIXTURE: fixture,
-      STOP_PROCESS_SCRIPT: stopProcessScript,
-      SUITE_STATUS: String(suiteStatus),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -213,6 +336,14 @@ function extractFunction(lane: string, name: string): string {
 function assertNoBareWait(body: string): void {
   if (/^\s*wait(?:\s|$)/m.test(body)) {
     throw new Error("real lane functions must not contain a bare wait")
+  }
+}
+
+function assertFinalWaitIsGuarded(source: string): void {
+  if (
+    !source.includes('if kill -0 "$pid" 2>/dev/null; then\n    echo "$name still exists after KILL')
+  ) {
+    throw new Error("the final wait must have a still-alive guard")
   }
 }
 

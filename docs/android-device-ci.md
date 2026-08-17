@@ -99,6 +99,8 @@ guard is verified without a device.
 
 Install exactly the pinned version on the runner, as `expo-ci`:
 
+Save this strict block as a script and run the script; `set -euo pipefail` can close an interactive shell.
+
 ```sh
 set -euo pipefail
 
@@ -110,6 +112,26 @@ readonly maestro_link="$HOME/.local/bin/maestro"
 maestro_tmp="$(mktemp -d)"
 trap 'rm -rf -- "$maestro_tmp"' EXIT
 
+maestro_reported_version() {
+  local executable="$1"
+  local reported=""
+  local report_status=0
+
+  set +e
+  reported="$("$executable" --version 2>&1)"
+  report_status=$?
+  set -e
+  if [ "$report_status" -ne 0 ]; then
+    return "$report_status"
+  fi
+
+  local first_line="${reported%%$'\n'*}"
+  first_line="${first_line%$'\r'}"
+  printf '%s\n' "$first_line"
+}
+
+install -d "$HOME/.local/opt" "$HOME/.local/bin"
+
 curl --fail --location --silent --show-error \
   --output "$maestro_tmp/maestro.zip" "$maestro_url"
 printf '%s  %s\n' "$maestro_sha256" "$maestro_tmp/maestro.zip" |
@@ -117,7 +139,7 @@ printf '%s  %s\n' "$maestro_sha256" "$maestro_tmp/maestro.zip" |
 unzip -q "$maestro_tmp/maestro.zip" -d "$maestro_tmp/extracted"
 test -d "$maestro_tmp/extracted/maestro"
 test -x "$maestro_tmp/extracted/maestro/bin/maestro"
-test "$("$maestro_tmp/extracted/maestro/bin/maestro" --version)" = "$maestro_version"
+test "$(maestro_reported_version "$maestro_tmp/extracted/maestro/bin/maestro")" = "$maestro_version"
 
 if [ -e "$maestro_link" ] && [ ! -L "$maestro_link" ]; then
   echo "Refusing to replace non-symlink path: $maestro_link" >&2
@@ -127,17 +149,16 @@ fi
 if [ -e "$maestro_install" ] || [ -L "$maestro_install" ]; then
   if [ -L "$maestro_install" ] || [ ! -d "$maestro_install" ] ||
     [ ! -x "$maestro_install/bin/maestro" ] ||
-    [ "$("$maestro_install/bin/maestro" --version)" != "$maestro_version" ]; then
+    [ "$(maestro_reported_version "$maestro_install/bin/maestro")" != "$maestro_version" ]; then
     echo "Existing checksum-addressed Maestro install is invalid: $maestro_install" >&2
     exit 1
   fi
 else
-  install -d "$HOME/.local/opt" "$HOME/.local/bin"
   mv "$maestro_tmp/extracted/maestro" "$maestro_install"
 fi
 
 ln -sfn "$maestro_install/bin/maestro" "$maestro_link"
-test "$("$maestro_link" --version)" = "$maestro_version"
+test "$(maestro_reported_version "$maestro_link")" = "$maestro_version"
 ```
 
 The URL and SHA-256 are the official `cli-2.7.0` GitHub release asset and its
