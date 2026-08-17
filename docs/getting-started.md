@@ -489,8 +489,10 @@ A `form` association whose owner tag is unknown reports the owner as an unknown
 component instead of failing the control. The association is inert: the control
 still renders, and its binding still answers state, validity, and
 `successfulEntries()`, but `submit()`, `requestPlan()`, `submissionProposal()`,
-and `retryFailure()` raise a `RegistryError` and `shouldInterceptSubmission()`
-answers `false`. `action`, `method`, and `enctype` on a tag this client cannot
+and `retryFailure()` raise a `RegistryError`. `submissionInterception()` returns
+the frozen result `{ intercepted: false, reason: "unknown-vocabulary" }`, and
+`shouldInterceptSubmission()` delegates to that result and answers `false`.
+`action`, `method`, and `enctype` on a tag this client cannot
 interpret must never become a request, so a submission deferred with
 `afterCommit` is also rejected when the owner tag stops being known before the
 queued submission runs. The association becomes live as soon as a known form

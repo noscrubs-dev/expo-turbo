@@ -169,6 +169,7 @@ behavior.
 ### Forms
 
 - [x] Host-registered successful controls and submitter precedence
+- [x] Frozen form-interception results with exact refusal reasons and a Boolean compatibility API
 - [x] GET, URL-encoded, `text/plain`, and multipart request planning
 - [x] Rails method normalization and nested/repeated parameter names
 - [x] Constraint validation, async confirmation, duplicate prevention, and `submits-with`

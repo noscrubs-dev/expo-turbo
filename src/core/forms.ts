@@ -193,6 +193,19 @@ export interface ActiveFormRetryOptions {
 
 export type FormMode = "off" | "on" | "optin"
 
+export type FormSubmissionInterceptionReason =
+  | "form-mode-off"
+  | "opt-in-required"
+  | "opt-out"
+  | "unknown-vocabulary"
+
+export type FormSubmissionInterception =
+  | Readonly<{ readonly intercepted: true }>
+  | Readonly<{
+      readonly intercepted: false
+      readonly reason: FormSubmissionInterceptionReason
+    }>
+
 export type FormContainerRole = "datalist" | "fieldset" | "legend"
 
 export interface FormControlSemantics {
@@ -290,6 +303,15 @@ const INACTIVE_SUBMITTER_STATE: FormSubmitterActivitySnapshot = Object.freeze({
   revision: 0,
 })
 const VALID_FORM_CONTROL: FormControlValidity = Object.freeze({ valid: true })
+const INTERCEPTED_FORM_SUBMISSION: FormSubmissionInterception = Object.freeze({
+  intercepted: true,
+})
+const FORM_SUBMISSION_NOT_INTERCEPTED = Object.freeze({
+  formModeOff: Object.freeze({ intercepted: false, reason: "form-mode-off" }),
+  optInRequired: Object.freeze({ intercepted: false, reason: "opt-in-required" }),
+  optOut: Object.freeze({ intercepted: false, reason: "opt-out" }),
+  unknownVocabulary: Object.freeze({ intercepted: false, reason: "unknown-vocabulary" }),
+}) satisfies Readonly<Record<string, FormSubmissionInterception>>
 
 function hasAttribute(node: ProtocolElement, name: string): boolean {
   return node.attributes.some((attribute) => attribute.name === name)
@@ -306,11 +328,23 @@ function normalizeFormMode(value: unknown): FormMode {
   return value
 }
 
-function closestTurboSetting(node: ProtocolElement): string | undefined {
+type TurboSettingSnapshot = Map<ProtocolElement, string | undefined>
+
+function turboSetting(node: ProtocolElement, snapshot: TurboSettingSnapshot): string | undefined {
+  if (snapshot.has(node)) return snapshot.get(node)
+  const setting = attributeValue(node, "data-turbo")
+  snapshot.set(node, setting)
+  return setting
+}
+
+function closestTurboSetting(
+  node: ProtocolElement,
+  snapshot: TurboSettingSnapshot,
+): string | undefined {
   let current: ProtocolNode | null = node
   while (current && current.kind !== "document") {
     if (isElement(current)) {
-      const setting = attributeValue(current, "data-turbo")
+      const setting = turboSetting(current, snapshot)
       if (setting !== undefined) return setting
     }
     current = current.parent
@@ -318,10 +352,10 @@ function closestTurboSetting(node: ProtocolElement): string | undefined {
   return undefined
 }
 
-function formHasTurboOptIn(form: ProtocolElement): boolean {
+function formHasTurboOptIn(form: ProtocolElement, snapshot: TurboSettingSnapshot): boolean {
   let current: ProtocolNode | null = form
   while (current && current.kind !== "document") {
-    if (isElement(current) && attributeValue(current, "data-turbo") === "true") return true
+    if (isElement(current) && turboSetting(current, snapshot) === "true") return true
     current = current.parent
   }
   return false
@@ -1032,19 +1066,32 @@ export class FormControlRegistry {
   }
 
   shouldInterceptSubmission(options: SuccessfulFormEntriesOptions = {}): boolean {
+    return this.submissionInterception(options).intercepted
+  }
+
+  submissionInterception(options: SuccessfulFormEntriesOptions = {}): FormSubmissionInterception {
     this.assertActive()
-    if (!this.formOwnerKnown) return false
-    if (this.formMode === "off") return false
+    // Preserve the established fail-closed order. An unknown owner and mode off
+    // do not inspect caller options. A live mode then gives submitter opt-out
+    // precedence over the form-mode-specific form decision.
+    if (!this.formOwnerKnown) return FORM_SUBMISSION_NOT_INTERCEPTED.unknownVocabulary
+    if (this.formMode === "off") return FORM_SUBMISSION_NOT_INTERCEPTED.formModeOff
     const selection = submitterSelectionOption(options)
     const submitter = selection === undefined ? undefined : this.activeSubmitter(selection)
+    const turboSettings: TurboSettingSnapshot = new Map()
     // data-turbo is package-owned, tag-independent vocabulary. Core has no
     // unknown-vocabulary reporting channel, so honoring this safety opt-out is silent.
-    if (submitter && closestTurboSetting(submitter.node) === "false") {
-      return false
+    if (submitter && closestTurboSetting(submitter.node, turboSettings) === "false") {
+      return FORM_SUBMISSION_NOT_INTERCEPTED.optOut
     }
-    return this.formMode === "optin"
-      ? formHasTurboOptIn(this.form)
-      : closestTurboSetting(this.form) !== "false"
+    if (this.formMode === "optin") {
+      return formHasTurboOptIn(this.form, turboSettings)
+        ? INTERCEPTED_FORM_SUBMISSION
+        : FORM_SUBMISSION_NOT_INTERCEPTED.optInRequired
+    }
+    return closestTurboSetting(this.form, turboSettings) === "false"
+      ? FORM_SUBMISSION_NOT_INTERCEPTED.optOut
+      : INTERCEPTED_FORM_SUBMISSION
   }
 
   checkValidity(): FormConstraintValidationReport {

@@ -2967,6 +2967,9 @@ describe("React protocol renderer", () => {
     if (!submitterNode) throw new Error("form mode submitter was not rendered")
     const selected = submitterNode.props.selection()
 
+    const required = binding.submissionInterception({ submitter: selected })
+    expect(required).toEqual({ intercepted: false, reason: "opt-in-required" })
+    expect(Object.isFrozen(required)).toBe(true)
     expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(false)
     expect(
       binding.requestPlan({
@@ -2978,8 +2981,13 @@ describe("React protocol renderer", () => {
       request: { method: "GET", url: "https://example.test/save?commit=save" },
     })
     act(() => session.setAttribute("id:mode-root", "data-turbo", "true"))
+    expect(binding.submissionInterception({ submitter: selected })).toEqual({ intercepted: true })
     expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(true)
     act(() => session.setAttribute("id:save", "data-turbo", "false"))
+    expect(binding.submissionInterception({ submitter: selected })).toEqual({
+      intercepted: false,
+      reason: "opt-out",
+    })
     expect(binding.shouldInterceptSubmission({ submitter: selected })).toBe(false)
 
     await act(async () => {

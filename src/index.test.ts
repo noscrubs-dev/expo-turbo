@@ -7,6 +7,7 @@ import {
   DocumentHistory,
   EXPO_TURBO_STATUS,
   FormSubmissionController,
+  type FormSubmissionInterception,
   type FormSubmissionReport,
   FrameCommitError,
   FrameLifecycle,
@@ -42,3 +43,8 @@ function inspectSubmissionReport(report: FormSubmissionReport): string {
   return report.requestedUrl
 }
 void inspectSubmissionReport
+
+function inspectSubmissionInterception(result: FormSubmissionInterception): string {
+  return result.intercepted ? "intercepted" : result.reason
+}
+void inspectSubmissionInterception

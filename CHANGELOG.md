@@ -4,6 +4,13 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Add `FormControlRegistry#submissionInterception()` and the same method on
+  `ExpoTurboFormBinding`. The synchronous, pure, frozen result is
+  `{ intercepted: true }` or `{ intercepted: false, reason }`, where `reason`
+  is `unknown-vocabulary`, `form-mode-off`, `opt-out`, or `opt-in-required`.
+  The existing `shouldInterceptSubmission()` API now delegates to this result.
+  Its behavior and precedence do not change.
+
 - Complete the high-level runtime service wiring. `createExpoTurboRuntime` now
   builds a document preloader that shares one prefetch cache with document
   visits, and a Frame preloader that shares one cache with Frame loads.

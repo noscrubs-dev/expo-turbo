@@ -102,6 +102,7 @@ import type {
   FormControlRegistration,
   FormControlRegistry,
   FormControlSelection,
+  FormSubmissionInterception,
   SuccessfulFormEntriesOptions,
   SuccessfulFormEntry,
 } from "../core/forms.js"
@@ -322,6 +323,9 @@ export interface ExpoTurboFormBinding {
   readonly formNodeKey: string
   readonly requestPlan: (options: ActiveFormRequestPlanOptions) => FormRequestPlan
   readonly shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) => boolean
+  readonly submissionInterception: (
+    options?: SuccessfulFormEntriesOptions,
+  ) => FormSubmissionInterception
   readonly submissionProposal: (
     options: ActiveFormSubmissionProposalOptions,
   ) => FormSubmissionProposal
@@ -1249,6 +1253,10 @@ function useFormBinding(
     },
     [inert, registry],
   )
+  const submissionInterception = useCallback(
+    (options?: SuccessfulFormEntriesOptions) => registry.submissionInterception(options),
+    [registry],
+  )
   return useMemo<ExpoTurboFormBinding>(
     () =>
       Object.freeze({
@@ -1268,11 +1276,10 @@ function useFormBinding(
             : registry.retryFailure(options, controllerOptions),
         reportValidity: () => registry.reportValidity(),
         state,
-        // An unknown owner is never an Expo Turbo submission to intercept,
-        // matching how `data-turbo="false"` and an off form mode answer.
         shouldInterceptSubmission: (options?: SuccessfulFormEntriesOptions) =>
-          inert ? false : registry.shouldInterceptSubmission(options),
+          submissionInterception(options).intercepted,
         submit,
+        submissionInterception,
         submissionProposal: (options: ActiveFormSubmissionProposalOptions) =>
           inert
             ? refuseInertFormOwner("submission proposal", inert)
@@ -1281,7 +1288,7 @@ function useFormBinding(
           registry.successfulEntries(options),
         terminalState,
       }),
-    [formNodeKey, inert, registry, state, submit, terminalState],
+    [formNodeKey, inert, registry, state, submissionInterception, submit, terminalState],
   )
 }
 

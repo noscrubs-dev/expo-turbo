@@ -20,6 +20,7 @@ import {
   type FormSelectItem,
   type FormSelectOption,
   MAX_FORM_CONTROL_ENTRIES_PER_CONTROL,
+  type SuccessfulFormEntriesOptions,
   type SuccessfulFormEntry,
 } from "./forms"
 import { parseExpoTurboDocument } from "./parser"
@@ -1278,6 +1279,176 @@ describe("native form control registry", () => {
     expect(optin.shouldInterceptSubmission({ submitter: optinExternal.selection })).toBe(true)
     session.setAttribute("id:external-submit", "data-turbo", "false")
     expect(optin.shouldInterceptSubmission({ submitter: optinExternal.selection })).toBe(false)
+  })
+
+  test.each([
+    {
+      expected: { intercepted: true },
+      label: "on with no submitter",
+      mode: "on",
+    },
+    {
+      expected: { intercepted: false, reason: "unknown-vocabulary" },
+      formTag: "FutureForm",
+      formTurbo: "false",
+      label: "unknown owner before mode and opt-out",
+      mode: "off",
+      submitterTag: "FutureButton",
+      submitterTurbo: "false",
+    },
+    {
+      expected: { intercepted: false, reason: "form-mode-off" },
+      formTurbo: "false",
+      label: "mode off before submitter opt-out",
+      mode: "off",
+      submitterTag: "DemoButton",
+      submitterTurbo: "false",
+    },
+    {
+      expected: { intercepted: false, reason: "opt-out" },
+      formTurbo: "false",
+      label: "on form opt-out with no submitter",
+      mode: "on",
+    },
+    {
+      expected: { intercepted: false, reason: "opt-out" },
+      label: "known submitter opt-out",
+      mode: "on",
+      submitterTag: "DemoButton",
+      submitterTurbo: "false",
+    },
+    {
+      expected: { intercepted: false, reason: "opt-out" },
+      label: "unknown submitter opt-out",
+      mode: "on",
+      submitterTag: "FutureButton",
+      submitterTurbo: "false",
+    },
+    {
+      expected: { intercepted: true },
+      label: "unknown submitter without opt-out",
+      mode: "on",
+      submitterTag: "FutureButton",
+    },
+    {
+      expected: { intercepted: true },
+      label: "unknown submitter exact opt-in",
+      mode: "on",
+      submitterTag: "FutureButton",
+      submitterTurbo: "true",
+    },
+    {
+      expected: { intercepted: false, reason: "opt-in-required" },
+      label: "opt-in mode without form opt-in",
+      mode: "optin",
+      submitterTag: "DemoButton",
+    },
+    {
+      expected: { intercepted: false, reason: "opt-out" },
+      label: "submitter opt-out before required form opt-in",
+      mode: "optin",
+      submitterTag: "FutureButton",
+      submitterTurbo: "false",
+    },
+    {
+      expected: { intercepted: true },
+      formTurbo: "false",
+      label: "ancestor form opt-in before closer form opt-out",
+      mode: "optin",
+      outerTurbo: "true",
+    },
+  ] as const)("returns the frozen interception result for $label", (fixture) => {
+    const formTag = fixture.formTag ?? "DemoForm"
+    const outerTurbo = fixture.outerTurbo ? ` data-turbo="${fixture.outerTurbo}"` : ""
+    const formTurbo = fixture.formTurbo ? ` data-turbo="${fixture.formTurbo}"` : ""
+    const submitterTag = fixture.submitterTag
+    const submitterTurbo = fixture.submitterTurbo ? ` data-turbo="${fixture.submitterTurbo}"` : ""
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        `<Gallery${outerTurbo}><${formTag} id="form"${formTurbo}>${
+          submitterTag ? `<${submitterTag} id="submitter"${submitterTurbo} />` : ""
+        }</${formTag}></Gallery>`,
+      ),
+    )
+    const registry = new FormControlRegistry(session, "id:form", {
+      formMode: fixture.mode,
+      formSemantics: FORM_SEMANTICS,
+    })
+    const registration = submitterTag
+      ? registry.register("id:submitter", { kind: "submitter" })
+      : undefined
+    const initialState = registry.submissionState
+    const initialTerminalState = registry.submissionTerminalState
+    const result = registry.submissionInterception(
+      registration ? { submitter: registration.selection } : undefined,
+    )
+
+    expect(result).toEqual(fixture.expected)
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(registry.submissionState).toBe(initialState)
+    expect(registry.submissionTerminalState).toBe(initialTerminalState)
+  })
+
+  test("reads one submitter option and keeps the Boolean API delegated", () => {
+    const session = formModeFixture()
+    let vocabularyQueries = 0
+    const formSemantics = {
+      formContainerRole: FORM_SEMANTICS.formContainerRole,
+      resolve(tagName: string) {
+        vocabularyQueries += 1
+        return FORM_SEMANTICS.resolve(tagName)
+      },
+    }
+    const registry = new FormControlRegistry(session, "id:form", { formSemantics })
+    const unknown = registry.register("id:save", { kind: "submitter" })
+    const form = session.tree.getElementById("form")
+    const submitter = session.tree.getElementById("save")
+    if (!form || !submitter) throw new Error("form-mode query fixtures are missing")
+    const constructionQueries = vocabularyQueries
+    let submitterReads = 0
+    const options = {
+      get submitter() {
+        submitterReads += 1
+        return unknown.selection
+      },
+    }
+    const turboAttributeReads = new Map<readonly unknown[], number>()
+    const originalFind = Array.prototype.find
+    const dataTurboProbe = Object.freeze({ name: "data-turbo" })
+    Array.prototype.find = function find<T>(
+      this: T[],
+      predicate: (value: T, index: number, obj: T[]) => unknown,
+      thisArg?: unknown,
+    ): T | undefined {
+      if (
+        (this === form.attributes || this === submitter.attributes) &&
+        predicate.call(thisArg, dataTurboProbe as T, 0, this)
+      ) {
+        turboAttributeReads.set(this, (turboAttributeReads.get(this) ?? 0) + 1)
+      }
+      return originalFind.call(this, predicate, thisArg)
+    } as typeof Array.prototype.find
+
+    try {
+      expect(registry.submissionInterception(options)).toEqual({ intercepted: true })
+    } finally {
+      Array.prototype.find = originalFind
+    }
+    expect(submitterReads).toBe(1)
+    expect(turboAttributeReads.get(submitter.attributes)).toBe(1)
+    expect(turboAttributeReads.get(form.attributes)).toBe(1)
+    expect(vocabularyQueries).toBe(constructionQueries)
+
+    let delegatedCalls = 0
+    Object.defineProperty(registry, "submissionInterception", {
+      value: (received: SuccessfulFormEntriesOptions) => {
+        delegatedCalls += 1
+        expect(received).toBe(options)
+        return Object.freeze({ intercepted: false, reason: "opt-out" } as const)
+      },
+    })
+    expect(registry.shouldInterceptSubmission(options)).toBe(false)
+    expect(delegatedCalls).toBe(1)
   })
 
   test("keeps form mode off as an interaction short-circuit and rejects invalid modes", () => {
