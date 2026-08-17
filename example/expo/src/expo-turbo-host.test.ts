@@ -3,10 +3,20 @@
 import { describe, expect, test } from "bun:test"
 import type { NavigationAdapter, TurboResponse, VisitAction } from "expo-turbo/adapters"
 import { EXPO_TURBO_MIME_TYPE, TargetError } from "expo-turbo/core"
-import { ExpoTurbo, useExpoTurboDisposable, useExpoTurboDocumentLink } from "expo-turbo/react"
 import {
+  ExpoTurbo,
+  useComponentAction,
+  useDocumentState,
+  useExpoTurboDisposable,
+  useExpoTurboDocumentLink,
+  useExpoTurboDocumentLinkPrefetch,
+} from "expo-turbo/react"
+import {
+  createComponentActionRegistry,
   createRegistry,
   defineComponent,
+  defineComponentAction,
+  defineComponentActionModule,
   defineComponentModule,
   stringCodec,
 } from "expo-turbo/registry"
@@ -30,10 +40,43 @@ const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
  * arrived through the provider.
  */
 const activations = new Map<string, () => Promise<unknown>>()
+const actionExecutions = new Map<string, () => Promise<string>>()
+const prefetches = new Map<string, ReturnType<typeof useExpoTurboDocumentLinkPrefetch>>()
+let recoverableFailure = false
 
 function DocumentLink({ href }: Readonly<{ href: string }>): ReactNode {
   activations.set(href, useExpoTurboDocumentLink(href))
+  prefetches.set(href, useExpoTurboDocumentLinkPrefetch(href))
   return createElement("link", { href })
+}
+
+const recordAction = defineComponentAction({
+  action: "record-host-value",
+  handler: ({ params, state }) => {
+    state.set("host-record", params.value)
+    return params.value
+  },
+  schema: z.object({ value: z.string() }),
+})
+
+const actions = createComponentActionRegistry(
+  defineComponentActionModule({
+    actions: [recordAction],
+    name: "host-actions",
+    version: "1.0.0",
+  }),
+)
+
+function ActionTrigger(): ReactNode {
+  const execute = useComponentAction(recordAction)
+  const recorded = useDocumentState<string>("host-record")
+  actionExecutions.set("record", () => execute({ value: "from-high-level-runtime" }))
+  return createElement("action-trigger", { recorded: recorded.value })
+}
+
+function RecoverableFailure(): ReactNode {
+  if (recoverableFailure) throw new Error("recoverable component failure")
+  return createElement("recovered-component")
 }
 
 const registry = createRegistry(
@@ -53,6 +96,20 @@ const registry = createRegistry(
         component: DocumentLink,
         schema: z.object({ href: z.string().trim().min(1) }),
         tag: "HostDocLink",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: ActionTrigger,
+        schema: z.object({}),
+        tag: "HostActionTrigger",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: RecoverableFailure,
+        schema: z.object({}),
+        tag: "HostRecoverableFailure",
       }),
     ],
     name: "expo-turbo-host-fixtures",
@@ -204,6 +261,133 @@ describe("ExpoTurbo navigation forwarding", () => {
     await expect(activate()).rejects.toBeInstanceOf(TargetError)
     expect(navigation.external).toEqual([])
 
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+})
+
+describe("ExpoTurbo runtime service forwarding", () => {
+  test("wires actions and both shared preloaders without duplicate destination fetches", async () => {
+    activations.clear()
+    actionExecutions.clear()
+    prefetches.clear()
+    const requests: Readonly<{
+      headers: Readonly<Record<string, string>>
+      url: string
+    }>[] = []
+    const fetch = {
+      fetch: async (
+        request: Readonly<{ headers: Readonly<Record<string, string>>; url: string }>,
+      ) => {
+        requests.push(request)
+        if (request.url === "https://example.test/frame") {
+          return xmlResponse('<turbo-frame id="details" />', request.url)
+        }
+        if (request.url === "https://example.test/next") {
+          return xmlResponse("<HostDoc />", request.url)
+        }
+        return xmlResponse(
+          '<HostDoc><HostDocLink href="/next" /><HostDocLink href="/frame" data-turbo-frame="details" data-turbo-preload="" /><HostActionTrigger /><turbo-frame id="details" /></HostDoc>',
+          request.url,
+        )
+      },
+    }
+
+    const renderer = await mount(
+      createElement(ExpoTurbo, {
+        actions,
+        fetch,
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      }),
+    )
+
+    const prefetch = prefetches.get("/next")
+    const activateFrame = activations.get("/frame")
+    const activateDocument = activations.get("/next")
+    const executeAction = actionExecutions.get("record")
+    if (!prefetch || !activateFrame || !activateDocument || !executeAction) {
+      throw new Error("runtime service fixtures did not mount")
+    }
+    prefetch()
+    prefetch.commit()
+    await act(async () => {
+      await nextTurn()
+      await executeAction()
+    })
+    expect(
+      renderer.root.find((node) => String(node.type) === "action-trigger").props.recorded,
+    ).toBe("from-high-level-runtime")
+
+    await act(async () => {
+      await activateFrame()
+      await activateDocument()
+    })
+
+    expect(requests.map(({ url }) => url)).toEqual([
+      DOCUMENT_URL,
+      "https://example.test/frame",
+      "https://example.test/next",
+    ])
+    expect(requests.filter(({ url }) => url === "https://example.test/frame")).toHaveLength(1)
+    expect(requests.filter(({ url }) => url === "https://example.test/next")).toHaveLength(1)
+    expect(requests.find(({ url }) => url.endsWith("/frame"))?.headers["Turbo-Frame"]).toBe(
+      "details",
+    )
+    expect(requests.find(({ url }) => url.endsWith("/next"))?.headers["X-Sec-Purpose"]).toBe(
+      "prefetch",
+    )
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("forwards renderError to the provider and recovers through its retry", async () => {
+    recoverableFailure = true
+    const surfaced: Error[] = []
+    let retry: (() => void) | undefined
+    const renderer = await mount(
+      createElement(ExpoTurbo, {
+        fetch: {
+          fetch: async (request) =>
+            xmlResponse("<HostDoc><HostRecoverableFailure /></HostDoc>", request.url),
+        },
+        registry,
+        renderError: (error: Error, next: () => void) => {
+          surfaced.push(error)
+          retry = next
+          return createElement("render-error", { message: error.message })
+        },
+        url: DOCUMENT_URL,
+      }),
+    )
+
+    expect(renderer.toJSON()).toMatchObject({
+      props: { message: "recoverable component failure" },
+      type: "render-error",
+    })
+    // The provider boundary renders before the high-level full-document
+    // surface. React can render that boundary more than once while it settles,
+    // so the invariant is two routes, not an exact render count. Before issue
+    // #440 only the high-level route called this function.
+    expect(surfaced.length).toBeGreaterThan(1)
+    expect(new Set(surfaced.map((error) => error.message))).toEqual(
+      new Set(["recoverable component failure"]),
+    )
+    if (!retry) throw new Error("renderError did not receive a retry callback")
+
+    recoverableFailure = false
+    await act(async () => {
+      retry?.()
+      await nextTurn()
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "render-error")).toHaveLength(0)
+    expect(
+      renderer.root.findAll((node) => String(node.type) === "recovered-component"),
+    ).toHaveLength(1)
     await act(async () => {
       renderer.unmount()
     })

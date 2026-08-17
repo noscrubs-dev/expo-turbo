@@ -157,6 +157,7 @@ function reportMissingRenderError(error: Error): void {
  * adapters.
  */
 export function ExpoTurbo({
+  actions,
   adapters = NO_RENDER_ADAPTERS,
   boundaries = NO_BOUNDARIES,
   cable,
@@ -222,6 +223,7 @@ export function ExpoTurbo({
   // biome-ignore lint/correctness/useExhaustiveDependencies: url is handled by the visit effect
   useEffect(() => {
     const runtime = createExpoTurboRuntime({
+      ...(actions ? { actions } : {}),
       ...(cable ? { cable } : {}),
       fetch,
       ...(focus ? { focus } : {}),
@@ -243,6 +245,7 @@ export function ExpoTurbo({
     }
   }, [
     attempt,
+    actions,
     cable,
     fetch,
     focus,
@@ -295,7 +298,7 @@ export function ExpoTurbo({
     return () => {
       active = false
     }
-  }, [attempt, cable, fail, fetch, focus, history, navigation, registry, url])
+  }, [actions, attempt, cable, fail, fetch, focus, history, navigation, registry, url])
 
   if (status.state === "loading") return loading
   if (status.state === "error") {
@@ -311,6 +314,7 @@ export function ExpoTurbo({
   return createElement(
     ExpoTurboProvider,
     {
+      ...(runtime.actions ? { actions: runtime.actions } : {}),
       ...(adapters.autofocus ? { autofocus: adapters.autofocus } : {}),
       ...(adapters.autofocusScroll ? { autofocusScroll: adapters.autofocusScroll } : {}),
       ...(adapters.defaultDirection ? { defaultDirection: adapters.defaultDirection } : {}),
@@ -325,6 +329,7 @@ export function ExpoTurbo({
         : {}),
       ...(boundaries.document ? { documentComponent: boundaries.document } : {}),
       documentController: runtime.controller,
+      documentPreloader: runtime.documentPreloader,
       ...(adapters.documentHistoryScroll
         ? { documentHistoryScroll: adapters.documentHistoryScroll }
         : {}),
@@ -346,6 +351,7 @@ export function ExpoTurbo({
       ...(adapters.frameAutoscroll ? { frameAutoscroll: adapters.frameAutoscroll } : {}),
       ...(boundaries.frame ? { frameComponent: boundaries.frame } : {}),
       frames: runtime.frames,
+      framePreloader: runtime.framePreloader,
       // Issue #404: the renderer reads navigation from context, so a runtime
       // that never receives it here fails every external-scheme, cross-origin,
       // and unvisitable link with a TargetError.
@@ -366,6 +372,9 @@ export function ExpoTurbo({
       // cleanup, so the provider must not dispose them a second time.
       ownsStateDisposal: false,
       registry,
+      ...(typeof renderError === "function"
+        ? { renderError: (event: ExpoTurboRenderError) => renderError(event.error, retry) }
+        : {}),
       scopes: runtime.scopes,
       session: runtime.session,
       state: runtime.state,

@@ -32,7 +32,12 @@ import {
   type ExpoTurboRenderAdapters,
   type ExpoTurboUnknownVocabularyHandler,
 } from "../react/index.js"
-import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
+import type {
+  ComponentActionRegistry,
+  ComponentRegistry,
+  RegistryComponent,
+  RegistryComponentAction,
+} from "../registry/index.js"
 import { ExpoTurboErrorSurface, ExpoTurboLoadingSurface } from "./surfaces.js"
 
 /**
@@ -94,6 +99,8 @@ export interface ExpoTurboAppAdapters {
 }
 
 export interface ExpoTurboAppProps {
+  /** Optional actions available to registered components. */
+  readonly actions?: ComponentActionRegistry<RegistryComponentAction>
   readonly adapters?: ExpoTurboAppAdapters
   readonly boundaries?: ExpoTurboBoundaries
   /** Replaces the packaged spinner. */
@@ -243,6 +250,7 @@ function documentTarget(
  * the `boundaries` components that render inside the document.
  */
 export function ExpoTurboApp({
+  actions,
   adapters = NO_ADAPTERS,
   boundaries,
   loading,
@@ -359,6 +367,7 @@ export function ExpoTurboApp({
   if ("error" in resolved) return surface(resolved.error, NO_RETRY)
 
   return createElement(ExpoTurbo, {
+    ...(actions ? { actions } : {}),
     adapters: renderAdapters,
     ...(boundaries ? { boundaries } : {}),
     ...(cable ? { cable } : {}),

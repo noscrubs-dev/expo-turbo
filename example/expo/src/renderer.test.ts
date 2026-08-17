@@ -14500,6 +14500,52 @@ describe("React protocol renderer", () => {
     expect(JSON.stringify(renderer.toJSON())).toContain("Recovered")
   })
 
+  test("raises a new blank-root error after added content is removed", async () => {
+    // Issue #429 regression for the completed refusal path fixed in ff9d8ae.
+    // Keep the full sequence: the refusal first raises the full-document error,
+    // added output clears it, and removing that output raises a fresh error.
+    // A test that starts or ends in only one state does not prove the boundary
+    // released its stale error state between the two blank intervals.
+    const errors: ExpoTurboRenderError[] = []
+    const componentRegistry = blankingRefusalFixture()
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot><BlankingPreview form="form" /><FutureForm id="form" action="/danger" method="post" /></FutureRoot>',
+        { url: "https://example.test/reblank" },
+      ),
+    )
+    const renderer = render(session, componentRegistry, {
+      forms: new DocumentFormControls(session, { formSemantics: componentRegistry }),
+      onError: (event) => errors.push(event),
+      renderError: () => createElement("protocol-error"),
+    })
+
+    expect(renderer.toJSON()).toEqual({ type: "protocol-error", props: {}, children: null })
+    expect(errors).toHaveLength(1)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="append" target="form"><template><DemoText id="live">Live content</DemoText></template></turbo-stream>',
+      )
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "protocol-error")).toHaveLength(0)
+    expect(JSON.stringify(renderer.toJSON())).toContain("Live content")
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="remove" target="live"></turbo-stream>',
+      )
+    })
+
+    expect(renderer.toJSON()).toEqual({ type: "protocol-error", props: {}, children: null })
+    expect(errors).toHaveLength(2)
+    expect(errors[1]?.error).not.toBe(errors[0]?.error)
+    expect(errors[1]?.blank?.attempt).toBe(1)
+  })
+
   test("clears the blank-root error once a Stream restores content to a nested node", async () => {
     // The root element is `shell`, so a Stream aimed at `inner` notifies a key
     // nothing is subscribed to once the guard has replaced the subtree. Only a

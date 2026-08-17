@@ -17,11 +17,16 @@ import {
   createExpoTurboRuntime,
   ExpoTurboProvider,
   ExpoTurboRoot,
+  useComponentAction,
+  useDocumentState,
   useExpoTurboDocumentLink,
 } from "expo-turbo/react"
 import {
+  createComponentActionRegistry,
   createRegistry,
   defineComponent,
+  defineComponentAction,
+  defineComponentActionModule,
   defineComponentModule,
   presenceCodec,
   stringCodec,
@@ -90,11 +95,36 @@ const ORIGIN = "https://shop.example.test"
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 const activations = new Map<string, () => Promise<unknown>>()
+const appActionExecutions = new Map<string, () => Promise<string>>()
 const HostContext = createContext<string | undefined>(undefined)
 
 function DocumentLink({ href }: Readonly<{ href: string; target?: string }>): ReactNode {
   activations.set(href, useExpoTurboDocumentLink(href))
   return createElement("link", { href })
+}
+
+const appRecordAction = defineComponentAction({
+  action: "record-app-value",
+  handler: ({ params, state }) => {
+    state.set("app-record", params.value)
+    return params.value
+  },
+  schema: z.object({ value: z.string() }),
+})
+
+const appActions = createComponentActionRegistry(
+  defineComponentActionModule({
+    actions: [appRecordAction],
+    name: "expo-turbo-app-actions",
+    version: "1.0.0",
+  }),
+)
+
+function AppActionTrigger(): ReactNode {
+  const execute = useComponentAction(appRecordAction)
+  const recorded = useDocumentState<string>("app-record")
+  appActionExecutions.set("record", () => execute({ value: "from-expo-turbo-app" }))
+  return createElement("app-action-trigger", { recorded: recorded.value })
 }
 
 const registry = createRegistry(
@@ -122,6 +152,13 @@ const registry = createRegistry(
           target: z.string().optional(),
         }),
         tag: "AppDocLink",
+      }),
+      defineComponent({
+        attributes: {},
+        children: "none",
+        component: AppActionTrigger,
+        schema: z.object({}),
+        tag: "AppActionTrigger",
       }),
     ],
     name: "expo-turbo-app-fixtures",
@@ -214,6 +251,35 @@ function textOf(node: unknown): string {
 }
 
 describe("ExpoTurboApp zero-configuration entrypoint", () => {
+  test("passes optional component actions into the high-level runtime", async () => {
+    routerPath = "/catalog/actions"
+    appActionExecutions.clear()
+    const transport = stubTransport("<AppDoc><AppActionTrigger /></AppDoc>")
+
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        actions: appActions,
+        adapters: { fetch: transport.fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    const execute = appActionExecutions.get("record")
+    if (!execute) throw new Error("app action trigger did not register")
+    await act(async () => {
+      await expect(execute()).resolves.toBe("from-expo-turbo-app")
+    })
+
+    expect(
+      renderer.root.find((node) => String(node.type) === "app-action-trigger").props.recorded,
+    ).toBe("from-expo-turbo-app")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
   test("builds the document URL from origin and the mounted router path", async () => {
     routerPath = "/catalog/shoes"
     const transport = stubTransport("<AppDoc />")

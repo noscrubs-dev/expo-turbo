@@ -4,6 +4,20 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Complete the high-level runtime service wiring. `createExpoTurboRuntime` now
+  builds a document preloader that shares one prefetch cache with document
+  visits, and a Frame preloader that shares one cache with Frame loads.
+  `ExpoTurbo` sends both preloaders and `renderError` to its provider, so
+  press-in prefetch, automatic document and Frame preload, and local renderer
+  error surfaces are reachable through `ExpoTurboApp` without host wiring.
+  Committed press-in document prefetch and exact Frame preload each avoid a
+  duplicate destination request; automatic document preview revalidation is
+  unchanged. The factory, `ExpoTurbo`, and `ExpoTurboApp` also accept an
+  optional `actions` component action registry. The runtime builds its runner
+  with runtime state, exposes it as `runtime.actions`, and sends it to the
+  provider. Omitting `actions` keeps component actions disabled. Low-level
+  provider and controller injection defaults are unchanged.
+
 - Tighten registry identifiers across TypeScript and Ruby to reject Unicode noncharacters and malformed text. This narrow input check now correctly keeps valid U+FFFD and other valid Unicode scalars.
 
 - Keep deferred document reconnect handoffs per canonical document URL instead

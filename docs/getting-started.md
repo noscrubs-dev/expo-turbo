@@ -386,6 +386,7 @@ adapter:
 <ExpoTurbo
   url={documentUrl}
   registry={registry}
+  actions={componentActions}
   fetch={fetchAdapter}
   history={historyAdapter}
   navigation={navigationAdapter}
@@ -394,6 +395,20 @@ adapter:
   renderError={(error, retry) => <ErrorMessage error={error} retry={retry} />}
 />
 ```
+
+`actions` is optional on both `ExpoTurbo` and `ExpoTurboApp`. Pass a
+`ComponentActionRegistry` only when registered components call
+`useComponentAction`. The runtime builds the existing action runner with its
+own document state store and sends it to the provider. Action names do not
+become component capability identities, and a host with no actions does not
+need an empty registry or other configuration.
+
+The high-level runtime also builds the document and Frame preloaders. A
+committed press-in document prefetch and an exact Frame preload share their
+one-use response caches with the corresponding live request loader, so the
+later visit does not send a duplicate request. Automatic document preload keeps
+its existing preview-then-revalidation behavior. Hosts that compose
+`ExpoTurboProvider` directly still choose whether to supply either preloader.
 
 `renderError` is **required** on `ExpoTurbo`. A host-neutral component has no
 primitives to draw with, so it can neither invent a failure surface nor throw:
@@ -427,15 +442,17 @@ through Expo Router. This bridge supplies synchronous history writes and basic
 navigation. Managed native traversal metadata, restoration event delivery, and
 app-specific external-link policy remain host work.
 
-These adapters are the runtime's identity. `ExpoTurbo` replaces its whole
-runtime when `fetch`, `history`, `navigation`, `focus`, or `registry` changes
-identity, so build them outside render or memoize them; an adapter rebuilt on
-every render refetches without bound.
+These adapters and the optional action registry are the runtime's identity.
+`ExpoTurbo` replaces its whole runtime when `actions`, `fetch`, `history`,
+`navigation`, `focus`, or `registry` changes identity, so build them outside
+render or memoize them; an object rebuilt on every render refetches without
+bound.
 
 `createExpoTurboRuntime` suits a host that controls loading and presentation
-separately, and `ExpoTurboProvider` with `ExpoTurboRoot` suits one that
-composes the renderer itself. Import individual primitives from
-`expo-turbo/core` only when custom runtime composition is required.
+separately. It exposes `documentPreloader` and `framePreloader`, plus `actions`
+when an action registry was supplied. `ExpoTurboProvider` with `ExpoTurboRoot`
+suits a host that composes the renderer itself. Import individual primitives
+from `expo-turbo/core` only when custom runtime composition is required.
 
 A host that shares one runtime across screens can use
 `useExpoTurboDisposable(runtime)` to reference-count it. It disposes one

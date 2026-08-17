@@ -4,12 +4,20 @@ import { z } from "zod"
 
 import type { CableCallbacks, TurboRequest, TurboResponse } from "../adapters/index.js"
 import {
+  ActionError,
   attributeValue,
   DOCUMENT_REFRESH_DEBOUNCE_MS,
   EXPO_TURBO_MIME_TYPE,
   isElement,
 } from "../core/index.js"
-import { createRegistry, defineComponent, defineComponentModule } from "../registry/index.js"
+import {
+  createComponentActionRegistry,
+  createRegistry,
+  defineComponent,
+  defineComponentAction,
+  defineComponentActionModule,
+  defineComponentModule,
+} from "../registry/index.js"
 import { createExpoTurboRuntime } from "./runtime-factory.js"
 
 const TestDocument = (() => null) as ComponentType
@@ -57,6 +65,114 @@ function response(xml: string, url: string): TurboResponse {
 }
 
 describe("Expo Turbo runtime", () => {
+  test("shares document and Frame preload responses with their live request loaders", async () => {
+    const requests: TurboRequest[] = []
+    const documentUrl = "https://example.test/document"
+    const nextUrl = "https://example.test/next"
+    const frameUrl = "https://example.test/frame"
+    const runtime = createExpoTurboRuntime({
+      fetch: {
+        fetch: async (request) => {
+          requests.push(request)
+          if (request.url === frameUrl) {
+            return response(
+              '<turbo-frame id="details"><TestField id="loaded-frame" /></turbo-frame>',
+              request.url,
+            )
+          }
+          return response(
+            request.url === nextUrl
+              ? '<TestDocument><TestField id="loaded-document" /></TestDocument>'
+              : '<TestDocument><turbo-frame id="details" /></TestDocument>',
+            request.url,
+          )
+        },
+      },
+      registry,
+      url: documentUrl,
+    })
+
+    await runtime.load()
+    await expect(runtime.framePreloader.preload("details", frameUrl)).resolves.toMatchObject({
+      status: "cached",
+    })
+    await expect(runtime.frames.get("details").visit(frameUrl)).resolves.toMatchObject({
+      status: "completed",
+    })
+    expect(runtime.session.tree.getElementById("loaded-frame")).toBeDefined()
+
+    const documentPreload = runtime.documentPreloader.retain(nextUrl)
+    documentPreload.commit()
+    await expect(documentPreload.promise).resolves.toMatchObject({ status: "cached" })
+    await expect(runtime.controller.visit(nextUrl)).resolves.toMatchObject({ status: "committed" })
+    expect(runtime.session.tree.getElementById("loaded-document")).toBeDefined()
+
+    // Each preloader and live loader must share one cache. A separate cache
+    // makes either destination appear twice here.
+    expect(requests.map(({ url }) => url)).toEqual([documentUrl, frameUrl, nextUrl])
+    expect(requests.filter(({ url }) => url === frameUrl)).toHaveLength(1)
+    expect(requests.filter(({ url }) => url === nextUrl)).toHaveLength(1)
+    const descriptor = `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`
+    expect(requests.slice(1).map(({ headers }) => headers["X-Expo-Turbo-Client"])).toEqual([
+      descriptor,
+      descriptor,
+    ])
+    expect(requests[1]?.headers["Turbo-Frame"]).toBe("details")
+    expect(requests[2]?.headers["X-Sec-Purpose"]).toBe("prefetch")
+
+    runtime.dispose()
+  })
+
+  test("builds optional component actions against the runtime state", async () => {
+    const record = defineComponentAction({
+      action: "record-runtime-value",
+      handler: ({ params, state }) => {
+        state.set("recorded", params.value)
+        return params.value
+      },
+      schema: z.object({ value: z.string() }),
+    })
+    const actions = createComponentActionRegistry(
+      defineComponentActionModule({
+        actions: [record],
+        name: "runtime-actions",
+        version: "1.0.0",
+      }),
+    )
+    const runtime = createExpoTurboRuntime({
+      actions,
+      fetch: { fetch: async (request) => response("<TestDocument />", request.url) },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    await expect(
+      runtime.actions?.executeDefinition(record, { value: "from-action" }),
+    ).resolves.toBe("from-action")
+    expect(runtime.state.get("recorded")).toBe("from-action")
+
+    const unknown = defineComponentAction({
+      action: "unknown-runtime-action",
+      handler: () => undefined,
+      schema: z.object({}),
+    })
+    await expect(runtime.actions?.executeDefinition(unknown, {})).rejects.toBeInstanceOf(
+      ActionError,
+    )
+    runtime.dispose()
+  })
+
+  test("does not create a component action runner when actions are omitted", () => {
+    const runtime = createExpoTurboRuntime({
+      fetch: { fetch: async (request) => response("<TestDocument />", request.url) },
+      registry,
+      url: "https://example.test/document",
+    })
+
+    expect(runtime.actions).toBeUndefined()
+    runtime.dispose()
+  })
+
   test("loads a document with the registry capabilities and owns disposal", async () => {
     const requests: Array<Readonly<{ headers: Readonly<Record<string, string>>; url: string }>> = []
     const url = "https://example.test/document"

@@ -15,6 +15,8 @@ import {
   CableStreamSourceRegistry,
   DocumentFormControls,
   DocumentHistory,
+  DocumentPrefetchCache,
+  DocumentPreloader,
   DocumentRefreshController,
   DocumentRequestLoader,
   DocumentSession,
@@ -31,13 +33,22 @@ import {
   type FormSubmissionReport,
   FrameControllerRegistry,
   FrameHistoryCoordinator,
+  FramePreloadCache,
+  FramePreloader,
   FrameRequestLoader,
   isElement,
   parseExpoTurboDocument,
   StateError,
 } from "../core/index.js"
 import { serializeClientDescriptor } from "../core/protocol-request.js"
-import type { ComponentRegistry, RegistryComponent } from "../registry/index.js"
+import {
+  type ComponentActionExecutor,
+  type ComponentActionRegistry,
+  type ComponentRegistry,
+  createComponentActionRunner,
+  type RegistryComponent,
+  type RegistryComponentAction,
+} from "../registry/index.js"
 
 const clock: ClockAdapter = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -144,7 +155,10 @@ export class ExpoTurboFormLinkSubmissions extends FormLinkSubmissionController {
 }
 
 export interface ExpoTurboRuntime {
+  /** Present only when a component action registry was supplied. */
+  readonly actions?: ComponentActionExecutor
   readonly controller: DocumentVisitController
+  readonly documentPreloader: DocumentPreloader
   /**
    * Turbo's temporary-form path for links carrying `data-turbo-method` or
    * `data-turbo-stream` — the ordinary Rails delete-button idiom. The runtime
@@ -155,6 +169,7 @@ export interface ExpoTurboRuntime {
   readonly formLinks: ExpoTurboFormLinkSubmissions
   readonly forms: DocumentFormControls
   readonly frames: FrameControllerRegistry
+  readonly framePreloader: FramePreloader
   readonly scopes: DocumentStateScopes
   readonly session: DocumentSession
   readonly state: DocumentStateStore
@@ -165,6 +180,11 @@ export interface ExpoTurboRuntime {
 }
 
 export interface CreateExpoTurboRuntimeOptions {
+  /**
+   * Optional component actions available to registered components. The runtime
+   * builds their runner against its own document state store.
+   */
+  readonly actions?: ComponentActionRegistry<RegistryComponentAction>
   /**
    * Transport for `turbo-cable-stream-source` elements. Supplying it is what
    * creates the Stream source registry; the runtime owns its disposal.
@@ -203,6 +223,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   const scopes = new DocumentStateScopes(session)
   const visitLifecycle = new DocumentVisitLifecycle()
   const snapshots = new DocumentSnapshotCache()
+  const documentPrefetchCache = new DocumentPrefetchCache()
   const history = options.history
     ? new DocumentHistory({ next: () => `expo-turbo-history-${++requestId}` }, options.history)
     : undefined
@@ -213,8 +234,13 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   })
   const controller = new DocumentVisitController(loader, clock, {
     ...(history ? { history } : {}),
+    prefetchCache: documentPrefetchCache,
     snapshotCache: snapshots,
     visitLifecycle,
+  })
+  const documentPreloader = new DocumentPreloader(session, options.fetch, requestIds, snapshots, {
+    moduleVersions: clientDescriptor,
+    prefetchCache: documentPrefetchCache,
   })
   const onBackgroundError = options.onBackgroundError
   // Spread rather than a wrapper: an always-present callback would replace each
@@ -230,10 +256,15 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
         visitLifecycle,
       })
     : undefined
+  const framePreloadCache = new FramePreloadCache()
+  const framePreloader = new FramePreloader(session, options.fetch, requestIds, framePreloadCache, {
+    clientDescriptor,
+  })
   const frames = new FrameControllerRegistry(
     session,
     new FrameRequestLoader(session, options.fetch, requestIds, {
       clientDescriptor,
+      preloadCache: framePreloadCache,
       refresh,
     }),
     undefined,
@@ -265,6 +296,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     formSemantics: options.registry,
     moduleVersions: clientDescriptor,
   })
+  const actions = options.actions ? createComponentActionRunner(options.actions, state) : undefined
   // Cable delivers Stream actions, including `refresh`, for as long as the
   // socket is up. It does NOT recover the document after a reconnect: a
   // broadcast missed while the socket was down leaves the mounted document
@@ -283,10 +315,13 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
   let disposed = false
 
   return Object.freeze({
+    ...(actions ? { actions } : {}),
     controller,
+    documentPreloader,
     formLinks,
     forms,
     frames,
+    framePreloader,
     scopes,
     session,
     state,
@@ -298,6 +333,8 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
       // canceled, so nothing downstream is asked to apply a response into
       // controllers that are about to go away.
       formLinks.dispose()
+      documentPreloader.cancelAll()
+      framePreloader.cancelAll()
       forms.dispose()
       frames.dispose()
       streamSources?.dispose()
