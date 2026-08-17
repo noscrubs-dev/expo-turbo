@@ -167,8 +167,9 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
+      - run: bun run lint
       - run: bun run build
-      - run: bun install --frozen-lockfile
+      - run: test ! -e node_modules/expo-turbo && bun install --frozen-lockfile
         working-directory: example/expo
       - run: bun run check
         working-directory: example/expo

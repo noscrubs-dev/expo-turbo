@@ -27,6 +27,9 @@ test("the example gate verifies the installed build first and never uses the lin
   expect(manifest.scripts["verify:installed-package"]).toBe(
     "node scripts/verify-installed-expo-turbo.mjs",
   )
+  expect(manifest.scripts.postinstall).toBe(
+    "node scripts/link-react-peer.mjs && node scripts/materialize-installed-expo-turbo.mjs",
+  )
 })
 
 test("the example check cannot drop or reorder the capability verification", () => {
@@ -42,20 +45,22 @@ test("the example check cannot drop or reorder the capability verification", () 
   ).toThrow()
 })
 
-test("CI and release build before the frozen example install and check", async () => {
+test("CI and release lint and build before the fresh example snapshot and check", async () => {
   for (const workflowName of ["ci.yml", "release.yml"]) {
     const workflow = await readFile(join(repositoryRoot, ".github/workflows", workflowName), "utf8")
     const expoJob = workflow.slice(
       workflow.indexOf("  expo-example:"),
       workflow.indexOf("\n  rails-example:"),
     )
+    const lint = expoJob.indexOf("- run: bun run lint")
     const build = expoJob.indexOf("- run: bun run build")
     const frozenInstall = expoJob.indexOf(
-      "- run: bun install --frozen-lockfile\n        working-directory: example/expo",
+      "- run: test ! -e node_modules/expo-turbo && bun install --frozen-lockfile\n        working-directory: example/expo",
     )
     const check = expoJob.indexOf("- run: bun run check\n        working-directory: example/expo")
 
-    expect(build).toBeGreaterThan(-1)
+    expect(lint).toBeGreaterThan(-1)
+    expect(build).toBeGreaterThan(lint)
     expect(frozenInstall).toBeGreaterThan(build)
     expect(check).toBeGreaterThan(frozenInstall)
   }

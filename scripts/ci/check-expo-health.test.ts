@@ -32,6 +32,18 @@ describe("Expo CI health wrapper behavior", () => {
     expect(await calls(fixture)).toEqual(["doctor offline=1"])
   })
 
+  test("Doctor output overflow blocks before the live stage", async () => {
+    const fixture = await createFixture({
+      doctorOutput: "x".repeat(64 * 1024 + 1),
+      expoOutput: currentAdvice,
+    })
+    const result = await run(script, fixture, "ci", pullRequestEnvironment)
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain("Doctor output exceeded the safety limit")
+    expect(await calls(fixture)).toEqual(["doctor offline=1"])
+  })
+
   test("clean live success uses local binaries and deletes inherited EXPO_OFFLINE", async () => {
     const fixture = await createFixture({ expoOutput: currentAdvice })
     const result = await run(script, fixture, "ci", {
@@ -135,6 +147,49 @@ describe("Expo CI health wrapper behavior", () => {
     }
   })
 
+  test("live output overflow reports the bounded-stream failure", async () => {
+    const fixture = await createFixture({ expoOutput: "x".repeat(64 * 1024 + 1) })
+    const result = await run(script, fixture, "ci", pullRequestEnvironment)
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain("output exceeded the safety limit")
+    expect(result.stdout).not.toContain("::warning")
+  })
+
+  test("upToDate true with a nonzero exit is invalid", async () => {
+    const fixture = await createFixture({ expoExit: 1, expoOutput: currentAdvice })
+    const result = await run(script, fixture, "ci", pullRequestEnvironment)
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain("JSON contract failed (exit status 1)")
+  })
+
+  test("each dependency must have exactly the four contract keys", async () => {
+    for (const dependencyValue of [
+      { ...dependency("expo-router"), extra: "not allowed" },
+      { packageName: "expo-router", packageType: "dependencies", actualVersion: "57.0.13" },
+    ]) {
+      const fixture = await createFixture({
+        expoExit: 1,
+        expoOutput: JSON.stringify({ dependencies: [dependencyValue], upToDate: false }),
+      })
+      const result = await run(script, fixture, "ci", pullRequestEnvironment)
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stdout).not.toContain("::warning")
+      expect(result.stderr).toContain("JSON contract failed")
+    }
+  })
+
+  test("rendered dependency values are truncated before warning output", async () => {
+    const longName = `${"a".repeat(160)}SHOULD_NOT_RENDER`
+    const fixture = await createFixture({ expoExit: 1, expoOutput: driftWith(longName) })
+    const result = await run(script, fixture, "ci", pullRequestEnvironment)
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("a".repeat(160))
+    expect(result.stdout).not.toContain("SHOULD_NOT_RENDER")
+  })
+
   test("Doctor timeout terminates its child and never starts Expo", async () => {
     const fixture = await createFixture({ doctorHang: true, expoOutput: currentAdvice })
     const result = await run(script, fixture, "ci", pullRequestEnvironment, testTimeoutEnvironment)
@@ -152,6 +207,18 @@ describe("Expo CI health wrapper behavior", () => {
     expect(result.stderr).toContain("Expo CLI timed out")
     expect(await calls(fixture)).toContain("expo terminated")
   })
+
+  test("a SIGTERM-ignoring Doctor is escalated to SIGKILL within a fixed bound", async () => {
+    const fixture = await createFixture({ doctorIgnoreTerm: true, expoOutput: currentAdvice })
+    const started = performance.now()
+    const result = await run(script, fixture, "ci", pullRequestEnvironment, testTimeoutEnvironment)
+    const elapsed = performance.now() - started
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain("Doctor timed out and was terminated")
+    expect(elapsed).toBeLessThan(5_000)
+    expect(await calls(fixture)).toEqual(["doctor offline=1"])
+  }, 10_000)
 
   test("CI cannot use the short test timeout", async () => {
     const fixture = await createFixture({ expoOutput: currentAdvice })
@@ -288,6 +355,8 @@ function hostileDrift(value: string): string {
 async function createFixture(options: {
   doctorExit?: number
   doctorHang?: boolean
+  doctorIgnoreTerm?: boolean
+  doctorOutput?: string
   doctorStderr?: string
   expoExit?: number
   expoHang?: boolean
@@ -298,9 +367,11 @@ async function createFixture(options: {
   fixtures.push(fixture)
   const bin = join(fixture, "node_modules/.bin")
   await mkdir(bin, { recursive: true })
-  const doctorHang = options.doctorHang
-    ? `trap 'printf "doctor terminated\\n" >> calls; exit 143' TERM\nwhile :; do :; done\n`
-    : `exit ${options.doctorExit ?? 0}\n`
+  const doctorHang = options.doctorIgnoreTerm
+    ? `trap '' TERM\nwhile :; do :; done\n`
+    : options.doctorHang
+      ? `trap 'printf "doctor terminated\\n" >> calls; exit 143' TERM\nwhile :; do :; done\n`
+      : `exit ${options.doctorExit ?? 0}\n`
   const expoHang = options.expoHang
     ? `trap 'printf "expo terminated\\n" >> calls; exit 143' TERM\nwhile :; do :; done\n`
     : `cat expo-output\nexit ${options.expoExit ?? 0}\n`
@@ -313,6 +384,15 @@ async function createFixture(options: {
     `#!/bin/sh\nif [ "${"$"}{EXPO_OFFLINE+x}" = x ]; then offline="${"$"}EXPO_OFFLINE"; else offline=absent; fi\nprintf 'expo offline=%s ci=%s args=%s\\n' "${"$"}offline" "${"$"}{CI:-}" "${"$"}*" >> calls\nprintf '%s' "${escapeShell(options.expoStderr ?? "")}" >&2\n${expoHang}`,
   )
   await writeFile(join(fixture, "expo-output"), options.expoOutput)
+  if (options.doctorOutput !== undefined) {
+    await writeFile(join(fixture, "doctor-output"), options.doctorOutput)
+    const doctorPath = join(bin, "expo-doctor")
+    const source = await readFile(doctorPath, "utf8")
+    await writeExecutable(
+      doctorPath,
+      source.replace(`${doctorHang}`, `cat doctor-output\n${doctorHang}`),
+    )
+  }
   return fixture
 }
 

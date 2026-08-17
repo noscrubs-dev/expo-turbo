@@ -40,7 +40,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "postinstall": "node scripts/link-react-peer.mjs",
+    "postinstall": "node scripts/link-react-peer.mjs && node scripts/materialize-installed-expo-turbo.mjs",
     "verify:installed-package": "node scripts/verify-installed-expo-turbo.mjs",
     "capabilities:write": "bun scripts/sync-capability-manifest.ts --write",
     "capabilities:check": "bun scripts/sync-capability-manifest.ts --check",
