@@ -1,0 +1,32 @@
+{
+  "baseline": "61bc0e8^",
+  "bunVersion": "1.3.14",
+  "unchangedPackagesSha256": "dd68d8f29d6935ba16d887476379af8719eed823deece15e2c4f8833fd737fa9",
+  "allowedPackageChanges": {
+    "@expo/cli": ["@expo/cli@57.0.15", "@expo/cli@57.0.16"],
+    "@expo/config": ["@expo/config@57.0.7", "@expo/config@57.0.8"],
+    "@expo/config/@expo/config-plugins": ["@expo/config-plugins@57.0.7", null],
+    "@expo/fingerprint": ["@expo/fingerprint@0.20.7", "@expo/fingerprint@0.20.8"],
+    "@expo/inline-modules": ["@expo/inline-modules@0.1.5", "@expo/inline-modules@0.1.6"],
+    "@expo/inline-modules/@expo/config-plugins": ["@expo/config-plugins@57.0.7", null],
+    "@expo/local-build-cache-provider/@expo/config": [null, "@expo/config@57.0.7"],
+    "@expo/local-build-cache-provider/@expo/config/@expo/config-plugins": [
+      null,
+      "@expo/config-plugins@57.0.7"
+    ],
+    "@expo/log-box": ["@expo/log-box@57.0.2", "@expo/log-box@57.0.3"],
+    "@expo/metro-config/@expo/config": [null, "@expo/config@57.0.7"],
+    "@expo/metro-config/@expo/config/@expo/config-plugins": [null, "@expo/config-plugins@57.0.7"],
+    "@expo/metro-runtime": ["@expo/metro-runtime@57.0.9", "@expo/metro-runtime@57.0.11"],
+    "@expo/prebuild-config/@expo/config": [null, "@expo/config@57.0.7"],
+    "@expo/prebuild-config/@expo/config/@expo/config-plugins": [
+      null,
+      "@expo/config-plugins@57.0.7"
+    ],
+    "expo": ["expo@57.0.13", "expo@57.0.14"],
+    "expo-asset": ["expo-asset@57.0.11", "expo-asset@57.0.12"],
+    "expo-constants": ["expo-constants@57.0.11", "expo-constants@57.0.12"],
+    "expo-router": ["expo-router@57.0.13", "expo-router@57.0.14"],
+    "expo-router/@expo/metro-runtime": ["@expo/metro-runtime@57.0.10", null]
+  }
+}

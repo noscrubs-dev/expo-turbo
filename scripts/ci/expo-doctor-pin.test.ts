@@ -55,6 +55,11 @@ test("Expo checks stay exact, locked, local, and wrapped in every workflow", asy
           `- run: ${escapeRegExp(wrapperCall)} (?:ci|release)\\n {8}working-directory: example/expo`,
         ),
       )
+      const job = workflow.source.slice(
+        workflow.source.lastIndexOf("\n  expo-example:", workflow.source.indexOf(wrapperCall)),
+        workflow.source.indexOf(wrapperCall),
+      )
+      expect(job).toContain("timeout-minutes: 45")
     }
   }
 
@@ -63,7 +68,8 @@ test("Expo checks stay exact, locked, local, and wrapped in every workflow", asy
     { name: "release.yml", call: `- run: ${wrapperCall} release` },
   ])
   expect(wrapper).toContain('runLocal("expo-doctor", [], { EXPO_OFFLINE: "1" })')
-  expect(wrapper).toContain('runLocal("expo", ["install", "--check", "--json"], { CI: "1" })')
+  expect(wrapper).toContain("EXPO_OFFLINE: undefined")
+  expect(wrapper).toContain("productionChildTimeoutMs")
   expect(wrapper).toContain('join(process.cwd(), "node_modules/.bin", binary)')
   expect(wrapper).not.toMatch(/\b(?:bunx|npx|npm\s+(?:exec|x))\b/)
 })

@@ -32,6 +32,9 @@
     "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
+  "overrides": {
+    "expo-constants": "$expo-constants"
+  },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",

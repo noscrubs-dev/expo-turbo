@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { writeSync } from "node:fs"
 import { appendFile } from "node:fs/promises"
 import { join } from "node:path"
 
@@ -7,9 +8,17 @@ const outputLimit = 64 * 1024
 const dependencyLimit = 100
 const renderedValueLimit = 160
 const driftExitStatus = 1
+const productionChildTimeoutMs = 3 * 60 * 1000
+const terminationGraceMs = 250
 
 type Lane = "pull_request" | "main" | "release"
-type CommandResult = { exitCode: number; stdout: string; stderr: string; overflow: boolean }
+type CommandResult = {
+  exitCode: number
+  stdout: string
+  stderr: string
+  overflow: boolean
+  timedOut: boolean
+}
 type DriftDependency = {
   packageName: string
   packageType: "dependencies" | "devDependencies"
@@ -26,28 +35,40 @@ async function main(): Promise<number> {
   if (lane === null) return fail("Expo CI policy could not identify a trusted lane.")
 
   const doctor = await runLocal("expo-doctor", [], { EXPO_OFFLINE: "1" })
-  if (doctor.overflow) return fail("Pinned Expo Doctor output exceeded the safety limit.")
+  if (doctor.timedOut) return fail("Locked Expo Doctor timed out and was terminated.")
+  if (doctor.overflow) return fail("Locked Expo Doctor output exceeded the safety limit.")
   if (doctor.exitCode !== 0) {
-    return fail(`Pinned Expo Doctor failed with exit status ${doctor.exitCode}.`)
+    return fail(`Locked Expo Doctor failed with exit status ${doctor.exitCode}.`)
   }
 
-  const sdkAdvice = await runLocal("expo", ["install", "--check", "--json"], { CI: "1" })
-  if (sdkAdvice.overflow) return fail("Fresh Expo SDK advice exceeded the safety limit.")
+  const sdkAdvice = await runLocal("expo", ["install", "--check", "--json"], {
+    CI: "1",
+    EXPO_OFFLINE: undefined,
+  })
+  if (sdkAdvice.timedOut) {
+    return fail("Live fresh Expo SDK advice was unavailable: the Expo CLI timed out.")
+  }
+  if (sdkAdvice.overflow) {
+    return fail("Live fresh Expo SDK advice was unavailable: output exceeded the safety limit.")
+  }
+  if (sdkAdvice.stderr.length > 0) {
+    return fail("Live fresh Expo SDK advice was unavailable: Expo CLI stderr was not empty.")
+  }
 
   const advice = parseAdvice(sdkAdvice.stdout, sdkAdvice.exitCode)
   if (advice.kind === "current") {
-    console.log("Pinned Expo Doctor and fresh Expo SDK advice passed.")
+    writeSync(1, "Locked Expo Doctor passed. Verified live fresh Expo SDK advice passed.\n")
     return 0
   }
   if (advice.kind === "invalid") {
     return fail(
-      `Fresh Expo SDK advice did not meet its JSON contract (exit status ${sdkAdvice.exitCode}).`,
+      `Live fresh Expo SDK advice was unavailable: JSON contract failed (exit status ${sdkAdvice.exitCode}).`,
     )
   }
 
   const evidence = renderDrift(advice.dependencies)
   if (lane === "pull_request") {
-    console.log(`::warning title=Expo SDK advice changed::${githubCommandValue(evidence)}`)
+    writeSync(1, `::warning title=Live Expo SDK advice changed::${githubCommandValue(evidence)}\n`)
     return 0
   }
 
@@ -55,10 +76,10 @@ async function main(): Promise<number> {
   if (summary) {
     await appendFile(
       summary,
-      `\n## Expo SDK advice changed\n\nThe fresh Expo SDK package map does not match this lockfile.\n\n${evidence}\n`,
+      `\n## Live Expo SDK advice changed\n\nThe verified live Expo SDK package map does not match this lockfile.\n\n${githubSummaryValue(evidence)}\n`,
     )
   }
-  return fail(`Fresh Expo SDK advice found dependency drift in the ${lane} lane.`)
+  return fail(`Verified live Expo SDK advice found dependency drift in the ${lane} lane.`)
 }
 
 function resolveLane(argument: string | undefined, env: NodeJS.ProcessEnv): Lane | null {
@@ -72,25 +93,53 @@ function resolveLane(argument: string | undefined, env: NodeJS.ProcessEnv): Lane
 async function runLocal(
   binary: "expo-doctor" | "expo",
   arguments_: string[],
-  overrides: Record<string, string>,
+  overrides: Record<string, string | undefined>,
 ): Promise<CommandResult> {
+  const env = { ...process.env }
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[name]
+    else env[name] = value
+  }
+
   const subprocess = Bun.spawn([join(process.cwd(), "node_modules/.bin", binary), ...arguments_], {
     cwd: process.cwd(),
-    env: { ...process.env, ...overrides },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [stdout, stderr] = await Promise.all([
-    readBounded(subprocess.stdout, () => subprocess.kill()),
-    readBounded(subprocess.stderr, () => subprocess.kill()),
+  let timedOut = false
+  let forceKill: ReturnType<typeof setTimeout> | undefined
+  const terminate = () => {
+    subprocess.kill("SIGTERM")
+    forceKill ??= setTimeout(() => subprocess.kill("SIGKILL"), terminationGraceMs)
+  }
+  const timeout = setTimeout(() => {
+    timedOut = true
+    terminate()
+  }, childTimeoutMs(process.env))
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    readBounded(subprocess.stdout, terminate),
+    readBounded(subprocess.stderr, terminate),
+    subprocess.exited,
   ])
-  const exitCode = await subprocess.exited
+  clearTimeout(timeout)
+  if (forceKill) clearTimeout(forceKill)
   return {
     exitCode,
     stdout: stdout.text,
     stderr: stderr.text,
     overflow: stdout.overflow || stderr.overflow,
+    timedOut,
   }
+}
+
+function childTimeoutMs(env: NodeJS.ProcessEnv): number {
+  if (env.GITHUB_ACTIONS !== "true" && env.EXPO_HEALTH_ALLOW_TEST_TIMEOUT === "1") {
+    const candidate = Number(env.EXPO_HEALTH_TEST_TIMEOUT_MS)
+    if (Number.isInteger(candidate) && candidate >= 25 && candidate <= 5_000) return candidate
+  }
+  return productionChildTimeoutMs
 }
 
 async function readBounded(
@@ -174,11 +223,19 @@ export function renderDrift(dependencies: DriftDependency[]): string {
 }
 
 function safeValue(value: string): string {
-  return value.replace(/[^A-Za-z0-9@/._+*^~<>=|:, -]/g, "?").slice(0, renderedValueLimit)
+  return value.replace(/[^A-Za-z0-9@/._+*^~=:, -]/g, "?").slice(0, renderedValueLimit)
 }
 
 export function githubCommandValue(value: string): string {
   return value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")
+}
+
+export function githubSummaryValue(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("@", "&#64;")
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,7 +252,7 @@ function isBoundedString(value: unknown): value is string {
 }
 
 function fail(message: string): number {
-  console.error(`ERROR: ${message}`)
+  writeSync(2, `ERROR: ${message}\n`)
   return 1
 }
 
