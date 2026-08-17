@@ -68,19 +68,94 @@ describe("the Android lane's use of the Maestro pin", () => {
   // seconds, and a second reading taken at cleanup can report a version the
   // run was never proven against. Both are what this issue was about, so the
   // order and the single measurement are held here rather than only in review.
-  test("asserts the pin before any install, build, or device work", async () => {
-    const lane = await readFile(join(dirname(checkScript), "run-android-maestro.sh"), "utf8")
-
-    expect(lane.indexOf("check-maestro-version.sh")).toBeGreaterThan(0)
-    expect(lane.indexOf("bun install")).toBeGreaterThan(lane.indexOf("check-maestro-version.sh"))
+  test("asserts the pin before every protected lane command", async () => {
+    assertLaneGuard(await readLane())
   })
 
-  test("records the asserted version as its Maestro evidence", async () => {
-    const lane = await readFile(join(dirname(checkScript), "run-android-maestro.sh"), "utf8")
+  test("rejects every protected command category when it moves above the guard", async () => {
+    const lane = await readLane()
 
-    expect(lane).toContain('echo "maestro=$maestro_version"')
+    for (const protectedCommand of protectedCommands) {
+      const mutation = lane.replace(maestroGuard, `${protectedCommand.mutation}\n${maestroGuard}`)
+      expect(() => assertLaneGuard(mutation)).toThrow(protectedCommand.name)
+    }
+  })
+
+  test("rejects a second Maestro version measurement", async () => {
+    const lane = await readLane()
+    const mutation = lane.replace(maestroGuard, `${maestroGuard}\nmaestro --version`)
+
+    expect(() => assertLaneGuard(mutation)).toThrow("maestro --version")
+  })
+
+  test("rejects a second environment record of the asserted value", async () => {
+    const lane = await readLane()
+    const mutation = lane.replace(maestroEvidence, `${maestroEvidence}\n    ${maestroEvidence}`)
+
+    expect(() => assertLaneGuard(mutation)).toThrow("exactly once")
   })
 })
+
+const maestroGuard = 'maestro_version="$("$script_dir/check-maestro-version.sh")"'
+const maestroEvidence = 'echo "maestro=$maestro_version"'
+const protectedCommands = [
+  {
+    name: "package install",
+    pattern: /\bbun install\b|\bgem install\b|\bbundle install\b/g,
+    mutation: "bun install --frozen-lockfile",
+  },
+  { name: "package build", pattern: /\bbun run build\b/g, mutation: "bun run build" },
+  {
+    name: "native build",
+    pattern: /\bbun x expo prebuild\b|\.\/gradlew\b/g,
+    mutation: "./gradlew app:assembleRelease",
+  },
+  {
+    name: "emulator or ADB",
+    pattern: /\badb(?:\s|$)|\$ANDROID_HOME\/emulator\/emulator/g,
+    mutation: "adb kill-server",
+  },
+  { name: "Rails", pattern: /\bbundle exec rails server\b/g, mutation: "bundle exec rails server" },
+  {
+    name: "Maestro suite",
+    pattern: /\bmaestro --device\b/g,
+    mutation: "maestro --device emulator-5580 test .maestro",
+  },
+]
+
+function assertLaneGuard(lane: string): void {
+  const executableLane = lane
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n")
+  const guardIndex = executableLane.indexOf(maestroGuard)
+
+  expect(guardIndex).toBeGreaterThan(0)
+  expect(executableLane.split(maestroGuard)).toHaveLength(2)
+
+  for (const protectedCommand of protectedCommands) {
+    const matches = [...executableLane.matchAll(protectedCommand.pattern)]
+    if (matches.length === 0) {
+      throw new Error(`${protectedCommand.name}: no current command matched`)
+    }
+    for (const match of matches) {
+      if ((match.index ?? -1) < guardIndex) {
+        throw new Error(`${protectedCommand.name}: protected command precedes version guard`)
+      }
+    }
+  }
+
+  if (/\bmaestro\s+--version\b/.test(executableLane)) {
+    throw new Error("maestro --version must not measure the lane version again")
+  }
+  if (executableLane.split(maestroEvidence).length !== 2) {
+    throw new Error("the asserted Maestro value must be recorded exactly once")
+  }
+}
+
+async function readLane(): Promise<string> {
+  return readFile(join(dirname(checkScript), "run-android-maestro.sh"), "utf8")
+}
 
 async function fakeMaestro(body: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "expo-turbo-maestro-pin-"))

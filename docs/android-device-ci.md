@@ -100,17 +100,32 @@ guard is verified without a device.
 Install exactly the pinned version on the runner, as `expo-ci`:
 
 ```sh
-export MAESTRO_VERSION=2.7.0
-curl -fsSL https://get.maestro.mobile.dev | bash
+readonly maestro_version="2.7.0"
+readonly maestro_sha256="a4ccab6b604617e7aef6db4f885666056eabe5cfa32befaa3bc994041b8fcbb5"
+readonly maestro_url="https://github.com/mobile-dev-inc/Maestro/releases/download/cli-${maestro_version}/maestro.zip"
+maestro_tmp="$(mktemp -d)"
+trap 'rm -rf -- "$maestro_tmp"' EXIT
+
+curl --fail --location --silent --show-error \
+  --output "$maestro_tmp/maestro.zip" "$maestro_url"
+printf '%s  %s\n' "$maestro_sha256" "$maestro_tmp/maestro.zip" |
+  sha256sum --check --strict -
+unzip -q "$maestro_tmp/maestro.zip" -d "$maestro_tmp/extracted"
+test -x "$maestro_tmp/extracted/maestro/bin/maestro"
+
+readonly maestro_install="$HOME/.local/opt/maestro-${maestro_version}-${maestro_sha256}"
+install -d "$HOME/.local/opt" "$HOME/.local/bin"
+test ! -e "$maestro_install"
+mv "$maestro_tmp/extracted/maestro" "$maestro_install"
+ln -sfn "$maestro_install/bin/maestro" "$HOME/.local/bin/maestro"
+"$HOME/.local/bin/maestro" --version
 ```
 
-The installer writes to `$HOME/.maestro` and edits an interactive shell
-profile. The lane runs in a non-interactive shell and puts `$HOME/.local/bin`
-first on `PATH`, so make the installed entrypoint reachable there:
-
-```sh
-ln -sf "$HOME/.maestro/bin/maestro" "$HOME/.local/bin/maestro"
-```
+The URL and SHA-256 are the official `cli-2.7.0` GitHub release asset and its
+`checksums_sha256.txt` value. The lane runs in a non-interactive shell and puts
+`$HOME/.local/bin` first on `PATH`. The checksum gate runs before extraction,
+and the version plus checksum in the install path prevent a partial download
+from replacing another Maestro installation.
 
 Changing the Maestro version means editing the pin in
 `scripts/ci/check-maestro-version.sh`, updating the inventory above, installing
