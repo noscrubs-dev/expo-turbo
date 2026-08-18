@@ -48,6 +48,7 @@ async function assertArtifactContract(
     "maestro-bootstrap-attempt-$attempt.log",
     "maestro-bootstrap-attempt-$attempt-retry.log",
     "maestro-transport-trigger-attempt-$attempt.txt",
+    "maestro-monitor-startup-attempt-$attempt.txt",
     "maestro-tests-bootstrap-attempt-$attempt",
     "maestro-debug-bootstrap-attempt-$attempt",
     "maestro-tests-bootstrap-attempt-$attempt-retry",
@@ -77,9 +78,10 @@ async function assertArtifactContract(
     throw new Error("the emulator bootstrap artifact paths must use the suite attempt number")
   }
   if (
-    !runner.includes('capture_attempt_evidence 1 "$first_status"') ||
-    !runner.includes('capture_attempt_evidence 2 "$second_status"') ||
-    !runner.includes(': >"$rails_log"')
+    !runner.includes('capture_attempt_evidence 1 "$first_status" 1') ||
+    !runner.includes('capture_attempt_evidence 2 "$second_status" "$rails_attempt_2_start_byte"') ||
+    !runner.includes('rails_attempt_2_start_byte=$(($(wc -c <"$rails_log") + 1))') ||
+    runner.includes('stop_emulator_for_retry\n: >"$rails_log"')
   ) {
     throw new Error("suite retries must preserve and separate both attempts")
   }
@@ -142,10 +144,33 @@ describe("Android Maestro artifacts", () => {
     ).rejects.toThrow(/pinned upload action/)
     await expect(
       assertArtifactContract(
-        runner.replace('capture_attempt_evidence 2 "$second_status"', "true"),
+        runner.replace(
+          'capture_attempt_evidence 2 "$second_status" "$rails_attempt_2_start_byte"',
+          "true",
+        ),
         workflow,
         version,
       ),
     ).rejects.toThrow(/preserve and separate/)
+  })
+
+  test("keeps readable Rails evidence without truncation or NUL holes", async () => {
+    const runner = await readFile(join(root, "scripts/ci/run-android-maestro.sh"), "utf8")
+    expect(runner).not.toContain('stop_emulator_for_retry\n: >"$rails_log"')
+
+    const fixture = await mkdtemp(join(tmpdir(), "rails-attempt-evidence-"))
+    const rails = join(fixture, "rails.log")
+    const attempt1 = "attempt one request\nattempt one response\n"
+    const attempt2 = "attempt two request\nattempt two response\n"
+    await writeFile(rails, attempt1)
+    const boundary = (await readFile(rails)).byteLength + 1
+    await Bun.write(rails, attempt1 + attempt2)
+    const bytes = await readFile(rails)
+    const secondEvidence = bytes.subarray(boundary - 1).toString()
+
+    expect(bytes.includes(0)).toBe(false)
+    expect(bytes.toString()).toContain("attempt one response")
+    expect(bytes.toString()).toContain("attempt two response")
+    expect(secondEvidence).toBe(attempt2)
   })
 })

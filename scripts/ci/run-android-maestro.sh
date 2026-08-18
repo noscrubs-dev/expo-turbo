@@ -65,7 +65,7 @@ is_adb_transport_failure() {
   # These messages come from ADB or Maestro's device server. Do not include
   # selector timeouts, assertions, application crashes, or generic exceptions:
   # those are product/test failures and must remain failures.
-  grep -Eiq "$adb_transport_pattern" "$log"
+  grep -Eq "$adb_transport_pattern" "$log"
 }
 
 should_retry_transport_failure() {
@@ -85,6 +85,78 @@ file_identity() {
   local path="$1"
 
   stat --format='%d:%i' "$path" 2>/dev/null
+}
+
+is_valid_process_identity() {
+  local identity="$1"
+
+  [[ "$identity" =~ ^[0-9]+[[:space:]].*[[:space:]][0-9]{4}$ ]]
+}
+
+is_valid_file_identity() {
+  local identity="$1"
+
+  [[ "$identity" =~ ^[0-9]+:[1-9][0-9]*$ ]]
+}
+
+initialize_maestro_run_log() {
+  local run_log="$1"
+  local stream_marker="$2"
+
+  : >"$run_log"
+  printf '%s\n' "$stream_marker" >>"$run_log"
+}
+
+write_monitor_startup_failure() {
+  local artifact="$1"
+  local diagnostic="$2"
+  local process_value="$3"
+  local file_value="$4"
+
+  {
+    echo "state=monitor_startup_failed"
+    echo "diagnostic=$diagnostic"
+    echo "process_identity=$process_value"
+    echo "file_identity=$file_value"
+    echo "action=fail closed without signalling an unproven PID"
+  } >"$artifact"
+  echo "$diagnostic: live Maestro transport monitoring could not start; failing closed." >&2
+}
+
+record_monitor_safety_failure() {
+  local artifact="$1"
+  local attempt="$2"
+  local state="$3"
+  local diagnostic="$4"
+  local detail="$5"
+
+  {
+    echo "attempt=$attempt"
+    echo "state=$state"
+    echo "diagnostic=$diagnostic"
+    echo "$detail"
+    echo "action=do not signal the Maestro PID; fail the suite closed"
+  } >"$artifact"
+  echo "$diagnostic: live Maestro transport proof failed; no process was signalled." >&2
+}
+
+drain_log_stream() {
+  local pid="$1"
+  local checks="$2"
+  local poll_interval="$3"
+  local _
+  local process_state=""
+
+  for _ in $(seq 1 "$checks"); do
+    process_state="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+    if ! kill -0 "$pid" 2>/dev/null || [[ "$process_state" == *Z* ]]; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep "$poll_interval"
+  done
+
+  return 1
 }
 
 run_named_adb_command() {
@@ -590,11 +662,18 @@ snapshot_reverse_evidence() {
 capture_attempt_evidence() {
   local attempt="$1"
   local status="$2"
+  local rails_start_byte="${3:-1}"
   local path
 
   timeout 15 adb -s "$adb_serial" logcat -d \
     >"$artifacts/logcat-attempt-$attempt.txt" 2>&1 || true
-  cp "$rails_log" "$artifacts/rails-attempt-$attempt.log" 2>/dev/null || true
+  {
+    echo "attempt=$attempt"
+    echo "source=$rails_log"
+    echo "start_byte=$rails_start_byte"
+    echo "content_begin"
+    tail -c +"$rails_start_byte" "$rails_log" 2>/dev/null || true
+  } >"$artifacts/rails-attempt-$attempt.log"
   {
     echo "attempt=$attempt"
     echo "suite_exit_status=$status"
@@ -631,14 +710,18 @@ monitor_maestro_transport() {
   local actual_process_identity=""
   local first_line=""
   local matched_line=""
-  local stream_marker="EXPO_TURBO_MAESTRO_STREAM invocation=$invocation_token pid=$pid"
+  local stream_marker="EXPO_TURBO_MAESTRO_STREAM invocation=$invocation_token"
 
   while kill -0 "$pid" 2>/dev/null; do
-    if [ -s "$run_log" ]; then
-      IFS= read -r first_line <"$run_log" || true
-      if [ "$first_line" != "$stream_marker" ]; then
-        return 0
-      fi
+    IFS= read -r first_line <"$run_log" || true
+    if [ "$first_line" != "$stream_marker" ]; then
+      record_monitor_safety_failure \
+        "$trigger_log" \
+        "$attempt" \
+        "stream_marker_validation_failed" \
+        "MAESTRO_STREAM_MARKER_INVALID" \
+        "expected_marker=$stream_marker actual_first_line=$first_line"
+      return 2
     fi
 
     if matched_line="$(
@@ -648,11 +731,33 @@ monitor_maestro_transport() {
     )"; then
       actual_process_identity="$(process_identity "$pid")"
       actual_file_identity="$(file_identity "$run_log")"
-      if [ -z "$expected_process_identity" ] ||
-        [ "$actual_process_identity" != "$expected_process_identity" ] ||
-        [ -z "$expected_file_identity" ] ||
+      if ! is_valid_process_identity "$actual_process_identity"; then
+        record_monitor_safety_failure \
+          "$trigger_log" \
+          "$attempt" \
+          "identity_validation_failed" \
+          "MAESTRO_MONITOR_PROCESS_IDENTITY_INVALID" \
+          "actual_process_identity=$actual_process_identity"
+        return 2
+      fi
+      if ! is_valid_file_identity "$actual_file_identity"; then
+        record_monitor_safety_failure \
+          "$trigger_log" \
+          "$attempt" \
+          "identity_validation_failed" \
+          "MAESTRO_MONITOR_FILE_IDENTITY_INVALID" \
+          "actual_file_identity=$actual_file_identity"
+        return 2
+      fi
+      if [ "$actual_process_identity" != "$expected_process_identity" ] ||
         [ "$actual_file_identity" != "$expected_file_identity" ]; then
-        return 0
+        record_monitor_safety_failure \
+          "$trigger_log" \
+          "$attempt" \
+          "identity_validation_failed" \
+          "MAESTRO_MONITOR_IDENTITY_CHANGED" \
+          "expected_process_identity=$expected_process_identity actual_process_identity=$actual_process_identity expected_file_identity=$expected_file_identity actual_file_identity=$actual_file_identity"
+        return 2
       fi
       {
         echo "attempt=$attempt"
@@ -678,27 +783,49 @@ run_maestro_suite() {
   local test_output="$artifacts/maestro-tests-attempt-$attempt"
   local debug_output="$artifacts/maestro-debug-attempt-$attempt"
   local trigger_log="$artifacts/maestro-transport-trigger-attempt-$attempt.txt"
+  local startup_log="$artifacts/maestro-monitor-startup-attempt-$attempt.txt"
   local invocation_token="attempt-$attempt-worker-$$-$(date +%s%N)"
+  local stream_marker="EXPO_TURBO_MAESTRO_STREAM invocation=$invocation_token"
   local maestro_process_identity=""
   local run_log_identity=""
   local status
 
-  rm -f "$run_log" "$trigger_log"
+  rm -f "$trigger_log" "$startup_log"
+  initialize_maestro_run_log "$run_log" "$stream_marker"
 
   set +e
-  (
-    printf 'EXPO_TURBO_MAESTRO_STREAM invocation=%s pid=%s\n' "$invocation_token" "$BASHPID"
-    exec maestro --device "$adb_serial" test \
+  maestro --device "$adb_serial" test \
       --format junit \
       --output "$junit" \
       --test-output-dir "$test_output" \
       --debug-output "$debug_output" \
       --flatten-debug-output \
-      "$maestro_flow_path"
-  ) >"$run_log" 2>&1 &
+      "$maestro_flow_path" >>"$run_log" 2>&1 &
   maestro_pid=$!
   maestro_process_identity="$(process_identity "$maestro_pid")"
   run_log_identity="$(file_identity "$run_log")"
+
+  if ! is_valid_process_identity "$maestro_process_identity"; then
+    write_monitor_startup_failure \
+      "$startup_log" \
+      "MAESTRO_MONITOR_PROCESS_IDENTITY_INVALID" \
+      "$maestro_process_identity" \
+      "$run_log_identity"
+    maestro_pid=""
+    set -e
+    return 70
+  fi
+  if ! is_valid_file_identity "$run_log_identity"; then
+    write_monitor_startup_failure \
+      "$startup_log" \
+      "MAESTRO_MONITOR_FILE_IDENTITY_INVALID" \
+      "$maestro_process_identity" \
+      "$run_log_identity"
+    maestro_pid=""
+    set -e
+    return 70
+  fi
+
   tail --pid="$maestro_pid" --sleep-interval=0.1 -n +1 -f "$run_log" &
   maestro_log_stream_pid=$!
   monitor_maestro_transport \
@@ -717,7 +844,14 @@ run_maestro_suite() {
 
   stop_process "$maestro_transport_monitor_pid" "Maestro transport monitor" 50 50 0.1
   maestro_transport_monitor_pid=""
-  stop_process "$maestro_log_stream_pid" "Maestro log stream" 50 50 0.1
+  if grep -Eq '^state=(stream_marker_validation_failed|identity_validation_failed)$' \
+    "$trigger_log" 2>/dev/null; then
+    status=70
+  fi
+  if ! drain_log_stream "$maestro_log_stream_pid" 40 0.05; then
+    echo "Maestro log stream did not self-exit within 2 seconds; the saved attempt log remains authoritative." >&2
+    stop_process "$maestro_log_stream_pid" "Maestro log stream" 50 50 0.1
+  fi
   maestro_log_stream_pid=""
   maestro_pid=""
 
@@ -730,13 +864,17 @@ run_maestro_suite() {
 start_and_prepare_emulator 1
 
 if run_maestro_suite 1; then
-  capture_attempt_evidence 1 0
+  capture_attempt_evidence 1 0 1
   exit 0
 else
   first_status=$?
 fi
 
-capture_attempt_evidence 1 "$first_status"
+capture_attempt_evidence 1 "$first_status" 1
+
+if [ "$first_status" -eq 70 ]; then
+  exit "$first_status"
+fi
 
 if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"; then
   exit "$first_status"
@@ -744,14 +882,14 @@ fi
 
 echo "Maestro lost proven ADB transport; restarting the emulator and retrying the full suite once." >&2
 stop_emulator_for_retry
-: >"$rails_log"
+rails_attempt_2_start_byte=$(($(wc -c <"$rails_log") + 1))
 start_and_prepare_emulator 2
 
 if run_maestro_suite 2; then
-  capture_attempt_evidence 2 0
+  capture_attempt_evidence 2 0 "$rails_attempt_2_start_byte"
   exit 0
 else
   second_status=$?
-  capture_attempt_evidence 2 "$second_status"
+  capture_attempt_evidence 2 "$second_status" "$rails_attempt_2_start_byte"
   exit "$second_status"
 fi

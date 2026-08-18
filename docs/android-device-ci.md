@@ -87,16 +87,19 @@ starting Maestro. This changes only disposable emulator state.
 
 The lane builds dependencies and the release APK once. If the first suite
 attempt reports an explicit ADB or Maestro device-server loss, the runner
-preserves the first attempt's logs and JUnit, restarts and reprovisions a clean
-emulator, and reruns the complete suite once against the same APK. The failed
-flow does not need a zero-second duration. Assertion failures, selector
-timeouts, app crashes, and a failed second attempt remain failures. Chrome
-bootstrap also retries only after the same explicit transport evidence.
+preserves the first attempt's logs and, when Maestro produced it before TERM or
+KILL, its JUnit. The runner always preserves the attempt log, transport trigger,
+Rails byte-range log, logcat, environment state, and Maestro debug output. It
+then restarts and reprovisions a clean emulator and reruns the complete suite
+once against the same APK. The failed flow does not need a zero-second duration.
+Assertion failures, selector timeouts, app crashes, and a failed second attempt
+remain failures. Chrome bootstrap also retries only after the same explicit
+transport evidence.
 
 During each full-suite attempt, a live monitor checks the attempt log every
-0.2 seconds. The lane removes the old log path and creates a new stream for the
-attempt. The stream starts with a unique invocation token and the exact Maestro
-PID. The monitor reads only lines after that marker. Before it stops the
+0.2 seconds. The runner creates or truncates the active log before monitor
+startup. The first line contains a unique invocation token. The monitor reads
+only lines after that marker. Before it stops the
 process, it proves that the PID still has the captured parent and start time and
 that the log still has the captured device and inode. It accepts only a full
 line with an ADB offline, missing-device, or `DeviceServerDiedException`
@@ -121,6 +124,10 @@ media-scan logs. A retry cannot overwrite evidence from the event that caused
 it.
 `--flatten-debug-output` puts each `maestro.log` directly in its already
 unique debug directory.
+
+The console stream gets a two-second, condition-based drain window after
+Maestro exits. If it does not exit in that bound, cleanup stops only the stream.
+The complete saved attempt log remains authoritative.
 
 ## Failure and staleness alert
 
