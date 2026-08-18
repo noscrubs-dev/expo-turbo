@@ -159,7 +159,7 @@ describe("Android lane cleanup", () => {
     expect(environment).toContain("evidence_complete=true")
   })
 
-  test("runs cleanup only from EXIT and maps INT and TERM to conventional statuses", async () => {
+  test("runs cleanup only from EXIT and uses the anchored supervisor contract", async () => {
     const lane = await readFile(laneScript, "utf8")
     const entry = await readFile(entryScript, "utf8")
     const supervisor = await readFile(entrySupervisor, "utf8")
@@ -171,16 +171,16 @@ describe("Android lane cleanup", () => {
     ).toThrow("cleanup must run only from EXIT")
     expect(() =>
       assertEntrySignalContract(
-        entry.replace("trap 'forward_signal INT 130' INT", ": INT trap removed"),
-        supervisor.replace('"INT" => 130', '"INT" => 131'),
+        entry,
+        supervisor.replace('{"I" => 130, "T" => 143}', '{"I" => 131, "T" => 143}'),
       ),
     ).toThrow("entry signal handlers")
     expect(() =>
       assertEntrySignalContract(
         entry,
         supervisor.replaceAll(
-          "Process.kill(signal, -worker_pgid)",
-          "Process.kill(signal, worker_pgid)",
+          "Process.kill(signal, -@anchor_pgid)",
+          "Process.kill(signal, @anchor_pgid)",
         ),
       ),
     ).toThrow("entire worker group")
@@ -222,8 +222,8 @@ describe("Android lane cleanup", () => {
   test("the real entry wrapper runs from a checkout path that contains spaces", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
     const shellSpawn = supervisor.replace(
-      "Process.spawn([worker, worker], pgroup: true)",
-      "Process.spawn(worker, pgroup: true)",
+      "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
+      "Process.spawn(@worker, pgroup: @anchor_pgid)",
     )
     expect(shellSpawn).not.toBe(supervisor)
 
@@ -263,8 +263,8 @@ while true; do sleep 0.05; done
 
     const supervisor = await readFile(entrySupervisor, "utf8")
     const dropsLaterSignal = supervisor.replace(
-      "    pending_signals << signal",
-      "    pending_signals << signal unless cancellation_status",
+      "    result = @signal_writer.write_nonblock(code, exception: false)",
+      "    return if @first_signal\n    result = @signal_writer.write_nonblock(code, exception: false)",
     )
     expect(dropsLaterSignal).not.toBe(supervisor)
     const mutationFixture = await createFixture()
@@ -304,16 +304,13 @@ while true; do sleep 0.05; done
     expect(result.status, result.stderr).toBe(130)
     expect(result.elapsed).toBeLessThan(4_000)
     expect(result.stderr).toContain(
-      "Android entry worker did not stop after cancellation; cleaning its owned process group.",
+      "Android entry worker did not stop before the cancellation deadline.",
     )
     expect(await recordedWorkerIsRunning(fixture)).toBe(false)
     expect(isRunning(await readPid(fixture, "descendant-pid"))).toBe(false)
 
     const supervisor = await readFile(entrySupervisor, "utf8")
-    const noKill = supervisor.replace(
-      '    Process.kill("KILL", -worker_pgid)',
-      "    nil # KILL escalation removed",
-    )
+    const noKill = supervisor.replace('    signal_group("KILL")', "    nil # group KILL removed")
     expect(noKill).not.toBe(supervisor)
     const mutationFixture = await createFixture()
     const mutation = await runEntrySignalSequence(
@@ -337,180 +334,171 @@ while true; do sleep 0.05; done
     ).toBe(false)
   }, 20_000)
 
-  test("a worker that exits during startup keeps status 37 through a signal race", async () => {
-    const supervisor = await readFile(entrySupervisor, "utf8")
-    const mutation = supervisor
-      .replace(
-        "worker_pid = Process.spawn([worker, worker], pgroup: true)",
-        "worker_pid = Process.spawn([worker, worker], pgroup: true)\nsleep 1",
+  for (const workerStatus of [0, 37] as const) {
+    test(`TERM recorded immediately before worker status ${workerStatus} always wins`, async () => {
+      const supervisor = (await readFile(entrySupervisor, "utf8")).replace(
+        "TERM_GRACE = 0.25",
+        "TERM_GRACE = 0.001",
       )
-      .replace("  break if worker_status\n\n  begin", "  exit 70 if worker_status\n\n  begin")
-    expect(mutation).not.toBe(supervisor)
-
-    const fastExitFixture = await createFixture()
-    const fastExitResult = await runEntryWorker(fastExitFixture, "exit 37\n")
-    expect(fastExitResult.timedOut, fastExitResult.stderr).toBe(false)
-    expect(fastExitResult.status, fastExitResult.stderr).toBe(37)
-
-    const signalFixture = await createFixture()
-    const delayedSupervisor = supervisor.replace(
-      "worker_pid = Process.spawn([worker, worker], pgroup: true)",
-      "worker_pid = Process.spawn([worker, worker], pgroup: true)\nsleep 1",
-    )
-    const signalResult = await runEntryWorker(
-      signalFixture,
-      'printf "ready\\n" >"$FIXTURE/worker-exited"\nexit 37\n',
-      undefined,
-      delayedSupervisor,
-      "SIGTERM",
-    )
-    expect(signalResult.timedOut, signalResult.stderr).toBe(false)
-    expect(signalResult.status, signalResult.stderr).toBe(37)
-
-    const fixture = await createFixture()
-    const result = await runEntryWorker(fixture, "exit 37\n", undefined, mutation)
-    expect(result.status).toBe(70)
-  })
-
-  for (const [exitStatus, errorName] of [
-    [0, "ESRCH"],
-    [37, "EPERM"],
-  ] as const) {
-    test(`fails and cleans live descendants after a status ${exitStatus} leader becomes a zombie`, async () => {
-      const supervisor = await readFile(entrySupervisor, "utf8")
-      const errorAfterExit = supervisor.replace(
-        `  cancellation_deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1 if cancellation_status
-
-  while (signal = pending_signals.shift)
-    begin
-      Process.kill(signal, -worker_pgid)`,
-        `  cancellation_deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1 if cancellation_status
-
-  while (signal = pending_signals.shift)
-    begin
-      File.write(File.join(ENV.fetch("FIXTURE"), "forward-attempt"), "")
-      loop do
-        worker_state = IO.popen(["ps", "-o", "stat=", "-p", worker_pid.to_s], &:read).strip
-        break if worker_state.start_with?("Z")
-
-        Thread.pass
-      end
-      raise Errno::${errorName}`,
-      )
-      expect(errorAfterExit).not.toBe(supervisor)
-      expect(errorAfterExit).toContain(`raise Errno::${errorName}`)
-
-      const worker = `trap '' INT TERM
-printf '%s\\n' "$$" >"$FIXTURE/worker-pid"
-sleep 30 &
-printf '%s\\n' "$!" >"$FIXTURE/descendant-pid"
-printf 'ready\\n' >"$FIXTURE/worker-ready"
-while [ ! -e "$FIXTURE/forward-attempt" ]; do :; done
-exit ${exitStatus}
-`
-      const fixture = await createFixture()
-      const result = await runEntryWorker(
-        fixture,
-        worker,
-        undefined,
-        errorAfterExit,
-        "SIGTERM",
-        "worker-ready",
-      )
-      const workerPid = Number((await readFile(join(fixture, "worker-pid"), "utf8")).trim())
-      const descendantPid = await readPid(fixture, "descendant-pid")
-
-      expect(result.timedOut, result.stderr).toBe(false)
-      expect(result.status, result.stderr).toBe(70)
-      expect(result.stderr).toContain(
-        "Android entry could not forward TERM to its owned worker process group",
-      )
-      expect(isRunning(workerPid)).toBe(false)
-      expect(isRunning(descendantPid)).toBe(false)
-
-      const acceptsLeaderStatus = errorAfterExit.replace(
-        "      worker_status = wait_for_worker(worker_pid)",
-        "      worker_status = wait_for_worker(worker_pid)\n      exit worker_status.exitstatus if worker_status",
-      )
-      expect(acceptsLeaderStatus).not.toBe(errorAfterExit)
-      const mutationFixture = await createFixture()
-      const mutation = await runEntryWorker(
-        mutationFixture,
-        worker,
-        undefined,
-        acceptsLeaderStatus,
-        "SIGTERM",
-        "worker-ready",
-      )
-      const mutationDescendantPid = await readPid(mutationFixture, "descendant-pid")
-      if (isRunning(mutationDescendantPid)) survivingPids.push(mutationDescendantPid)
-      expect(
-        !mutation.timedOut &&
-          mutation.status === 70 &&
-          !isRunning(mutationDescendantPid) &&
-          mutation.stderr.includes(
-            "Android entry could not forward TERM to its owned worker process group",
-          ),
-      ).toBe(false)
-    }, 15_000)
+      for (let repetition = 0; repetition < 40; repetition += 1) {
+        const fixture = await createFixture()
+        const result = await runEntryScenario(
+          fixture,
+          `trap '' INT TERM
+printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+printf 'ready\\n' >"$FIXTURE/race-ready"
+while [ ! -e "$FIXTURE/race-release" ]; do sleep 0.001; done
+exit ${workerStatus}
+`,
+          async (pid) => {
+            await waitForFile(join(fixture, "race-ready"))
+            process.kill(pid, "SIGTERM")
+            await Bun.sleep(2)
+            await writeFile(join(fixture, "race-release"), "")
+          },
+          supervisor,
+        )
+        expect(result.timedOut, result.stderr).toBe(false)
+        expect(result.status, result.stderr).toBe(143)
+      }
+    }, 45_000)
   }
 
-  test("fails visibly and cleans the proved group when forwarding gets EPERM while live", async () => {
+  test("cancellation after anchor readiness does not start the worker", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
-    const liveEperm = supervisor.replace(
-      `  cancellation_deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1 if cancellation_status
-
-  while (signal = pending_signals.shift)
-    begin
-      Process.kill(signal, -worker_pgid)`,
-      `  cancellation_deadline ||= Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1 if cancellation_status
-
-  while (signal = pending_signals.shift)
-    begin
-      raise Errno::EPERM`,
+    const barrier = supervisor.replace(
+      "    drain_signals(forward: false)\n    return finish_without_worker if cancelled?",
+      `    File.write(File.join(ENV.fetch("FIXTURE"), "anchor-ready"), "")
+    sleep POLL_INTERVAL until File.exist?(File.join(ENV.fetch("FIXTURE"), "anchor-release"))
+    drain_signals(forward: false)
+    return finish_without_worker if cancelled?`,
     )
-    expect(liveEperm).not.toBe(supervisor)
+    expect(barrier).not.toBe(supervisor)
+    const fixture = await createFixture()
+    const result = await runEntryScenario(
+      fixture,
+      'printf "started\\n" >"$FIXTURE/worker-started"\nexit 0\n',
+      async (pid) => {
+        await waitForFile(join(fixture, "anchor-ready"))
+        process.kill(pid, "SIGTERM")
+        await Bun.sleep(20)
+        await writeFile(join(fixture, "anchor-release"), "")
+      },
+      barrier,
+    )
+    expect(result.status, result.stderr).toBe(143)
+    expect(await Bun.file(join(fixture, "worker-started")).exists()).toBe(false)
+  })
 
+  test("a worker exit keeps status 37 and the sweep removes its live descendant", async () => {
     const fixture = await createFixture()
     const result = await runEntryWorker(
       fixture,
-      `printf '%s\\n' "$$" >"$FIXTURE/worker-pid"
-sleep 30 &
+      `sleep 30 &
 printf '%s\\n' "$!" >"$FIXTURE/descendant-pid"
-printf 'ready\\n' >"$FIXTURE/worker-ready"
-wait
+exit 37
 `,
-      undefined,
-      liveEperm,
-      "SIGTERM",
-      "worker-ready",
     )
-    const workerPid = Number((await readFile(join(fixture, "worker-pid"), "utf8")).trim())
-    const descendantPid = Number((await readFile(join(fixture, "descendant-pid"), "utf8")).trim())
-
-    expect(result.timedOut, result.stderr).toBe(false)
-    expect(result.status, result.stderr).toBe(70)
-    expect(result.stderr).toBe(
-      "Android entry could not forward TERM to its owned worker process group (EPERM).\n",
-    )
-    expect(isRunning(workerPid)).toBe(false)
-    expect(isRunning(descendantPid)).toBe(false)
+    expect(result.status, result.stderr).toBe(37)
+    expect(isRunning(await readPid(fixture, "descendant-pid"))).toBe(false)
   })
 
-  test("the entry wrapper fails closed when process-group validation is removed", async () => {
+  test("anchor EOF during RUNNING is safety status 70 and cleans the worker", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const exposedAnchor = supervisor.replace(
+      "    spawn_worker",
+      '    File.write(File.join(ENV.fetch("FIXTURE"), "anchor-pid"), @anchor_pid.to_s)\n    spawn_worker',
+    )
+    const fixture = await createFixture()
+    const result = await runEntryScenario(
+      fixture,
+      `printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+printf 'ready\\n' >"$FIXTURE/worker-ready"
+while true; do sleep 0.01; done
+`,
+      async () => {
+        await waitForFile(join(fixture, "worker-ready"))
+        process.kill(await readPid(fixture, "anchor-pid"), "SIGKILL")
+      },
+      exposedAnchor,
+    )
+    expect(result.status, result.stderr).toBe(70)
+    expect(result.stderr).toContain("anchor liveness channel closed")
+    expect(await recordedWorkerIsRunning(fixture)).toBe(false)
+  })
+
+  test("startup proof failure is bounded and does not print a Ruby stack trace", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const mutation = supervisor.replace(
+      "        Process.setpgid(0, 0)",
+      "        nil # pgroup disabled",
+    )
+    const fixture = await createFixture()
+    const result = await runEntryWorker(fixture, "exit 0\n", undefined, mutation)
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(70)
+    expect(result.stderr).toContain("anchor liveness channel closed during startup")
+    expect(result.stderr).not.toContain("run-android-maestro-entry.rb:")
+  })
+
+  test("a pgroup-disabled worker fails closed without touching an unrelated sentinel", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const mutation = supervisor.replace(
+      "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
+      "Process.spawn([@worker, @worker])",
+    )
+    const sentinel = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
+    const fixture = await createFixture()
+    const result = await runEntryWorker(
+      fixture,
+      "while true; do sleep 0.01; done\n",
+      undefined,
+      mutation,
+    )
+    expect(result.status, result.stderr).toBe(70)
+    expect(isRunning(sentinel.pid)).toBe(true)
+    sentinel.kill(9)
+    await sentinel.exited
+  })
+
+  test("the anchored sweep has one TERM, one KILL, only WNOHANG reaps, and no group signal after anchor reap", async () => {
     const entry = await readFile(entryScript, "utf8")
     const supervisor = await readFile(entrySupervisor, "utf8")
     assertEntrySignalContract(entry, supervisor)
     for (const guard of [
-      "worker_pid = Process.spawn([worker, worker], pgroup: true)",
-      "worker_pid > 1",
-      "worker_pgid == worker_pid",
-      "group_proven = true",
+      "@anchor_pid > 1",
+      "@anchor_pgid == @anchor_pid",
+      "worker_pgid == @anchor_pgid",
+      "!@anchor_reaped",
+      "Process::WNOHANG",
     ]) {
-      const mutation = supervisor.replaceAll(guard, "nil # removed process-group guard")
+      const mutation = supervisor.replaceAll(guard, "nil # removed anchored guard")
       expect(mutation).not.toBe(supervisor)
       expect(() => assertEntrySignalContract(entry, mutation)).toThrow("process-group")
     }
+  })
+
+  test("the trap self-pipe forwards an ordered INT and TERM stress sequence", async () => {
+    const fixture = await createFixture()
+    const signals = Array.from({ length: 8 }, (_, index) =>
+      index % 2 === 0 ? ("SIGINT" as const) : ("SIGTERM" as const),
+    )
+    const result = await runEntrySignalSequence(
+      fixture,
+      `trap 'printf I >>"$FIXTURE/forwarded"' INT
+trap 'printf T >>"$FIXTURE/forwarded"' TERM
+printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+printf 'ready\\n' >"$FIXTURE/worker-ready"
+while true; do sleep 0.01 || true; done
+`,
+      signals,
+    )
+    expect(result.status, result.stderr).toBe(130)
+    expect(await readFile(join(fixture, "forwarded"), "utf8")).toBe("ITITITITT")
+    expect(result.stderr).not.toContain("ThreadError")
   })
 
   for (const [signal, expectedStatus] of [
@@ -1133,7 +1121,6 @@ async function killRecordedWorkerGroup(fixture: string): Promise<void> {
   const selfPgid = await processGroup(fixture, "test-runner-pgid", process.pid)
   if (
     currentPgid !== ownership.pgid ||
-    ownership.pid !== ownership.pgid ||
     ownership.pgid <= 1 ||
     ownership.pgid === selfPgid ||
     ownership.pid === process.pid
@@ -1231,6 +1218,59 @@ async function runEntryWorker(
   }
 }
 
+async function runEntryScenario(
+  fixture: string,
+  workerBody: string,
+  action: (supervisorPid: number) => Promise<void>,
+  supervisorSource?: string,
+): Promise<{ status: number; stderr: string; timedOut: boolean }> {
+  const fixtureScripts = join(fixture, "scripts/ci")
+  await mkdir(fixtureScripts, { recursive: true })
+  const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
+  const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
+  await Promise.all([
+    writeFile(fixtureEntry, await readFile(entryScript, "utf8")),
+    writeFile(fixtureSupervisor, supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+    writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`),
+  ])
+  await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
+
+  const stderrPath = join(fixture, "entry-scenario.stderr")
+  const child = Bun.spawn([fixtureEntry], {
+    cwd: fixture,
+    env: { ...process.env, FIXTURE: fixture },
+    stdout: "ignore",
+    stderr: Bun.file(stderrPath),
+  })
+  try {
+    await action(child.pid)
+  } catch (error) {
+    await killRecordedWorkerGroup(fixture)
+    if (child.exitCode === null) child.kill(9)
+    await child.exited
+    throw error
+  }
+  const timedOut = await Promise.race([
+    child.exited.then(() => false),
+    Bun.sleep(5_000).then(() => true),
+  ])
+  if (timedOut) await killRecordedWorkerGroup(fixture)
+  if (timedOut && child.exitCode === null) child.kill(9)
+  const status = await child.exited
+  await killRecordedWorkerGroup(fixture)
+  return { status, stderr: await readFile(stderrPath, "utf8"), timedOut }
+}
+
+async function waitForFile(path: string, bound = 2_000): Promise<void> {
+  const deadline = performance.now() + bound
+  while (performance.now() < deadline) {
+    if (await Bun.file(path).exists()) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`timed out waiting for ${path}`)
+}
+
 async function runEntrySignalSequence(
   fixture: string,
   workerBody: string,
@@ -1317,23 +1357,27 @@ function assertSignalTrapContract(lane: string): void {
 
 function assertEntrySignalContract(entry: string, supervisor: string): void {
   if (
-    !supervisor.includes('"INT" => 130') ||
-    !supervisor.includes('"TERM" => 143') ||
-    !supervisor.includes("Signal.trap(signal)")
+    !supervisor.includes('{"I" => 130, "T" => 143}') ||
+    !supervisor.includes('Signal.trap("INT"') ||
+    !supervisor.includes('Signal.trap("TERM"') ||
+    !supervisor.includes("write_nonblock(code, exception: false)") ||
+    !supervisor.includes('Signal.trap("USR1")')
   ) {
     throw new Error("entry signal handlers must map INT and TERM")
   }
-  if (!supervisor.includes("Process.kill(signal, -worker_pgid)")) {
+  if (!supervisor.includes("Process.kill(signal, -@anchor_pgid)")) {
     throw new Error("entry must signal the entire worker group")
   }
   if (!entry.includes(canonicalSupervisorCommand)) {
     throw new Error("entry supervisor launcher is missing")
   }
   for (const guard of [
-    "worker_pid = Process.spawn([worker, worker], pgroup: true)",
-    "worker_pid > 1",
-    "worker_pgid == worker_pid",
-    "group_proven = true",
+    "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
+    "@anchor_pid > 1",
+    "@anchor_pgid == @anchor_pid",
+    "worker_pgid == @anchor_pgid",
+    "!@anchor_reaped",
+    "Process::WNOHANG",
   ]) {
     if (!supervisor.includes(guard)) {
       throw new Error(`entry process-group guard is missing: ${guard}`)
