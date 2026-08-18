@@ -1613,7 +1613,9 @@ export class FormControlRegistry {
       if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
         return undefined
       }
-      return (definition as Readonly<{ readonly formOwner?: unknown }>).formOwner === true
+      if (!("formOwner" in definition)) return false
+      const formOwner = (definition as Readonly<{ readonly formOwner?: unknown }>).formOwner
+      return formOwner === true || formOwner === false ? formOwner : undefined
     } catch {
       throw new RegistryError("Expo Turbo form vocabulary could not be resolved", {
         target: element.key,

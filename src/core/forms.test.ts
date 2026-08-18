@@ -612,6 +612,282 @@ describe("native form control registry", () => {
     }
   })
 
+  test("treats malformed form-owner properties as unresolved without request effects", async () => {
+    const malformedFormOwners: readonly unknown[] = [
+      "yes",
+      "",
+      1,
+      0,
+      Number.NaN,
+      null,
+      Object.freeze({}),
+      Object.freeze([]),
+      undefined,
+      1n,
+      Symbol("form-owner"),
+      () => true,
+    ]
+    const refusalMessages = [
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+    ]
+
+    for (const formOwner of malformedFormOwners) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoForm id="form" action="/danger" method="post" /></Gallery>',
+          { url: "https://example.test/current" },
+        ),
+      )
+      const transportRequests: string[] = []
+      const historyWrites: string[] = []
+      const navigationCalls: string[] = []
+      const history = new DocumentHistory(
+        { next: () => "history-malformed-owner" },
+        {
+          write(method) {
+            historyWrites.push(method)
+            return undefined
+          },
+        },
+      )
+      history.initialize({
+        entry: {
+          restorationIdentifier: "history-current",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        kind: "managed",
+      })
+      let vocabularyQueries = 0
+      const registry = new DocumentFormControls(session, {
+        formSemantics: {
+          formContainerRole: FORM_SEMANTICS.formContainerRole,
+          resolve() {
+            vocabularyQueries += 1
+            return { formOwner } as never
+          },
+        },
+        submissionController: new FormSubmissionController(
+          session,
+          {
+            async fetch(request) {
+              transportRequests.push(request.url)
+              throw new Error("malformed form owner reached transport")
+            },
+          },
+          {
+            history,
+            navigation: {
+              back() {
+                navigationCalls.push("back")
+              },
+              openExternal(url) {
+                navigationCalls.push(`external:${url}`)
+              },
+              visit(url) {
+                navigationCalls.push(`visit:${url}`)
+              },
+            },
+          },
+        ),
+      }).controlsFor("id:form")
+      const initialRevision = session.revision
+      const initialTreeGeneration = session.treeGeneration
+      const failures: unknown[] = []
+
+      expect(vocabularyQueries).toBe(1)
+      expect(registry.shouldInterceptSubmission()).toBe(false)
+      for (const attempt of [
+        () => registry.requestPlan({ protocol: { requestId: "malformed-plan" } }),
+        () => registry.submissionProposal({ protocol: { requestId: "malformed-proposal" } }),
+        () => registry.submit({ protocol: { requestId: "malformed-submit" } }),
+        () => registry.retryFailure({ protocol: { requestId: "malformed-retry" } }),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+
+      expect(vocabularyQueries).toBe(1)
+      expect(failures.map((failure) => (failure as Error).message)).toEqual(refusalMessages)
+      for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+      expect(transportRequests).toEqual([])
+      expect(historyWrites).toEqual([])
+      expect(navigationCalls).toEqual([])
+      expect(session.revision).toBe(initialRevision)
+      expect(session.treeGeneration).toBe(initialTreeGeneration)
+    }
+  })
+
+  test("uses safe submitter defaults for every malformed form-owner property", () => {
+    const malformedFormOwners: readonly unknown[] = [
+      "yes",
+      "",
+      1,
+      0,
+      Number.NaN,
+      null,
+      Object.freeze({}),
+      Object.freeze([]),
+      undefined,
+      1n,
+      Symbol("form-owner"),
+      () => true,
+    ]
+
+    for (const formOwner of malformedFormOwners) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          `<Gallery>
+            <DemoForm id="form" action="/safe" method="post">
+              <DemoInput id="field" />
+              <FutureButton
+                data-turbo-action="replace"
+                data-turbo-frame="danger-frame"
+                data-turbo-stream=""
+                id="evil"
+                formaction="/danger"
+                formenctype="multipart/form-data"
+                formmethod="delete"
+                formnovalidate=""
+                formtarget="_blank"
+              />
+            </DemoForm>
+            <turbo-frame id="danger-frame" />
+          </Gallery>`,
+          { url: "https://example.test/current" },
+        ),
+      )
+      const transportRequests: string[] = []
+      const historyWrites: string[] = []
+      const navigationCalls: string[] = []
+      const history = new DocumentHistory(
+        { next: () => "history-malformed-submitter" },
+        {
+          write(method) {
+            historyWrites.push(method)
+            return undefined
+          },
+        },
+      )
+      history.initialize({
+        entry: {
+          restorationIdentifier: "history-current",
+          restorationIndex: 0,
+          url: "https://example.test/current",
+        },
+        kind: "managed",
+      })
+      const vocabularyQueries = new Map<string, number>()
+      const registry = new DocumentFormControls(session, {
+        formSemantics: {
+          formContainerRole: FORM_SEMANTICS.formContainerRole,
+          resolve(tagName) {
+            vocabularyQueries.set(tagName, (vocabularyQueries.get(tagName) ?? 0) + 1)
+            return tagName === "DemoForm" ? { formOwner: true } : ({ formOwner } as never)
+          },
+        },
+        submissionController: new FormSubmissionController(
+          session,
+          {
+            async fetch(request) {
+              transportRequests.push(request.url)
+              throw new Error("malformed submitter reached transport")
+            },
+          },
+          {
+            history,
+            navigation: {
+              back() {
+                navigationCalls.push("back")
+              },
+              openExternal(url) {
+                navigationCalls.push(`external:${url}`)
+              },
+              visit(url) {
+                navigationCalls.push(`visit:${url}`)
+              },
+            },
+          },
+        ),
+      }).controlsFor("id:form")
+      registry.register("id:field", { kind: "value", name: "field", value: "A" })
+      const submitter = registry.register("id:evil", {
+        kind: "submitter",
+        name: "commit",
+        value: "go",
+      })
+      const initialRevision = session.revision
+      const initialTreeGeneration = session.treeGeneration
+
+      const proposal = registry.submissionProposal({
+        protocol: { requestId: "malformed-submitter" },
+        submitter: submitter.selection,
+      })
+
+      expect(vocabularyQueries).toEqual(
+        new Map([
+          ["DemoForm", 1],
+          ["FutureButton", 1],
+        ]),
+      )
+      expect(proposal.destination).toEqual({ kind: "document" })
+      expect(proposal.plan.request).toMatchObject({
+        body: {
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          value: "field=A&commit=go",
+        },
+        method: "POST",
+        url: "https://example.test/safe",
+      })
+      expect(transportRequests).toEqual([])
+      expect(historyWrites).toEqual([])
+      expect(navigationCalls).toEqual([])
+      expect(session.revision).toBe(initialRevision)
+      expect(session.treeGeneration).toBe(initialTreeGeneration)
+    }
+  })
+
+  test("preserves Boolean and missing form-owner vocabulary behavior", () => {
+    for (const formOwner of [true, false] as const) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>'),
+      )
+      const controls = new DocumentFormControls(session, {
+        formSemantics: {
+          formContainerRole: FORM_SEMANTICS.formContainerRole,
+          resolve: () => ({ formOwner }),
+        },
+      })
+      if (formOwner) {
+        expect(controls.controlsFor("id:form").shouldInterceptSubmission()).toBe(true)
+      } else {
+        expect(() => controls.controlsFor("id:form")).toThrow(
+          "Expo Turbo form association target is not a declared form owner",
+        )
+      }
+    }
+
+    const missingOwnerSession = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>'),
+    )
+    const missingOwnerControls = new DocumentFormControls(missingOwnerSession, {
+      formSemantics: {
+        formContainerRole: FORM_SEMANTICS.formContainerRole,
+        resolve: () => ({}),
+      },
+    })
+    expect(() => missingOwnerControls.controlsFor("id:form")).toThrow(
+      "Expo Turbo form association target is not a declared form owner",
+    )
+  })
+
   test("does not read request overrides from an unknown registered submitter", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
