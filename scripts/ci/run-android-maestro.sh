@@ -56,6 +56,7 @@ readonly reverse_listeners_log="$artifacts/reverse-probe-listeners.txt"
 readonly reverse_binding_log="$artifacts/reverse-probe-binding.txt"
 readonly reverse_attempt_log="$artifacts/reverse-probe-attempt.txt"
 readonly ss_missing_marker="(ss is not installed here - listener state unknown)"
+readonly chrome_package="com.android.chrome"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
 readonly adb_transport_pattern="^[[:space:]]*((Caused by: )?([[:alnum:]_.-]+\.)?DeviceServerDiedException([:[:space:]].*)?|(adb: |error: )?device offline|(adb: |error: )?host:transport:[^[:space:]]*offline.*|(adb: |error: )?device '[^']+' not found)[[:space:]]*$"
 
@@ -558,9 +559,122 @@ test -f "$apk"
 readonly picker_fixture="$PWD/.maestro/fixtures/expo-turbo-android-picked.txt"
 test -f "$picker_fixture"
 
-start_and_prepare_emulator() {
+write_chrome_bootstrap_report() {
+  local focus_log="$1"
+  local activity_log="$2"
+  local relevant_logcat="$3"
+  local report="$4"
+  local current_focus=""
+  local resumed_activity=""
+  local foreground="not_chrome"
+  local device_fault="not_found"
+  local classification=""
+
+  current_focus="$(grep -m1 'mCurrentFocus=' "$focus_log")"
+  resumed_activity="$(grep -m1 'mResumedActivity:' "$activity_log" || true)"
+
+  if printf '%s\n%s\n' "$current_focus" "$resumed_activity" | grep -qF "$chrome_package"; then
+    foreground="chrome"
+  fi
+  if grep -Eqi \
+    'ANR in .*gms|gms\.persistent.*ANR|Killing [0-9]+:com\.android\.chrome|GmsModuleProvider|Force removing ActivityRecord.*FirstRunActivity' \
+    "$relevant_logcat"; then
+    device_fault="found"
+  fi
+
+  if [ "$foreground" = "chrome" ] && [ "$device_fault" = "not_found" ]; then
+    classification="chrome_remained_foreground_without_device_fault_evidence"
+  elif [ "$foreground" = "chrome" ]; then
+    classification="chrome_remained_foreground_with_device_fault_evidence"
+  elif [ "$device_fault" = "found" ]; then
+    classification="foreground_left_chrome_with_device_fault_evidence"
+  else
+    classification="foreground_left_chrome_without_device_fault_evidence"
+  fi
+
+  {
+    echo "classification=$classification"
+    echo "foreground=$foreground"
+    echo "device_fault_evidence=$device_fault"
+    echo "current_focus=$current_focus"
+    echo "resumed_activity=${resumed_activity:-not captured by dumpsys}"
+    echo "process_liveness=not used; a background Chrome process does not establish foreground state"
+    echo "relevant_logcat_begin"
+    if [ -s "$relevant_logcat" ]; then
+      cat "$relevant_logcat"
+    else
+      echo "(no Chrome death or GMS ANR evidence in the bounded logcat window)"
+    fi
+    echo "relevant_logcat_end"
+  } >"$report"
+}
+
+capture_chrome_bootstrap_failure_evidence() {
   local attempt="$1"
-  local attempt_emulator_log="$artifacts/emulator-attempt-$attempt.log"
+  local invocation="$2"
+  local prefix="$artifacts/chrome-bootstrap-attempt-$attempt-$invocation"
+  local focus_log="$prefix-focus.txt"
+  local activity_log="$prefix-activity.txt"
+  local logcat_log="$prefix-logcat.txt"
+  local relevant_logcat="$prefix-relevant-logcat.txt"
+  local report="$prefix-classification.txt"
+
+  if ! timeout 15 adb -s "$adb_serial" shell dumpsys window windows >"$focus_log" 2>&1; then
+    echo "Chrome bootstrap evidence failed: could not capture current focus." >&2
+    return 1
+  fi
+  if ! grep -q 'mCurrentFocus=' "$focus_log"; then
+    echo "Chrome bootstrap evidence failed: current focus was absent." >&2
+    return 1
+  fi
+  if ! timeout 15 adb -s "$adb_serial" shell dumpsys activity activities \
+    >"$activity_log" 2>&1; then
+    echo "Chrome bootstrap evidence failed: could not capture foreground activity." >&2
+    return 1
+  fi
+  if ! timeout 15 adb -s "$adb_serial" logcat -d -t 1000 >"$logcat_log" 2>&1; then
+    echo "Chrome bootstrap evidence failed: could not capture bounded logcat." >&2
+    return 1
+  fi
+  awk 'BEGIN { IGNORECASE=1 }
+    /ANR in .*gms|gms\.persistent.*ANR|Killing [0-9]+:com\.android\.chrome|GmsModuleProvider|Force removing ActivityRecord.*FirstRunActivity/' \
+    "$logcat_log" >"$relevant_logcat"
+  write_chrome_bootstrap_report \
+    "$focus_log" "$activity_log" "$relevant_logcat" "$report"
+  cat "$report" >&2
+}
+
+reset_chrome_bootstrap() {
+  local attempt="$1"
+  local package_log="$artifacts/chrome-bootstrap-attempt-$attempt-package.txt"
+  local clear_log="$artifacts/chrome-bootstrap-attempt-$attempt-clear.txt"
+
+  if ! wait_for_stable_device; then
+    return 1
+  fi
+  if ! run_named_adb_command "$package_log" 15 \
+    adb -s "$adb_serial" shell pm path "$chrome_package"; then
+    return 1
+  fi
+  if ! grep -Eq '^package:.+\.apk\r?$' "$package_log"; then
+    echo "Chrome bootstrap recovery refused to clear an unvalidated package." >&2
+    return 1
+  fi
+  if ! run_named_adb_command "$clear_log" 30 \
+    adb -s "$adb_serial" shell pm clear "$chrome_package"; then
+    return 1
+  fi
+  if ! grep -Eq '^Success\r?$' "$clear_log"; then
+    echo "Chrome bootstrap recovery did not confirm a successful package reset." >&2
+    return 1
+  fi
+  if ! wait_for_stable_device; then
+    return 1
+  fi
+}
+
+run_chrome_bootstrap() {
+  local attempt="$1"
   local bootstrap_output="$artifacts/maestro-tests-bootstrap-attempt-$attempt"
   local bootstrap_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt"
   local bootstrap_log="$artifacts/maestro-bootstrap-attempt-$attempt.log"
@@ -568,6 +682,67 @@ start_and_prepare_emulator() {
   local bootstrap_retry_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt-retry"
   local bootstrap_retry_log="$artifacts/maestro-bootstrap-attempt-$attempt-retry.log"
   local bootstrap_status=0
+  local evidence_status=0
+
+  set +e
+  maestro --device "$adb_serial" test \
+    --test-output-dir "$bootstrap_output" \
+    --debug-output "$bootstrap_debug" \
+    --flatten-debug-output \
+    scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_log"
+  bootstrap_status="${PIPESTATUS[0]}"
+  set -e
+  if [ "$bootstrap_status" -eq 0 ]; then
+    return 0
+  fi
+
+  set +e
+  capture_chrome_bootstrap_failure_evidence "$attempt" "first"
+  evidence_status=$?
+  set -e
+  if [ "$evidence_status" -ne 0 ]; then
+    return "$bootstrap_status"
+  fi
+
+  echo "Chrome bootstrap failed before product flows; resetting Chrome and retrying once." >&2
+  if ! reset_chrome_bootstrap "$attempt"; then
+    capture_attempt_evidence "$attempt" "$bootstrap_status" 1
+    return "$bootstrap_status"
+  fi
+
+  set +e
+  maestro --device "$adb_serial" test \
+    --test-output-dir "$bootstrap_retry_output" \
+    --debug-output "$bootstrap_retry_debug" \
+    --flatten-debug-output \
+    scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_retry_log"
+  bootstrap_status="${PIPESTATUS[0]}"
+  set -e
+  if [ "$bootstrap_status" -eq 0 ]; then
+    return 0
+  fi
+
+  set +e
+  capture_chrome_bootstrap_failure_evidence "$attempt" "second"
+  evidence_status=$?
+  capture_attempt_evidence "$attempt" "$bootstrap_status" 1
+  if [ ! -s "$emulator_log" ] ||
+    [ ! -s "$artifacts/logcat-attempt-$attempt.txt" ] ||
+    [ ! -s "$artifacts/environment-attempt-$attempt.txt" ]; then
+    evidence_status=1
+  fi
+  set -e
+  if [ "$evidence_status" -ne 0 ]; then
+    echo "The second Chrome bootstrap failed, and its focused evidence was incomplete." >&2
+  else
+    echo "The second Chrome bootstrap failed; its foreground classification does not excuse the failure." >&2
+  fi
+  return "$bootstrap_status"
+}
+
+start_and_prepare_emulator() {
+  local attempt="$1"
+  local attempt_emulator_log="$artifacts/emulator-attempt-$attempt.log"
 
   echo "=== Starting clean Android emulator ===" >"$attempt_emulator_log"
   "$ANDROID_HOME/emulator/emulator" \
@@ -608,35 +783,7 @@ start_and_prepare_emulator() {
     -d file:///sdcard/Download/expo-turbo-android-picked.txt
 
   wait_for_stable_device
-  set +e
-  maestro --device "$adb_serial" test \
-    --test-output-dir "$bootstrap_output" \
-    --debug-output "$bootstrap_debug" \
-    --flatten-debug-output \
-    scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_log"
-  bootstrap_status="${PIPESTATUS[0]}"
-  set -e
-
-  if [ "$bootstrap_status" -ne 0 ]; then
-    if ! is_adb_transport_failure "$bootstrap_log"; then
-      return "$bootstrap_status"
-    fi
-
-    echo "Chrome bootstrap lost proven ADB transport; reconnecting once." >&2
-    timeout 10 adb reconnect offline >/dev/null 2>&1 || true
-    wait_for_stable_device
-    set +e
-    maestro --device "$adb_serial" test \
-      --test-output-dir "$bootstrap_retry_output" \
-      --debug-output "$bootstrap_retry_debug" \
-      --flatten-debug-output \
-      scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_retry_log"
-    bootstrap_status="${PIPESTATUS[0]}"
-    set -e
-    if [ "$bootstrap_status" -ne 0 ]; then
-      return "$bootstrap_status"
-    fi
-  fi
+  run_chrome_bootstrap "$attempt"
 
   wait_for_stable_device
   if ! prepare_rails_reverse; then

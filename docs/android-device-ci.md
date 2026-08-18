@@ -93,8 +93,15 @@ Rails byte-range log, logcat, environment state, and Maestro debug output. It
 then restarts and reprovisions a clean emulator and reruns the complete suite
 once against the same APK. The failed flow does not need a zero-second duration.
 Assertion failures, selector timeouts, app crashes, and a failed second attempt
-remain failures. Chrome bootstrap also retries only after the same explicit
-transport evidence.
+remain failures. Before product flows start, Chrome bootstrap has one narrower
+exception: any first bootstrap failure gets one retry. The runner first records
+the current focus, resumed activity, and a bounded logcat window for Chrome
+death or a Google Mobile Services ANR. It then validates the Chrome package,
+clears its half-written profile, proves stable ADB health, and runs the same
+bootstrap once. It does not use Chrome process liveness because Android can
+restart Chrome in the background while the launcher remains in front. A second
+bootstrap failure always fails the lane and preserves full attempt evidence.
+This exception does not change the transport-only product-suite retry rule.
 
 During each full-suite attempt, a live monitor checks the attempt log every
 0.2 seconds. The runner creates or truncates the active log before monitor
@@ -125,8 +132,8 @@ Maestro stream is the source for the device-server failure. The next emulator
 attempt must still restore the reverse mapping and prove a device-side request
 to Rails `/up` before Rails-backed flows can start.
 
-The first bootstrap, its one transport retry, suite attempt 1, the second clean
-bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
+The first bootstrap, its one bootstrap-only retry, suite attempt 1, the second
+clean bootstrap, its one bootstrap-only retry, and suite attempt 2 have unique Maestro
 logs, `--test-output-dir`, and `--debug-output` paths. Each suite attempt also
 has separate emulator, logcat, Rails, environment, fixture-upload, and
 media-scan logs. A retry cannot overwrite evidence from the event that caused
@@ -302,8 +309,9 @@ cause broader deletion.
 **2026-08-18**:
 
 - Changed: A first-attempt device-server loss now starts one clean-emulator
-  retry without a zero-second flow requirement. Chrome uses the same strict
-  transport classifier.
+  retry without a zero-second flow requirement. The pre-product Chrome
+  bootstrap can retry any first failure once after focused evidence and a
+  validated profile reset. Product flows still use the strict transport rule.
 - Why: Run `32143590467`, attempt 2, lost the device server after five seconds.
   ADB recovered without its Rails reverse mapping, and eight later flows failed
   as product-shaped connection errors.

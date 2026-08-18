@@ -53,6 +53,9 @@ async function assertArtifactContract(
     "maestro-debug-bootstrap-attempt-$attempt",
     "maestro-tests-bootstrap-attempt-$attempt-retry",
     "maestro-debug-bootstrap-attempt-$attempt-retry",
+    "chrome-bootstrap-attempt-$attempt-$invocation",
+    "chrome-bootstrap-attempt-$attempt-package.txt",
+    "chrome-bootstrap-attempt-$attempt-clear.txt",
     "maestro-tests-attempt-$attempt",
     "maestro-debug-attempt-$attempt",
   ]
@@ -84,6 +87,9 @@ async function assertArtifactContract(
     runner.includes('stop_emulator_for_retry\n: >"$rails_log"')
   ) {
     throw new Error("suite retries must preserve and separate both attempts")
+  }
+  if (!runner.includes('capture_attempt_evidence "$attempt" "$bootstrap_status" 1')) {
+    throw new Error("a double bootstrap failure must preserve full attempt evidence")
   }
   if (!version.includes('readonly expected_version="2.7.0"')) {
     throw new Error("the flat-output contract must stay pinned to Maestro 2.7.0")

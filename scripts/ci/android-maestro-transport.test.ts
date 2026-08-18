@@ -82,6 +82,32 @@ async function runFunction(
   return { status, stdout, stderr }
 }
 
+function assertChromeBootstrapContract(source: string): void {
+  const bootstrap = extractFunction(source, "run_chrome_bootstrap")
+  const classification = extractFunction(source, "write_chrome_bootstrap_report")
+
+  if ((bootstrap.match(/maestro --device/g) ?? []).length !== 2) {
+    throw new Error("Chrome bootstrap must have exactly two bounded invocations")
+  }
+  if (!bootstrap.includes('capture_chrome_bootstrap_failure_evidence "$attempt" "first"')) {
+    throw new Error("Chrome bootstrap must capture the first failure before recovery")
+  }
+  if (!bootstrap.includes('capture_attempt_evidence "$attempt" "$bootstrap_status" 1')) {
+    throw new Error("a double Chrome bootstrap failure must preserve full attempt evidence")
+  }
+  if (bootstrap.includes("should_retry_transport_failure")) {
+    throw new Error("the Chrome-only retry must not change the product retry gate")
+  }
+  if (!classification.includes("mCurrentFocus=") || classification.includes("pidof")) {
+    throw new Error("Chrome bootstrap classification must use foreground focus, not pidof")
+  }
+  if (
+    !source.includes('if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"')
+  ) {
+    throw new Error("product suite retries must remain transport-only")
+  }
+}
+
 async function runTransportMonitor(
   source: string,
   log: string,
@@ -289,8 +315,122 @@ wc -l <"$2"
       expect(result.status, `${name}: ${result.stderr}`).not.toBe(0)
     }
 
-    expect(source).toContain('if ! is_adb_transport_failure "$bootstrap_log"; then')
-    expect(source).not.toContain("Chrome bootstrap lost its first device session")
+    assertChromeBootstrapContract(source)
+  })
+
+  test("retries one non-transport Chrome bootstrap assertion and can pass", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const bootstrap = extractFunction(source, "run_chrome_bootstrap")
+    const maestroCalls = [...bootstrap.matchAll(/maestro --device/g)].map((match) => match.index)
+    const firstEvidence = bootstrap.indexOf(
+      'capture_chrome_bootstrap_failure_evidence "$attempt" "first"',
+    )
+    const reset = bootstrap.indexOf('reset_chrome_bootstrap "$attempt"')
+    const secondSuccess = bootstrap.lastIndexOf(
+      'if [ "$bootstrap_status" -eq 0 ]; then\n    return 0',
+    )
+
+    expect(maestroCalls).toHaveLength(2)
+    expect(maestroCalls[0]).toBeLessThan(firstEvidence)
+    expect(firstEvidence).toBeLessThan(reset)
+    expect(reset).toBeLessThan(maestroCalls[1] ?? -1)
+    expect(maestroCalls[1] ?? -1).toBeLessThan(secondSuccess)
+  })
+
+  test("fails after exactly two Chrome bootstrap invocations and keeps full evidence", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const bootstrap = extractFunction(source, "run_chrome_bootstrap")
+    const secondEvidence = bootstrap.indexOf(
+      'capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
+    )
+    const fullEvidence = bootstrap.lastIndexOf(
+      'capture_attempt_evidence "$attempt" "$bootstrap_status" 1',
+    )
+    const failedReturn = bootstrap.lastIndexOf('return "$bootstrap_status"')
+
+    expect(bootstrap.match(/maestro --device/g)).toHaveLength(2)
+    expect(secondEvidence).toBeGreaterThan(0)
+    expect(secondEvidence).toBeLessThan(fullEvidence)
+    expect(fullEvidence).toBeLessThan(failedReturn)
+    expect(extractFunction(source, "capture_attempt_evidence")).toContain(': >"$emulator_log"')
+  })
+
+  test("classifies launcher foreground after a background Chrome restart from focus evidence", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const focus = await fixtureFile(
+      "launcher-focus.txt",
+      "mCurrentFocus=Window{12 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity}\n",
+    )
+    const activity = await fixtureFile(
+      "launcher-activity.txt",
+      "mResumedActivity: ActivityRecord{12 com.google.android.apps.nexuslauncher/.NexusLauncherActivity}\n",
+    )
+    const logcat = await fixtureFile(
+      "launcher-logcat.txt",
+      "ActivityManager: Killing 3824:com.android.chrome/u0a123 because dependency GmsModuleProvider\nChrome restarted for a background receiver\n",
+    )
+    const report = `${focus}.report`
+    const result = await runFunction(
+      source,
+      ["write_chrome_bootstrap_report"],
+      'chrome_package=com.android.chrome; write_chrome_bootstrap_report "$1" "$2" "$3" "$4"',
+      [focus, activity, logcat, report],
+    )
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await readFile(report, "utf8")).toContain(
+      "classification=foreground_left_chrome_with_device_fault_evidence",
+    )
+    expect(extractFunction(source, "write_chrome_bootstrap_report")).not.toContain("pidof")
+  })
+
+  test("reports Chrome foreground without device-fault evidence as a real bootstrap failure", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const focus = await fixtureFile(
+      "chrome-focus.txt",
+      "mCurrentFocus=Window{12 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n",
+    )
+    const activity = await fixtureFile(
+      "chrome-activity.txt",
+      "mResumedActivity: ActivityRecord{12 com.android.chrome/com.google.android.apps.chrome.Main}\n",
+    )
+    const logcat = await fixtureFile("chrome-logcat.txt", "unrelated line\n")
+    const report = `${focus}.report`
+    const result = await runFunction(
+      source,
+      ["write_chrome_bootstrap_report"],
+      'chrome_package=com.android.chrome; write_chrome_bootstrap_report "$1" "$2" "$3" "$4"',
+      [focus, activity, logcat, report],
+    )
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await readFile(report, "utf8")).toContain(
+      "classification=chrome_remained_foreground_without_device_fault_evidence",
+    )
+  })
+
+  test("guards the bootstrap bound, foreground classifier, and product retry boundary", async () => {
+    const source = await readFile(laneScript, "utf8")
+    expect(() => assertChromeBootstrapContract(source)).not.toThrow()
+    expect(() =>
+      assertChromeBootstrapContract(
+        source.replace(
+          '  if [ "$bootstrap_status" -eq 0 ]; then\n    return 0\n  fi\n\n  set +e\n  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
+          '  while [ "$bootstrap_status" -ne 0 ]; do\n    maestro --device "$adb_serial" test\n  done\n\n  set +e\n  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
+        ),
+      ),
+    ).toThrow(/exactly two/)
+    expect(() =>
+      assertChromeBootstrapContract(
+        source.replace(
+          'if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"; then',
+          'if [ "$first_status" -eq 0 ]; then',
+        ),
+      ),
+    ).toThrow(/transport-only/)
+    expect(() =>
+      assertChromeBootstrapContract(source.replace("mCurrentFocus=", "pidof com.android.chrome")),
+    ).toThrow(/foreground focus, not pidof/)
   })
 
   test("uses the production strict case-sensitive full-line classifier", async () => {
