@@ -100,6 +100,11 @@ with ID `7`, `dom_id(account)` is `account_7`, `dom_id(account, :frame)` is
 unsaved account and the `Account` class both use `new_account` without a prefix;
 `dom_id(Account, :list)` is `list_account`.
 
+Expo-format calls also no longer apply the old Expo-specific role/key character
+validation. Rails now decides which values `dom_id` handles. A host that relied
+on the Expo helper to reject a record key or prefix must validate that value in
+application code.
+
 **Migration from 0.3:** Expo Turbo renders previously treated the prefix
 `:record` as no prefix, so `dom_id(account, :record)` returned `account_7`.
 Change that call to `dom_id(account)` before upgrading if the old special case
@@ -108,9 +113,11 @@ only for this changed ID. Other `dom_id` calls keep their Rails IDs and need no
 cache or reload action.
 
 `ExpoTurbo::Rails::DomIds.id_for` remains as a deprecated direct-call wrapper
-for the 0.4 minor release. It delegates to Rails and warns on every call. Replace
-it with `ActionView::RecordIdentifier.dom_id` or the standard view helper; the
-wrapper will be removed in 0.5.0.
+for the 0.4 minor release and warns on every call. It keeps the 0.3 rule that a
+default or explicit `:record` role has no prefix. Thus `id_for(account, :record)`
+delegates as `dom_id(account)`, not `dom_id(account, :record)`. Use that exact
+replacement to keep the stable 0.3 result. Other roles delegate as the Rails
+prefix. The wrapper will be removed in 0.5.0.
 
 ## Templates and admission
 

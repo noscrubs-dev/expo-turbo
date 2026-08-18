@@ -6,15 +6,19 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 - **Breaking:** Use the normal Rails ActionView `dom_id` helper for HTML and
   Expo Turbo renders. The removed format-specific helper no longer restricts
-  prefixes, unsaved records, or model classes. In particular,
+  prefixes, unsaved records, model classes, or role/key characters with the old
+  Expo-specific checks. A host that relied on that rejection must validate the
+  record and prefix in application code. In particular,
   `dom_id(record, :record)` now follows Rails and returns
   `record_record_id` for a `Record`; it previously returned `record_id` in an
   Expo Turbo render. A host that relied on that special case must change the call to
   `dom_id(record)` before upgrading, and expire cached markup or reload retained
   Frame/Stream targets only for IDs that used that call. Other IDs do not need
   cache or reload work. `ExpoTurbo::Rails::DomIds.id_for` remains for the 0.4
-  minor release as a deprecated direct wrapper around Rails and will be removed
-  in 0.5.0.
+  minor release as a deprecated wrapper and will be removed in 0.5.0. It keeps
+  the 0.3 rule that a default or explicit `:record` role has no prefix, so
+  `id_for(record, :record)` delegates as `dom_id(record)`, not
+  `dom_id(record, :record)`.
 
 - Stop the renderer emitting a bare string into a React Native `View`. Every
   text run the renderer places below a `children: "nodes"` component has no

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "action_controller/api"
+require "open3"
+require "rbconfig"
 require "spec_helper"
 
 class ExpoTurboDomIdsSpecRecord
@@ -118,10 +120,80 @@ RSpec.describe ExpoTurbo::Rails::DomIds do
     expect(described_class.id_for(unsaved, :sidebar)).to eq("rails-unsaved-id")
   end
 
-  it "warns that the direct wrapper will be removed in 0.5" do
-    expect(described_class::DEPRECATOR).to receive(:warn).with(/removed in expo_turbo-rails 0\.5\.0/)
+  it "delegates an explicit record role to Rails with no prefix" do
+    allow(described_class::DEPRECATOR).to receive(:warn)
+    expect(ActionView::RecordIdentifier).to receive(:dom_id).with(saved, nil).and_return("rails-record-id")
+
+    expect(described_class.id_for(saved, :record)).to eq("rails-record-id")
+  end
+
+  it "warns with the safe explicit-record migration and the 0.5 removal" do
+    expect(described_class::DEPRECATOR).to receive(:warn).with(
+      a_string_including(
+        "removed in expo_turbo-rails 0.5.0",
+        "replace id_for(record, :record) with dom_id(record), not dom_id(record, :record)",
+        "explicit :record role has no prefix"
+      )
+    )
+
+    described_class.id_for(saved, :record)
+  end
+
+  it "registers its deprecator once under the stable Rails application name" do
+    initializer = ExpoTurbo::Rails::Engine.initializers.find do |candidate|
+      candidate.name == "expo_turbo.rails.deprecator"
+    end
+
+    initializer.run(Rails.application)
+    initializer.run(Rails.application)
+
+    expect(described_class::DEPRECATOR_NAME).to eq(:expo_turbo_rails)
+    expect(Rails.application.deprecators[described_class::DEPRECATOR_NAME]).to equal(described_class::DEPRECATOR)
+    expect(Rails.application.deprecators.each.count { |deprecator| deprecator.equal?(described_class::DEPRECATOR) }).to eq(1)
+  end
+
+  it "uses the host deprecation behavior and obeys host silencing" do
+    warnings = []
+    Rails.application.deprecators.behavior = lambda do |message, callstack, deprecator|
+      warnings << [message, callstack, deprecator]
+    end
 
     described_class.id_for(saved)
+    Rails.application.deprecators.silence { described_class.id_for(saved) }
+
+    expect(warnings.length).to eq(1)
+    expect(warnings.first.fetch(0)).to include("ExpoTurbo::Rails::DomIds.id_for is deprecated")
+    expect(warnings.first.fetch(2)).to equal(described_class::DEPRECATOR)
+  ensure
+    Rails.application.deprecators.behavior = :stderr
+  end
+
+  it "loads the gem and warns without an initialized Rails application" do
+    gem_root = File.expand_path("../..", __dir__)
+    script = <<~RUBY
+      require "action_controller/railtie"
+      require "expo_turbo/rails"
+      abort "Rails application initialized" unless Rails.application.nil?
+
+      model_name = Struct.new(:param_key).new("room")
+      record = Object.new
+      record.define_singleton_method(:to_key) { [7] }
+      record.define_singleton_method(:model_name) { model_name }
+      record.define_singleton_method(:to_model) { self }
+
+      ExpoTurbo::Rails::DomIds::DEPRECATOR.behavior = :silence
+      abort "wrong id" unless ExpoTurbo::Rails::DomIds.id_for(record, :record) == "room_7"
+    RUBY
+    output, status = Open3.capture2e(
+      RbConfig.ruby,
+      "-I#{File.join(gem_root, "lib")}",
+      "-e",
+      script,
+      chdir: gem_root
+    )
+
+    expect(output).to eq("")
+    expect(status).to be_success
   end
 
   it "does not load or install the removed format-specific helper" do
@@ -148,6 +220,22 @@ RSpec.describe ExpoTurbo::Rails::DomIds do
       end
 
       expect(mismatches).to eq(record: "room_7")
+    end
+  end
+
+  it "keeps Rails parity for role and key characters rejected by the old Expo helper" do
+    unusual_key = ExpoTurboDomIdsSpecRecord.new(["north\nwing"])
+    unusual_role = :"side\tbar"
+
+    ["text/html", ExpoTurbo::Rails::MIME_TYPE].each do |accept|
+      context = view_context(accept)
+
+      expect(context.dom_id(saved, unusual_role))
+        .to eq(ActionView::RecordIdentifier.dom_id(saved, unusual_role))
+      expect(context.dom_id(saved, unusual_role)).to eq("side\tbar_room_7")
+      expect(context.dom_id(unusual_key, :frame))
+        .to eq(ActionView::RecordIdentifier.dom_id(unusual_key, :frame))
+      expect(context.dom_id(unusual_key, :frame)).to eq("frame_room_north\nwing")
     end
   end
 end

@@ -5,6 +5,10 @@ module ExpoTurbo
     class Engine < ::Rails::Engine
       config.expo_turbo = ActiveSupport::OrderedOptions.new
 
+      initializer "expo_turbo.rails.deprecator" do |app|
+        app.deprecators[ExpoTurbo::Rails::DomIds::DEPRECATOR_NAME] = ExpoTurbo::Rails::DomIds::DEPRECATOR
+      end
+
       # A lint, not a runtime hook: loading the task does not load the linter,
       # and no request path reaches either.
       rake_tasks do
