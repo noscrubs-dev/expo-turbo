@@ -8,10 +8,10 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const stopProcessScript = join(scriptDirectory, "stop-process.sh")
 const laneScript = join(scriptDirectory, "run-android-maestro.sh")
 const entryScript = join(scriptDirectory, "run-android-maestro-entry.sh")
+const entrySupervisor = join(scriptDirectory, "run-android-maestro-entry.rb")
 const androidWorkflow = join(scriptDirectory, "../../.github/workflows/android-device.yml")
 const canonicalEntryCommand = "exec scripts/ci/run-android-maestro-entry.sh"
-const canonicalEntryLauncher =
-  'ruby -e \'Process.setsid; Signal.trap("INT", "DEFAULT"); Signal.trap("QUIT", "DEFAULT"); exec(*ARGV)\' "$worker" &'
+const canonicalSupervisorCommand = 'exec ruby "$script_dir/run-android-maestro-entry.rb"'
 const fixtures: string[] = []
 const survivingPids: number[] = []
 
@@ -162,27 +162,25 @@ describe("Android lane cleanup", () => {
   test("runs cleanup only from EXIT and maps INT and TERM to conventional statuses", async () => {
     const lane = await readFile(laneScript, "utf8")
     const entry = await readFile(entryScript, "utf8")
+    const supervisor = await readFile(entrySupervisor, "utf8")
 
     assertSignalTrapContract(lane)
-    assertEntrySignalContract(entry)
+    assertEntrySignalContract(entry, supervisor)
     expect(() =>
       assertSignalTrapContract(lane.replace("trap cleanup EXIT", "trap cleanup EXIT INT TERM")),
     ).toThrow("cleanup must run only from EXIT")
     expect(() =>
       assertEntrySignalContract(
         entry.replace("trap 'forward_signal INT 130' INT", ": INT trap removed"),
+        supervisor.replace('"INT" => 130', '"INT" => 131'),
       ),
     ).toThrow("entry signal handlers")
     expect(() =>
       assertEntrySignalContract(
-        entry.replace('kill -s "$signal" -- "-$worker_pgid"', 'kill -s "$signal" "$worker_pid"'),
+        entry,
+        supervisor.replace("Process.kill(signal, -worker_pid)", "Process.kill(signal, worker_pid)"),
       ),
     ).toThrow("entire worker group")
-    for (const reset of ['Signal.trap("INT", "DEFAULT")', 'Signal.trap("QUIT", "DEFAULT")']) {
-      const mutation = entry.replace(reset, ": disposition reset removed")
-      expect(mutation).not.toBe(entry)
-      expect(() => assertEntrySignalContract(mutation)).toThrow("process-group launcher")
-    }
   })
 
   test("the Android workflow invokes only the exact checked-in entry wrapper", async () => {
@@ -218,22 +216,54 @@ describe("Android lane cleanup", () => {
     }
   })
 
+  test("a worker that exits during startup keeps status 37 through a signal race", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const mutation = supervisor
+      .replace(
+        "worker_pid = Process.spawn(worker, pgroup: true)",
+        "worker_pid = Process.spawn(worker, pgroup: true)\nsleep 1",
+      )
+      .replace("  break if worker_status\n\n  begin", "  exit 70 if worker_status\n\n  begin")
+    expect(mutation).not.toBe(supervisor)
+
+    const fastExitFixture = await createFixture()
+    const fastExitResult = await runEntryWorker(fastExitFixture, "exit 37\n")
+    expect(fastExitResult.timedOut, fastExitResult.stderr).toBe(false)
+    expect(fastExitResult.status, fastExitResult.stderr).toBe(37)
+
+    const signalFixture = await createFixture()
+    const delayedSupervisor = supervisor.replace(
+      "worker_pid = Process.spawn(worker, pgroup: true)",
+      "worker_pid = Process.spawn(worker, pgroup: true)\nsleep 1",
+    )
+    const signalResult = await runEntryWorker(
+      signalFixture,
+      'printf "ready\\n" >"$FIXTURE/worker-exited"\nexit 37\n',
+      undefined,
+      delayedSupervisor,
+      "SIGTERM",
+    )
+    expect(signalResult.timedOut, signalResult.stderr).toBe(false)
+    expect(signalResult.status, signalResult.stderr).toBe(37)
+
+    const fixture = await createFixture()
+    const result = await runEntryWorker(fixture, "exit 37\n", undefined, mutation)
+    expect(result.status).toBe(70)
+  })
+
   test("the entry wrapper fails closed when process-group validation is removed", async () => {
     const entry = await readFile(entryScript, "utf8")
-    assertEntrySignalContract(entry)
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    assertEntrySignalContract(entry, supervisor)
     for (const guard of [
-      '[ "$worker_pid" -le 1 ]',
-      '[ "$current_pgid" -le 1 ]',
-      '[ "$current_pgid" != "$worker_pid" ]',
-      '[ "$current_pgid" != "$worker_pgid" ]',
-      '[ "$current_pgid" = "$entry_pgid" ]',
-      "for job_pid in $(jobs -pr); do",
-      "owned_worker_is_running || return 1",
-      canonicalEntryLauncher,
+      "worker_pid = Process.spawn(worker, pgroup: true)",
+      "worker_pid > 1",
+      "worker_pgid == worker_pid",
+      "group_proven = true",
     ]) {
-      const mutation = entry.replace(guard, ": removed process-group guard")
-      expect(mutation).not.toBe(entry)
-      expect(() => assertEntrySignalContract(mutation)).toThrow("process-group")
+      const mutation = supervisor.replace(guard, "nil # removed process-group guard")
+      expect(mutation).not.toBe(supervisor)
+      expect(() => assertEntrySignalContract(entry, mutation)).toThrow("process-group")
     }
   })
 
@@ -244,8 +274,9 @@ describe("Android lane cleanup", () => {
     test(`the GitHub-shaped runner forwards ${signal} from only its temporary Bash PID`, async () => {
       const workflow = await readFile(androidWorkflow, "utf8")
       const entry = await readFile(entryScript, "utf8")
+      const supervisor = await readFile(entrySupervisor, "utf8")
       for (let repetition = 0; repetition < 3; repetition += 1) {
-        const result = await runRunnerShapedSignal(workflow, entry, signal)
+        const result = await runRunnerShapedSignal(workflow, entry, supervisor, signal)
         expectRunnerSignalProof(result, expectedStatus)
       }
     })
@@ -253,43 +284,30 @@ describe("Android lane cleanup", () => {
     test(`the GitHub-shaped ${signal} proof rejects the previous bare wrapper command`, async () => {
       const workflow = await readFile(androidWorkflow, "utf8")
       const entry = await readFile(entryScript, "utf8")
+      const supervisor = await readFile(entrySupervisor, "utf8")
       const mutation = workflow.replace(
         `run: ${canonicalEntryCommand}`,
         "run: scripts/ci/run-android-maestro-entry.sh",
       )
       expect(mutation).not.toBe(workflow)
 
-      const result = await runRunnerShapedSignal(mutation, entry, signal)
+      const result = await runRunnerShapedSignal(mutation, entry, supervisor, signal)
       expect(runnerSignalProofPasses(result, expectedStatus)).toBe(false)
     })
   }
 
-  test("the GitHub-shaped INT proof rejects inherited ignored signal dispositions", async () => {
+  test("the GitHub-shaped TERM proof rejects a dropped signal during wait", async () => {
     const workflow = await readFile(androidWorkflow, "utf8")
     const entry = await readFile(entryScript, "utf8")
-    const mutation = entry.replace(
-      canonicalEntryLauncher,
-      'ruby -e \'Process.setsid; Signal.trap("INT", "IGNORE"); Signal.trap("QUIT", "IGNORE"); exec(*ARGV)\' "$worker" &',
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const mutation = supervisor.replace(
+      "Process.kill(signal, -worker_pid)",
+      "nil # signal forwarding removed",
     )
-    expect(mutation).not.toBe(entry)
+    expect(mutation).not.toBe(supervisor)
 
-    const result = await runRunnerShapedSignal(workflow, mutation, "SIGINT")
-    expect(runnerSignalProofPasses(result, 130)).toBe(false)
-  })
-
-  test("an already-exited worker keeps its genuine failure during a signal race", async () => {
-    const fixture = await createFixture()
-    const entry = await readFile(entryScript, "utf8")
-    const marker = "worker_status=0\nwhile true; do"
-    const mutation = entry.replace(
-      marker,
-      "while owned_worker_is_running; do sleep 0.01; done\nforward_signal TERM 143\nworker_status=0\nwhile true; do",
-    )
-    expect(mutation).not.toBe(entry)
-
-    const result = await runEntryWorker(fixture, "exit 37\n", mutation)
-    expect(result.timedOut).toBe(false)
-    expect(result.status).toBe(37)
+    const result = await runRunnerShapedSignal(workflow, entry, mutation, "SIGTERM")
+    expect(runnerSignalProofPasses(result, 143)).toBe(false)
   })
 
   for (const [signal, expectedStatus] of [
@@ -695,8 +713,10 @@ printf 'ready\n' >"$FIXTURE/ready"
 while true; do sleep 0.1; done
 `
   const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
   const fixtureLane = join(fixtureScripts, "run-android-maestro.sh")
   await writeFile(fixtureEntry, await readFile(entryScript, "utf8"))
+  await writeFile(fixtureSupervisor, await readFile(entrySupervisor, "utf8"))
   await writeFile(fixtureLane, harness)
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
 
@@ -736,6 +756,7 @@ interface RunnerSignalResult {
 async function runRunnerShapedSignal(
   workflowSource: string,
   entrySource: string,
+  supervisorSource: string,
   signal: "SIGINT" | "SIGTERM",
 ): Promise<RunnerSignalResult> {
   const fixture = await createFixture()
@@ -777,10 +798,12 @@ while true; do sleep 0.1; done
   const run = workflowRunValue(workflowSource)
   const stepScript = join(fixture, "github-step.sh")
   const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
   const fixtureLane = join(fixtureScripts, "run-android-maestro.sh")
   await Promise.all([
     writeFile(stepScript, `${run}\n`),
     writeFile(fixtureEntry, entrySource),
+    writeFile(fixtureSupervisor, supervisorSource),
     writeFile(fixtureLane, lane),
   ])
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
@@ -934,21 +957,35 @@ async function runEntryWorker(
   fixture: string,
   workerBody: string,
   entrySource?: string,
+  supervisorSource?: string,
+  signalAfterWorkerExit?: "SIGINT" | "SIGTERM",
 ): Promise<{ status: number; stderr: string; timedOut: boolean }> {
   const fixtureScripts = join(fixture, "scripts/ci")
   await mkdir(fixtureScripts, { recursive: true })
   const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
   const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
   await writeFile(fixtureEntry, entrySource ?? (await readFile(entryScript, "utf8")))
+  await writeFile(fixtureSupervisor, supervisorSource ?? (await readFile(entrySupervisor, "utf8")))
   await writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`)
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
 
   const stderrPath = join(fixture, "entry.stderr")
   const child = Bun.spawn([fixtureEntry], {
     cwd: fixture,
+    env: { ...process.env, FIXTURE: fixture },
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
+  if (signalAfterWorkerExit) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await Bun.file(join(fixture, "worker-exited")).exists()) break
+      await Bun.sleep(10)
+    }
+    expect(await Bun.file(join(fixture, "worker-exited")).exists()).toBe(true)
+    await Bun.sleep(50)
+    process.kill(child.pid, signalAfterWorkerExit)
+  }
   const timedOut = await Promise.race([
     child.exited.then(() => false),
     Bun.sleep(7_000).then(() => true),
@@ -985,29 +1022,32 @@ function assertSignalTrapContract(lane: string): void {
   }
 }
 
-function assertEntrySignalContract(entry: string): void {
+function assertEntrySignalContract(entry: string, supervisor: string): void {
   if (
-    !entry.includes("trap 'forward_signal INT 130' INT") ||
-    !entry.includes("trap 'forward_signal TERM 143' TERM")
+    !supervisor.includes('"INT" => 130') ||
+    !supervisor.includes('"TERM" => 143') ||
+    !supervisor.includes("Signal.trap(signal)")
   ) {
     throw new Error("entry signal handlers must map INT and TERM")
   }
-  if (!entry.includes('kill -s "$signal" -- "-$worker_pgid"')) {
+  if (!supervisor.includes("Process.kill(signal, -worker_pid)")) {
     throw new Error("entry must signal the entire worker group")
   }
-  if (!entry.includes(canonicalEntryLauncher)) {
-    throw new Error("entry process-group launcher is missing")
+  if (!entry.includes(canonicalSupervisorCommand)) {
+    throw new Error("entry supervisor launcher is missing")
   }
   for (const guard of [
-    '[ "$worker_pid" -le 1 ]',
-    '[ "$current_pgid" -le 1 ]',
-    '[ "$current_pgid" != "$worker_pid" ]',
-    '[ "$current_pgid" != "$worker_pgid" ]',
-    '[ "$current_pgid" = "$entry_pgid" ]',
-    "for job_pid in $(jobs -pr); do",
-    "owned_worker_is_running || return 1",
+    "worker_pid = Process.spawn(worker, pgroup: true)",
+    "worker_pid > 1",
+    "worker_pgid == worker_pid",
+    "group_proven = true",
   ]) {
-    if (!entry.includes(guard)) throw new Error(`entry process-group guard is missing: ${guard}`)
+    if (!supervisor.includes(guard)) {
+      throw new Error(`entry process-group guard is missing: ${guard}`)
+    }
+  }
+  if (supervisor.includes("kill -0") || supervisor.includes("jobs -")) {
+    throw new Error("entry process-group ownership must not use kill -0 or the Bash job table")
   }
 }
 
