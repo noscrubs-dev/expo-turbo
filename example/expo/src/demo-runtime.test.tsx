@@ -36,6 +36,12 @@ interface NativeScrollViewHandle {
 const nativeScrollCalls: NativeScrollCall[] = [];
 const nativeRootScrollContainerIds: number[] = [];
 let nextNativeScrollContainerId = 0;
+const animationFrameCallbacks: FrameRequestCallback[] = [];
+
+globalThis.requestAnimationFrame = (callback) => {
+  animationFrameCallbacks.push(callback);
+  return animationFrameCallbacks.length;
+};
 
 const NativeScrollView = forwardRef<NativeScrollViewHandle, Readonly<Record<string, unknown>>>(
   (props, ref) => {
@@ -2354,10 +2360,11 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
-  test("morphs a same-path replace from root metadata and resets the gallery root scroll", async () => {
+  test("reapplies a same-path refresh reset on the next native frame", async () => {
     nativeScrollCalls.length = 0;
     nativeRootScrollContainerIds.length = 0;
     nextNativeScrollContainerId = 0;
+    animationFrameCallbacks.length = 0;
     const runtime = createDemoRuntime();
     const navigation = new TestNavigation();
     let renderer: ReactTestRenderer | undefined;
@@ -2457,6 +2464,26 @@ describe("demo app runtime ownership", () => {
           options: { animated: false, x: 0, y: 0 },
         },
       ]);
+
+      await act(async () => {
+        const callback = animationFrameCallbacks.shift();
+        if (!callback) throw new Error("same-path refresh reset was not scheduled");
+        callback(0);
+        await nextTurn();
+      });
+      expect(nativeScrollCalls).toEqual([
+        {
+          containerId: scenarioScrollContainerId,
+          options: { animated: false, x: 0, y: 0 },
+        },
+        {
+          containerId: scenarioScrollContainerId,
+          options: { animated: false, x: 0, y: 0 },
+        },
+      ]);
+
+      expect(animationFrameCallbacks).toHaveLength(0);
+      expect(nativeScrollCalls).toHaveLength(2);
     } finally {
       await act(async () => {
         renderer?.unmount();

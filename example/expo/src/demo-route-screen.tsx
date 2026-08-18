@@ -61,6 +61,11 @@ export function DemoCompatibilityGallery() {
   >(undefined);
   const scrollX = useRef(0);
   const scrollY = useRef(0);
+  const resetDocumentScroll = useCallback(() => {
+    scrollX.current = 0;
+    scrollY.current = 0;
+    scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 });
+  }, []);
   const setScrollView = useCallback(
     (node: ScrollView | null) => {
       autofocusScrollContainerCleanup.current?.();
@@ -125,9 +130,12 @@ export function DemoCompatibilityGallery() {
       runtime.documentRefreshScroll.registerContainer({
         isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
         scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: false, x, y }),
-        scrollToTop: () => scrollView.current?.scrollTo({ animated: false, x: 0, y: 0 }),
+        scrollToTop: () => {
+          resetDocumentScroll();
+          requestAnimationFrame(resetDocumentScroll);
+        },
       }),
-    [runtime.documentRefreshScroll],
+    [resetDocumentScroll, runtime.documentRefreshScroll],
   );
   useLayoutEffect(
     () =>
