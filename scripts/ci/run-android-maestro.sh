@@ -570,8 +570,12 @@ write_chrome_bootstrap_report() {
   local device_fault="not_found"
   local classification=""
 
-  current_focus="$(grep -m1 'mCurrentFocus=' "$focus_log")"
-  resumed_activity="$(grep -m1 'mResumedActivity:' "$activity_log" || true)"
+  current_focus="$(grep -Em1 \
+    '^[[:space:]]*mCurrentFocus=Window[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
+    "$focus_log")"
+  resumed_activity="$(grep -Em1 \
+    '^[[:space:]]*(mResumedActivity|ResumedActivity): ActivityRecord[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
+    "$activity_log" || true)"
 
   if printf '%s\n%s\n' "$current_focus" "$resumed_activity" | grep -qF "$chrome_package"; then
     foreground="chrome"
@@ -619,11 +623,13 @@ capture_chrome_bootstrap_failure_evidence() {
   local relevant_logcat="$prefix-relevant-logcat.txt"
   local report="$prefix-classification.txt"
 
-  if ! timeout 15 adb -s "$adb_serial" shell dumpsys window windows >"$focus_log" 2>&1; then
+  if ! timeout 15 adb -s "$adb_serial" shell dumpsys window >"$focus_log" 2>&1; then
     echo "Chrome bootstrap evidence failed: could not capture current focus." >&2
     return 1
   fi
-  if ! grep -q 'mCurrentFocus=' "$focus_log"; then
+  if ! grep -Eq \
+    '^[[:space:]]*mCurrentFocus=Window[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
+    "$focus_log"; then
     echo "Chrome bootstrap evidence failed: current focus was absent." >&2
     return 1
   fi

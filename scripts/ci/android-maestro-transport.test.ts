@@ -85,6 +85,7 @@ async function runFunction(
 function assertChromeBootstrapContract(source: string): void {
   const bootstrap = extractFunction(source, "run_chrome_bootstrap")
   const classification = extractFunction(source, "write_chrome_bootstrap_report")
+  const evidence = extractFunction(source, "capture_chrome_bootstrap_failure_evidence")
 
   if ((bootstrap.match(/maestro --device/g) ?? []).length !== 2) {
     throw new Error("Chrome bootstrap must have exactly two bounded invocations")
@@ -102,10 +103,106 @@ function assertChromeBootstrapContract(source: string): void {
     throw new Error("Chrome bootstrap classification must use foreground focus, not pidof")
   }
   if (
+    !evidence.includes('shell dumpsys window >"$focus_log"') ||
+    evidence.includes("shell dumpsys window windows")
+  ) {
+    throw new Error("Chrome bootstrap evidence must use the full window dump")
+  }
+  if (
     !source.includes('if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"')
   ) {
     throw new Error("product suite retries must remain transport-only")
   }
+}
+
+async function androidEvidenceFixture(
+  windowOutput: string,
+  activityOutput: string,
+  logcatOutput: string,
+): Promise<string> {
+  const fixture = await mkdtemp(join(tmpdir(), "android-maestro-evidence-"))
+  fixtures.push(fixture)
+  await Promise.all([
+    writeFile(join(fixture, "window.txt"), windowOutput),
+    writeFile(
+      join(fixture, "window-windows.txt"),
+      "WINDOW MANAGER WINDOWS (dumpsys window windows)\n",
+    ),
+    writeFile(join(fixture, "activity.txt"), activityOutput),
+    writeFile(join(fixture, "logcat.txt"), logcatOutput),
+    writeFile(
+      join(fixture, "adb"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+fixture="\${0%/*}"
+printf '%s\\n' "$*" >>"$fixture/commands.txt"
+case "$*" in
+  "-s emulator-5580 shell dumpsys window") cat "$fixture/window.txt" ;;
+  "-s emulator-5580 shell dumpsys window windows") cat "$fixture/window-windows.txt" ;;
+  "-s emulator-5580 shell dumpsys activity activities") cat "$fixture/activity.txt" ;;
+  "-s emulator-5580 logcat -d -t 1000") cat "$fixture/logcat.txt" ;;
+  *) exit 64 ;;
+esac
+`,
+    ),
+  ])
+  await chmod(join(fixture, "adb"), 0o755)
+  return fixture
+}
+
+async function runChromeBootstrapHarness(
+  source: string,
+  firstStatus: number,
+  secondStatus: number,
+  evidenceMode = "pass",
+  resetMode = "pass",
+): Promise<{ status: number; trace: string; calls: number }> {
+  const trace = await fixtureFile("bootstrap-trace.txt", "")
+  const result = await runFunction(
+    source,
+    ["run_chrome_bootstrap"],
+    `fixture_root="\${1%/*}"
+artifacts="$fixture_root/artifacts"
+mkdir -p "$artifacts"
+emulator_log="$fixture_root/emulator.log"
+: >"$emulator_log"
+trace_file="$1"
+adb_serial=emulator-5580
+first_bootstrap_status="$2"
+second_bootstrap_status="$3"
+evidence_mode="$4"
+reset_mode="$5"
+maestro() {
+  local calls=0
+  if [ -f "$trace_file.calls" ]; then calls="$(cat "$trace_file.calls")"; fi
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$trace_file.calls"
+  if [ "$calls" -eq 1 ]; then return "$first_bootstrap_status"; fi
+  return "$second_bootstrap_status"
+}
+capture_chrome_bootstrap_failure_evidence() {
+  printf 'evidence:%s\\n' "$2" >>"$trace_file"
+  if [ "$evidence_mode" = "pass" ]; then return 0; fi
+  return 1
+}
+reset_chrome_bootstrap() {
+  printf 'reset\\n' >>"$trace_file"
+  if [ "$reset_mode" = "pass" ]; then return 0; fi
+  return 1
+}
+capture_attempt_evidence() {
+  printf 'full-evidence\\n' >>"$trace_file"
+  : >"$emulator_log"
+  : >"$artifacts/logcat-attempt-$1.txt"
+  : >"$artifacts/environment-attempt-$1.txt"
+}
+exec 2>>"$trace_file.stderr"
+run_chrome_bootstrap 1`,
+    [trace, String(firstStatus), String(secondStatus), evidenceMode, resetMode],
+  )
+  const callsPath = `${trace}.calls`
+  const calls = (await Bun.file(callsPath).exists()) ? Number(await readFile(callsPath, "utf8")) : 0
+  return { status: result.status, trace: await readFile(trace, "utf8"), calls }
 }
 
 async function runTransportMonitor(
@@ -335,6 +432,24 @@ wc -l <"$2"
     expect(firstEvidence).toBeLessThan(reset)
     expect(reset).toBeLessThan(maestroCalls[1] ?? -1)
     expect(maestroCalls[1] ?? -1).toBeLessThan(secondSuccess)
+
+    const result = await runChromeBootstrapHarness(source, 17, 0)
+    expect(result.status).toBe(0)
+    expect(result.calls).toBe(2)
+    expect(result.trace).toBe("evidence:first\nreset\n")
+  })
+
+  test("fails closed when first evidence capture or reset fails", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const evidenceFailure = await runChromeBootstrapHarness(source, 17, 0, "fail")
+    expect(evidenceFailure.status).toBe(17)
+    expect(evidenceFailure.calls).toBe(1)
+    expect(evidenceFailure.trace).toBe("evidence:first\n")
+
+    const resetFailure = await runChromeBootstrapHarness(source, 17, 0, "pass", "fail")
+    expect(resetFailure.status).toBe(17)
+    expect(resetFailure.calls).toBe(1)
+    expect(resetFailure.trace).toBe("evidence:first\nreset\nfull-evidence\n")
   })
 
   test("fails after exactly two Chrome bootstrap invocations and keeps full evidence", async () => {
@@ -353,17 +468,89 @@ wc -l <"$2"
     expect(secondEvidence).toBeLessThan(fullEvidence)
     expect(fullEvidence).toBeLessThan(failedReturn)
     expect(extractFunction(source, "capture_attempt_evidence")).toContain(': >"$emulator_log"')
+
+    const result = await runChromeBootstrapHarness(source, 17, 23)
+    expect(result.status).toBe(23)
+    expect(result.calls).toBe(2)
+    expect(result.trace).toBe("evidence:first\nreset\nevidence:second\nfull-evidence\n")
+  })
+
+  test("captures and parses verbatim current Android foreground output", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const fixture = await androidEvidenceFixture(
+      `WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)
+  Display: mDisplayId=0
+    mCurrentFocus=Window{9b77ef8 u0 com.android.chrome/com.google.android.apps.chrome.Main}
+`,
+      `ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)
+Display #0 (activities from top to bottom):
+  * Hist  #0: ActivityRecord{e53f100 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t1}
+  ResumedActivity: ActivityRecord{f16e297 u0 com.android.chrome/com.google.android.apps.chrome.Main t9}
+`,
+      "ActivityTaskManager: unrelated bounded logcat line\n",
+    )
+    const result = await runFunction(
+      source,
+      ["write_chrome_bootstrap_report", "capture_chrome_bootstrap_failure_evidence"],
+      'timeout() { shift; "$@"; }; PATH="$1:$PATH"; artifacts="$1/artifacts"; mkdir -p "$artifacts"; adb_serial=emulator-5580; chrome_package=com.android.chrome; capture_chrome_bootstrap_failure_evidence 1 first 2>"$1/capture.stderr"',
+      [fixture],
+    )
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await readFile(join(fixture, "commands.txt"), "utf8")).toBe(
+      "-s emulator-5580 shell dumpsys window\n" +
+        "-s emulator-5580 shell dumpsys activity activities\n" +
+        "-s emulator-5580 logcat -d -t 1000\n",
+    )
+    const report = await readFile(
+      join(fixture, "artifacts/chrome-bootstrap-attempt-1-first-classification.txt"),
+      "utf8",
+    )
+    expect(report).toContain(
+      "classification=chrome_remained_foreground_without_device_fault_evidence",
+    )
+    expect(report).toContain(
+      "resumed_activity=  ResumedActivity: ActivityRecord{f16e297 u0 com.android.chrome/com.google.android.apps.chrome.Main t9}",
+    )
+  })
+
+  test("fails if production evidence uses the window windows dump without current focus", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const brokenSource = source.replace(
+      'shell dumpsys window >"$focus_log"',
+      'shell dumpsys window windows >"$focus_log"',
+    )
+    expect(brokenSource).not.toBe(source)
+    const fixture = await androidEvidenceFixture(
+      "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)\n  mCurrentFocus=Window{9b77ef8 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n",
+      "  ResumedActivity: ActivityRecord{f16e297 u0 com.android.chrome/com.google.android.apps.chrome.Main t9}\n",
+      "unrelated line\n",
+    )
+    const result = await runFunction(
+      brokenSource,
+      ["write_chrome_bootstrap_report", "capture_chrome_bootstrap_failure_evidence"],
+      'timeout() { shift; "$@"; }; PATH="$1:$PATH"; artifacts="$1/artifacts"; mkdir -p "$artifacts"; adb_serial=emulator-5580; chrome_package=com.android.chrome; capture_chrome_bootstrap_failure_evidence 1 first 2>"$1/capture.stderr"',
+      [fixture],
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(await readFile(join(fixture, "capture.stderr"), "utf8")).toContain(
+      "current focus was absent",
+    )
+    expect(await readFile(join(fixture, "commands.txt"), "utf8")).toBe(
+      "-s emulator-5580 shell dumpsys window windows\n",
+    )
   })
 
   test("classifies launcher foreground after a background Chrome restart from focus evidence", async () => {
     const source = await readFile(laneScript, "utf8")
     const focus = await fixtureFile(
       "launcher-focus.txt",
-      "mCurrentFocus=Window{12 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity}\n",
+      "  mCurrentFocus=Window{21be88f u0 com.google.android.apps.nexuslauncher/com.google.android.apps.nexuslauncher.NexusLauncherActivity}\n",
     )
     const activity = await fixtureFile(
       "launcher-activity.txt",
-      "mResumedActivity: ActivityRecord{12 com.google.android.apps.nexuslauncher/.NexusLauncherActivity}\n",
+      "  ResumedActivity: ActivityRecord{56eb186 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t1}\n",
     )
     const logcat = await fixtureFile(
       "launcher-logcat.txt",
@@ -388,11 +575,11 @@ wc -l <"$2"
     const source = await readFile(laneScript, "utf8")
     const focus = await fixtureFile(
       "chrome-focus.txt",
-      "mCurrentFocus=Window{12 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n",
+      "  mCurrentFocus=Window{9b77ef8 u0 com.android.chrome/com.google.android.apps.chrome.Main}\n",
     )
     const activity = await fixtureFile(
       "chrome-activity.txt",
-      "mResumedActivity: ActivityRecord{12 com.android.chrome/com.google.android.apps.chrome.Main}\n",
+      "  ResumedActivity: ActivityRecord{f16e297 u0 com.android.chrome/com.google.android.apps.chrome.Main t9}\n",
     )
     const logcat = await fixtureFile("chrome-logcat.txt", "unrelated line\n")
     const report = `${focus}.report`
