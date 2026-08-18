@@ -69,11 +69,25 @@ is_adb_transport_failure() {
   grep -Eq "$adb_transport_pattern" "$log"
 }
 
+is_maestro_attempt_transport_failure() {
+  local log="$1"
+  local junit="$2"
+
+  if is_adb_transport_failure "$log"; then
+    return 0
+  fi
+
+  [ -f "$junit" ] || return 1
+  sed -e 's/^[[:space:]]*<failure>//' -e 's#</failure>[[:space:]]*$##' "$junit" |
+    grep -Eq "$adb_transport_pattern"
+}
+
 should_retry_transport_failure() {
   local attempt="$1"
   local log="$2"
+  local junit="$3"
 
-  [ "$attempt" -eq 1 ] && is_adb_transport_failure "$log"
+  [ "$attempt" -eq 1 ] && is_maestro_attempt_transport_failure "$log" "$junit"
 }
 
 process_identity() {
@@ -1159,7 +1173,10 @@ if [ "$first_status" -eq 70 ]; then
   exit "$first_status"
 fi
 
-if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"; then
+if ! should_retry_transport_failure \
+  1 \
+  "$artifacts/maestro-attempt-1.log" \
+  "$artifacts/maestro-junit-attempt-1.xml"; then
   exit "$first_status"
 fi
 

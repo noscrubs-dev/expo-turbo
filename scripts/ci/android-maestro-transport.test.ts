@@ -142,7 +142,9 @@ function assertChromeBootstrapContract(source: string): void {
     throw new Error("Chrome retry must reconnect ADB, prove stability, and clear Chrome")
   }
   if (
-    !source.includes('if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"')
+    !source.includes("if ! should_retry_transport_failure \\\n") ||
+    !source.includes('"$artifacts/maestro-attempt-1.log" \\\n') ||
+    !source.includes('"$artifacts/maestro-junit-attempt-1.xml"; then')
   ) {
     throw new Error("product suite retries must remain transport-only")
   }
@@ -566,27 +568,61 @@ wc -l <"$2"
 
     const result = await runFunction(
       source,
-      ["is_adb_transport_failure", "should_retry_transport_failure"],
-      'should_retry_transport_failure "$1" "$2"',
-      ["1", log],
+      [
+        "is_adb_transport_failure",
+        "is_maestro_attempt_transport_failure",
+        "should_retry_transport_failure",
+      ],
+      'should_retry_transport_failure "$1" "$2" "$3"',
+      ["1", log, `${log}.missing-junit`],
     )
     expect(result.status).toBe(0)
 
     const oldGate = source.replace(
-      '[ "$attempt" -eq 1 ] && is_adb_transport_failure "$log"',
-      '[ "$attempt" -eq 1 ] && grep -Eq \'\\[Failed\\].*\\(0s\\)\' "$log" && is_adb_transport_failure "$log"',
+      '[ "$attempt" -eq 1 ] && is_maestro_attempt_transport_failure "$log" "$junit"',
+      '[ "$attempt" -eq 1 ] && grep -Eq \'\\[Failed\\].*\\(0s\\)\' "$log" && is_maestro_attempt_transport_failure "$log" "$junit"',
     )
     expect(oldGate).not.toBe(source)
     expect(
       (
         await runFunction(
           oldGate,
-          ["is_adb_transport_failure", "should_retry_transport_failure"],
-          'should_retry_transport_failure "$1" "$2"',
-          ["1", log],
+          [
+            "is_adb_transport_failure",
+            "is_maestro_attempt_transport_failure",
+            "should_retry_transport_failure",
+          ],
+          'should_retry_transport_failure "$1" "$2" "$3"',
+          ["1", log, `${log}.missing-junit`],
         )
       ).status,
     ).not.toBe(0)
+  })
+
+  test("retries when the JUnit failure proves a device-server loss", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const log = await fixtureFile("summary.log", "[Failed] Rails flow (19s)\n")
+    const junit = await fixtureFile(
+      "offline.xml",
+      `<testsuite>
+  <testcase status="ERROR">
+    <failure>maestro.android.DeviceServerDiedException: Device server died during 'takeScreenshot': StatusRuntimeException: UNAVAILABLE
+Caused by: java.io.IOException: Command failed (host:transport:emulator-5580): device offline</failure>
+  </testcase>
+</testsuite>\n`,
+    )
+
+    const result = await runFunction(
+      source,
+      [
+        "is_adb_transport_failure",
+        "is_maestro_attempt_transport_failure",
+        "should_retry_transport_failure",
+      ],
+      'should_retry_transport_failure "$1" "$2" "$3"',
+      ["1", log, junit],
+    )
+    expect(result.status, result.stderr).toBe(0)
   })
 
   test("does not retry assertions, application crashes, or selector timeouts", async () => {
@@ -610,6 +646,19 @@ wc -l <"$2"
       )
       expect(result.status, `${name}: ${result.stderr}`).not.toBe(0)
     }
+
+    const productLog = await fixtureFile("product-summary.log", "[Failed] Rails flow (19s)\n")
+    const productJunit = await fixtureFile(
+      "product.xml",
+      `<testsuite><testcase status="FAILURE"><failure>Element not found: text: "DeviceServerDiedException: device offline"</failure></testcase></testsuite>\n`,
+    )
+    const junitResult = await runFunction(
+      source,
+      ["is_adb_transport_failure", "is_maestro_attempt_transport_failure"],
+      'is_maestro_attempt_transport_failure "$1" "$2"',
+      [productLog, productJunit],
+    )
+    expect(junitResult.status, junitResult.stderr).not.toBe(0)
 
     assertChromeBootstrapContract(source)
   })
@@ -994,8 +1043,8 @@ exit 0`,
     expect(() =>
       assertChromeBootstrapContract(
         source.replace(
-          'if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"; then',
-          'if [ "$first_status" -eq 0 ]; then',
+          '"$artifacts/maestro-junit-attempt-1.xml"; then',
+          '"$artifacts/maestro-attempt-1.log"; then',
         ),
       ),
     ).toThrow(/transport-only/)
@@ -1079,9 +1128,13 @@ exit 0`,
     )
     const result = await runFunction(
       source,
-      ["is_adb_transport_failure", "should_retry_transport_failure"],
-      'should_retry_transport_failure "$1" "$2"',
-      ["2", log],
+      [
+        "is_adb_transport_failure",
+        "is_maestro_attempt_transport_failure",
+        "should_retry_transport_failure",
+      ],
+      'should_retry_transport_failure "$1" "$2" "$3"',
+      ["2", log, `${log}.missing-junit`],
     )
 
     expect(result.status).not.toBe(0)
