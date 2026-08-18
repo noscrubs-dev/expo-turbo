@@ -227,6 +227,7 @@ function render(
     renderError?: (event: ExpoTurboRenderError) => ReactNode
     strict?: boolean
     streamSources?: ExpoTurboProviderProps["streamSources"]
+    textComponent?: ExpoTurboProviderProps["textComponent"]
   }> = {},
 ): ReactTestRenderer {
   let renderer: ReactTestRenderer | undefined
@@ -16578,6 +16579,364 @@ describe("React protocol renderer", () => {
     expect(Object.isFrozen(vocabulary[0])).toBe(true)
     expect(JSON.stringify(renderer.toJSON())).toContain("Unknown fallback")
     expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+  })
+
+  /**
+   * Issue #405. Vocabulary tolerance unwraps an unknown element and keeps its
+   * children, so a tag the installed client does not know and the server does
+   * — the version-skew case #392 exists to survive — used to put its text into
+   * the tree as a bare JavaScript string. When the nearest rendered ancestor is
+   * `View`-like that breaks React Native's text-in-view rule: `RCTRawText`, a
+   * nonfatal RedBox on 0.86.2 in development, silent in production, and an
+   * invariant failure on older versions.
+   *
+   * `react-test-renderer` mocks host components, so it cannot enforce that rule
+   * and cannot fail on the defect directly — the suite already renders a raw
+   * string under a mocked host elsewhere in this file and passes. So these
+   * assertions are on the shape the renderer emits instead: `textRuns` reports
+   * which host each string landed in, and a string under anything but the
+   * host's own text primitive is the defect.
+   */
+  const TEXT_PRIMITIVE = "text-primitive"
+  const textPrimitive = ({ children }: Readonly<{ children?: ReactNode }>) =>
+    createElement(TEXT_PRIMITIVE, null, children)
+
+  /** Every string in the rendered tree, with the host that is its React parent. */
+  function textRuns(rendered: unknown): readonly Readonly<{ host: string; text: string }>[] {
+    const runs: { host: string; text: string }[] = []
+    const walk = (node: unknown, host: string): void => {
+      if (typeof node === "string") {
+        runs.push({ host, text: node })
+        return
+      }
+      if (!node || typeof node !== "object") return
+      const { children, type } = node as Readonly<{ children?: unknown; type?: unknown }>
+      if (!Array.isArray(children)) return
+      for (const child of children) walk(child, String(type))
+    }
+    walk(rendered, "(root)")
+    return runs
+  }
+
+  test("wraps the surviving text of an unwrapped unknown element in the host text primitive", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
+        url: "https://example.test/skew",
+      }),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      textComponent: textPrimitive,
+    })
+
+    // The text survives, which is the whole point of unwrapping, and it lands
+    // inside the primitive rather than directly in the `gallery` host.
+    expect(textRuns(renderer.toJSON())).toEqual([{ host: TEXT_PRIMITIVE, text: "hello" }])
+    // Unwrapping is still reported exactly once, unchanged by the wrapping.
+    expect(vocabulary.map(({ kind, nodeKey, tag }) => ({ kind, nodeKey, tag }))).toEqual([
+      { kind: "component", nodeKey: "id:future", tag: "FutureText" },
+    ])
+  })
+
+  test("drops the surviving text rather than emit a bare string with no text primitive", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
+        url: "https://example.test/skew",
+      }),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+    })
+
+    // The last resort: no primitive to put it in, so the run is dropped. This
+    // is the assertion a mutation restoring the bare string fails.
+    expect(textRuns(renderer.toJSON())).toEqual([])
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("hello")
+    // The gallery itself still rendered, so the document is not blank.
+    expect(renderer.root.findAll((node) => String(node.type) === "gallery")).toHaveLength(1)
+    expect(vocabulary.map(({ kind, tag }) => ({ kind, tag }))).toEqual([
+      { kind: "component", tag: "FutureText" },
+    ])
+  })
+
+  test("draws the boundary at ownership: a text component keeps its own text, a nodes component does not", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><DemoText>owned</DemoText><FutureText>placed</FutureText></Gallery>',
+      ),
+    )
+    // No primitive configured, so only text a component owns survives.
+    const renderer = render(session, registryWithCounters())
+
+    // `DemoText` declares `children: "text"`: the decoded run is handed to the
+    // component, which puts it in its own `text` host. Nothing here touches it.
+    expect(textRuns(renderer.toJSON())).toEqual([{ host: "text", text: "owned" }])
+
+    // With a primitive, the renderer-placed run appears too, and the two stay
+    // distinguishable: one in the component's host, one in the primitive.
+    const wrapped = render(
+      new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoText>owned</DemoText><FutureText>placed</FutureText></Gallery>',
+        ),
+      ),
+      registryWithCounters(),
+      { textComponent: textPrimitive },
+    )
+    expect(textRuns(wrapped.toJSON())).toEqual([
+      { host: "text", text: "owned" },
+      { host: TEXT_PRIMITIVE, text: "placed" },
+    ])
+  })
+
+  test("leaves insignificant whitespace as neither output nor a drop", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const warnings: unknown[][] = []
+    const originalWarn = console.warn
+    console.warn = (...values: unknown[]) => {
+      warnings.push(values)
+    }
+    try {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoText>kept</DemoText>\n  <FutureText>\n  </FutureText>\n</Gallery>',
+        ),
+      )
+      const renderer = render(session, registryWithCounters(), {
+        onUnknownVocabulary: (event) => {
+          vocabulary.push(event)
+        },
+      })
+
+      // Whitespace between elements renders as nothing and always has. Counting
+      // it as a drop would let indentation decide whether a document is blank,
+      // and counting it as output would hide a document that really is.
+      expect(textRuns(renderer.toJSON())).toEqual([{ host: "text", text: "kept" }])
+      expect(warnings.filter(([message]) => String(message).includes("dropped text"))).toEqual([])
+      expect(vocabulary.map(({ tag }) => tag)).toEqual(["FutureText"])
+    } finally {
+      console.warn = originalWarn
+    }
+  })
+
+  test("keeps known structural output inside an unknown wrapper while placing its text", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureCard id="card">lead<DemoText>known</DemoText><FutureBadge id="badge">nested</FutureBadge>tail</FutureCard></Gallery>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      textComponent: textPrimitive,
+    })
+
+    // Refusing to unwrap would have taken `DemoText` with it, which is why the
+    // report rejected that alternative. Order is preserved across the mixed
+    // array of placed runs and rendered components.
+    expect(textRuns(renderer.toJSON())).toEqual([
+      { host: TEXT_PRIMITIVE, text: "lead" },
+      { host: "text", text: "known" },
+      { host: TEXT_PRIMITIVE, text: "nested" },
+      { host: TEXT_PRIMITIVE, text: "tail" },
+    ])
+    // One report per unknown node, and the nested unknown is its own node.
+    expect(vocabulary.map(({ nodeKey, tag }) => ({ nodeKey, tag }))).toEqual([
+      { nodeKey: "id:card", tag: "FutureCard" },
+      { nodeKey: "id:badge", tag: "FutureBadge" },
+    ])
+  })
+
+  test("places CDATA and entity-decoded text through the same boundary", async () => {
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureText id="cdata"><![CDATA[raw < & text]]></FutureText><FutureText id="entities">a &amp; b &lt; c</FutureText></Gallery>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), { textComponent: textPrimitive })
+
+    expect(textRuns(renderer.toJSON())).toEqual([
+      { host: TEXT_PRIMITIVE, text: "raw < & text" },
+      { host: TEXT_PRIMITIVE, text: "a & b < c" },
+    ])
+
+    // And both are dropped, not emitted, when there is nothing to put them in.
+    const bare = render(
+      new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><FutureText id="cdata"><![CDATA[raw < & text]]></FutureText><FutureText id="entities">a &amp; b &lt; c</FutureText></Gallery>',
+        ),
+      ),
+      registryWithCounters(),
+    )
+    expect(textRuns(bare.toJSON())).toEqual([])
+  })
+
+  test("reports each repeated unknown node once and places each of their runs", async () => {
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<Gallery><FutureText id="one">one</FutureText><FutureText id="two">two</FutureText><FutureText id="three">three</FutureText></Gallery>',
+      ),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      textComponent: textPrimitive,
+    })
+
+    expect(textRuns(renderer.toJSON())).toEqual([
+      { host: TEXT_PRIMITIVE, text: "one" },
+      { host: TEXT_PRIMITIVE, text: "two" },
+      { host: TEXT_PRIMITIVE, text: "three" },
+    ])
+    // Deduplication is per node and per generation, not per tag: three nodes of
+    // one unknown tag are three reports, and none of them repeats.
+    expect(vocabulary.map(({ nodeKey, tag }) => ({ nodeKey, tag }))).toEqual([
+      { nodeKey: "id:one", tag: "FutureText" },
+      { nodeKey: "id:two", tag: "FutureText" },
+      { nodeKey: "id:three", tag: "FutureText" },
+    ])
+  })
+
+  test("warns once per dropped run in development and stays silent in production", async () => {
+    const development = globalThis as typeof globalThis & { __DEV__?: boolean }
+    const hadDevelopmentFlag = Object.hasOwn(development, "__DEV__")
+    const previousDevelopmentFlag = development.__DEV__
+    const originalWarn = console.warn
+    const warnings: unknown[][] = []
+    console.warn = (...values: unknown[]) => {
+      warnings.push(values)
+    }
+    const dropWarnings = () =>
+      warnings.filter(([message]) => String(message).includes("dropped text"))
+
+    try {
+      development.__DEV__ = true
+      const developmentRenderer = render(
+        new DocumentSession(
+          parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
+            url: "https://example.test/skew",
+          }),
+        ),
+        registryWithCounters(),
+      )
+      // Dropping content is never silent: a build that can show a warning does.
+      expect(dropWarnings()).toHaveLength(1)
+      expect(dropWarnings()[0]?.[1]).toEqual({
+        documentUrl: "https://example.test/skew",
+        nodeKey: "path.0.0.0",
+      })
+      act(() => developmentRenderer.unmount())
+
+      development.__DEV__ = false
+      const productionRenderer = render(
+        new DocumentSession(
+          parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>'),
+        ),
+        registryWithCounters(),
+      )
+      expect(dropWarnings()).toHaveLength(1)
+      act(() => productionRenderer.unmount())
+    } finally {
+      console.warn = originalWarn
+      if (hadDevelopmentFlag) development.__DEV__ = previousDevelopmentFlag
+      else delete development.__DEV__
+    }
+  })
+
+  test("counts a dropped run as a drop, so unsafe text cannot stand in for a blank document", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const vocabulary: ExpoTurboUnknownVocabularyEvent[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<FutureRoot id="root">only text</FutureRoot>', {
+        url: "https://example.test/blank",
+      }),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      onUnknownVocabulary: (event) => {
+        vocabulary.push(event)
+      },
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+
+    // Everything this document could render was unsafe text, so the document is
+    // blank and reports as blank. A mutation counting the drop as output leaves
+    // the guard down and fails here. The error surface renders text of its own,
+    // so the document's runs are the ones outside it.
+    expect(textRuns(renderer.toJSON()).filter(({ host }) => host !== "protocol-error")).toEqual([])
+    expect(JSON.stringify(renderer.toJSON())).toContain("protocol-error")
+    expect(errors.map(({ severity }) => severity)).toEqual(["document"])
+    expect(errors[0]?.error.message).toContain("no renderable fallback")
+    expect(vocabulary.map(({ tag }) => tag)).toEqual(["FutureRoot"])
+  })
+
+  test("raises no blank report when the text primitive keeps that same text on screen", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<FutureRoot id="root">only text</FutureRoot>', {
+        url: "https://example.test/blank",
+      }),
+    )
+    const renderer = render(session, registryWithCounters(), {
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+      textComponent: textPrimitive,
+    })
+
+    // Valid text kept on screen is output, so the same document is not blank.
+    expect(textRuns(renderer.toJSON())).toEqual([{ host: TEXT_PRIMITIVE, text: "only text" }])
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(errors).toHaveLength(0)
+  })
+
+  test("recovers from a blank document when a Stream replaces unsafe text with output", async () => {
+    const errors: ExpoTurboRenderError[] = []
+    const recoveries: ExpoTurboDocumentBlankRecovery[] = []
+    const session = new DocumentSession(
+      parseExpoTurboDocument(
+        '<FutureRoot id="root"><Gallery id="slot"><FutureText>unsafe</FutureText></Gallery></FutureRoot>',
+        { url: "https://example.test/recovery" },
+      ),
+    )
+    // The gallery is output, so this document starts healthy.
+    const renderer = render(session, registryWithCounters(), {
+      onDocumentBlankRecovery: (event) => recoveries.push(event),
+      onError: (event) => errors.push(event),
+      renderError: (event) => createElement("protocol-error", null, event.error.message),
+    })
+    expect(errors).toHaveLength(0)
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="slot"><template><FutureText id="slot">still unsafe</FutureText></template></turbo-stream>',
+      )
+    })
+    // Now nothing renders but a dropped run, so the guard raises. Its surface
+    // carries text of its own; the document's own runs are gone.
+    expect(textRuns(renderer.toJSON()).filter(({ host }) => host !== "protocol-error")).toEqual([])
+    expect(errors.map(({ severity }) => severity)).toEqual(["document"])
+
+    await act(async () => {
+      await dispatchTurboStreamFragment(
+        session,
+        '<turbo-stream action="replace" target="slot"><template><Gallery id="slot"><DemoText>restored</DemoText></Gallery></template></turbo-stream>',
+      )
+    })
+    expect(textRuns(renderer.toJSON())).toEqual([{ host: "text", text: "restored" }])
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("protocol-error")
+    expect(recoveries).toHaveLength(1)
   })
 })
 

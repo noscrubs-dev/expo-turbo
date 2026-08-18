@@ -38,7 +38,7 @@ import type {
   RegistryComponent,
   RegistryComponentAction,
 } from "../registry/index.js"
-import { ExpoTurboErrorSurface, ExpoTurboLoadingSurface } from "./surfaces.js"
+import { ExpoTurboErrorSurface, ExpoTurboLoadingSurface, ExpoTurboTextSurface } from "./surfaces.js"
 
 /**
  * Every adapter `ExpoTurboApp` wires, with three states per key:
@@ -102,6 +102,12 @@ export interface ExpoTurboAppProps {
   /** Optional actions available to registered components. */
   readonly actions?: ComponentActionRegistry<RegistryComponentAction>
   readonly adapters?: ExpoTurboAppAdapters
+  /**
+   * `boundaries.text` defaults to the packaged `ExpoTurboTextSurface`, so the
+   * zero-configuration entrypoint keeps the text of an unknown element on
+   * screen instead of dropping it. Supply your own to restyle it; drop down to
+   * `ExpoTurbo` to run without a text primitive at all.
+   */
   readonly boundaries?: ExpoTurboBoundaries
   /** Replaces the packaged spinner. */
   readonly loading?: ReactNode
@@ -349,6 +355,14 @@ export function ExpoTurboApp({
     [renderError],
   )
 
+  // A host-neutral renderer has no text primitive, so without one it drops the
+  // text of an unwrapped unknown element rather than emit a bare string under a
+  // View. This entrypoint knows the platform, so it supplies one.
+  const hostBoundaries = useMemo<ExpoTurboBoundaries>(
+    () => ({ ...boundaries, text: boundaries?.text ?? ExpoTurboTextSurface }),
+    [boundaries],
+  )
+
   // Every configuration failure resolves through this one value, so each one
   // both renders and reports. A visible error the host's telemetry never hears
   // about is the blank screen again, just better dressed.
@@ -369,7 +383,7 @@ export function ExpoTurboApp({
   return createElement(ExpoTurbo, {
     ...(actions ? { actions } : {}),
     adapters: renderAdapters,
-    ...(boundaries ? { boundaries } : {}),
+    boundaries: hostBoundaries,
     ...(cable ? { cable } : {}),
     fetch: resolved.fetch,
     ...(focus ? { focus } : {}),

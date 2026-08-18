@@ -27,6 +27,7 @@ import {
   DemoFormBoundary,
   DemoFrameBoundary,
   DemoFrameAutoscrollProvider,
+  DemoTextBoundary,
   DemoVisibilityProvider,
 } from "./demo-boundaries";
 import {
@@ -286,6 +287,7 @@ export function DemoRuntimeProvider({
                   session={runtime.session}
                   state={runtime.actionRuntime.state}
                   styles={DEMO_STYLE_ADAPTER}
+                  textComponent={DemoTextBoundary}
                 >
                   {children}
                 </ExpoTurboProvider>

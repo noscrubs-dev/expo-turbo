@@ -4,6 +4,19 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Stop the renderer emitting a bare string into a React Native `View`. Text
+  that survives an unwrapped unknown component has no host of its own, so it
+  became a direct child of whatever the nearest decoded ancestor rendered —
+  `RCTRawText`, a nonfatal RedBox in development and silent in production on
+  React Native 0.86, an invariant failure on older versions. Text a
+  `children: "text"` component owns is unchanged. Text the renderer places
+  itself now goes inside a host text primitive: `textComponent` on
+  `ExpoTurboProvider`, `boundaries.text` on `ExpoTurbo`, and the new packaged
+  `ExpoTurboTextSurface`, which `ExpoTurboApp` supplies by default. With no
+  primitive configured the run is dropped rather than emitted, counts as a drop
+  for the blank-root guard so it can never stand in for screen output, and
+  writes one development warning. Insignificant whitespace is unchanged.
+
 - Fix `ExpoTurbo` stranding the loading surface when `onError` is added or
   removed. Adding or removing the handler replaces the runtime, because its
   presence decides whether each controller keeps its own fallback reporting, but

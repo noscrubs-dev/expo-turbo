@@ -153,6 +153,7 @@ import {
   type ProtocolElement,
   type ProtocolNode,
   type ProtocolParentNode,
+  type ProtocolText,
   renderedTextValue,
 } from "../core/tree.js"
 import { EXPO_TURBO_RUNTIME_VERSION } from "../core/versions.js"
@@ -362,6 +363,20 @@ export interface ExpoTurboFormControlBinding {
   readonly submitsWith?: string
 }
 
+/**
+ * The host's text primitive, wrapped around every text run the renderer places
+ * itself. It receives one run as its only child and must render it inside
+ * whatever component draws text on the host platform — `Text` on React Native.
+ *
+ * It is the host's because the renderer has no primitives of its own, and it is
+ * needed because a text run has no host of its own: see `ProtocolTextRun` for
+ * where the boundary between renderer-placed and component-owned text falls,
+ * and for what happens to a run when this is absent.
+ */
+export interface ExpoTurboTextBoundaryProps {
+  readonly children?: ReactNode
+}
+
 interface ExpoTurboFormContextValue {
   readonly binding: ExpoTurboFormBinding
   readonly registry: FormControlRegistry
@@ -399,6 +414,7 @@ interface RendererContextValue {
   readonly state: DocumentStateStore | undefined
   readonly streamSources: CableStreamSourceCollection | undefined
   readonly styles: StyleAdapter | undefined
+  readonly textComponent: ComponentType<ExpoTurboTextBoundaryProps> | undefined
 }
 
 const RendererContext = createContext<RendererContextValue | undefined>(undefined)
@@ -439,6 +455,7 @@ const unknownVocabularyClaims = new WeakMap<
   DocumentSession,
   WeakMap<ProtocolElement, UnknownVocabularyClaim>
 >()
+const droppedTextRunWarnings = new WeakMap<DocumentSession, WeakMap<ProtocolText, number>>()
 const UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES = ["action", "confirm", "method", "stream"] as const
 const UNSUPPORTED_DOCUMENT_PREFETCH_ATTRIBUTES = [
   ...UNSUPPORTED_DOCUMENT_LINK_ATTRIBUTES,
@@ -796,6 +813,14 @@ export interface ExpoTurboProviderProps {
   readonly state?: DocumentStateStore
   readonly streamSources?: CableStreamSourceCollection
   readonly styles?: StyleAdapter
+  /**
+   * The host's text primitive. Every text run the renderer places itself is
+   * wrapped in it, because a bare string under a React Native `View` breaks the
+   * text-in-view rule. Without it such a run is dropped instead of emitted.
+   *
+   * `ExpoTurboApp` from `expo-turbo/expo` supplies one for you.
+   */
+  readonly textComponent?: ComponentType<ExpoTurboTextBoundaryProps>
 }
 
 export interface ExpoTurboDisposable {
@@ -895,6 +920,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       state: props.state,
       streamSources: props.streamSources,
       styles: props.styles,
+      textComponent: props.textComponent,
     }),
     [
       props.actions,
@@ -928,6 +954,7 @@ export function ExpoTurboProvider(props: ExpoTurboProviderProps): ReactNode {
       props.state,
       props.streamSources,
       props.styles,
+      props.textComponent,
     ],
   )
   return createElement(
@@ -4280,14 +4307,95 @@ function ProtocolElementView(
     : createElement(RegisteredElementBoundary, boundaryProps)
 }
 
+function claimDroppedTextRunWarning(
+  session: DocumentSession,
+  node: ProtocolText,
+  generation: number,
+): boolean {
+  let sessionClaims = droppedTextRunWarnings.get(session)
+  if (!sessionClaims) {
+    sessionClaims = new WeakMap()
+    droppedTextRunWarnings.set(session, sessionClaims)
+  }
+  if (sessionClaims.get(node) === generation) return false
+  sessionClaims.set(node, generation)
+  return true
+}
+
+/**
+ * One run of protocol text, placed by the renderer rather than by a component.
+ *
+ * The primitive-versus-host boundary this enforces runs between the two ways
+ * text reaches the screen:
+ *
+ * - A component owns it. A `children: "text"` definition receives the decoded
+ *   run as its React children and puts it in whatever primitive it draws with,
+ *   so nothing here applies and nothing here changes it.
+ * - The renderer places it. A text node rendered as a child node has no host of
+ *   its own, so its React parent is whatever component the nearest decoded
+ *   ancestor rendered. That ancestor declared `children: "nodes"`, which says
+ *   it accepts elements and says nothing about text, and on React Native a
+ *   component that accepts elements is `View`-like far more often than
+ *   `Text`-like. A bare string there breaks the text-in-view rule: a nonfatal
+ *   RedBox in development, silent in production, and older React Native
+ *   versions raised it as an invariant failure.
+ *
+ * The renderer cannot ask which host a component renders, so it never guesses:
+ * a run it places goes inside `textComponent`, the primitive the host supplied,
+ * and each run is wrapped on its own so per-node subscriptions stay intact.
+ *
+ * With no primitive configured the run is dropped instead of emitted. Issue
+ * #405 chose that as the explicit last resort over both alternatives: refusing
+ * to unwrap the unknown element would take the valid components nested in it
+ * along with the text, and emitting the string is the defect itself. A drop is
+ * registered rather than nothing, so unsafe text can never stand in for screen
+ * output — a document whose only content was unsafe text is blank and reports
+ * as blank.
+ */
+function ProtocolTextRun(
+  props: Readonly<{ node: ProtocolText; nodeKey: string; text: string }>,
+): ReactNode {
+  const { session, textComponent } = useRenderer()
+  const generation = session.treeGeneration
+  const dropped = textComponent === undefined
+  const { node, nodeKey } = props
+  useEffect(() => {
+    if (!dropped || !developmentVocabularyWarningsEnabled()) return
+    if (session.treeGeneration !== generation) return
+    if (session.getNodeSnapshot(nodeKey)?.node !== node) return
+    if (!claimDroppedTextRunWarning(session, node, generation)) return
+    try {
+      console.warn(
+        "Expo Turbo dropped text with no host text primitive",
+        Object.freeze({
+          documentUrl: session.tree.document.url ?? "about:blank",
+          nodeKey,
+        }),
+      )
+    } catch {
+      // Development warnings must not change rendered document state.
+    }
+  }, [dropped, generation, node, nodeKey, session])
+  return textComponent
+    ? createElement(
+        DocumentOutputMarker,
+        { kind: "output" },
+        createElement(textComponent, null, props.text),
+      )
+    : createElement(DocumentOutputMarker, { kind: "drop" })
+}
+
 function ProtocolNodeView(props: Readonly<{ nodeKey: string }>): ReactNode {
   const snapshot = useProtocolNode(props.nodeKey)
   if (!snapshot) return null
   const node = snapshot.node
   if (node.kind === "comment") return null
   if (node.kind === "text") {
+    // Insignificant whitespace renders as nothing and always has. It is neither
+    // output nor a drop: counting it either way would let indentation decide
+    // whether a document reads as blank.
     const text = renderedTextValue(node)
-    return text ? createElement(DocumentOutputMarker, { kind: "output" }, text) : null
+    return text ? createElement(ProtocolTextRun, { node, nodeKey: props.nodeKey, text }) : null
   }
   if (node.kind === "document") return createElement(Fragment, null, renderChildren(node.children))
   return createElement(ProtocolElementView, {

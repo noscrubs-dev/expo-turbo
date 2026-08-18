@@ -7,4 +7,5 @@ export {
   ExpoTurboErrorSurface,
   type ExpoTurboErrorSurfaceProps,
   ExpoTurboLoadingSurface,
+  ExpoTurboTextSurface,
 } from "./surfaces.js"

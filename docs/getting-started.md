@@ -496,6 +496,28 @@ state.
 `data-*` attributes are shared protocol metadata, not component vocabulary.
 They stay available through `protocol.data` and never report as unknown.
 
+### Text a component does not own
+
+Unwrapping a text-bearing unknown component leaves its text with no host of its
+own, so its React parent becomes whatever component the nearest decoded
+ancestor rendered. That ancestor declared `children: "nodes"`, which says
+nothing about text, and on React Native a component accepting elements is
+usually a `View`. A bare string there breaks the text-in-view rule.
+
+So the renderer never emits one. Text a component owns — the decoded run a
+`children: "text"` definition receives as its React children — is that
+component's business and is untouched. Text the renderer places itself goes
+inside `textComponent`, the host's text primitive, one wrapper per run.
+`ExpoTurboApp` supplies `ExpoTurboTextSurface`; `ExpoTurbo` takes it as
+`boundaries.text`; `ExpoTurboProvider` takes it as `textComponent`.
+
+Without one, the run is dropped. That is the last resort rather than the
+design: refusing to unwrap would take the valid components nested in the
+unknown element along with the text. A dropped run counts as no output for the
+blank-root guard, so unsafe text can never stand in for screen output, and
+development builds write one warning per dropped run. Insignificant whitespace
+is neither output nor a drop, as before.
+
 A `form` association whose owner tag is unknown reports the owner as an unknown
 component instead of failing the control. The association is inert: the control
 still renders, and its binding still answers state, validity, and

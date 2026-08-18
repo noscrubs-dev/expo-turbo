@@ -33,6 +33,20 @@ export function ExpoTurboLoadingSurface(): ReactNode {
   )
 }
 
+/**
+ * The packaged text primitive, wrapped around every text run the renderer
+ * places itself — the surviving text of an unwrapped unknown element, most
+ * often. Without a primitive such a run is dropped, because a bare string
+ * under a `View` breaks React Native's text-in-view rule.
+ *
+ * It carries no styling of its own so it inherits the surrounding text style,
+ * which is what makes text from a tag this build does not know read like the
+ * text around it rather than like a separate widget.
+ */
+export function ExpoTurboTextSurface({ children }: Readonly<{ children?: ReactNode }>): ReactNode {
+  return createElement(Text, { selectable: true }, children)
+}
+
 export interface ExpoTurboErrorSurfaceProps {
   readonly error: Error
   readonly retry: () => void

@@ -510,6 +510,55 @@ describe("ExpoTurboApp default surfaces", () => {
     })
   })
 
+  test("keeps the text of a tag this build does not know inside the packaged primitive", async () => {
+    // Issue #405: the version-skew case. The server knows `AppFutureText` and
+    // ships it, this build does not, so tolerance unwraps it and its text
+    // survives. Without a text primitive the renderer drops that run rather
+    // than emit a bare string under a View, so the zero-configuration
+    // entrypoint supplies one and the content stays on screen.
+    routerPath = "/skew"
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: stubTransport("<AppDoc><AppFutureText>skewed</AppFutureText></AppDoc>").fetch },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    const wrapper = renderer.root.find((node) => String(node.type) === "native-text")
+    expect(textOf(renderer.toJSON())).toBe("skewed")
+    expect(wrapper.props.children).toBe("skewed")
+    // Reverting the default drops the run: the text disappears entirely.
+    expect(JSON.stringify(renderer.toJSON())).toContain("skewed")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("lets a host replace the packaged text primitive", async () => {
+    routerPath = "/skew-host"
+    const renderer = await mount(
+      createElement(ExpoTurboApp, {
+        adapters: { fetch: stubTransport("<AppDoc><AppFutureText>skewed</AppFutureText></AppDoc>").fetch },
+        boundaries: {
+          text: ({ children }: Readonly<{ children?: ReactNode }>) =>
+            createElement("host-text", null, children),
+        },
+        origin: ORIGIN,
+        registry,
+      }),
+    )
+
+    expect(renderer.root.findAll((node) => String(node.type) === "host-text")).toHaveLength(1)
+    expect(renderer.root.findAll((node) => String(node.type) === "native-text")).toHaveLength(0)
+    expect(textOf(renderer.toJSON())).toBe("skewed")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
   test("hides the raw error from release builds but still reports it", async () => {
     routerPath = "/broken"
     globalWithAct.__DEV__ = false

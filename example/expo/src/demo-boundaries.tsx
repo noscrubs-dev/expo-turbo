@@ -2,6 +2,7 @@ import {
   type ExpoTurboDocumentBoundaryProps,
   type ExpoTurboFormBoundaryProps,
   type ExpoTurboFrameBoundaryProps,
+  type ExpoTurboTextBoundaryProps,
 } from "expo-turbo/react";
 import {
   Children,
@@ -508,5 +509,19 @@ export function DemoFormBoundary({
       ) : null}
       {children}
     </View>
+  );
+}
+
+/**
+ * The host text primitive. Issue #405: text that survives an unwrapped unknown
+ * component has no host of its own, so without this the renderer drops it
+ * rather than emit a bare string under a View. The demo keeps it visible and
+ * marks it, so a skewed document reads as content rather than as a gap.
+ */
+export function DemoTextBoundary({ children }: ExpoTurboTextBoundaryProps) {
+  return (
+    <Text selectable style={{ color: "#435160", fontSize: 14, lineHeight: 21 }}>
+      {children}
+    </Text>
   );
 }

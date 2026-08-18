@@ -32,6 +32,7 @@ import {
   type ExpoTurboRenderError,
   type ExpoTurboRenderErrorSeverity,
   ExpoTurboRoot,
+  type ExpoTurboTextBoundaryProps,
   type ExpoTurboUnknownVocabularyHandler,
 } from "./renderer.js"
 import {
@@ -80,6 +81,14 @@ export interface ExpoTurboBoundaries {
   readonly document?: ComponentType<ExpoTurboDocumentBoundaryProps>
   readonly form?: ComponentType<ExpoTurboFormBoundaryProps>
   readonly frame?: ComponentType<ExpoTurboFrameBoundaryProps>
+  /**
+   * The host's text primitive. Issue #405: without it, a text run the renderer
+   * places itself — the surviving text of an unwrapped unknown element, most
+   * often — is dropped rather than emitted as a bare string under a `View`.
+   *
+   * `ExpoTurboApp` from `expo-turbo/expo` supplies one for you.
+   */
+  readonly text?: ComponentType<ExpoTurboTextBoundaryProps>
 }
 
 /**
@@ -400,6 +409,7 @@ export function ExpoTurbo({
       state: runtime.state,
       ...(runtime.streamSources ? { streamSources: runtime.streamSources } : {}),
       ...(adapters.styles ? { styles: adapters.styles } : {}),
+      ...(boundaries.text ? { textComponent: boundaries.text } : {}),
     },
     createElement(ExpoTurboRoot),
   )
