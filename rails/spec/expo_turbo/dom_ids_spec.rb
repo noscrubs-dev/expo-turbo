@@ -127,45 +127,93 @@ RSpec.describe ExpoTurbo::Rails::DomIds do
     expect(described_class.id_for(saved, :record)).to eq("rails-record-id")
   end
 
-  it "warns with the safe explicit-record migration and the 0.5 removal" do
-    expect(described_class::DEPRECATOR).to receive(:warn).with(
-      a_string_including(
-        "removed in expo_turbo-rails 0.5.0",
-        "replace id_for(record, :record) with dom_id(record), not dom_id(record, :record)",
-        "explicit :record role has no prefix"
-      )
-    )
+  it "gives the exact no-prefix migration for the default role" do
+    expect(described_class::DEPRECATOR).to receive(:warn).with(described_class::RECORD_DEPRECATION_MESSAGE)
+
+    described_class.id_for(saved)
+  end
+
+  it "gives the exact no-prefix migration for an explicit record role" do
+    expect(described_class::DEPRECATOR).to receive(:warn).with(described_class::RECORD_DEPRECATION_MESSAGE)
 
     described_class.id_for(saved, :record)
   end
 
-  it "registers its deprecator once under the stable Rails application name" do
-    initializer = ExpoTurbo::Rails::Engine.initializers.find do |candidate|
-      candidate.name == "expo_turbo.rails.deprecator"
-    end
+  it "keeps each non-record role in its exact migration" do
+    expect(described_class::DEPRECATOR).to receive(:warn).with(
+      "ExpoTurbo::Rails::DomIds.id_for is deprecated and will be removed in expo_turbo-rails 0.5.0; " \
+      "replace id_for(record, :frame) with dom_id(record, :frame); keep the :frame prefix"
+    )
+    described_class.id_for(saved, :frame)
 
-    initializer.run(Rails.application)
-    initializer.run(Rails.application)
+    expect(described_class::DEPRECATOR).to receive(:warn).with(
+      "ExpoTurbo::Rails::DomIds.id_for is deprecated and will be removed in expo_turbo-rails 0.5.0; " \
+      "replace id_for(record, :sidebar) with dom_id(record, :sidebar); keep the :sidebar prefix"
+    )
+    described_class.id_for(saved, :sidebar)
+  end
 
+  it "does not call a nonstandard role only to format its warning" do
+    role = Object.new
+    role.define_singleton_method(:inspect) { raise "warning inspected role" }
+    role.define_singleton_method(:instance_of?) { |*| raise "warning inspected role type" }
+    role.define_singleton_method(:to_s) { "sidebar" }
+
+    expect(described_class::DEPRECATOR).to receive(:warn).with(
+      "ExpoTurbo::Rails::DomIds.id_for is deprecated and will be removed in expo_turbo-rails 0.5.0; " \
+      "replace id_for(record, role) with dom_id(record, role); keep the non-:record prefix"
+    )
+
+    expect(described_class.id_for(saved, role)).to eq("sidebar_room_7")
+  end
+
+  it "registers its deprecator during the actual test application boot" do
+    expect(Rails.application).to be_initialized
     expect(described_class::DEPRECATOR_NAME).to eq(:expo_turbo_rails)
     expect(Rails.application.deprecators[described_class::DEPRECATOR_NAME]).to equal(described_class::DEPRECATOR)
     expect(Rails.application.deprecators.each.count { |deprecator| deprecator.equal?(described_class::DEPRECATOR) }).to eq(1)
   end
 
-  it "uses the host deprecation behavior and obeys host silencing" do
+  it "registers once when its initializer is re-run for a separate application" do
+    initializer = ExpoTurbo::Rails::Engine.initializers.find do |candidate|
+      candidate.name == "expo_turbo.rails.deprecator"
+    end
+    original_behavior = described_class::DEPRECATOR.behavior
+    throwaway_app = Class.new(::Rails::Application).new
+
+    initializer.run(throwaway_app)
+    initializer.run(throwaway_app)
+
+    expect(throwaway_app.deprecators[described_class::DEPRECATOR_NAME]).to equal(described_class::DEPRECATOR)
+    expect(throwaway_app.deprecators.each.count { |deprecator| deprecator.equal?(described_class::DEPRECATOR) }).to eq(1)
+  ensure
+    described_class::DEPRECATOR.behavior = original_behavior if original_behavior
+  end
+
+  it "uses the host behavior, attributes the caller, and obeys host silencing" do
     warnings = []
+    original_behaviors = Rails.application.deprecators.each.to_h { |deprecator| [deprecator, deprecator.behavior] }
     Rails.application.deprecators.behavior = lambda do |message, callstack, deprecator|
       warnings << [message, callstack, deprecator]
     end
 
+    call_site = __LINE__ + 1
     described_class.id_for(saved)
     Rails.application.deprecators.silence { described_class.id_for(saved) }
 
     expect(warnings.length).to eq(1)
     expect(warnings.first.fetch(0)).to include("ExpoTurbo::Rails::DomIds.id_for is deprecated")
+    expect(warnings.first.fetch(1).first.path).to eq(__FILE__)
+    expect(warnings.first.fetch(1).first.lineno).to eq(call_site)
     expect(warnings.first.fetch(2)).to equal(described_class::DEPRECATOR)
   ensure
-    Rails.application.deprecators.behavior = :stderr
+    original_behaviors&.each { |deprecator, behavior| deprecator.behavior = behavior }
+  end
+
+  it "keeps normal Expo render calls warning-free" do
+    expect(described_class::DEPRECATOR).not_to receive(:warn)
+
+    dom_id_cases(view_context(ExpoTurbo::Rails::MIME_TYPE))
   end
 
   it "loads the gem and warns without an initialized Rails application" do
