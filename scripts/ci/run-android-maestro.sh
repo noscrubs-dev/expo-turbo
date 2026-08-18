@@ -689,8 +689,8 @@ enable_hide_error_dialogs() {
     return 1
   fi
   hide_error_dialogs_prior_value="$(tr -d '\r\n' <"$read_log")"
-  if [ "$hide_error_dialogs_prior_value" != "0" ]; then
-    echo "Android hide_error_dialogs must exist and be disabled on the pinned image." >&2
+  if [[ ! "$hide_error_dialogs_prior_value" =~ ^(null|0|1)$ ]]; then
+    echo "Android hide_error_dialogs returned an unsafe prior value." >&2
     return 1
   fi
 
@@ -717,14 +717,21 @@ restore_hide_error_dialogs() {
   if [ "$hide_error_dialogs_restore_required" -ne 1 ]; then
     return 0
   fi
-  if [[ ! "$hide_error_dialogs_prior_value" =~ ^[01]$ ]]; then
+  if [[ ! "$hide_error_dialogs_prior_value" =~ ^(null|0|1)$ ]]; then
     echo "Android hide_error_dialogs prior value is not safe to restore." >&2
     return 1
   fi
-  if ! run_named_adb_command "$restore_log" 15 \
-    adb -s "$adb_serial" shell settings put global hide_error_dialogs \
-    "$hide_error_dialogs_prior_value"; then
-    return 1
+  if [ "$hide_error_dialogs_prior_value" = "null" ]; then
+    if ! run_named_adb_command "$restore_log" 15 \
+      adb -s "$adb_serial" shell settings delete global hide_error_dialogs; then
+      return 1
+    fi
+  else
+    if ! run_named_adb_command "$restore_log" 15 \
+      adb -s "$adb_serial" shell settings put global hide_error_dialogs \
+      "$hide_error_dialogs_prior_value"; then
+      return 1
+    fi
   fi
   if ! run_named_adb_command "$verify_log" 15 \
     adb -s "$adb_serial" shell settings get global hide_error_dialogs; then
@@ -742,11 +749,9 @@ reset_chrome_bootstrap() {
   local package_log="$artifacts/chrome-bootstrap-attempt-$attempt-package.txt"
   local clear_log="$artifacts/chrome-bootstrap-attempt-$attempt-clear.txt"
 
-  if ! run_named_adb_command \
+  run_named_adb_command \
     "$artifacts/chrome-bootstrap-attempt-$attempt-reconnect-offline.txt" 10 \
-    adb reconnect offline; then
-    return 1
-  fi
+    adb reconnect offline || true
   if ! wait_for_stable_device; then
     return 1
   fi

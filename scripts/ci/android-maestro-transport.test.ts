@@ -128,6 +128,7 @@ function assertChromeBootstrapContract(source: string): void {
   }
   if (
     !reset.includes("adb reconnect offline") ||
+    !reset.includes("adb reconnect offline || true") ||
     !reset.includes("wait_for_stable_device") ||
     !reset.includes('shell pm clear "$chrome_package"')
   ) {
@@ -233,9 +234,10 @@ run_chrome_bootstrap 1`,
 
 async function runHiddenDialogsHarness(
   source: string,
+  priorSetting: "null" | "0" | "1" | "invalid",
   bootstrapStatus: number,
   failureMode = "none",
-): Promise<{ status: number; trace: string; finalSetting: string }> {
+): Promise<{ status: number; trace: string; finalSetting: string; restoreRequired: boolean }> {
   const trace = await fixtureFile("hide-dialogs-trace.txt", "")
   const result = await runFunction(
     source,
@@ -250,56 +252,135 @@ mkdir -p "$artifacts"
 adb_serial=emulator-5580
 hide_error_dialogs_prior_value=""
 hide_error_dialogs_restore_required=0
-setting=0
-	desired_bootstrap_status="$2"
-failure_mode="$3"
+setting="$2"
+desired_bootstrap_status="$3"
+failure_mode="$4"
+restore_calls=0
 run_named_adb_command() {
   local output="$1"
   shift 2
   printf '%s\\n' "$*" >>"$trace_file"
   case "$output" in
     *-read.txt)
-      [ "$failure_mode" != "read" ] || return 31
-      printf '%s\\n' "$setting" >"$output"
+      [ "$failure_mode" != "read-command" ] || return 31
+      if [ "$setting" = "invalid" ]; then printf 'unexpected\\r\\n' >"$output"; else printf '%s\\r\\n' "$setting" >"$output"; fi
       ;;
     *-set.txt)
-      [ "$failure_mode" != "set" ] || return 32
+      [ "$failure_mode" != "set-command" ] || return 32
       setting=1
       : >"$output"
       ;;
     *-verify.txt)
+      [ "$failure_mode" != "enable-verify-command" ] || return 34
       printf '%s\\n' "$setting" >"$output"
-      [ "$failure_mode" != "verify" ] || printf '0\\n' >"$output"
+      [ "$failure_mode" != "enable-verify-value" ] || printf '0\\n' >"$output"
       ;;
     *-restore.txt)
-      [ "$failure_mode" != "restore" ] || return 33
-      setting="$hide_error_dialogs_prior_value"
+      restore_calls=$((restore_calls + 1))
+      if [ "$failure_mode" = "restore-command" ] ||
+        { [ "$failure_mode" = "restore-command-once" ] && [ "$restore_calls" -eq 1 ]; }; then
+        return 33
+      fi
+      case "$*" in
+        *" settings delete global hide_error_dialogs") setting=null ;;
+        *) setting="$hide_error_dialogs_prior_value" ;;
+      esac
       : >"$output"
       ;;
     *-restored.txt)
+      [ "$failure_mode" != "restore-verify-command" ] || return 35
       printf '%s\\n' "$setting" >"$output"
+      if [ "$failure_mode" = "restore-verify-value" ]; then
+        if [ "$hide_error_dialogs_prior_value" = "1" ]; then printf '0\\n' >"$output"; else printf '1\\n' >"$output"; fi
+      fi
       ;;
   esac
 }
 run_chrome_bootstrap() {
   printf 'bootstrap setting=%s\\n' "$setting" >>"$trace_file"
-	  return "$desired_bootstrap_status"
+  return "$desired_bootstrap_status"
 }
-	if run_chrome_bootstrap_with_hidden_dialogs 1; then
-	  status=0
-	else
-	  status=$?
-	fi
-printf 'product setting=%s\\n' "$setting" >>"$trace_file"
+if run_chrome_bootstrap_with_hidden_dialogs 1; then
+  status=0
+else
+  status=$?
+fi
+printf 'wrapper_restore_required=%s\\n' "$hide_error_dialogs_restore_required" >>"$trace_file"
+if [ "$failure_mode" = "restore-command-once" ] &&
+  [ "$hide_error_dialogs_restore_required" -eq 1 ]; then
+  restore_hide_error_dialogs cleanup
+fi
+printf 'observed setting=%s\\n' "$setting" >>"$trace_file"
+printf 'restore_required=%s\\n' "$hide_error_dialogs_restore_required" >>"$trace_file"
 printf 'status=%s\\n' "$status" >>"$trace_file"
 exit 0`,
-    [trace, String(bootstrapStatus), failureMode],
+    [trace, priorSetting, String(bootstrapStatus), failureMode],
   )
   const traceContents = await readFile(trace, "utf8")
   const status = Number(traceContents.match(/^status=([0-9]+)$/m)?.[1] ?? -1)
-  const finalSetting = traceContents.match(/^product setting=(.*)$/m)?.[1] ?? "not-recorded"
+  const finalSetting = traceContents.match(/^observed setting=(.*)$/m)?.[1] ?? "not-recorded"
+  const restoreRequired = traceContents.match(/^restore_required=(.*)$/m)?.[1] === "1"
   expect(result.status, result.stderr).toBe(0)
-  return { status, trace: traceContents, finalSetting }
+  return { status, trace: traceContents, finalSetting, restoreRequired }
+}
+
+async function runBootstrapResetHarness(
+  source: string,
+  reconnectStatus: number,
+): Promise<{ status: number; trace: string; calls: number; reconnectEvidence: string }> {
+  const trace = await fixtureFile("bootstrap-reset-trace.txt", "")
+  const result = await runFunction(
+    source,
+    ["reset_chrome_bootstrap", "run_chrome_bootstrap"],
+    `fixture_root="\${1%/*}"
+trace_file="$1"
+artifacts="$fixture_root/artifacts"
+mkdir -p "$artifacts"
+adb_serial=emulator-5580
+chrome_package=com.android.chrome
+emulator_log="$fixture_root/emulator.log"
+: >"$emulator_log"
+reconnect_status="$2"
+run_named_adb_command() {
+  local output="$1"
+  shift 2
+  printf '%s\\n' "$*" >>"$trace_file"
+  case "$output" in
+    *-reconnect-offline.txt)
+      printf 'no offline transports\\n' >"$output"
+      return "$reconnect_status"
+      ;;
+    *-package.txt) printf 'package:/system/app/Chrome/Chrome.apk\\n' >"$output" ;;
+    *-clear.txt) printf 'Success\\n' >"$output" ;;
+  esac
+}
+wait_for_stable_device() { printf 'stable\\n' >>"$trace_file"; return 0; }
+maestro() {
+  calls=0
+  [ ! -f "$fixture_root/bootstrap.calls" ] || calls="$(cat "$fixture_root/bootstrap.calls")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$fixture_root/bootstrap.calls"
+  if [ "$calls" -eq 1 ]; then echo 'assertion failed: Chrome consent button'; return 17; fi
+  return 0
+}
+capture_chrome_bootstrap_failure_evidence() { printf 'evidence:%s\\n' "$2" >>"$trace_file"; return 0; }
+capture_attempt_evidence() { return 0; }
+if run_chrome_bootstrap 1; then status=0; else status=$?; fi
+printf 'status=%s\\n' "$status" >>"$trace_file"
+exit 0`,
+    [trace, String(reconnectStatus)],
+  )
+  const traceContents = await readFile(trace, "utf8")
+  expect(result.status, result.stderr).toBe(0)
+  return {
+    status: Number(traceContents.match(/^status=([0-9]+)$/m)?.[1] ?? -1),
+    trace: traceContents,
+    calls: Number(await readFile(join(dirname(trace), "bootstrap.calls"), "utf8")),
+    reconnectEvidence: await readFile(
+      join(dirname(trace), "artifacts/chrome-bootstrap-attempt-1-reconnect-offline.txt"),
+      "utf8",
+    ),
+  }
 }
 
 async function runTransportMonitor(
@@ -733,36 +814,91 @@ exit 0`,
     ).toContain("Application Not Responding: com.android.systemui")
   })
 
-  test("keeps error dialogs hidden through bootstrap and restores them before product work", async () => {
+  test("retries a non-transport bootstrap when reconnect finds no offline transport", async () => {
     const source = await readFile(laneScript, "utf8")
-    const success = await runHiddenDialogsHarness(source, 0)
-    expect(success.status, JSON.stringify(success)).toBe(0)
-    expect(success.finalSetting).toBe("0")
-    expect(success.trace).toContain("settings put global hide_error_dialogs 1")
-    expect(success.trace).toContain("bootstrap setting=1")
-    expect(success.trace).toContain("settings put global hide_error_dialogs 0")
-    expect(success.trace.indexOf("settings put global hide_error_dialogs 0")).toBeLessThan(
-      success.trace.indexOf("product setting=0"),
-    )
+    const result = await runBootstrapResetHarness(source, 1)
+
+    expect(result.status, JSON.stringify(result)).toBe(0)
+    expect(result.calls).toBe(2)
+    expect(result.reconnectEvidence).toBe("no offline transports\n")
+    expect(result.trace).toContain("adb reconnect offline")
+    expect(result.trace.match(/^stable$/gm)).toHaveLength(2)
+    expect(result.trace).toContain("shell pm clear com.android.chrome")
   })
 
-  test("restores error dialogs on bootstrap and setup failures", async () => {
+  test("accepts and exactly restores null, zero, and one hide-error-dialog states", async () => {
     const source = await readFile(laneScript, "utf8")
-    const bootstrapFailure = await runHiddenDialogsHarness(source, 23)
-    expect(bootstrapFailure.status, JSON.stringify(bootstrapFailure)).toBe(23)
-    expect(bootstrapFailure.finalSetting).toBe("0")
-    expect(bootstrapFailure.trace).toContain("product setting=0\n")
+    for (const prior of ["null", "0", "1"] as const) {
+      const success = await runHiddenDialogsHarness(source, prior, 0)
+      expect(success.status, JSON.stringify(success)).toBe(0)
+      expect(success.finalSetting).toBe(prior)
+      expect(success.restoreRequired).toBe(false)
+      expect(success.trace).toContain("settings put global hide_error_dialogs 1")
+      expect(success.trace).toContain("bootstrap setting=1")
+      if (prior === "null") {
+        expect(success.trace).toContain("settings delete global hide_error_dialogs")
+      } else {
+        expect(success.trace).toContain(`settings put global hide_error_dialogs ${prior}`)
+      }
+      expect(success.trace.indexOf("bootstrap setting=1")).toBeLessThan(
+        success.trace.indexOf(`observed setting=${prior}`),
+      )
+    }
+  })
 
-    for (const failureMode of ["set", "verify"] as const) {
-      const failure = await runHiddenDialogsHarness(source, 0, failureMode)
+  test("restores the prior state on every hidden-dialog wrapper failure exit", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const bootstrapFailure = await runHiddenDialogsHarness(source, "null", 23)
+    expect(bootstrapFailure.status, JSON.stringify(bootstrapFailure)).toBe(23)
+    expect(bootstrapFailure.finalSetting).toBe("null")
+    expect(bootstrapFailure.restoreRequired).toBe(false)
+
+    for (const failureMode of [
+      "set-command",
+      "enable-verify-command",
+      "enable-verify-value",
+    ] as const) {
+      const failure = await runHiddenDialogsHarness(source, "0", 0, failureMode)
       expect(failure.status).not.toBe(0)
       expect(failure.finalSetting).toBe("0")
       expect(failure.trace).toContain("settings put global hide_error_dialogs 0")
       expect(failure.trace).not.toContain("bootstrap setting=")
     }
-    const restoreFailure = await runHiddenDialogsHarness(source, 0, "restore")
-    expect(restoreFailure.status).not.toBe(0)
-    expect(restoreFailure.trace).not.toContain("product setting=0")
+
+    const readFailure = await runHiddenDialogsHarness(source, "0", 0, "read-command")
+    expect(readFailure.status).not.toBe(0)
+    expect(readFailure.finalSetting).toBe("0")
+    expect(readFailure.restoreRequired).toBe(false)
+    expect(readFailure.trace).not.toContain("settings put global hide_error_dialogs 1")
+    expect(readFailure.trace).not.toContain("bootstrap setting=")
+
+    const invalid = await runHiddenDialogsHarness(source, "invalid", 0)
+    expect(invalid.status).not.toBe(0)
+    expect(invalid.finalSetting).toBe("invalid")
+    expect(invalid.restoreRequired).toBe(false)
+    expect(invalid.trace).not.toContain("settings put global hide_error_dialogs 1")
+    expect(invalid.trace).not.toContain("bootstrap setting=")
+  })
+
+  test("fails closed on restore and delete failures and retries restoration during cleanup", async () => {
+    const source = await readFile(laneScript, "utf8")
+    for (const [prior, failureMode] of [
+      ["null", "restore-command"],
+      ["0", "restore-command"],
+      ["1", "restore-verify-command"],
+      ["0", "restore-verify-value"],
+    ] as const) {
+      const failure = await runHiddenDialogsHarness(source, prior, 0, failureMode)
+      expect(failure.status).not.toBe(0)
+      expect(failure.restoreRequired).toBe(true)
+      expect(failure.trace).toContain("wrapper_restore_required=1")
+    }
+
+    const cleanupRetry = await runHiddenDialogsHarness(source, "null", 0, "restore-command-once")
+    expect(cleanupRetry.status).not.toBe(0)
+    expect(cleanupRetry.finalSetting).toBe("null")
+    expect(cleanupRetry.restoreRequired).toBe(false)
+    expect(cleanupRetry.trace.match(/settings delete global hide_error_dialogs/g)).toHaveLength(2)
   })
 
   test("classifies launcher foreground after a background Chrome restart from focus evidence", async () => {
