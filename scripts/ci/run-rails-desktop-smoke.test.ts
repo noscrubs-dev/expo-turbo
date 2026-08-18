@@ -8,11 +8,29 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const runner = join(repositoryRoot, "scripts/ci/run-rails-desktop-smoke.sh")
 const smokeDirectory = join(repositoryRoot, "example/expo/src")
 const fixtures: string[] = []
+const ownedRunners = new Map<number, OwnedRunner>()
+const processGroupStopChecks = 40
+const processGroupStopInterval = 25
 
 afterEach(async () => {
-  await Promise.all(
-    fixtures.splice(0).map((fixture) => rm(fixture, { recursive: true, force: true })),
-  )
+  const cleanupErrors: unknown[] = []
+  for (const owned of Array.from(ownedRunners.values())) {
+    try {
+      await stopOwnedRunner(owned)
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+  }
+  for (const fixture of fixtures.splice(0)) {
+    try {
+      await rm(fixture, { recursive: true, force: true })
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, "Rails desktop smoke test cleanup failed")
+  }
 })
 
 describe("Rails desktop smoke runner", () => {
@@ -55,15 +73,15 @@ describe("Rails desktop smoke runner", () => {
   ] as const) {
     test(`stops Bun and both services on ${signal} and preserves signal status`, async () => {
       const fixture = await createCommands()
-      const child = spawnRunner(runner, fixture, { BUN_HANG: "1" })
-
-      await waitForFile(join(fixture, "bun-ready"))
-      process.kill(child.pid, signal)
-      expect(await child.exited).toBe(status)
-      const events = await readFile(join(fixture, "events"), "utf8")
-      expect(events).toContain("bun-term")
-      expect(events).toContain("rails-term")
-      expect(events).toContain("redis-term")
+      await withOwnedRunner(runner, fixture, { BUN_HANG: "1" }, async (child) => {
+        await waitForFile(join(fixture, "bun-ready"))
+        process.kill(child.pid, signal)
+        expect(await child.exited).toBe(status)
+        const events = await readFile(join(fixture, "events"), "utf8")
+        expect(events).toContain("bun-term")
+        expect(events).toContain("rails-term")
+        expect(events).toContain("redis-term")
+      })
     })
   }
 
@@ -140,19 +158,70 @@ describe("Rails desktop smoke runner", () => {
 
   test("bounds shutdown when Bun ignores TERM", async () => {
     const fixture = await createCommands()
-    const child = spawnRunner(runner, fixture, { BUN_HANG: "1", BUN_IGNORE_TERM: "1" })
+    await withOwnedRunner(
+      runner,
+      fixture,
+      { BUN_HANG: "1", BUN_IGNORE_TERM: "1" },
+      async (child) => {
+        await waitForFile(join(fixture, "bun-ready"))
+        const deadlineStartedAt = performance.now()
+        process.kill(child.pid, "SIGTERM")
+        const status = await child.exited
+        const elapsed = performance.now() - deadlineStartedAt
+        const bunPid = Number.parseInt(await readFile(join(fixture, "bun-pid"), "utf8"), 10)
 
-    await waitForFile(join(fixture, "bun-ready"))
-    const deadlineStartedAt = performance.now()
-    process.kill(child.pid, "SIGTERM")
-    const status = await child.exited
-    const elapsed = performance.now() - deadlineStartedAt
-    const bunPid = Number.parseInt(await readFile(join(fixture, "bun-pid"), "utf8"), 10)
+        expect(status).toBe(143)
+        expect(elapsed).toBeLessThan(5_000)
+        expect(isProcessAlive(bunPid)).toBe(false)
+        expect(await readFile(join(fixture, "events"), "utf8")).toContain("bun-term")
+      },
+    )
+  }, 10_000)
 
-    expect(status).toBe(143)
-    expect(elapsed).toBeLessThan(5_000)
-    expect(() => process.kill(bunPid, 0)).toThrow()
-    expect(await readFile(join(fixture, "events"), "utf8")).toContain("bun-term")
+  test("cleans the full process group after assertion and read errors", async () => {
+    for (const failure of ["assertion", "read"] as const) {
+      const fixture = await createCommands()
+      let descendantPids: number[] = []
+      let processGroup = 0
+
+      try {
+        await withOwnedRunner(runner, fixture, { BUN_HANG: "1" }, async (child) => {
+          processGroup = child.pid
+          await waitForFile(join(fixture, "bun-ready"))
+          descendantPids = await readFixturePids(fixture)
+          if (failure === "assertion") expect("actual smoke result").toBe("expected smoke result")
+          await readFile(join(fixture, "missing-output"), "utf8")
+        })
+        throw new Error(`Expected ${failure} failure`)
+      } catch (error) {
+        expect(String(error)).toContain(
+          failure === "assertion" ? "expected smoke result" : "ENOENT",
+        )
+      }
+
+      expect(processGroupIsAlive(processGroup)).toBe(false)
+      expect(descendantPids.every((pid) => !isProcessAlive(pid))).toBe(true)
+      await removeFixture(fixture)
+      expect(await Bun.file(fixture).exists()).toBe(false)
+      await expectPortsFree()
+    }
+  }, 10_000)
+
+  test("detects process-group cleanup and busy-loop mutations", async () => {
+    const source = await readFile(fileURLToPath(import.meta.url), "utf8")
+    expect(() => assertHarnessCleanupContract(source)).not.toThrow()
+
+    for (const mutation of [
+      source.replace("\n    detached: true,", "\n    detached: false,"),
+      source.replace(
+        "} finally {\n    await finishOwnedRunner(owned, primaryError)",
+        "} if (false) {",
+      ),
+      source.replace("\n    while true; do /bin/sleep 0.05; done", "\n    while true; do :; done"),
+    ]) {
+      expect(mutation).not.toBe(source)
+      expect(() => assertHarnessCleanupContract(mutation)).toThrow()
+    }
   })
 
   test("empty, duplicate, and symbolic-link discovery fail before services start", async () => {
@@ -265,7 +334,7 @@ if [ "\${BUN_HANG:-}" = 1 ] || [ "\${RAILS_EXIT_DURING_TESTS:-}" = 1 ] || [ "\${
   fi
   printf 'ready\n' >"$FIXTURE/bun-ready"
   if [ "\${BUN_IGNORE_TERM:-}" = 1 ]; then
-    while true; do :; done
+    while true; do /bin/sleep 0.05; done
   fi
   while true; do /bin/sleep 0.05; done
 fi
@@ -304,16 +373,43 @@ async function executable(path: string, contents: string): Promise<void> {
   await chmod(path, 0o755)
 }
 
+interface OwnedRunner {
+  child: ReturnType<typeof Bun.spawn>
+  processGroup: number
+}
+
 function spawnRunner(
   path: string,
   fixture: string,
   environment: Record<string, string> = {},
-): ReturnType<typeof Bun.spawn> {
-  return Bun.spawn([path], {
+): OwnedRunner {
+  const child = Bun.spawn([path], {
+    detached: true,
     env: testEnvironment(fixture, environment),
     stdout: "pipe",
     stderr: "pipe",
   })
+  const owned = { child, processGroup: child.pid }
+  ownedRunners.set(owned.processGroup, owned)
+  return owned
+}
+
+async function withOwnedRunner<T>(
+  path: string,
+  fixture: string,
+  environment: Record<string, string>,
+  operation: (child: ReturnType<typeof Bun.spawn>) => Promise<T>,
+): Promise<T> {
+  const owned = spawnRunner(path, fixture, environment)
+  let primaryError: unknown
+  try {
+    return await operation(owned.child)
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    await finishOwnedRunner(owned, primaryError)
+  }
 }
 
 async function runRunner(
@@ -324,16 +420,121 @@ async function runRunner(
   const stdoutPath = join(fixture, "runner-stdout")
   const stderrPath = join(fixture, "runner-stderr")
   const child = Bun.spawn([path], {
+    detached: true,
     env: testEnvironment(fixture, environment),
     stdout: Bun.file(stdoutPath),
     stderr: Bun.file(stderrPath),
   })
-  const status = await child.exited
-  const [stdout, stderr] = await Promise.all([
-    readFile(stdoutPath, "utf8"),
-    readFile(stderrPath, "utf8"),
-  ])
-  return { status, stdout, stderr }
+  const owned = { child, processGroup: child.pid }
+  ownedRunners.set(owned.processGroup, owned)
+  let primaryError: unknown
+  try {
+    const status = await child.exited
+    const [stdout, stderr] = await Promise.all([
+      readFile(stdoutPath, "utf8"),
+      readFile(stderrPath, "utf8"),
+    ])
+    return { status, stdout, stderr }
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    await finishOwnedRunner(owned, primaryError)
+  }
+}
+
+async function finishOwnedRunner(owned: OwnedRunner, primaryError: unknown): Promise<void> {
+  try {
+    await stopOwnedRunner(owned)
+  } catch (cleanupError) {
+    if (primaryError === undefined) throw cleanupError
+    console.error("Rails desktop smoke runner cleanup also failed:", cleanupError)
+  }
+}
+
+async function stopOwnedRunner(owned: OwnedRunner): Promise<void> {
+  ownedRunners.delete(owned.processGroup)
+  signalProcessGroup(owned.processGroup, "SIGTERM")
+  if (!(await waitForProcessGroupExit(owned.processGroup))) {
+    signalProcessGroup(owned.processGroup, "SIGKILL")
+    if (!(await waitForProcessGroupExit(owned.processGroup))) {
+      throw new Error(`Process group ${owned.processGroup} survived SIGKILL`)
+    }
+  }
+  await owned.child.exited
+}
+
+function signalProcessGroup(processGroup: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-processGroup, signal)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+  }
+}
+
+async function waitForProcessGroupExit(processGroup: number): Promise<boolean> {
+  for (let attempt = 0; attempt < processGroupStopChecks; attempt += 1) {
+    if (!processGroupIsAlive(processGroup)) return true
+    await Bun.sleep(processGroupStopInterval)
+  }
+  return !processGroupIsAlive(processGroup)
+}
+
+function processGroupIsAlive(processGroup: number): boolean {
+  if (processGroup <= 0) return false
+  try {
+    process.kill(-processGroup, 0)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
+    throw error
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
+    throw error
+  }
+}
+
+async function readFixturePids(fixture: string): Promise<number[]> {
+  return Promise.all(
+    ["redis-pid", "rails-pid", "bun-pid"].map(async (file) =>
+      Number.parseInt(await readFile(join(fixture, file), "utf8"), 10),
+    ),
+  )
+}
+
+async function removeFixture(fixture: string): Promise<void> {
+  const index = fixtures.indexOf(fixture)
+  if (index >= 0) fixtures.splice(index, 1)
+  await rm(fixture, { recursive: true, force: true })
+}
+
+async function expectPortsFree(): Promise<void> {
+  for (const port of [3001, 6379]) {
+    const result = Bun.spawnSync(["lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(result.exitCode).toBe(1)
+  }
+}
+
+function assertHarnessCleanupContract(source: string): void {
+  if (source.match(/\n {4}detached: true,/g)?.length !== 2) {
+    throw new Error("each runner path must own a process group")
+  }
+  if (
+    source.match(/} finally \{\n {4}await finishOwnedRunner\(owned, primaryError\)/g)?.length !== 2
+  ) {
+    throw new Error("runner cleanup must be in finally")
+  }
+  if (/\n\s+while true; do :; done\n/.test(source)) throw new Error("fixture must not busy loop")
 }
 
 function testEnvironment(

@@ -8,17 +8,30 @@ const workflowPath = join(repositoryRoot, ".github/workflows/ci.yml")
 const canonicalCommand = "scripts/ci/run-rails-desktop-smoke.sh"
 
 interface WorkflowStep {
+  "continue-on-error"?: unknown
+  if?: unknown
   name?: string
   run?: string
 }
 
+interface WorkflowJob {
+  "continue-on-error"?: unknown
+  if?: unknown
+  needs?: unknown
+  steps?: WorkflowStep[]
+}
+
 interface Workflow {
-  jobs?: Record<string, { steps?: WorkflowStep[] }>
+  jobs?: Record<string, WorkflowJob>
 }
 
 function normalizedSmokeRun(workflowSource: string): string {
   const workflow = Bun.YAML.parse(workflowSource) as Workflow
-  const steps = workflow.jobs?.["rails-action-cable-smoke"]?.steps
+  const job = workflow.jobs?.["rails-action-cable-smoke"]
+  if (!job) throw new Error("Rails desktop smoke job is missing")
+  rejectBypassFields(job, "job")
+
+  const steps = job.steps
   if (!Array.isArray(steps)) throw new Error("Rails desktop smoke job is missing")
 
   const smokeSteps = steps.filter((step) => step.name === "Smoke Rails desktop integration")
@@ -28,9 +41,24 @@ function normalizedSmokeRun(workflowSource: string): string {
     )
   }
 
-  const run = smokeSteps[0]?.run
+  const smokeStep = smokeSteps[0]
+  if (!smokeStep) throw new Error("Rails desktop smoke step is missing")
+  rejectBypassFields(smokeStep, "step")
+
+  const run = smokeStep.run
   if (typeof run !== "string") throw new Error("Rails desktop smoke run value is missing")
   return run.replaceAll("\r\n", "\n").trim()
+}
+
+function rejectBypassFields(value: WorkflowJob | WorkflowStep, scope: "job" | "step"): void {
+  for (const field of ["continue-on-error", "if"] as const) {
+    if (Object.hasOwn(value, field)) {
+      throw new Error(`Rails desktop smoke ${scope} must not set ${field}`)
+    }
+  }
+  if (scope === "job" && Object.hasOwn(value, "needs")) {
+    throw new Error("Rails desktop smoke job must not depend on another job")
+  }
 }
 
 function expectCanonicalSmokeRun(workflowSource: string): void {
@@ -92,4 +120,44 @@ test("Rails desktop smoke wiring rejects missing and duplicate smoke steps", asy
 
   expect(() => expectCanonicalSmokeRun(missing)).toThrow()
   expect(() => expectCanonicalSmokeRun(duplicate)).toThrow()
+})
+
+test("Rails desktop smoke wiring rejects step-level skip and fail-open fields", async () => {
+  const workflow = await readFile(workflowPath, "utf8")
+  for (const field of [
+    "continue-on-error: true",
+    "continue-on-error: false",
+    "if: always()",
+    `if: \${{ false }}`,
+  ]) {
+    const mutation = workflow.replace(
+      `      - name: Smoke Rails desktop integration\n        run: ${canonicalCommand}`,
+      `      - name: Smoke Rails desktop integration\n        run: ${canonicalCommand}\n        ${field}`,
+    )
+    expect(mutation).not.toBe(workflow)
+    expect(() => expectCanonicalSmokeRun(mutation)).toThrow("Rails desktop smoke step must not set")
+  }
+})
+
+test("Rails desktop smoke wiring rejects job-level skip, fail-open, and dependency fields", async () => {
+  const workflow = await readFile(workflowPath, "utf8")
+  for (const field of [
+    "continue-on-error: true",
+    "continue-on-error: false",
+    "if: always()",
+    `if: \${{ false }}`,
+    "needs: rails",
+    "needs: [rails]",
+  ]) {
+    const mutation = workflow.replace(
+      "  rails-action-cable-smoke:\n",
+      `  rails-action-cable-smoke:\n    ${field}\n`,
+    )
+    expect(mutation).not.toBe(workflow)
+    expect(() => expectCanonicalSmokeRun(mutation)).toThrow(
+      field.startsWith("needs:")
+        ? "Rails desktop smoke job must not depend on another job"
+        : "Rails desktop smoke job must not set",
+    )
+  }
 })
