@@ -95,19 +95,8 @@ jobs:
   rails-action-cable-smoke:
     name: Rails desktop smoke
     runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/example/rails/Gemfile
-      REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
