@@ -532,13 +532,12 @@ async function runSignalCleanup(
   const interrupt = extractFunction(lane, "handle_interrupt")
   const terminate = extractFunction(lane, "handle_terminate")
   const stopProcess = await readFile(stopProcessScript, "utf8")
-  const activeChild = mode === "child-active"
-    ? [
-        "sleep 30 &",
-        "rails_pid=$!",
-        "printf '%s\n' \"$rails_pid\" >\"$FIXTURE/child-pid\"",
-      ].join("\n")
-    : "true"
+  const activeChild =
+    mode === "child-active"
+      ? ["sleep 30 &", "rails_pid=$!", 'printf \'%s\n\' "$rails_pid">"$FIXTURE/child-pid"'].join(
+          "\n",
+        )
+      : "true"
   const harness = `
 set -euo pipefail
 artifacts="$FIXTURE/artifacts"
@@ -594,10 +593,10 @@ function assertSignalTrapContract(lane: string): void {
   if (!/^trap cleanup EXIT$/m.test(lane) || /^trap cleanup EXIT INT TERM$/m.test(lane)) {
     throw new Error("cleanup must run only from EXIT")
   }
-  if (!/handle_interrupt\(\) \{\n  trap - INT TERM\n  exit 130\n\}/.test(lane)) {
+  if (!/handle_interrupt\(\) \{\n {2}trap - INT TERM\n {2}exit 130\n\}/.test(lane)) {
     throw new Error("INT must exit 130")
   }
-  if (!/handle_terminate\(\) \{\n  trap - INT TERM\n  exit 143\n\}/.test(lane)) {
+  if (!/handle_terminate\(\) \{\n {2}trap - INT TERM\n {2}exit 143\n\}/.test(lane)) {
     throw new Error("TERM must exit 143")
   }
   if (!/^trap handle_interrupt INT$/m.test(lane) || !/^trap handle_terminate TERM$/m.test(lane)) {

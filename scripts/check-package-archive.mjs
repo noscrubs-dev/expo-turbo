@@ -113,10 +113,12 @@ try {
       `const checks = ${JSON.stringify(checks)}`,
       "for (const [specifier, names] of checks) {",
       "  const module = await import(specifier)",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Generated source interpolates specifier at runtime.
       "  assert.ok(module && typeof module === 'object', `${specifier} did not load`)",
       "  for (const name of names) {",
       "    assert.ok(",
       "      module[name] !== undefined,",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Generated source interpolates export details at runtime.
       "      `${specifier} is missing its ${name} export in the packed archive`,",
       "    )",
       "  }",
@@ -124,6 +126,7 @@ try {
       "    assert.deepEqual(",
       "      Object.keys(module).filter((key) => key !== 'default'),",
       "      [],",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: Generated source interpolates the specifier at runtime.
       "      `${specifier} is documented as empty but ships exports`,",
       "    )",
       "  }",
