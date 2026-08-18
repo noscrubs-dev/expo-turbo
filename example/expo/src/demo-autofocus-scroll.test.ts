@@ -149,6 +149,27 @@ describe("demo autofocus scrolling", () => {
     ])
   })
 
+  test("lets a document refresh reset suppress delayed and native focus scrolling", () => {
+    const current = harness()
+
+    current.registry.scrollTo("id:field")
+    expect(current.scrolls).toEqual([{ animated: false, y: 119 }])
+
+    current.registry.suppressActiveScroll()
+    current.setScrollY(0)
+    current.registry.remeasure()
+    current.target.emit({ height: 44, width: 320, x: 0, y: 450 })
+    current.viewport.emit({ height: 300, width: 320, x: 0, y: 100 })
+    current.registry.scrollTo("id:field")
+    expect(current.scrolls).toEqual([{ animated: false, y: 119 }])
+
+    current.registry.scrollTo("id:field")
+    expect(current.scrolls).toEqual([
+      { animated: false, y: 119 },
+      { animated: false, y: 94 },
+    ])
+  })
+
   test("pairs delayed field rectangles with their measurement-time scroll offset", () => {
     const registry = new DemoAutofocusScrollRegistry()
     const viewport = queuedMeasurement()

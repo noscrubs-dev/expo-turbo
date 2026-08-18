@@ -59,6 +59,7 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
   private activeId: string | undefined
   private container: DemoAutofocusScrollContainerRecord | undefined
   private disposed = false
+  private suppressedFocusId: string | undefined
   private readonly targets = new Map<string, DemoAutofocusScrollRecord>()
 
   canScroll(id: string): boolean {
@@ -87,12 +88,19 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
       if (this.targets.get(id) !== record) return
       this.targets.delete(id)
       if (this.activeId === id) this.activeId = undefined
+      if (this.suppressedFocusId === id) this.suppressedFocusId = undefined
       record.measureEpoch += 1
     }
   }
 
   cancel(id: string): void {
     if (this.activeId === id) this.activeId = undefined
+    if (this.suppressedFocusId === id) this.suppressedFocusId = undefined
+  }
+
+  suppressActiveScroll(): void {
+    this.suppressedFocusId = this.activeId
+    this.activeId = undefined
   }
 
   registerContainer(container: DemoAutofocusScrollContainer): () => void {
@@ -135,6 +143,11 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
 
   scrollTo(id: string): void {
     if (this.disposed) return
+    if (this.suppressedFocusId === id) {
+      this.suppressedFocusId = undefined
+      return
+    }
+    this.suppressedFocusId = undefined
     if (!this.targets.has(id) || !this.container?.container.isAvailable()) return
     this.activeId = id
     this.flushActive()
@@ -144,6 +157,7 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
     if (this.disposed) return
     this.disposed = true
     this.activeId = undefined
+    this.suppressedFocusId = undefined
     this.container = undefined
     this.targets.clear()
   }

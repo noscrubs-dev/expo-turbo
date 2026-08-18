@@ -36,12 +36,6 @@ interface NativeScrollViewHandle {
 const nativeScrollCalls: NativeScrollCall[] = [];
 const nativeRootScrollContainerIds: number[] = [];
 let nextNativeScrollContainerId = 0;
-const animationFrameCallbacks: FrameRequestCallback[] = [];
-
-globalThis.requestAnimationFrame = (callback) => {
-  animationFrameCallbacks.push(callback);
-  return animationFrameCallbacks.length;
-};
 
 const NativeScrollView = forwardRef<NativeScrollViewHandle, Readonly<Record<string, unknown>>>(
   (props, ref) => {
@@ -2360,14 +2354,14 @@ describe("demo app runtime ownership", () => {
     unregisterScroll();
   });
 
-  test("reapplies a same-path refresh reset on the next native frame", async () => {
+  test("morphs a same-path replace from root metadata and resets the gallery root scroll", async () => {
     nativeScrollCalls.length = 0;
     nativeRootScrollContainerIds.length = 0;
     nextNativeScrollContainerId = 0;
-    animationFrameCallbacks.length = 0;
     const runtime = createDemoRuntime();
     const navigation = new TestNavigation();
     let renderer: ReactTestRenderer | undefined;
+    let unregisterDelayedFocus: (() => void) | undefined;
     const routeTree = (routeKey: string) =>
       createElement(
         DemoRuntimeProvider,
@@ -2438,6 +2432,11 @@ describe("demo app runtime ownership", () => {
         );
       if (!replaceLink) throw new Error("same-path replace action link was not rendered");
 
+      unregisterDelayedFocus = runtime.autofocusScroll.register(
+        "id:delayed-refresh-focus",
+        (listener) => listener(0, 900, 320, 44),
+      );
+      runtime.autofocusScroll.scrollTo("id:delayed-refresh-focus");
       nativeScrollCalls.length = 0;
       await act(async () => {
         replaceLink.props.onPress();
@@ -2465,26 +2464,11 @@ describe("demo app runtime ownership", () => {
         },
       ]);
 
-      await act(async () => {
-        const callback = animationFrameCallbacks.shift();
-        if (!callback) throw new Error("same-path refresh reset was not scheduled");
-        callback(0);
-        await nextTurn();
-      });
-      expect(nativeScrollCalls).toEqual([
-        {
-          containerId: scenarioScrollContainerId,
-          options: { animated: false, x: 0, y: 0 },
-        },
-        {
-          containerId: scenarioScrollContainerId,
-          options: { animated: false, x: 0, y: 0 },
-        },
-      ]);
-
-      expect(animationFrameCallbacks).toHaveLength(0);
-      expect(nativeScrollCalls).toHaveLength(2);
+      runtime.autofocusScroll.scrollTo("id:delayed-refresh-focus");
+      runtime.autofocusScroll.remeasure("id:delayed-refresh-focus");
+      expect(nativeScrollCalls).toHaveLength(1);
     } finally {
+      unregisterDelayedFocus?.();
       await act(async () => {
         renderer?.unmount();
         await Promise.resolve();

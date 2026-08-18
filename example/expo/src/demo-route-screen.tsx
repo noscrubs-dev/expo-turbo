@@ -131,11 +131,11 @@ export function DemoCompatibilityGallery() {
         isAvailable: () => Boolean(scrollView.current?.getNativeScrollRef?.()),
         scrollTo: ({ x, y }) => scrollView.current?.scrollTo({ animated: false, x, y }),
         scrollToTop: () => {
+          runtime.autofocusScroll.suppressActiveScroll();
           resetDocumentScroll();
-          requestAnimationFrame(resetDocumentScroll);
         },
       }),
-    [resetDocumentScroll, runtime.documentRefreshScroll],
+    [resetDocumentScroll, runtime.autofocusScroll, runtime.documentRefreshScroll],
   );
   useLayoutEffect(
     () =>
