@@ -94,12 +94,24 @@ timeouts, app crashes, and a failed second attempt remain failures. Chrome
 bootstrap also retries only after the same explicit transport evidence.
 
 During each full-suite attempt, a live monitor checks the attempt log every
-0.2 seconds. When it sees an exact transport signature, it first proves that
-the active Maestro process is still a direct child of the lane. It then records
-the matched line and stops only that Maestro process with the bounded stop
+0.2 seconds. The lane removes the old log path and creates a new stream for the
+attempt. The stream starts with a unique invocation token and the exact Maestro
+PID. The monitor reads only lines after that marker. Before it stops the
+process, it proves that the PID still has the captured parent and start time and
+that the log still has the captured device and inode. It accepts only a full
+line with an ADB offline, missing-device, or `DeviceServerDiedException`
+signature. Product output that contains these words as part of a selector or
+assertion does not match. The monitor records the matched line and all captured
+identities, and then it stops only that Maestro process with the bounded stop
 helper. This prevents later Rails flows from spending minutes on a reverse
 mapping that the device lost. The normal retry decision still reads the saved
 attempt log after the process exits.
+
+The monitor does not require ADB to still report an offline device. ADB can
+recover before the next poll, as it did in run `32143590467`. The fresh active
+Maestro stream is the source for the device-server failure. The next emulator
+attempt must still restore the reverse mapping and prove a device-side request
+to Rails `/up` before Rails-backed flows can start.
 
 The first bootstrap, its one transport retry, suite attempt 1, the second clean
 bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
@@ -288,8 +300,10 @@ cause broader deletion.
 - Why: Run `32143590467`, attempt 2, spent 15 minutes in failed flows after the
   first transport loss. The final-log classifier could not stop that work.
 - Impact: Detection occurs during the failed attempt. A separate trigger file
-  records the matched line. Normal product failures still run to their normal
-  Maestro result.
+  records the matched line and the active stream, process, and file identities.
+  Stale logs, replaced logs, prior-attempt logs, and product text cannot stop
+  the active process. Normal product failures still run to their normal Maestro
+  result.
 - Changed: The guarded retention tool remains for legacy or default-tree
   residue, but the Android lane no longer calls it.
 - Why: Every lane command supplies explicit test and debug output directories,

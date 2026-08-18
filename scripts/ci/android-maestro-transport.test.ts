@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url"
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const laneScript = join(scriptDirectory, "run-android-maestro.sh")
 const stopProcessScript = join(scriptDirectory, "stop-process.sh")
+const transportPattern =
+  "^[[:space:]]*((Caused by: )?([[:alnum:]_.-]+\\.)?DeviceServerDiedException([:[:space:]].*)?|(adb: |error: )?device offline|(adb: |error: )?host:transport:[^[:space:]]*offline.*|(adb: |error: )?device '[^']+' not found)[[:space:]]*$"
+const activeStreamMarker = "EXPO_TURBO_MAESTRO_STREAM invocation=test-active pid=test-pid"
 const fixtures: string[] = []
 
 afterEach(async () => {
@@ -46,7 +49,7 @@ async function runFunction(
     [
       "bash",
       "-c",
-      `set -euo pipefail\nadb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"\n${body}\n${invocation}`,
+      `set -euo pipefail\nadb_transport_pattern="${transportPattern}"\n${body}\n${invocation}`,
       "test",
       ...args,
     ],
@@ -68,6 +71,8 @@ async function runTransportMonitor(
   log: string,
   trigger: string,
   duration: string,
+  identityMatches = true,
+  fileIdentityMatches = true,
 ): Promise<{ elapsed: number; status: number; stderr: string }> {
   const stopProcess = await readFile(stopProcessScript, "utf8")
   const functions = ["is_adb_transport_failure", "monitor_maestro_transport"]
@@ -77,20 +82,17 @@ async function runTransportMonitor(
   const script = `#!/usr/bin/env bash
 set -uo pipefail
 exec 2>"$4"
-adb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"
+adb_transport_pattern="${transportPattern}"
 ${stopProcess}
 ${functions}
 date() { printf '2026-08-18T00:00:00+00:00\\n'; }
-ps() {
-  if [[ " $* " == *" -o ppid= "* ]]; then
-    printf '%s\\n' "$$"
-    return 0
-  fi
-  command ps "$@"
-}
+process_identity() { printf 'active-process\\n'; }
+file_identity() { printf 'active-file\\n'; }
 sleep "$3" &
 target_pid=$!
-monitor_maestro_transport 1 "$target_pid" "$$" "$1" "$2" &
+awk -v pid="$target_pid" '{ gsub(/pid=test-pid/, "pid=" pid); print }' "$1" >"$1.active"
+mv "$1.active" "$1"
+monitor_maestro_transport 1 "$target_pid" "${identityMatches ? "active-process" : "different-process"}" "$1" "${fileIdentityMatches ? "active-file" : "different-file"}" "test-active" "$2" &
 monitor_pid=$!
 wait "$target_pid"
 target_status=$?
@@ -146,6 +148,10 @@ describe("Android Maestro transport recovery", () => {
       ["assertion.log", "Assertion failed: expected Welcome to be visible\n"],
       ["app-crash.log", "The application dev.expoturbo.example has crashed\n"],
       ["selector.log", "Element not found: id: chrome_terms_accept after 30 seconds\n"],
+      [
+        "product-output.log",
+        'Element not found: text: "DeviceServerDiedException: device offline"\n',
+      ],
     ]
     for (const [name, contents] of productFailures) {
       const log = await fixtureFile(name, contents)
@@ -184,7 +190,7 @@ describe("Android Maestro transport recovery", () => {
     const source = await readFile(laneScript, "utf8")
     const transportLog = await fixtureFile(
       "live-offline.log",
-      "[Failed] first flow (5s)\nDeviceServerDiedException: device offline\n",
+      `${activeStreamMarker}\n[Failed] first flow (5s)\nDeviceServerDiedException: device offline\n`,
     )
     const transportTrigger = `${transportLog}.trigger`
     const transport = await runTransportMonitor(source, transportLog, transportTrigger, "3")
@@ -194,18 +200,79 @@ describe("Android Maestro transport recovery", () => {
     expect(transport.stderr).toContain("stopping this attempt early")
     expect(await readFile(transportTrigger, "utf8")).toContain("DeviceServerDiedException")
 
-    const assertionLog = await fixtureFile(
-      "live-assertion.log",
-      "Assertion failed: expected Welcome to be visible\n",
-    )
-    const assertionTrigger = `${assertionLog}.trigger`
-    const assertion = await runTransportMonitor(source, assertionLog, assertionTrigger, "0.3")
-
-    expect(assertion.status, assertion.stderr).toBe(0)
-    expect(await Bun.file(assertionTrigger).exists()).toBe(false)
+    expect(source).toContain("printf 'EXPO_TURBO_MAESTRO_STREAM invocation=%s pid=%s\\n'")
     expect(source).toContain(
-      'monitor_maestro_transport "$attempt" "$maestro_pid" "$$" "$run_log" "$trigger_log" &',
+      'stream_marker="EXPO_TURBO_MAESTRO_STREAM invocation=$invocation_token pid=$pid"',
     )
+  })
+
+  test("does not stop on stale text before the active stream marker", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const log = await fixtureFile(
+      "stale.log",
+      `DeviceServerDiedException: stale text\n${activeStreamMarker}\n`,
+    )
+    const trigger = `${log}.trigger`
+    const result = await runTransportMonitor(source, log, trigger, "0.3")
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await Bun.file(trigger).exists()).toBe(false)
+  })
+
+  test("does not read a prior attempt log", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const fixture = await mkdtemp(join(tmpdir(), "android-maestro-prior-attempt-"))
+    fixtures.push(fixture)
+    await writeFile(
+      join(fixture, "maestro-attempt-1.log"),
+      `${activeStreamMarker}\nDeviceServerDiedException: prior attempt\n`,
+    )
+    const activeLog = join(fixture, "maestro-attempt-2.log")
+    await writeFile(activeLog, `${activeStreamMarker}\n`)
+    const trigger = `${activeLog}.trigger`
+    const result = await runTransportMonitor(source, activeLog, trigger, "0.3")
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await Bun.file(trigger).exists()).toBe(false)
+  })
+
+  test("does not stop on product-rendered transport words", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const log = await fixtureFile(
+      "product-output.log",
+      `${activeStreamMarker}\nElement not found: text: "DeviceServerDiedException: device offline"\n`,
+    )
+    const trigger = `${log}.trigger`
+    const result = await runTransportMonitor(source, log, trigger, "0.3")
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await Bun.file(trigger).exists()).toBe(false)
+  })
+
+  test("does not stop a PID whose invocation identity changed", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const log = await fixtureFile(
+      "reused-pid.log",
+      `${activeStreamMarker}\nDeviceServerDiedException: device offline\n`,
+    )
+    const trigger = `${log}.trigger`
+    const result = await runTransportMonitor(source, log, trigger, "0.3", false)
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await Bun.file(trigger).exists()).toBe(false)
+  })
+
+  test("does not stop after the active log path is replaced", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const log = await fixtureFile(
+      "replaced.log",
+      `${activeStreamMarker}\nDeviceServerDiedException: device offline\n`,
+    )
+    const trigger = `${log}.trigger`
+    const result = await runTransportMonitor(source, log, trigger, "0.3", true, false)
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(await Bun.file(trigger).exists()).toBe(false)
   })
 
   test("keeps device readiness waits condition-based and bounded", async () => {

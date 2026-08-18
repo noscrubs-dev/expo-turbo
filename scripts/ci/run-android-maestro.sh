@@ -57,7 +57,7 @@ readonly reverse_binding_log="$artifacts/reverse-probe-binding.txt"
 readonly reverse_attempt_log="$artifacts/reverse-probe-attempt.txt"
 readonly ss_missing_marker="(ss is not installed here - listener state unknown)"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
-readonly adb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"
+readonly adb_transport_pattern="^[[:space:]]*((Caused by: )?([[:alnum:]_.-]+\.)?DeviceServerDiedException([:[:space:]].*)?|(adb: |error: )?device offline|(adb: |error: )?host:transport:[^[:space:]]*offline.*|(adb: |error: )?device '[^']+' not found)[[:space:]]*$"
 
 is_adb_transport_failure() {
   local log="$1"
@@ -73,6 +73,18 @@ should_retry_transport_failure() {
   local log="$2"
 
   [ "$attempt" -eq 1 ] && is_adb_transport_failure "$log"
+}
+
+process_identity() {
+  local pid="$1"
+
+  ps -o ppid= -o lstart= -p "$pid" 2>/dev/null | awk '{$1=$1; print}'
+}
+
+file_identity() {
+  local path="$1"
+
+  stat --format='%d:%i' "$path" 2>/dev/null
 }
 
 run_named_adb_command() {
@@ -610,22 +622,44 @@ stop_emulator_for_retry() {
 monitor_maestro_transport() {
   local attempt="$1"
   local pid="$2"
-  local expected_ppid="$3"
+  local expected_process_identity="$3"
   local run_log="$4"
-  local trigger_log="$5"
-  local actual_ppid=""
+  local expected_file_identity="$5"
+  local invocation_token="$6"
+  local trigger_log="$7"
+  local actual_file_identity=""
+  local actual_process_identity=""
+  local first_line=""
   local matched_line=""
+  local stream_marker="EXPO_TURBO_MAESTRO_STREAM invocation=$invocation_token pid=$pid"
 
   while kill -0 "$pid" 2>/dev/null; do
-    if is_adb_transport_failure "$run_log"; then
-      actual_ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-      if [ "$actual_ppid" != "$expected_ppid" ]; then
+    if [ -s "$run_log" ]; then
+      IFS= read -r first_line <"$run_log" || true
+      if [ "$first_line" != "$stream_marker" ]; then
         return 0
       fi
-      matched_line="$(grep -Eim 1 "$adb_transport_pattern" "$run_log" 2>/dev/null || true)"
+    fi
+
+    if matched_line="$(
+      awk -v pattern="$adb_transport_pattern" \
+        'NR > 1 && $0 ~ pattern { print; found=1; exit } END { exit !found }' \
+        "$run_log" 2>/dev/null
+    )"; then
+      actual_process_identity="$(process_identity "$pid")"
+      actual_file_identity="$(file_identity "$run_log")"
+      if [ -z "$expected_process_identity" ] ||
+        [ "$actual_process_identity" != "$expected_process_identity" ] ||
+        [ -z "$expected_file_identity" ] ||
+        [ "$actual_file_identity" != "$expected_file_identity" ]; then
+        return 0
+      fi
       {
         echo "attempt=$attempt"
         echo "detected_at=$(date --iso-8601=seconds)"
+        echo "stream_marker=$stream_marker"
+        echo "process_identity=$actual_process_identity"
+        echo "file_identity=$actual_file_identity"
         echo "matched_line=$matched_line"
         echo "action=stop active Maestro process and preserve attempt evidence"
       } >"$trigger_log"
@@ -644,23 +678,37 @@ run_maestro_suite() {
   local test_output="$artifacts/maestro-tests-attempt-$attempt"
   local debug_output="$artifacts/maestro-debug-attempt-$attempt"
   local trigger_log="$artifacts/maestro-transport-trigger-attempt-$attempt.txt"
+  local invocation_token="attempt-$attempt-worker-$$-$(date +%s%N)"
+  local maestro_process_identity=""
+  local run_log_identity=""
   local status
 
-  : >"$run_log"
-  rm -f "$trigger_log"
+  rm -f "$run_log" "$trigger_log"
 
   set +e
-  maestro --device "$adb_serial" test \
-    --format junit \
-    --output "$junit" \
-    --test-output-dir "$test_output" \
-    --debug-output "$debug_output" \
-    --flatten-debug-output \
-    "$maestro_flow_path" >"$run_log" 2>&1 &
+  (
+    printf 'EXPO_TURBO_MAESTRO_STREAM invocation=%s pid=%s\n' "$invocation_token" "$BASHPID"
+    exec maestro --device "$adb_serial" test \
+      --format junit \
+      --output "$junit" \
+      --test-output-dir "$test_output" \
+      --debug-output "$debug_output" \
+      --flatten-debug-output \
+      "$maestro_flow_path"
+  ) >"$run_log" 2>&1 &
   maestro_pid=$!
+  maestro_process_identity="$(process_identity "$maestro_pid")"
+  run_log_identity="$(file_identity "$run_log")"
   tail --pid="$maestro_pid" --sleep-interval=0.1 -n +1 -f "$run_log" &
   maestro_log_stream_pid=$!
-  monitor_maestro_transport "$attempt" "$maestro_pid" "$$" "$run_log" "$trigger_log" &
+  monitor_maestro_transport \
+    "$attempt" \
+    "$maestro_pid" \
+    "$maestro_process_identity" \
+    "$run_log" \
+    "$run_log_identity" \
+    "$invocation_token" \
+    "$trigger_log" &
   maestro_transport_monitor_pid=$!
 
   wait "$maestro_pid"
