@@ -407,6 +407,8 @@ sampler_pid=""
 maestro_pid=""
 maestro_log_stream_pid=""
 maestro_transport_monitor_pid=""
+hide_error_dialogs_prior_value=""
+hide_error_dialogs_restore_required=0
 
 cleanup() {
   local status=$?
@@ -417,6 +419,11 @@ cleanup() {
   # cleanup budget instead of sending a second TERM after one second.
   if [[ "${ANDROID_MAESTRO_CLEANUP_FD:-}" =~ ^[0-9]+$ ]]; then
     printf "C" 2>/dev/null >&"$ANDROID_MAESTRO_CLEANUP_FD" || true
+  fi
+
+  if [ "${hide_error_dialogs_restore_required:-0}" -eq 1 ] &&
+    declare -F restore_hide_error_dialogs >/dev/null; then
+    restore_hide_error_dialogs "cleanup" || status=1
   fi
 
   timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat.txt" 2>&1 || true
@@ -565,19 +572,22 @@ write_chrome_bootstrap_report() {
   local relevant_logcat="$3"
   local report="$4"
   local current_focus=""
+  local focused_app=""
   local resumed_activity=""
   local foreground="not_chrome"
   local device_fault="not_found"
   local classification=""
 
-  current_focus="$(grep -Em1 \
-    '^[[:space:]]*mCurrentFocus=Window[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
-    "$focus_log")"
+  current_focus="$(grep -Em1 '^[[:space:]]*mCurrentFocus=' "$focus_log" || true)"
+  focused_app="$(grep -Em1 \
+    '^[[:space:]]*mFocusedApp=ActivityRecord' \
+    "$activity_log" || true)"
   resumed_activity="$(grep -Em1 \
     '^[[:space:]]*(mResumedActivity|ResumedActivity): ActivityRecord[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
     "$activity_log" || true)"
 
-  if printf '%s\n%s\n' "$current_focus" "$resumed_activity" | grep -qF "$chrome_package"; then
+  if printf '%s\n%s\n%s\n' "$current_focus" "$focused_app" "$resumed_activity" |
+    grep -qF "$chrome_package"; then
     foreground="chrome"
   fi
   if grep -Eqi \
@@ -601,6 +611,7 @@ write_chrome_bootstrap_report() {
     echo "foreground=$foreground"
     echo "device_fault_evidence=$device_fault"
     echo "current_focus=$current_focus"
+    echo "focused_app=${focused_app:-not captured by dumpsys}"
     echo "resumed_activity=${resumed_activity:-not captured by dumpsys}"
     echo "process_liveness=not used; a background Chrome process does not establish foreground state"
     echo "relevant_logcat_begin"
@@ -614,40 +625,116 @@ write_chrome_bootstrap_report() {
 }
 
 capture_chrome_bootstrap_failure_evidence() {
-  local attempt="$1"
-  local invocation="$2"
-  local prefix="$artifacts/chrome-bootstrap-attempt-$attempt-$invocation"
-  local focus_log="$prefix-focus.txt"
-  local activity_log="$prefix-activity.txt"
-  local logcat_log="$prefix-logcat.txt"
-  local relevant_logcat="$prefix-relevant-logcat.txt"
-  local report="$prefix-classification.txt"
+  (
+    set +e
+    local attempt="$1"
+    local invocation="$2"
+    local prefix="$artifacts/chrome-bootstrap-attempt-$attempt-$invocation"
+    local focus_log="$prefix-focus.txt"
+    local activity_log="$prefix-activity.txt"
+    local logcat_log="$prefix-logcat.txt"
+    local relevant_logcat="$prefix-relevant-logcat.txt"
+    local report="$prefix-classification.txt"
+    local diagnostic_failures=""
 
   if ! timeout 15 adb -s "$adb_serial" shell dumpsys window >"$focus_log" 2>&1; then
     echo "Chrome bootstrap evidence failed: could not capture current focus." >&2
-    return 1
+    diagnostic_failures="${diagnostic_failures}window_probe_failed,"
   fi
-  if ! grep -Eq \
-    '^[[:space:]]*mCurrentFocus=Window[^[:space:]]+[[:space:]]+u[0-9]+[[:space:]]+[[:alnum:]_.]+/[[:alnum:]_.$]+' \
-    "$focus_log"; then
+  if ! grep -Eq '^[[:space:]]*mCurrentFocus=' "$focus_log"; then
     echo "Chrome bootstrap evidence failed: current focus was absent." >&2
-    return 1
+    diagnostic_failures="${diagnostic_failures}current_focus_absent,"
   fi
   if ! timeout 15 adb -s "$adb_serial" shell dumpsys activity activities \
     >"$activity_log" 2>&1; then
     echo "Chrome bootstrap evidence failed: could not capture foreground activity." >&2
-    return 1
+    diagnostic_failures="${diagnostic_failures}activity_probe_failed,"
   fi
   if ! timeout 15 adb -s "$adb_serial" logcat -d -t 1000 >"$logcat_log" 2>&1; then
     echo "Chrome bootstrap evidence failed: could not capture bounded logcat." >&2
-    return 1
+    diagnostic_failures="${diagnostic_failures}logcat_probe_failed,"
   fi
   awk 'BEGIN { IGNORECASE=1 }
     /ANR in .*gms|gms\.persistent.*ANR|Killing [0-9]+:com\.android\.chrome|GmsModuleProvider|Force removing ActivityRecord.*FirstRunActivity/' \
     "$logcat_log" >"$relevant_logcat"
-  write_chrome_bootstrap_report \
-    "$focus_log" "$activity_log" "$relevant_logcat" "$report"
+  if ! write_chrome_bootstrap_report \
+    "$focus_log" "$activity_log" "$relevant_logcat" "$report"; then
+    diagnostic_failures="${diagnostic_failures}report_parser_failed,"
+    {
+      echo "classification=diagnostic_capture_failed"
+      echo "diagnostic_failures=$diagnostic_failures"
+      echo "authority=diagnostic only; recovery continues"
+    } >"$report"
+  elif [ -n "$diagnostic_failures" ]; then
+    {
+      echo "diagnostic_failures=$diagnostic_failures"
+      echo "authority=diagnostic only; recovery continues"
+    } >>"$report"
+  fi
   cat "$report" >&2
+  exit 0
+  ) || true
+  return 0
+}
+
+enable_hide_error_dialogs() {
+  local attempt="$1"
+  local read_log="$artifacts/hide-error-dialogs-attempt-$attempt-read.txt"
+  local set_log="$artifacts/hide-error-dialogs-attempt-$attempt-set.txt"
+  local verify_log="$artifacts/hide-error-dialogs-attempt-$attempt-verify.txt"
+
+  if ! run_named_adb_command "$read_log" 15 \
+    adb -s "$adb_serial" shell settings get global hide_error_dialogs; then
+    echo "Android hide_error_dialogs is not readable on the pinned image." >&2
+    return 1
+  fi
+  hide_error_dialogs_prior_value="$(tr -d '\r\n' <"$read_log")"
+  if [ "$hide_error_dialogs_prior_value" != "0" ]; then
+    echo "Android hide_error_dialogs must exist and be disabled on the pinned image." >&2
+    return 1
+  fi
+
+  hide_error_dialogs_restore_required=1
+  if ! run_named_adb_command "$set_log" 15 \
+    adb -s "$adb_serial" shell settings put global hide_error_dialogs 1; then
+    return 1
+  fi
+  if ! run_named_adb_command "$verify_log" 15 \
+    adb -s "$adb_serial" shell settings get global hide_error_dialogs; then
+    return 1
+  fi
+  if [ "$(tr -d '\r\n' <"$verify_log")" != "1" ]; then
+    echo "Android hide_error_dialogs could not be verified as enabled." >&2
+    return 1
+  fi
+}
+
+restore_hide_error_dialogs() {
+  local attempt="$1"
+  local restore_log="$artifacts/hide-error-dialogs-attempt-$attempt-restore.txt"
+  local verify_log="$artifacts/hide-error-dialogs-attempt-$attempt-restored.txt"
+
+  if [ "$hide_error_dialogs_restore_required" -ne 1 ]; then
+    return 0
+  fi
+  if [[ ! "$hide_error_dialogs_prior_value" =~ ^[01]$ ]]; then
+    echo "Android hide_error_dialogs prior value is not safe to restore." >&2
+    return 1
+  fi
+  if ! run_named_adb_command "$restore_log" 15 \
+    adb -s "$adb_serial" shell settings put global hide_error_dialogs \
+    "$hide_error_dialogs_prior_value"; then
+    return 1
+  fi
+  if ! run_named_adb_command "$verify_log" 15 \
+    adb -s "$adb_serial" shell settings get global hide_error_dialogs; then
+    return 1
+  fi
+  if [ "$(tr -d '\r\n' <"$verify_log")" != "$hide_error_dialogs_prior_value" ]; then
+    echo "Android hide_error_dialogs was not restored to its prior value." >&2
+    return 1
+  fi
+  hide_error_dialogs_restore_required=0
 }
 
 reset_chrome_bootstrap() {
@@ -655,6 +742,11 @@ reset_chrome_bootstrap() {
   local package_log="$artifacts/chrome-bootstrap-attempt-$attempt-package.txt"
   local clear_log="$artifacts/chrome-bootstrap-attempt-$attempt-clear.txt"
 
+  if ! run_named_adb_command \
+    "$artifacts/chrome-bootstrap-attempt-$attempt-reconnect-offline.txt" 10 \
+    adb reconnect offline; then
+    return 1
+  fi
   if ! wait_for_stable_device; then
     return 1
   fi
@@ -688,7 +780,6 @@ run_chrome_bootstrap() {
   local bootstrap_retry_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt-retry"
   local bootstrap_retry_log="$artifacts/maestro-bootstrap-attempt-$attempt-retry.log"
   local bootstrap_status=0
-  local evidence_status=0
 
   set +e
   maestro --device "$adb_serial" test \
@@ -702,13 +793,7 @@ run_chrome_bootstrap() {
     return 0
   fi
 
-  set +e
-  capture_chrome_bootstrap_failure_evidence "$attempt" "first"
-  evidence_status=$?
-  set -e
-  if [ "$evidence_status" -ne 0 ]; then
-    return "$bootstrap_status"
-  fi
+  capture_chrome_bootstrap_failure_evidence "$attempt" "first" || true
 
   echo "Chrome bootstrap failed before product flows; resetting Chrome and retrying once." >&2
   if ! reset_chrome_bootstrap "$attempt"; then
@@ -728,9 +813,9 @@ run_chrome_bootstrap() {
     return 0
   fi
 
+  local evidence_status=0
   set +e
   capture_chrome_bootstrap_failure_evidence "$attempt" "second"
-  evidence_status=$?
   capture_attempt_evidence "$attempt" "$bootstrap_status" 1
   if [ ! -s "$emulator_log" ] ||
     [ ! -s "$artifacts/logcat-attempt-$attempt.txt" ] ||
@@ -742,6 +827,26 @@ run_chrome_bootstrap() {
     echo "The second Chrome bootstrap failed, and its focused evidence was incomplete." >&2
   else
     echo "The second Chrome bootstrap failed; its foreground classification does not excuse the failure." >&2
+  fi
+  return "$bootstrap_status"
+}
+
+run_chrome_bootstrap_with_hidden_dialogs() {
+  local attempt="$1"
+  local bootstrap_status=0
+
+  if ! enable_hide_error_dialogs "$attempt"; then
+    restore_hide_error_dialogs "$attempt" || true
+    return 1
+  fi
+
+  set +e
+  run_chrome_bootstrap "$attempt"
+  bootstrap_status=$?
+  set -e
+
+  if ! restore_hide_error_dialogs "$attempt"; then
+    return 1
   fi
   return "$bootstrap_status"
 }
@@ -789,7 +894,7 @@ start_and_prepare_emulator() {
     -d file:///sdcard/Download/expo-turbo-android-picked.txt
 
   wait_for_stable_device
-  run_chrome_bootstrap "$attempt"
+  run_chrome_bootstrap_with_hidden_dialogs "$attempt"
 
   wait_for_stable_device
   if ! prepare_rails_reverse; then

@@ -84,14 +84,21 @@ async function runFunction(
 
 function assertChromeBootstrapContract(source: string): void {
   const bootstrap = extractFunction(source, "run_chrome_bootstrap")
+  const guardedBootstrap = extractFunction(source, "run_chrome_bootstrap_with_hidden_dialogs")
   const classification = extractFunction(source, "write_chrome_bootstrap_report")
   const evidence = extractFunction(source, "capture_chrome_bootstrap_failure_evidence")
+  const reset = extractFunction(source, "reset_chrome_bootstrap")
+  const prepare = extractFunction(source, "start_and_prepare_emulator")
+  const cleanup = extractFunction(source, "cleanup")
 
   if ((bootstrap.match(/maestro --device/g) ?? []).length !== 2) {
     throw new Error("Chrome bootstrap must have exactly two bounded invocations")
   }
   if (!bootstrap.includes('capture_chrome_bootstrap_failure_evidence "$attempt" "first"')) {
     throw new Error("Chrome bootstrap must capture the first failure before recovery")
+  }
+  if (!bootstrap.includes('capture_chrome_bootstrap_failure_evidence "$attempt" "first" || true')) {
+    throw new Error("Chrome bootstrap diagnostics must not control the recovery retry")
   }
   if (!bootstrap.includes('capture_attempt_evidence "$attempt" "$bootstrap_status" 1')) {
     throw new Error("a double Chrome bootstrap failure must preserve full attempt evidence")
@@ -107,6 +114,24 @@ function assertChromeBootstrapContract(source: string): void {
     evidence.includes("shell dumpsys window windows")
   ) {
     throw new Error("Chrome bootstrap evidence must use the full window dump")
+  }
+  if (
+    !guardedBootstrap.includes('enable_hide_error_dialogs "$attempt"') ||
+    !guardedBootstrap.includes('if ! restore_hide_error_dialogs "$attempt"; then') ||
+    !prepare.includes('run_chrome_bootstrap_with_hidden_dialogs "$attempt"') ||
+    prepare.includes('run_chrome_bootstrap "$attempt"')
+  ) {
+    throw new Error("Chrome bootstrap must restore hidden error dialogs before product flows")
+  }
+  if (!cleanup.includes('restore_hide_error_dialogs "cleanup" || status=1')) {
+    throw new Error("EXIT cleanup must retry error-dialog restoration on every failure path")
+  }
+  if (
+    !reset.includes("adb reconnect offline") ||
+    !reset.includes("wait_for_stable_device") ||
+    !reset.includes('shell pm clear "$chrome_package"')
+  ) {
+    throw new Error("Chrome retry must reconnect ADB, prove stability, and clear Chrome")
   }
   if (
     !source.includes('if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"')
@@ -180,6 +205,7 @@ maestro() {
   if [ "$calls" -eq 1 ]; then return "$first_bootstrap_status"; fi
   return "$second_bootstrap_status"
 }
+
 capture_chrome_bootstrap_failure_evidence() {
   printf 'evidence:%s\\n' "$2" >>"$trace_file"
   if [ "$evidence_mode" = "pass" ]; then return 0; fi
@@ -203,6 +229,77 @@ run_chrome_bootstrap 1`,
   const callsPath = `${trace}.calls`
   const calls = (await Bun.file(callsPath).exists()) ? Number(await readFile(callsPath, "utf8")) : 0
   return { status: result.status, trace: await readFile(trace, "utf8"), calls }
+}
+
+async function runHiddenDialogsHarness(
+  source: string,
+  bootstrapStatus: number,
+  failureMode = "none",
+): Promise<{ status: number; trace: string; finalSetting: string }> {
+  const trace = await fixtureFile("hide-dialogs-trace.txt", "")
+  const result = await runFunction(
+    source,
+    [
+      "enable_hide_error_dialogs",
+      "restore_hide_error_dialogs",
+      "run_chrome_bootstrap_with_hidden_dialogs",
+    ],
+    `trace_file="$1"
+artifacts="\${1%/*}/artifacts"
+mkdir -p "$artifacts"
+adb_serial=emulator-5580
+hide_error_dialogs_prior_value=""
+hide_error_dialogs_restore_required=0
+setting=0
+	desired_bootstrap_status="$2"
+failure_mode="$3"
+run_named_adb_command() {
+  local output="$1"
+  shift 2
+  printf '%s\\n' "$*" >>"$trace_file"
+  case "$output" in
+    *-read.txt)
+      [ "$failure_mode" != "read" ] || return 31
+      printf '%s\\n' "$setting" >"$output"
+      ;;
+    *-set.txt)
+      [ "$failure_mode" != "set" ] || return 32
+      setting=1
+      : >"$output"
+      ;;
+    *-verify.txt)
+      printf '%s\\n' "$setting" >"$output"
+      [ "$failure_mode" != "verify" ] || printf '0\\n' >"$output"
+      ;;
+    *-restore.txt)
+      [ "$failure_mode" != "restore" ] || return 33
+      setting="$hide_error_dialogs_prior_value"
+      : >"$output"
+      ;;
+    *-restored.txt)
+      printf '%s\\n' "$setting" >"$output"
+      ;;
+  esac
+}
+run_chrome_bootstrap() {
+  printf 'bootstrap setting=%s\\n' "$setting" >>"$trace_file"
+	  return "$desired_bootstrap_status"
+}
+	if run_chrome_bootstrap_with_hidden_dialogs 1; then
+	  status=0
+	else
+	  status=$?
+	fi
+printf 'product setting=%s\\n' "$setting" >>"$trace_file"
+printf 'status=%s\\n' "$status" >>"$trace_file"
+exit 0`,
+    [trace, String(bootstrapStatus), failureMode],
+  )
+  const traceContents = await readFile(trace, "utf8")
+  const status = Number(traceContents.match(/^status=([0-9]+)$/m)?.[1] ?? -1)
+  const finalSetting = traceContents.match(/^product setting=(.*)$/m)?.[1] ?? "not-recorded"
+  expect(result.status, result.stderr).toBe(0)
+  return { status, trace: traceContents, finalSetting }
 }
 
 async function runTransportMonitor(
@@ -269,7 +366,7 @@ describe("Android Maestro transport recovery", () => {
       'sleep 2 & pid=$!; process=$(process_identity "$pid"); file=$(file_identity "$1"); kill "$pid"; wait "$pid" 2>/dev/null || true; is_valid_process_identity "$process" && is_valid_file_identity "$file"; printf "%s\\n%s\\n" "$process" "$file"',
       [file],
     )
-    expect(result.status, result.stderr).toBe(0)
+    expect(result.status, JSON.stringify(result)).toBe(0)
     expect(result.stdout).toMatch(/^[0-9]+ .+ [0-9]{4}\n[0-9]+:[1-9][0-9]*\n$/)
 
     const invalidIdentities: Array<[string, string]> = [
@@ -439,12 +536,12 @@ wc -l <"$2"
     expect(result.trace).toBe("evidence:first\nreset\n")
   })
 
-  test("fails closed when first evidence capture or reset fails", async () => {
+  test("diagnostic parser failure still reaches the one allowed retry", async () => {
     const source = await readFile(laneScript, "utf8")
     const evidenceFailure = await runChromeBootstrapHarness(source, 17, 0, "fail")
-    expect(evidenceFailure.status).toBe(17)
-    expect(evidenceFailure.calls).toBe(1)
-    expect(evidenceFailure.trace).toBe("evidence:first\n")
+    expect(evidenceFailure.status).toBe(0)
+    expect(evidenceFailure.calls).toBe(2)
+    expect(evidenceFailure.trace).toBe("evidence:first\nreset\n")
 
     const resetFailure = await runChromeBootstrapHarness(source, 17, 0, "pass", "fail")
     expect(resetFailure.status).toBe(17)
@@ -496,7 +593,7 @@ Display #0 (activities from top to bottom):
       [fixture],
     )
 
-    expect(result.status, result.stderr).toBe(0)
+    expect(result.status, JSON.stringify(result)).toBe(0)
     expect(await readFile(join(fixture, "commands.txt"), "utf8")).toBe(
       "-s emulator-5580 shell dumpsys window\n" +
         "-s emulator-5580 shell dumpsys activity activities\n" +
@@ -514,7 +611,7 @@ Display #0 (activities from top to bottom):
     )
   })
 
-  test("fails if production evidence uses the window windows dump without current focus", async () => {
+  test("writes a diagnostic sentinel and continues when current focus capture is incomplete", async () => {
     const source = await readFile(laneScript, "utf8")
     const brokenSource = source.replace(
       'shell dumpsys window >"$focus_log"',
@@ -533,13 +630,139 @@ Display #0 (activities from top to bottom):
       [fixture],
     )
 
-    expect(result.status).not.toBe(0)
+    expect(result.status).toBe(0)
     expect(await readFile(join(fixture, "capture.stderr"), "utf8")).toContain(
       "current focus was absent",
     )
+    expect(
+      await readFile(
+        join(fixture, "artifacts/chrome-bootstrap-attempt-1-first-classification.txt"),
+        "utf8",
+      ),
+    ).toContain("diagnostic_failures=current_focus_absent,")
     expect(await readFile(join(fixture, "commands.txt"), "utf8")).toBe(
-      "-s emulator-5580 shell dumpsys window windows\n",
+      "-s emulator-5580 shell dumpsys window windows\n" +
+        "-s emulator-5580 shell dumpsys activity activities\n" +
+        "-s emulator-5580 logcat -d -t 1000\n",
     )
+  })
+
+  test("records the exact SystemUI ANR focus and launcher focused app", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const fixture = await androidEvidenceFixture(
+      "  mCurrentFocus=Window{af32e5a u0 Application Not Responding: com.android.systemui}\n",
+      "  mFocusedApp=ActivityRecord{ecf0619 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t7}\n",
+      "ActivityManager: unrelated line\n",
+    )
+    const result = await runFunction(
+      source,
+      ["write_chrome_bootstrap_report", "capture_chrome_bootstrap_failure_evidence"],
+      'timeout() { shift; "$@"; }; PATH="$1:$PATH"; artifacts="$1/artifacts"; mkdir -p "$artifacts"; adb_serial=emulator-5580; chrome_package=com.android.chrome; capture_chrome_bootstrap_failure_evidence 1 first',
+      [fixture],
+    )
+
+    expect(result.status, JSON.stringify(result)).toBe(0)
+    const report = await readFile(
+      join(fixture, "artifacts/chrome-bootstrap-attempt-1-first-classification.txt"),
+      "utf8",
+    )
+    expect(report).toContain(
+      "current_focus=  mCurrentFocus=Window{af32e5a u0 Application Not Responding: com.android.systemui}",
+    )
+    expect(report).toContain(
+      "focused_app=  mFocusedApp=ActivityRecord{ecf0619 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t7}",
+    )
+    expect(report).toContain("classification=foreground_left_chrome_without_device_fault_evidence")
+  })
+
+  test("recovers an offline first bootstrap with SystemUI ANR evidence and one successful retry", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const fixture = await androidEvidenceFixture(
+      "  mCurrentFocus=Window{af32e5a u0 Application Not Responding: com.android.systemui}\n",
+      "  mFocusedApp=ActivityRecord{ecf0619 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t7}\n",
+      "ActivityManager: device transport recovered\n",
+    )
+    const result = await runFunction(
+      source,
+      [
+        "write_chrome_bootstrap_report",
+        "capture_chrome_bootstrap_failure_evidence",
+        "run_chrome_bootstrap",
+      ],
+      `timeout() { shift; "$@"; }
+PATH="$1:$PATH"
+fixture_root="$1"
+artifacts="$1/artifacts"
+mkdir -p "$artifacts"
+adb_serial=emulator-5580
+chrome_package=com.android.chrome
+emulator_log="$1/emulator.log"
+: >"$emulator_log"
+maestro() {
+  calls=0
+  [ ! -f "$fixture_root/bootstrap.calls" ] || calls="$(cat "$fixture_root/bootstrap.calls")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$fixture_root/bootstrap.calls"
+  if [ "$calls" -eq 1 ]; then
+    echo "DeviceServerDiedException: host:transport:emulator-5580 device offline"
+    return 17
+  fi
+  return 0
+}
+reset_chrome_bootstrap() { echo "reconnected and reset" >>"$fixture_root/reset.trace"; return 0; }
+capture_attempt_evidence() { return 0; }
+if run_chrome_bootstrap 1; then
+  status=0
+else
+  status=$?
+fi
+printf '%s' "$status" >"$fixture_root/bootstrap.status"
+exit 0`,
+      [fixture],
+    )
+
+    expect(result.status, JSON.stringify(result)).toBe(0)
+    expect(await readFile(join(fixture, "bootstrap.status"), "utf8")).toBe("0")
+    expect(await readFile(join(fixture, "bootstrap.calls"), "utf8")).toBe("2")
+    expect(await readFile(join(fixture, "reset.trace"), "utf8")).toBe("reconnected and reset\n")
+    expect(
+      await readFile(
+        join(fixture, "artifacts/chrome-bootstrap-attempt-1-first-classification.txt"),
+        "utf8",
+      ),
+    ).toContain("Application Not Responding: com.android.systemui")
+  })
+
+  test("keeps error dialogs hidden through bootstrap and restores them before product work", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const success = await runHiddenDialogsHarness(source, 0)
+    expect(success.status, JSON.stringify(success)).toBe(0)
+    expect(success.finalSetting).toBe("0")
+    expect(success.trace).toContain("settings put global hide_error_dialogs 1")
+    expect(success.trace).toContain("bootstrap setting=1")
+    expect(success.trace).toContain("settings put global hide_error_dialogs 0")
+    expect(success.trace.indexOf("settings put global hide_error_dialogs 0")).toBeLessThan(
+      success.trace.indexOf("product setting=0"),
+    )
+  })
+
+  test("restores error dialogs on bootstrap and setup failures", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const bootstrapFailure = await runHiddenDialogsHarness(source, 23)
+    expect(bootstrapFailure.status, JSON.stringify(bootstrapFailure)).toBe(23)
+    expect(bootstrapFailure.finalSetting).toBe("0")
+    expect(bootstrapFailure.trace).toContain("product setting=0\n")
+
+    for (const failureMode of ["set", "verify"] as const) {
+      const failure = await runHiddenDialogsHarness(source, 0, failureMode)
+      expect(failure.status).not.toBe(0)
+      expect(failure.finalSetting).toBe("0")
+      expect(failure.trace).toContain("settings put global hide_error_dialogs 0")
+      expect(failure.trace).not.toContain("bootstrap setting=")
+    }
+    const restoreFailure = await runHiddenDialogsHarness(source, 0, "restore")
+    expect(restoreFailure.status).not.toBe(0)
+    expect(restoreFailure.trace).not.toContain("product setting=0")
   })
 
   test("classifies launcher foreground after a background Chrome restart from focus evidence", async () => {
@@ -602,8 +825,8 @@ Display #0 (activities from top to bottom):
     expect(() =>
       assertChromeBootstrapContract(
         source.replace(
-          '  if [ "$bootstrap_status" -eq 0 ]; then\n    return 0\n  fi\n\n  set +e\n  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
-          '  while [ "$bootstrap_status" -ne 0 ]; do\n    maestro --device "$adb_serial" test\n  done\n\n  set +e\n  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
+          '  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
+          '  maestro --device "$adb_serial" test\n  capture_chrome_bootstrap_failure_evidence "$attempt" "second"',
         ),
       ),
     ).toThrow(/exactly two/)
@@ -618,6 +841,19 @@ Display #0 (activities from top to bottom):
     expect(() =>
       assertChromeBootstrapContract(source.replace("mCurrentFocus=", "pidof com.android.chrome")),
     ).toThrow(/foreground focus, not pidof/)
+    expect(() =>
+      assertChromeBootstrapContract(
+        source.replace(
+          '  capture_chrome_bootstrap_failure_evidence "$attempt" "first" || true',
+          '  capture_chrome_bootstrap_failure_evidence "$attempt" "first" || return "$bootstrap_status"',
+        ),
+      ),
+    ).toThrow(/diagnostics must not control/)
+    expect(() =>
+      assertChromeBootstrapContract(
+        source.replaceAll('  if ! restore_hide_error_dialogs "$attempt"; then', "  if false; then"),
+      ),
+    ).toThrow(/restore hidden error dialogs/)
   })
 
   test("uses the production strict case-sensitive full-line classifier", async () => {

@@ -95,11 +95,17 @@ once against the same APK. The failed flow does not need a zero-second duration.
 Assertion failures, selector timeouts, app crashes, and a failed second attempt
 remain failures. Before product flows start, Chrome bootstrap has one narrower
 exception: any first bootstrap failure gets one retry. The runner first records
-the current focus, resumed activity, and a bounded logcat window for Chrome
-death or a Google Mobile Services ANR. It then validates the Chrome package,
-clears its half-written profile, proves stable ADB health, and runs the same
-bootstrap once. It does not use Chrome process liveness because Android can
-restart Chrome in the background while the launcher remains in front. A second
+the current focus, focused app, resumed activity, and a bounded logcat window
+for Chrome death or a Google Mobile Services ANR. These diagnostics are
+best-effort and cannot block the retry. A missing probe writes a clear sentinel.
+The runner reconnects offline ADB transports, proves stable ADB health,
+validates Chrome, clears its half-written profile, and runs the same bootstrap
+once. During both bootstrap calls, it verifies Android's global
+`hide_error_dialogs` setting, saves its prior value, and sets it to `1` so an OS
+crash or ANR dialog cannot cover Chrome. It restores and verifies the prior
+value before any product flow. An unsupported setting or a failed restore fails
+the lane. It does not use Chrome process liveness because Android can restart
+Chrome in the background while the launcher remains in front. A second
 bootstrap failure always fails the lane and preserves full attempt evidence.
 This exception does not change the transport-only product-suite retry rule.
 

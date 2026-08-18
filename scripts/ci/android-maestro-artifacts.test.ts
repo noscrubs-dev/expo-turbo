@@ -56,6 +56,12 @@ async function assertArtifactContract(
     "chrome-bootstrap-attempt-$attempt-$invocation",
     "chrome-bootstrap-attempt-$attempt-package.txt",
     "chrome-bootstrap-attempt-$attempt-clear.txt",
+    "chrome-bootstrap-attempt-$attempt-reconnect-offline.txt",
+    "hide-error-dialogs-attempt-$attempt-read.txt",
+    "hide-error-dialogs-attempt-$attempt-set.txt",
+    "hide-error-dialogs-attempt-$attempt-verify.txt",
+    "hide-error-dialogs-attempt-$attempt-restore.txt",
+    "hide-error-dialogs-attempt-$attempt-restored.txt",
     "maestro-tests-attempt-$attempt",
     "maestro-debug-attempt-$attempt",
   ]
