@@ -85,6 +85,7 @@ async function runFunction(
 function assertChromeBootstrapContract(source: string): void {
   const bootstrap = extractFunction(source, "run_chrome_bootstrap")
   const guardedBootstrap = extractFunction(source, "run_chrome_bootstrap_with_hidden_dialogs")
+  const enableHiddenDialogs = extractFunction(source, "enable_hide_error_dialogs")
   const classification = extractFunction(source, "write_chrome_bootstrap_report")
   const evidence = extractFunction(source, "capture_chrome_bootstrap_failure_evidence")
   const reset = extractFunction(source, "reset_chrome_bootstrap")
@@ -125,6 +126,12 @@ function assertChromeBootstrapContract(source: string): void {
   }
   if (!cleanup.includes('restore_hide_error_dialogs "cleanup" || status=1')) {
     throw new Error("EXIT cleanup must retry error-dialog restoration on every failure path")
+  }
+  if (
+    !enableHiddenDialogs.includes("android.intent.action.CLOSE_SYSTEM_DIALOGS") ||
+    !enableHiddenDialogs.includes("Application Not Responding:")
+  ) {
+    throw new Error("hidden-dialog setup must close and verify any pre-existing error dialog")
   }
   if (
     !reset.includes("adb reconnect offline") ||
@@ -256,6 +263,7 @@ setting="$2"
 desired_bootstrap_status="$3"
 failure_mode="$4"
 restore_calls=0
+dialog_open=1
 run_named_adb_command() {
   local output="$1"
   shift 2
@@ -274,6 +282,19 @@ run_named_adb_command() {
       [ "$failure_mode" != "enable-verify-command" ] || return 34
       printf '%s\\n' "$setting" >"$output"
       [ "$failure_mode" != "enable-verify-value" ] || printf '0\\n' >"$output"
+      ;;
+    *-close.txt)
+      [ "$failure_mode" != "close-command" ] || return 36
+      dialog_open=0
+      : >"$output"
+      ;;
+    *-closed.txt)
+      [ "$failure_mode" != "close-verify-command" ] || return 37
+      if [ "$failure_mode" = "close-verify-value" ]; then
+        printf '  mCurrentFocus=Window{fixture u0 Application Not Responding: com.android.systemui}\\n' >"$output"
+      else
+        printf '  mCurrentFocus=Window{fixture u0 com.android.chrome/.Main}\\n' >"$output"
+      fi
       ;;
     *-restore.txt)
       restore_calls=$((restore_calls + 1))
@@ -297,7 +318,7 @@ run_named_adb_command() {
   esac
 }
 run_chrome_bootstrap() {
-  printf 'bootstrap setting=%s\\n' "$setting" >>"$trace_file"
+  printf 'bootstrap setting=%s dialog_open=%s\\n' "$setting" "$dialog_open" >>"$trace_file"
   return "$desired_bootstrap_status"
 }
 if run_chrome_bootstrap_with_hidden_dialogs 1; then
@@ -834,13 +855,14 @@ exit 0`,
       expect(success.finalSetting).toBe(prior)
       expect(success.restoreRequired).toBe(false)
       expect(success.trace).toContain("settings put global hide_error_dialogs 1")
-      expect(success.trace).toContain("bootstrap setting=1")
+      expect(success.trace).toContain("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
+      expect(success.trace).toContain("bootstrap setting=1 dialog_open=0")
       if (prior === "null") {
         expect(success.trace).toContain("settings delete global hide_error_dialogs")
       } else {
         expect(success.trace).toContain(`settings put global hide_error_dialogs ${prior}`)
       }
-      expect(success.trace.indexOf("bootstrap setting=1")).toBeLessThan(
+      expect(success.trace.indexOf("bootstrap setting=1 dialog_open=0")).toBeLessThan(
         success.trace.indexOf(`observed setting=${prior}`),
       )
     }
@@ -857,6 +879,9 @@ exit 0`,
       "set-command",
       "enable-verify-command",
       "enable-verify-value",
+      "close-command",
+      "close-verify-command",
+      "close-verify-value",
     ] as const) {
       const failure = await runHiddenDialogsHarness(source, "0", 0, failureMode)
       expect(failure.status).not.toBe(0)

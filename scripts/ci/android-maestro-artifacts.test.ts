@@ -60,6 +60,8 @@ async function assertArtifactContract(
     "hide-error-dialogs-attempt-$attempt-read.txt",
     "hide-error-dialogs-attempt-$attempt-set.txt",
     "hide-error-dialogs-attempt-$attempt-verify.txt",
+    "hide-error-dialogs-attempt-$attempt-close.txt",
+    "hide-error-dialogs-attempt-$attempt-closed.txt",
     "hide-error-dialogs-attempt-$attempt-restore.txt",
     "hide-error-dialogs-attempt-$attempt-restored.txt",
     "maestro-tests-attempt-$attempt",

@@ -682,6 +682,8 @@ enable_hide_error_dialogs() {
   local read_log="$artifacts/hide-error-dialogs-attempt-$attempt-read.txt"
   local set_log="$artifacts/hide-error-dialogs-attempt-$attempt-set.txt"
   local verify_log="$artifacts/hide-error-dialogs-attempt-$attempt-verify.txt"
+  local close_log="$artifacts/hide-error-dialogs-attempt-$attempt-close.txt"
+  local closed_log="$artifacts/hide-error-dialogs-attempt-$attempt-closed.txt"
 
   if ! run_named_adb_command "$read_log" 15 \
     adb -s "$adb_serial" shell settings get global hide_error_dialogs; then
@@ -705,6 +707,19 @@ enable_hide_error_dialogs() {
   fi
   if [ "$(tr -d '\r\n' <"$verify_log")" != "1" ]; then
     echo "Android hide_error_dialogs could not be verified as enabled." >&2
+    return 1
+  fi
+  if ! run_named_adb_command "$close_log" 15 \
+    adb -s "$adb_serial" shell am broadcast \
+    -a android.intent.action.CLOSE_SYSTEM_DIALOGS; then
+    return 1
+  fi
+  if ! run_named_adb_command "$closed_log" 15 \
+    adb -s "$adb_serial" shell dumpsys window; then
+    return 1
+  fi
+  if grep -Eq '^[[:space:]]*mCurrentFocus=.*Application Not Responding:' "$closed_log"; then
+    echo "Android kept a pre-existing error dialog open after hide_error_dialogs was enabled." >&2
     return 1
   fi
 }
