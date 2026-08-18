@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -154,23 +154,57 @@ describe("Android Maestro artifacts", () => {
     ).rejects.toThrow(/preserve and separate/)
   })
 
-  test("keeps readable Rails evidence without truncation or NUL holes", async () => {
+  test("uses the production tail command on a live Rails writer without NUL holes", async () => {
     const runner = await readFile(join(root, "scripts/ci/run-android-maestro.sh"), "utf8")
     expect(runner).not.toContain('stop_emulator_for_retry\n: >"$rails_log"')
+    const tailCommand = runner.match(
+      /^\s{4}(tail -c \+"\$rails_start_byte" "\$rails_log" 2>\/dev\/null \|\| true)$/m,
+    )?.[1]
+    expect(tailCommand).toBeDefined()
 
-    const fixture = await mkdtemp(join(tmpdir(), "rails-attempt-evidence-"))
-    const rails = join(fixture, "rails.log")
-    const attempt1 = "attempt one request\nattempt one response\n"
-    const attempt2 = "attempt two request\nattempt two response\n"
-    await writeFile(rails, attempt1)
-    const boundary = (await readFile(rails)).byteLength + 1
-    await Bun.write(rails, attempt1 + attempt2)
-    const bytes = await readFile(rails)
-    const secondEvidence = bytes.subarray(boundary - 1).toString()
+    const runEvidenceProof = async (truncateAfterBoundary: boolean): Promise<number> => {
+      const fixture = await mkdtemp(join(tmpdir(), "rails-attempt-evidence-"))
+      try {
+        const harness = `
+set -euo pipefail
+rails_log="$1/rails.log"
+evidence="$1/rails-attempt-2.log"
+expected="$1/expected-attempt-2.log"
+exec 3>>"$rails_log"
+printf 'attempt one request\\nattempt one response\\n' >&3
+rails_start_byte=$(($(wc -c <"$rails_log") + 1))
+${truncateAfterBoundary ? ': >"$rails_log"' : ":"}
+printf 'attempt two request\\nattempt two response\\n' >"$expected"
+cat "$expected" >&3
+{ ${tailCommand}; } >"$evidence"
+cmp "$expected" "$evidence"
+if od -An -t u1 "$rails_log" "$evidence" | grep -Eq '(^|[[:space:]])0([[:space:]]|$)'; then
+  echo 'Rails evidence contains a NUL byte' >&2
+  exit 92
+fi
+exec 3>&-
+`
+        const child = Bun.spawn(["bash", "-c", harness, "test", fixture], {
+          stdout: "ignore",
+          stderr: "pipe",
+        })
+        const [status, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stderr).text(),
+        ])
+        if (status !== 0 && !truncateAfterBoundary) throw new Error(stderr)
+        if (status === 0) {
+          const evidence = await readFile(join(fixture, "rails-attempt-2.log"))
+          expect(evidence.includes(0)).toBe(false)
+          expect(evidence.toString()).toBe("attempt two request\nattempt two response\n")
+        }
+        return status
+      } finally {
+        await rm(fixture, { recursive: true, force: true })
+      }
+    }
 
-    expect(bytes.includes(0)).toBe(false)
-    expect(bytes.toString()).toContain("attempt one response")
-    expect(bytes.toString()).toContain("attempt two response")
-    expect(secondEvidence).toBe(attempt2)
+    expect(await runEvidenceProof(false)).toBe(0)
+    expect(await runEvidenceProof(true)).not.toBe(0)
   })
 })

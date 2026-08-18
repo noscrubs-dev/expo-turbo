@@ -14,6 +14,7 @@ const canonicalEntryCommand = "exec scripts/ci/run-android-maestro-entry.sh"
 const canonicalSupervisorCommand = 'exec ruby "$script_dir/run-android-maestro-entry.rb"'
 const fixtures: string[] = []
 const survivingPids: number[] = []
+const fixtureReadyBound = 10_000
 
 afterEach(async () => {
   for (const pid of survivingPids.splice(0)) {
@@ -634,19 +635,43 @@ while true; do sleep 0.01; done
     expect(await recordedWorkerIsRunning(fixture)).toBe(false)
   })
 
-  test("startup proof failure is bounded and does not print a Ruby stack trace", async () => {
+  test("startup proof failure and a forced entry timeout clean all owned processes", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
     const mutation = supervisor.replace(
       "        Process.setpgid(0, 0)",
       "        nil # pgroup disabled",
     )
+    const startupFixture = await createFixture()
+    const startupResult = await runEntryWorker(startupFixture, "exit 0\n", undefined, mutation)
+    expect(startupResult.timedOut).toBe(false)
+    expect(startupResult.status).toBe(70)
+    expect(startupResult.stderr).toContain("anchor liveness channel closed during startup")
+    expect(startupResult.stderr).not.toContain("run-android-maestro-entry.rb:")
+
+    const stalledSupervisor = supervisor
+      .replace(
+        "    start_and_prove_anchor\n",
+        '    start_and_prove_anchor\n    File.write(File.join(ENV.fetch("FIXTURE"), "anchor-pid"), @anchor_pid.to_s)\n',
+      )
+      .replace("    run_worker unless @worker_status", "    sleep 30")
+    expect(stalledSupervisor).not.toBe(supervisor)
+
     const fixture = await createFixture()
-    const result = await runEntryWorker(fixture, "exit 0\n", undefined, mutation)
-    expect(result.timedOut).toBe(false)
-    expect(result.status).toBe(70)
-    expect(result.stderr).toContain("anchor liveness channel closed during startup")
-    expect(result.stderr).not.toContain("run-android-maestro-entry.rb:")
-  })
+    const result = await runEntryWorker(
+      fixture,
+      `printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+printf 'ready\\n' >"$FIXTURE/worker-ready"
+while true; do sleep 0.01; done
+`,
+      undefined,
+      stalledSupervisor,
+    )
+
+    expect(result.timedOut).toBe(true)
+    expect(await recordedWorkerIsRunning(fixture)).toBe(false)
+    expect(isRunning(await readPid(fixture, "anchor-pid"))).toBe(false)
+  }, 20_000)
 
   test("a pgroup-disabled worker fails closed without touching an unrelated sentinel", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
@@ -654,8 +679,12 @@ while true; do sleep 0.01; done
       "      pgroup: @anchor_pgid,\n",
       "      # pgroup disabled\n",
     )
-    const sentinel = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
     const fixture = await createFixture()
+    const sentinel = Bun.spawn(["sleep", "30"], {
+      env: fixtureEnvironment(fixture),
+      stdout: "ignore",
+      stderr: "ignore",
+    })
     const result = await runEntryWorker(
       fixture,
       "while true; do sleep 0.01; done\n",
@@ -718,7 +747,7 @@ while true; do sleep 0.01 || true; done
         const result = await runRunnerShapedSignal(workflow, entry, supervisor, signal)
         expectRunnerSignalProof(result, expectedStatus)
       }
-    })
+    }, 90_000)
 
     test(`the GitHub-shaped ${signal} proof rejects the previous bare wrapper command`, async () => {
       const workflow = await readFile(androidWorkflow, "utf8")
@@ -732,7 +761,7 @@ while true; do sleep 0.01 || true; done
 
       const result = await runRunnerShapedSignal(mutation, entry, supervisor, signal)
       expect(runnerSignalProofPasses(result, expectedStatus)).toBe(false)
-    })
+    }, 90_000)
   }
 
   for (const [signal, expectedStatus] of [
@@ -907,6 +936,7 @@ printf 'producer_status=%s\\n' "$producer_status"
 async function createFixture(prefix = "expo-turbo-cleanup-"): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix))
   fixtures.push(directory)
+  await mkdir(join(directory, "tmp"))
 
   const child = join(directory, "ignore-term.sh")
   await writeFile(
@@ -917,6 +947,38 @@ async function createFixture(prefix = "expo-turbo-cleanup-"): Promise<string> {
   return directory
 }
 
+function fixtureEnvironment(
+  fixture: string,
+  values: Record<string, string> = {},
+): Record<string, string> {
+  return { ...process.env, TMPDIR: join(fixture, "tmp"), FIXTURE: fixture, ...values }
+}
+
+function instrumentFixtureSupervisor(source: string): string {
+  const workerLine = 'worker = File.expand_path("run-android-maestro.sh", __dir__)\n'
+  const instrumentation = `${workerLine}fixture_supervisor_pid = File.join(ENV.fetch("FIXTURE"), "entry-supervisor-pid")
+File.write(fixture_supervisor_pid, Process.pid.to_s)
+at_exit do
+  File.delete(fixture_supervisor_pid) if File.exist?(fixture_supervisor_pid) && File.read(fixture_supervisor_pid) == Process.pid.to_s
+end
+`
+  const instrumented = source.replace(workerLine, instrumentation)
+  if (instrumented === source) throw new Error("fixture supervisor entrypoint is missing")
+  return instrumented
+}
+
+const boundedFixtureFileWait = `wait_for_fixture_file() {
+  local path="$1"
+  local description="$2"
+  local attempt
+  for attempt in $(seq 1 1000); do
+    [ -e "$path" ] && return 0
+    sleep 0.01
+  done
+  echo "fixture condition did not become ready within 10 seconds: $description ($path)" >&2
+  return 1
+}`
+
 async function runStopProcess(
   fixture: string,
   source: string,
@@ -926,14 +988,11 @@ async function runStopProcess(
   const harness = `
 set -euo pipefail
 source "$STOP_PROCESS_UNDER_TEST"
+${boundedFixtureFileWait}
 /bin/bash "$FIXTURE/ignore-term.sh" "$FIXTURE/ready" </dev/null >/dev/null 2>&1 &
 target_pid=$!
 printf '%s\\n' "$target_pid" >"$FIXTURE/target-pid"
-for _ in $(seq 1 100); do
-  [ -e "$FIXTURE/ready" ] && break
-  sleep 0.01
-done
-test -e "$FIXTURE/ready"
+wait_for_fixture_file "$FIXTURE/ready" "TERM-ignore child startup"
 stop_process "$target_pid" fixture 3 20 0.01
 if kill -0 "$target_pid" 2>/dev/null; then
   echo survivor=true
@@ -1018,7 +1077,7 @@ async function runBoundedBash(
   const stdoutPath = join(outputDirectory, "bounded-bash.stdout")
   const stderrPath = join(outputDirectory, "bounded-bash.stderr")
   const child = Bun.spawn(["/bin/bash", "-c", harness], {
-    env: { ...process.env, ...environment },
+    env: fixtureEnvironment(outputDirectory, environment),
     stdout: Bun.file(stdoutPath),
     stderr: Bun.file(stderrPath),
   })
@@ -1085,11 +1144,9 @@ trap cleanup EXIT INT TERM
 exit 37
 `
   const child = Bun.spawn(["bash", "-c", harness], {
-    env: {
-      ...process.env,
+    env: fixtureEnvironment(fixture, {
       EVIDENCE_MODE: evidenceMode,
-      FIXTURE: fixture,
-    },
+    }),
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -1131,7 +1188,7 @@ exit 37
   // for them instead of reporting that cleanup failed to stop them.
   const stderrPath = join(fixture, "real-cleanup.stderr")
   const child = Bun.spawn(["bash", "-c", harness], {
-    env: { ...process.env, EVIDENCE_MODE: "free-absent", FIXTURE: fixture },
+    env: fixtureEnvironment(fixture, { EVIDENCE_MODE: "free-absent" }),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
@@ -1191,23 +1248,25 @@ while true; do sleep 0.1; done
   const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
   const fixtureLane = join(fixtureScripts, "run-android-maestro.sh")
   await writeFile(fixtureEntry, await readFile(entryScript, "utf8"))
-  await writeFile(fixtureSupervisor, await readFile(entrySupervisor, "utf8"))
+  await writeFile(
+    fixtureSupervisor,
+    instrumentFixtureSupervisor(await readFile(entrySupervisor, "utf8")),
+  )
   await writeFile(fixtureLane, harness)
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
 
   const stderrPath = join(fixture, "signal-entry.stderr")
   const child = Bun.spawn([fixtureEntry], {
     cwd: fixture,
-    env: { ...process.env, FIXTURE: fixture },
+    env: fixtureEnvironment(fixture),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
 
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await Bun.file(join(fixture, "ready")).exists()) break
-    await Bun.sleep(10)
+  await waitForFile(join(fixture, "ready"), fixtureReadyBound, "signal cleanup worker readiness")
+  if (mode === "child-active") {
+    await waitForFile(join(fixture, "child-pid"), fixtureReadyBound, "signal cleanup child PID")
   }
-  expect(await Bun.file(join(fixture, "ready")).exists()).toBe(true)
   process.kill(child.pid, signal)
 
   const timedOut = await Promise.race([
@@ -1215,7 +1274,9 @@ while true; do sleep 0.1; done
     Bun.sleep(3_000).then(() => true),
   ])
   if (timedOut && child.exitCode === null) child.kill(9)
-  return { status: await child.exited, stderr: await readFile(stderrPath, "utf8"), timedOut }
+  const status = await child.exited
+  await killRecordedEntrySupervisor(fixture)
+  return { status, stderr: await readFile(stderrPath, "utf8"), timedOut }
 }
 
 interface RunnerSignalResult {
@@ -1278,7 +1339,7 @@ while true; do sleep 0.1; done
   await Promise.all([
     writeFile(stepScript, `${run}\n`),
     writeFile(fixtureEntry, entrySource),
-    writeFile(fixtureSupervisor, supervisorSource),
+    writeFile(fixtureSupervisor, instrumentFixtureSupervisor(supervisorSource)),
     writeFile(fixtureLane, lane),
   ])
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
@@ -1286,27 +1347,24 @@ while true; do sleep 0.1; done
   const stderrPath = join(fixture, "runner-signal.stderr")
   const child = Bun.spawn(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", stepScript], {
     cwd: fixture,
-    env: { ...process.env, FIXTURE: fixture },
+    env: fixtureEnvironment(fixture),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
 
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (await Bun.file(join(fixture, "ready")).exists()) break
-    if (child.exitCode !== null) break
-    await Bun.sleep(10)
-  }
-  expect(await Bun.file(join(fixture, "ready")).exists()).toBe(true)
+  await waitForFile(join(fixture, "ready"), fixtureReadyBound, "runner-shaped worker readiness")
+  await waitForFile(join(fixture, "child-pid"), fixtureReadyBound, "runner-shaped child PID")
   process.kill(child.pid, signal)
 
   const timedOut = await Promise.race([
     child.exited.then(() => false),
-    Bun.sleep(3_000).then(() => true),
+    Bun.sleep(80_000).then(() => true),
   ])
   if (timedOut) await killRecordedWorkerGroup(fixture)
   if (timedOut && child.exitCode === null) child.kill(9)
   const status = await child.exited
   await killRecordedWorkerGroup(fixture)
+  await killRecordedEntrySupervisor(fixture)
 
   const environmentPath = join(fixture, "artifacts/environment.txt")
   const environment = (await Bun.file(environmentPath).exists())
@@ -1373,6 +1431,9 @@ async function killRecordedWorkerGroup(fixture: string): Promise<void> {
   const ownership = await readOwnedWorker(fixture)
   if (!ownership || !isRunning(ownership.pid)) return
   const currentPgid = await processGroup(fixture, "current-worker-pgid", ownership.pid)
+  // A killed child can remain as an unsignalable zombie until its entry
+  // parent is reaped. There is no live PID identity to prove or signal.
+  if (currentPgid === undefined) return
   const selfPgid = await processGroup(fixture, "test-runner-pgid", process.pid)
   if (
     currentPgid !== ownership.pgid ||
@@ -1385,26 +1446,48 @@ async function killRecordedWorkerGroup(fixture: string): Promise<void> {
     )
   }
   process.kill(-ownership.pgid, "SIGKILL")
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (!isRunning(ownership.pid)) return
-    await Bun.sleep(10)
-  }
-  throw new Error("recorded worker group survived SIGKILL")
 }
 
-async function processGroup(fixture: string, name: string, pid: number): Promise<number> {
+async function killRecordedEntrySupervisor(fixture: string): Promise<void> {
+  const path = join(fixture, "entry-supervisor-pid")
+  let record: string
+  try {
+    record = await readFile(path, "utf8")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    throw error
+  }
+  const pid = Number(record.trim())
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
+    throw new Error("fixture entry supervisor record contains an invalid PID")
+  }
+  if (!isRunning(pid)) return
+  process.kill(pid, "SIGKILL")
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (!isRunning(pid)) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`fixture-owned entry supervisor ${pid} survived SIGKILL`)
+}
+
+async function processGroup(
+  fixture: string,
+  name: string,
+  pid: number,
+): Promise<number | undefined> {
   const output = join(fixture, name)
   const child = Bun.spawn(
     [
       "ruby",
       "-e",
-      "File.write(ARGV.fetch(1), Process.getpgid(Integer(ARGV.fetch(0))).to_s)",
+      "begin; File.write(ARGV.fetch(1), Process.getpgid(Integer(ARGV.fetch(0))).to_s); rescue Errno::ESRCH; exit 72; end",
       `${pid}`,
       output,
     ],
-    { stdout: "ignore", stderr: "pipe" },
+    { env: fixtureEnvironment(fixture), stdout: "ignore", stderr: "pipe" },
   )
   const [status, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  if (status === 72) return undefined
   const pgid = (await Bun.file(output).exists()) ? Number(await readFile(output, "utf8")) : 0
   if (status !== 0 || !Number.isInteger(pgid)) {
     throw new Error(`could not validate process group for PID ${pid}: ${stderr.trim()}`)
@@ -1441,35 +1524,50 @@ async function runEntryWorker(
   const fixtureSupervisor = join(fixtureScripts, "run-android-maestro-entry.rb")
   const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
   await writeFile(fixtureEntry, entrySource ?? (await readFile(entryScript, "utf8")))
-  await writeFile(fixtureSupervisor, supervisorSource ?? (await readFile(entrySupervisor, "utf8")))
+  await writeFile(
+    fixtureSupervisor,
+    instrumentFixtureSupervisor(supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+  )
   await writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`)
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
 
   const stderrPath = join(fixture, "entry.stderr")
   const child = Bun.spawn([fixtureEntry], {
     cwd: fixture,
-    env: { ...process.env, FIXTURE: fixture },
+    env: fixtureEnvironment(fixture),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
-  if (signalAfterWorkerExit) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (await Bun.file(join(fixture, signalMarker)).exists()) break
-      await Bun.sleep(10)
+  let timedOut = false
+  try {
+    if (signalAfterWorkerExit) {
+      await waitForFile(
+        join(fixture, signalMarker),
+        fixtureReadyBound,
+        `entry worker signal marker ${signalMarker}`,
+      )
+      await Bun.sleep(50)
+      process.kill(child.pid, signalAfterWorkerExit)
     }
-    expect(await Bun.file(join(fixture, signalMarker)).exists()).toBe(true)
-    await Bun.sleep(50)
-    process.kill(child.pid, signalAfterWorkerExit)
-  }
-  const timedOut = await Promise.race([
-    child.exited.then(() => false),
-    Bun.sleep(7_000).then(() => true),
-  ])
-  if (timedOut && child.exitCode === null) child.kill(9)
-  return {
-    status: await child.exited,
-    stderr: await readFile(stderrPath, "utf8"),
-    timedOut,
+    timedOut = await Promise.race([
+      child.exited.then(() => false),
+      Bun.sleep(7_000).then(() => true),
+    ])
+    if (timedOut) {
+      await killRecordedWorkerGroup(fixture)
+      if (child.exitCode === null) child.kill(9)
+    }
+    return {
+      status: await child.exited,
+      stderr: await readFile(stderrPath, "utf8"),
+      timedOut,
+    }
+  } finally {
+    await killRecordedWorkerGroup(fixture)
+    if (child.exitCode === null) child.kill(9)
+    await child.exited
+    await killRecordedWorkerGroup(fixture)
+    await killRecordedEntrySupervisor(fixture)
   }
 }
 
@@ -1486,7 +1584,10 @@ async function runEntryScenario(
   const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
   await Promise.all([
     writeFile(fixtureEntry, await readFile(entryScript, "utf8")),
-    writeFile(fixtureSupervisor, supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+    writeFile(
+      fixtureSupervisor,
+      instrumentFixtureSupervisor(supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+    ),
     writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`),
   ])
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
@@ -1494,7 +1595,7 @@ async function runEntryScenario(
   const stderrPath = join(fixture, "entry-scenario.stderr")
   const child = Bun.spawn([fixtureEntry], {
     cwd: fixture,
-    env: { ...process.env, FIXTURE: fixture },
+    env: fixtureEnvironment(fixture),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
@@ -1514,16 +1615,23 @@ async function runEntryScenario(
   if (timedOut && child.exitCode === null) child.kill(9)
   const status = await child.exited
   await killRecordedWorkerGroup(fixture)
+  await killRecordedEntrySupervisor(fixture)
   return { status, stderr: await readFile(stderrPath, "utf8"), timedOut }
 }
 
-async function waitForFile(path: string, bound = 2_000): Promise<void> {
+async function waitForFile(
+  path: string,
+  bound = fixtureReadyBound,
+  description = "fixture file",
+): Promise<void> {
   const deadline = performance.now() + bound
   while (performance.now() < deadline) {
     if (await Bun.file(path).exists()) return
     await Bun.sleep(5)
   }
-  throw new Error(`timed out waiting for ${path}`)
+  throw new Error(
+    `fixture condition did not become ready within ${bound}ms: ${description} (${path})`,
+  )
 }
 
 async function runEntrySignalSequence(
@@ -1539,7 +1647,10 @@ async function runEntrySignalSequence(
   const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
   await Promise.all([
     writeFile(fixtureEntry, await readFile(entryScript, "utf8")),
-    writeFile(fixtureSupervisor, supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+    writeFile(
+      fixtureSupervisor,
+      instrumentFixtureSupervisor(supervisorSource ?? (await readFile(entrySupervisor, "utf8"))),
+    ),
     writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`),
   ])
   await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
@@ -1547,16 +1658,15 @@ async function runEntrySignalSequence(
   const stderrPath = join(fixture, "entry-signal-sequence.stderr")
   const child = Bun.spawn([fixtureEntry], {
     cwd: fixture,
-    env: { ...process.env, FIXTURE: fixture },
+    env: fixtureEnvironment(fixture),
     stdout: "ignore",
     stderr: Bun.file(stderrPath),
   })
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (await Bun.file(join(fixture, "worker-ready")).exists()) break
-    if (child.exitCode !== null) break
-    await Bun.sleep(10)
-  }
-  expect(await Bun.file(join(fixture, "worker-ready")).exists()).toBe(true)
+  await waitForFile(
+    join(fixture, "worker-ready"),
+    fixtureReadyBound,
+    "entry signal worker readiness",
+  )
 
   const started = performance.now()
   for (const signal of signals) {
@@ -1572,6 +1682,7 @@ async function runEntrySignalSequence(
   const status = await child.exited
   const elapsed = performance.now() - started
   await killRecordedWorkerGroup(fixture)
+  await killRecordedEntrySupervisor(fixture)
   return {
     status,
     stderr: await readFile(stderrPath, "utf8"),

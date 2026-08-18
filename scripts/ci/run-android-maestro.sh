@@ -110,15 +110,18 @@ initialize_maestro_run_log() {
 write_monitor_startup_failure() {
   local artifact="$1"
   local diagnostic="$2"
-  local process_value="$3"
-  local file_value="$4"
+  local unproven_pid="$3"
+  local process_value="$4"
+  local file_value="$5"
 
   {
     echo "state=monitor_startup_failed"
     echo "diagnostic=$diagnostic"
+    echo "unproven_pid=$unproven_pid"
     echo "process_identity=$process_value"
     echo "file_identity=$file_value"
     echo "action=fail closed without signalling an unproven PID"
+    echo "final_cleanup=trusted entry supervisor group sweep"
   } >"$artifact"
   echo "$diagnostic: live Maestro transport monitoring could not start; failing closed." >&2
 }
@@ -725,8 +728,8 @@ monitor_maestro_transport() {
     fi
 
     if matched_line="$(
-      awk -v pattern="$adb_transport_pattern" \
-        'NR > 1 && $0 ~ pattern { print; found=1; exit } END { exit !found }' \
+      EXPO_TURBO_ADB_TRANSPORT_PATTERN="$adb_transport_pattern" awk \
+        'BEGIN { pattern=ENVIRON["EXPO_TURBO_ADB_TRANSPORT_PATTERN"] } NR > 1 && $0 ~ pattern { print; found=1; exit } END { exit !found }' \
         "$run_log" 2>/dev/null
     )"; then
       actual_process_identity="$(process_identity "$pid")"
@@ -809,6 +812,7 @@ run_maestro_suite() {
     write_monitor_startup_failure \
       "$startup_log" \
       "MAESTRO_MONITOR_PROCESS_IDENTITY_INVALID" \
+      "$maestro_pid" \
       "$maestro_process_identity" \
       "$run_log_identity"
     maestro_pid=""
@@ -819,6 +823,7 @@ run_maestro_suite() {
     write_monitor_startup_failure \
       "$startup_log" \
       "MAESTRO_MONITOR_FILE_IDENTITY_INVALID" \
+      "$maestro_pid" \
       "$maestro_process_identity" \
       "$run_log_identity"
     maestro_pid=""

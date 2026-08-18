@@ -108,7 +108,16 @@ assertion does not match. The monitor records the matched line and all captured
 identities, and then it stops only that Maestro process with the bounded stop
 helper. This prevents later Rails flows from spending minutes on a reverse
 mapping that the device lost. The normal retry decision still reads the saved
-attempt log after the process exits.
+attempt log after the process exits, but only when marker and identity
+validation succeeded. A marker or identity validation failure returns safety
+status 70 and does not retry.
+
+If the monitor cannot prove the initial process or log identity, the suite
+also returns status 70 and does not retry. It writes
+`maestro-monitor-startup-attempt-N.txt` with the diagnostic, the unproved PID,
+and the available identity values. It never signals that PID. The trusted entry
+supervisor owns the final process-group sweep and removes the unproved process
+with the other lane processes.
 
 The monitor does not require ADB to still report an offline device. ADB can
 recover before the next poll, as it did in run `32143590467`. The fresh active

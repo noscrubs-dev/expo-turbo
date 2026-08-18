@@ -42,6 +42,18 @@ async function fixtureFile(name: string, contents: string): Promise<string> {
   return path
 }
 
+async function availableCommands(names: string[]): Promise<string[]> {
+  const available: string[] = []
+  for (const name of names) {
+    const child = Bun.spawn(["sh", "-c", 'command -v "$1" >/dev/null 2>&1', "test", name], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    if ((await child.exited) === 0) available.push(name)
+  }
+  return available
+}
+
 async function runFunction(
   source: string,
   names: string[],
@@ -77,6 +89,7 @@ async function runTransportMonitor(
   duration: string,
   identityMatches = true,
   fileIdentityMatches = true,
+  awkBinary = "awk",
 ): Promise<{ elapsed: number; status: number; stderr: string }> {
   const stopProcess = await readFile(stopProcessScript, "utf8")
   const functions = [
@@ -95,6 +108,8 @@ exec 2>"$4"
 ${extractReadonly(source, "adb_transport_pattern")}
 ${stopProcess}
 ${functions}
+awk_binary="$5"
+awk() { command "$awk_binary" "$@"; }
 date() { printf '2026-08-18T00:00:00+00:00\\n'; }
 process_identity() { printf '123 Mon Aug 18 00:00:00 2026\\n'; }
 file_identity() { printf '4:22\\n'; }
@@ -110,10 +125,10 @@ wait "$monitor_pid"
 exit "$target_status"
 `
   const started = performance.now()
-  const child = Bun.spawn(["bash", "-c", script, "test", log, trigger, duration, stderrPath], {
-    stdout: "pipe",
-    stderr: "ignore",
-  })
+  const child = Bun.spawn(
+    ["bash", "-c", script, "test", log, trigger, duration, stderrPath, awkBinary],
+    { stdout: "pipe", stderr: "ignore" },
+  )
   const status = await child.exited
   const stderr = await readFile(stderrPath, "utf8")
   return { elapsed: performance.now() - started, status, stderr }
@@ -161,6 +176,8 @@ describe("Android Maestro transport recovery", () => {
     const failureWriter = extractFunction(source, "write_monitor_startup_failure")
     expect(failureWriter).toContain("state=monitor_startup_failed")
     expect(failureWriter).toContain("action=fail closed without signalling an unproven PID")
+    expect(failureWriter).toContain('echo "unproven_pid=$unproven_pid"')
+    expect(failureWriter).toContain("final_cleanup=trusted entry supervisor group sweep")
     expect(failureWriter).toContain(
       'echo "$diagnostic: live Maestro transport monitoring could not start; failing closed." >&2',
     )
@@ -183,6 +200,9 @@ describe("Android Maestro transport recovery", () => {
       "grep -Eq '^state=(stream_marker_validation_failed|identity_validation_failed)$'",
     )
     expect(suite).toContain("status=70")
+
+    expect(suite.match(/write_monitor_startup_failure[\s\S]*?"\$maestro_pid"/g)).toHaveLength(2)
+    expect(suite).toContain('maestro_pid=""\n    set -e\n    return 70')
   })
 
   test("fully drains 302 fast log lines before bounded cleanup", async () => {
@@ -452,15 +472,86 @@ wc -l <"$2"
 
   test("does not stop on product-rendered transport words", async () => {
     const source = await readFile(laneScript, "utf8")
-    const log = await fixtureFile(
-      "product-output.log",
-      `${activeStreamMarker}\nElement not found: text: "DeviceServerDiedException: device offline"\n`,
-    )
-    const trigger = `${log}.trigger`
-    const result = await runTransportMonitor(source, log, trigger, "0.3")
+    const productLines = [
+      "- DeviceServerDiedException",
+      "Element DeviceServerDiedException",
+      'Element not found: text: "DeviceServerDiedException: device offline"',
+    ]
+    for (const [index, productLine] of productLines.entries()) {
+      const log = await fixtureFile(
+        `product-output-${index}.log`,
+        `${activeStreamMarker}\n${productLine}\n`,
+      )
+      const classifier = await runFunction(
+        source,
+        ["is_adb_transport_failure"],
+        'is_adb_transport_failure "$1"',
+        [log],
+      )
+      expect(classifier.status, productLine).not.toBe(0)
 
-    expect(result.status, result.stderr).toBe(0)
-    expect(await Bun.file(trigger).exists()).toBe(false)
+      const trigger = `${log}.trigger`
+      const result = await runTransportMonitor(source, log, trigger, "0.3")
+      expect(result.status, `${productLine}: ${result.stderr}`).toBe(0)
+      expect(await Bun.file(trigger).exists()).toBe(false)
+    }
+  })
+
+  test("keeps grep and each available awk on identical ERE semantics", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const awkCommands = await availableCommands(["awk", "gawk", "mawk"])
+    expect(awkCommands).toContain("awk")
+
+    for (const awkCommand of awkCommands) {
+      for (const [name, line, mustMatch] of [
+        ["transport", "com.maestro.DeviceServerDiedException", true],
+        ["dash-product", "- DeviceServerDiedException", false],
+        ["element-product", "Element DeviceServerDiedException", false],
+      ] as const) {
+        const log = await fixtureFile(
+          `${awkCommand}-${name}.log`,
+          `${activeStreamMarker}\n${line}\n`,
+        )
+        const classifier = await runFunction(
+          source,
+          ["is_adb_transport_failure"],
+          'is_adb_transport_failure "$1"',
+          [log],
+        )
+        expect(classifier.status === 0, `${awkCommand} grep ${line}`).toBe(mustMatch)
+        const trigger = `${log}.trigger`
+        const monitor = await runTransportMonitor(
+          source,
+          log,
+          trigger,
+          "0.3",
+          true,
+          true,
+          awkCommand,
+        )
+        expect(monitor.status !== 0, `${awkCommand} monitor ${line}: ${monitor.stderr}`).toBe(
+          mustMatch,
+        )
+        expect(await Bun.file(trigger).exists()).toBe(mustMatch)
+      }
+    }
+
+    const divergent = source.replace(
+      'EXPO_TURBO_ADB_TRANSPORT_PATTERN="$adb_transport_pattern" awk \\\n        \'BEGIN { pattern=ENVIRON["EXPO_TURBO_ADB_TRANSPORT_PATTERN"] } NR > 1 && $0 ~ pattern { print; found=1; exit } END { exit !found }\'',
+      "awk -v pattern=\"$adb_transport_pattern\" \\\n        'NR > 1 && $0 ~ pattern { print; found=1; exit } END { exit !found }'",
+    )
+    expect(divergent).not.toBe(source)
+    const mutationLog = await fixtureFile(
+      "divergent-consumer.log",
+      `${activeStreamMarker}\n- DeviceServerDiedException\n`,
+    )
+    const mutationTrigger = `${mutationLog}.trigger`
+    const mutation = await runTransportMonitor(divergent, mutationLog, mutationTrigger, "0.3")
+    expect(
+      mutation.status,
+      "the -v escape-processing mutation must stop the product fixture",
+    ).not.toBe(0)
+    expect(await Bun.file(mutationTrigger).exists()).toBe(true)
   })
 
   test("does not stop a PID whose invocation identity changed", async () => {
