@@ -163,7 +163,7 @@ describe("document preloader", () => {
     expect(requests[0]).toMatchObject({
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
-        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.4.0",
         "X-Sec-Purpose": "prefetch",
         "X-Turbo-Request-Id": "preload-1",
       },
@@ -1104,14 +1104,14 @@ describe("document preloader", () => {
     expect(limitsReads).toBe(1)
     expect(maxBytesReads).toBe(1)
     await expect(preloader.preload("/app/limited-once")).rejects.toBeInstanceOf(ParseError)
-    expect(request?.headers["X-Expo-Turbo-Client"]).toBe("v=1; proto=0.1; rt=0.3.0")
+    expect(request?.headers["X-Expo-Turbo-Client"]).toBe("v=1; proto=0.1; rt=0.4.0")
     expect(capabilityReads).toBe(1)
     expect(limitsReads).toBe(1)
     expect(maxBytesReads).toBe(1)
   })
 
   test("sends the client descriptor from the canonical option and still from the deprecated one", async () => {
-    const descriptor = "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    const descriptor = "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
     const build = (options: Record<string, unknown>) => {
       const requests: TurboRequest[] = []
       const preloader = new DocumentPreloader(

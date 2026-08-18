@@ -3448,7 +3448,7 @@ describe("native form control registry", () => {
         },
         headers: {
           Accept: "text/vnd.turbo-stream.html, application/vnd.expo-turbo+xml",
-          "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
+          "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.4.0",
           "X-Turbo-Request-Id": "request-1",
         },
         method: "POST",
@@ -3961,7 +3961,7 @@ describe("native form control registry", () => {
       submitter: 1,
     })
     expect(observed.at(-1)).toEqual({
-      capabilityHash: "v=1; proto=0.1; rt=0.3.0",
+      capabilityHash: "v=1; proto=0.1; rt=0.4.0",
       requestId: "submit-live",
     })
 
@@ -3989,7 +3989,7 @@ describe("native form control registry", () => {
     ).resolves.toMatchObject({ requestId: "retry-live", status: "empty" })
     expect(retryReads).toEqual({ capabilityHash: 1, protocol: 1, requestId: 1 })
     expect(observed.at(-1)).toEqual({
-      capabilityHash: "v=1; proto=0.1; rt=0.3.0",
+      capabilityHash: "v=1; proto=0.1; rt=0.4.0",
       requestId: "retry-live",
     })
 

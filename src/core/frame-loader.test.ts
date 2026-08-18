@@ -254,7 +254,7 @@ describe("Frame request loader", () => {
       { next: () => "request-1" },
       {
         clientDescriptor:
-          "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+          "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
       },
     )
 
@@ -267,7 +267,7 @@ describe("Frame request loader", () => {
       Accept: EXPO_TURBO_MIME_TYPE,
       "Turbo-Frame": "details",
       "X-Expo-Turbo-Client":
-        "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+        "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
       "X-Turbo-Request-Id": "request-1",
     })
     expect(requests[0]).toMatchObject({

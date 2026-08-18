@@ -47,7 +47,7 @@ test("the registry, committed manifest, and current Rails lock keep one identity
 
   expect(DEMO_REGISTRY.capabilities.modules).toEqual([{ name: "expo-turbo-example" }])
   expect(DEMO_MODULE_VERSIONS).toMatch(
-    /^v=1; proto=0\.1; rt=0\.3\.0; vocab=sha256-128:[0-9a-f]{32}$/,
+    /^v=1; proto=0\.1; rt=0\.4\.0; vocab=sha256-128:[0-9a-f]{32}$/,
   )
   expect(manifestSource).toBe(DEMO_REGISTRY.capabilityManifestJSON())
   expect(lock.current).toBe(DEMO_REGISTRY.capabilities.hash)

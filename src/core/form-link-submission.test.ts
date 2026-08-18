@@ -481,7 +481,7 @@ describe("FormLinkSubmissionController", () => {
     expect(requests[0]).toMatchObject({
       headers: {
         Accept: `${TURBO_STREAM_MIME_TYPE}, ${EXPO_TURBO_MIME_TYPE}`,
-        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.4.0",
         "X-Turbo-Request-Id": "link-1",
       },
       method: "GET",

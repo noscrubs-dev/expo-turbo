@@ -197,7 +197,7 @@ describe("Document request loader", () => {
     expect(requests[0]).toMatchObject({
       headers: {
         Accept: EXPO_TURBO_MIME_TYPE,
-        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.3.0",
+        "X-Expo-Turbo-Client": "v=1; proto=0.1; rt=0.4.0",
         "X-Turbo-Request-Id": "request-1",
       },
       method: "GET",

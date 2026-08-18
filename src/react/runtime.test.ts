@@ -112,7 +112,7 @@ describe("Expo Turbo runtime", () => {
     expect(requests.map(({ url }) => url)).toEqual([documentUrl, frameUrl, nextUrl])
     expect(requests.filter(({ url }) => url === frameUrl)).toHaveLength(1)
     expect(requests.filter(({ url }) => url === nextUrl)).toHaveLength(1)
-    const descriptor = `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`
+    const descriptor = `v=1; proto=0.1; rt=0.4.0; vocab=${registry.capabilities.hash}`
     expect(requests.slice(1).map(({ headers }) => headers["X-Expo-Turbo-Client"])).toEqual([
       descriptor,
       descriptor,
@@ -196,7 +196,7 @@ describe("Expo Turbo runtime", () => {
 
     expect(runtime.session.tree.document.children.find(isElement)?.tagName).toBe("TestDocument")
     expect(requests).toHaveLength(1)
-    const descriptor = `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`
+    const descriptor = `v=1; proto=0.1; rt=0.4.0; vocab=${registry.capabilities.hash}`
     expect(requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
     expect(requests[0]?.headers["X-Expo-Turbo-Modules"]).toBeUndefined()
 
@@ -537,7 +537,7 @@ describe("Expo Turbo runtime generated form links", () => {
     // The registry digest reaches the link submission too, so the server sees
     // one client descriptor across documents, forms, and form links.
     expect(submission?.headers["X-Expo-Turbo-Client"]).toBe(
-      `v=1; proto=0.1; rt=0.3.0; vocab=${registry.capabilities.hash}`,
+      `v=1; proto=0.1; rt=0.4.0; vocab=${registry.capabilities.hash}`,
     )
 
     runtime.dispose()

@@ -70,13 +70,14 @@ The implementation targets the supported native equivalents of Turbo `8.0.23`
 semantics. It does not try to copy browser-only DOM behavior.
 
 > [!IMPORTANT]
-> `0.3.0` is the stable release published on 2026-08-13. The package, gem,
-> standalone examples, automated conformance suite, and installed iOS and
-> Android simulator Release audits are complete for the supported surface. The
-> physical Android and iOS union suites also pass all 71 contracts and 115
-> atomic observations on each platform, including native provider multipart
-> proof. Manual VoiceOver, TalkBack, and browser screen-reader evidence remains
-> an explicit follow-up and is not claimed by the compatibility surface.
+> `0.4.0` is the release version dated 2026-08-18. This commit prepares the
+> package and gem; it does not publish them. The standalone examples, automated
+> conformance suite, and installed iOS and Android simulator Release audits are
+> complete for the supported surface. The
+> corrected issue 425 native-form evidence has not yet been rerun on physical
+> Android or iOS devices, so this release does not claim that all physical
+> contracts pass. Manual VoiceOver, TalkBack, and browser screen-reader evidence
+> also remains an explicit follow-up.
 
 ## Try it from source
 
@@ -101,11 +102,11 @@ are the canonical integration examples.
 
 | Area | Current status |
 | --- | --- |
-| TypeScript package | [`expo-turbo@0.3.0`](https://www.npmjs.com/package/expo-turbo); stable and clean-imported through all public entrypoints |
-| Rails gem | [`expo_turbo-rails` 0.3.0](https://rubygems.org/gems/expo_turbo-rails); clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
+| TypeScript package | `expo-turbo@0.4.0` release candidate; clean-imported through all public entrypoints |
+| Rails gem | `expo_turbo-rails` 0.4.0 release candidate; clean-installed against `turbo-rails` `2.0.10` and `2.0.23` |
 | Protocol baseline | Turbo `8.0.23`; all 26 upstream functional-suite families classified |
-| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; physical Android and iOS each pass 71/71 shared contracts |
-| Stable publication | [`v0.3.0`](https://github.com/noscrubs-dev/expo-turbo/releases/tag/v0.3.0), published 2026-08-13 from one verified frozen npm/gem candidate |
+| Native Release evidence | Installed iOS Simulator and Android Emulator builds pass; corrected issue 425 evidence is not yet rerun on physical devices |
+| Stable publication | `v0.4.0` release candidate prepared on 2026-08-18; publication is not part of this commit |
 
 See the
 [machine-readable compatibility manifest](https://github.com/noscrubs-dev/expo-turbo/blob/main/protocol/compatibility-manifest.json)
@@ -225,11 +226,11 @@ behavior.
 - [x] Installed signed Android Emulator Release audit through real Rails
 - [x] Automated web WCAG 2.0/2.1 A/AA axe audit and accessibility-tree checks
 - [x] Paired candidate build, clean installs, checksums, and provenance proof
-- [x] Physical Android conformance evidence: 71/71 contracts and 115/115 observations
-- [x] Physical iOS conformance evidence: 71/71 contracts and 115/115 observations
+- [ ] Rerun corrected issue 425 evidence and the physical Android conformance suite
+- [ ] Rerun corrected issue 425 evidence and the physical iOS conformance suite
 - [ ] Manual VoiceOver, TalkBack, and browser screen-reader evidence
 - [x] Final paired candidate from the final gated commit
-- [x] Stable npm/RubyGems publication and clean registry verification
+- [ ] Stable npm/RubyGems publication and clean registry verification
 
 ## Responsibilities and limits
 
@@ -261,10 +262,11 @@ sense on native platforms. It is not a browser DOM port of
 | `expo-turbo` | Version/status constants and combined public surface |
 | `expo-turbo/core` | Parser, tree/session, visits, Frames, forms, Streams, lifecycle, and errors |
 | `expo-turbo/adapters` | Host-neutral adapter interfaces and provided transport helpers |
+| `expo-turbo/expo` | Zero-configuration `ExpoTurboApp` entrypoint for Expo hosts |
 | `expo-turbo/expo-router` | Optional Expo Router navigation and history-write bridge |
 | `expo-turbo/react` | High-level runtime, provider, renderer, boundaries, and React hooks |
 | `expo-turbo/registry` | Typed component/action registries and attribute codecs |
-| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.3.0` |
+| `expo-turbo/testing` | Reserved testing boundary; no runtime APIs in `0.4.0` |
 | `expo_turbo/rails` | Rails Engine, controller concern, helpers, broadcasts, and Cable integration |
 | `expo_turbo/rails/testing` | Opt-in strict structural XML test helpers |
 

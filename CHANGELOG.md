@@ -2,7 +2,19 @@
 
 All notable public package, gem, and protocol changes will be recorded here.
 
-## Unreleased
+## 0.4.0 - 2026-08-18
+
+- Pull request 442 gives every `ExpoTurboRenderError` a `speculative`,
+  `background`, or `document` severity. `ExpoTurbo` replaces the document only
+  for `document` failures, so an announcement, autofocus, scroll, retained-focus,
+  prefetch, or preload failure no longer replaces an otherwise healthy screen
+  or silently releases its live Cable subscriptions. Blank reports now include
+  the document URL, runtime version, node key, and an interval with `attempt`
+  and `since`; `onDocumentBlankRecovery` reports the falling edge with `until`.
+  `ExpoTurbo` and `ExpoTurboApp` also pass an optional second report to
+  `onError`. A host that constructs `ExpoTurboRenderError` values must add a
+  severity; existing one-argument `onError` handlers continue to work. This
+  closes issues 435 and 436.
 
 - **Breaking:** Use the normal Rails ActionView `dom_id` helper for HTML and
   Expo Turbo renders. The removed format-specific helper no longer restricts
@@ -74,7 +86,12 @@ All notable public package, gem, and protocol changes will be recorded here.
   provider. Omitting `actions` keeps component actions disabled. Low-level
   provider and controller injection defaults are unchanged.
 
-- Tighten registry identifiers across TypeScript and Ruby to reject Unicode noncharacters and malformed text. This narrow input check now correctly keeps valid U+FFFD and other valid Unicode scalars.
+- **Breaking:** Tighten registry identifiers across TypeScript and Ruby to
+  reject Unicode noncharacters and malformed surrogate text. Valid U+FFFD and
+  other valid Unicode scalars remain accepted. Before generating or loading a
+  registry, rename any component, attribute, style-token, module, action, or
+  other registry identifier that contains a Unicode noncharacter or malformed
+  surrogate text.
 
 - Keep deferred document reconnect handoffs per canonical document URL instead
   of in one shared slot. Different documents now drain once in first-insertion
@@ -135,7 +152,7 @@ All notable public package, gem, and protocol changes will be recorded here.
   package-owned `data-turbo="false"` opt-out still stops first and needs no
   resolver. `data-turbo-confirm` remains a narrowing safety gate. Method,
   Stream, Frame, and visit-action metadata remain gated on known vocabulary.
-  `ExpoTurboApp` does not construct this advanced-path controller, so ordinary
+  `ExpoTurboApp` uses the runtime-owned controller described above, so ordinary
   facade consumers have no new option to pass.
 
 - **Breaking:** Add `"unknown-vocabulary"` to the document-link delegation
@@ -152,6 +169,12 @@ All notable public package, gem, and protocol changes will be recorded here.
   them and a real `ComponentRegistry` cannot produce them, so this affects
   untyped hosts only.
 
+- Treat a `null` form-owner resolver result as unknown vocabulary. It now raises
+  the same `RegistryError` as the neighboring unresolved cases and sends no
+  request, instead of leaking a raw `TypeError` from `definition.formOwner`.
+  TypeScript and a real `ComponentRegistry` do not produce this value, so this
+  corrects the untyped-host path reported in issue 431.
+
 - Add `FormLinkSubmissionController#submissionInterception()`, a read-only query
   returning either `{ intercept: true }` or `{ intercept: false, reason }` with
   `reason` one of `"form-mode-off"`, `"missing-metadata"`, `"opt-out"`, or
@@ -167,6 +190,14 @@ All notable public package, gem, and protocol changes will be recorded here.
   the tree without ever waking the boundary holding the error. The document
   stayed on the protocol-error surface permanently, which on a native client is
   an unrecoverable blank screen requiring an app restart.
+
+- Carry blank-root reporting through the high-level runtime: `ExpoTurbo` now
+  passes its renderer error surface to the provider, and the runtime wiring
+  proves an initial tree-decided blank reaches both `onError` and `renderError`
+  with its URL, runtime version, node key, and blank interval. Issue 429 remains
+  open: after a tree-decided blank gains real content and then loses it through
+  Streams, the revision observer can still stop before the second blank and
+  produce no new report or surface.
 
 ## 0.3.0 - 2026-08-13
 
@@ -466,7 +497,7 @@ All notable public package, gem, and protocol changes will be recorded here.
   `turbo_frame_tag` now accepts every id shape `turbo-rails` accepts, including
   a Symbol, and still normalizes a model class to the same id on `turbo-rails`
   2.0.10 and 2.0.23. This release originally made `dom_id` format-specific;
-  the Unreleased entry above removes that override and restores Rails behavior.
+  the 0.4.0 entry above removes that override and restores Rails behavior.
   `expo_turbo_stream` remains as the explicit builder for a broadcast, which has
   no request and therefore no format.
 - **Breaking:** Compare the `Turbo-Frame` request header against the Frame the

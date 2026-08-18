@@ -40,7 +40,7 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
   end
 
   it "resolves a digest without carrying its revision on the wire" do
-    descriptor = "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    descriptor = "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
     controller = native_controller("HTTP_X_EXPO_TURBO_CLIENT" => descriptor)
 
     expect(controller.expo_turbo_client_supports_component?("DemoCard")).to be(true)
@@ -87,7 +87,7 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
 
   it "warns when a valid descriptor carries an unknown digest" do
     controller = native_controller(
-      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:cccccccccccccccccccccccccccccccc"
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:cccccccccccccccccccccccccccccccc"
     )
     logger = double
     allow(logger).to receive(:warn)
@@ -115,7 +115,7 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
 
   it "prefers the descriptor over a conflicting legacy modules header" do
     controller = native_controller(
-      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef",
       "HTTP_X_EXPO_TURBO_MODULES" => "v1;cart=999"
     )
 
@@ -126,10 +126,10 @@ RSpec.describe "Expo Turbo client descriptor negotiation" do
 
   it "keeps two resolved descriptor digests separate in fragment cache identity" do
     first = native_controller(
-      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
     )
     second = native_controller(
-      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "HTTP_X_EXPO_TURBO_CLIENT" => "v=1; proto=0.1; rt=0.4.0; vocab=sha256-128:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
 
     expect(first.expo_turbo_cache_variant).not_to eq(second.expo_turbo_cache_variant)
