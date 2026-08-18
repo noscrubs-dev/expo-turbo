@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url"
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const liveSmokeDirectory = join(repositoryRoot, "example/expo/src")
 const workflowPath = join(repositoryRoot, ".github/workflows/ci.yml")
+const bunTestCommand = /^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()<>$`\\]*\s+)*bun\s+test(?:\s|$)/
+const bunTestCommandWithArguments =
+  /^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()<>$`\\]*\s+)*bun\s+test(?:\s+(.*))?$/
 
 async function liveSmokeFiles(directory = liveSmokeDirectory): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -57,7 +60,7 @@ function shellCommands(script: string): string[] {
 
 function smokeTestCommand(workflow: string): string {
   const commands = runScripts(desktopSmokeJob(workflow)).flatMap(shellCommands)
-  const candidates = commands.filter((command) => /\bbun\s+test(?:\s|$)/.test(command))
+  const candidates = commands.filter((command) => bunTestCommand.test(command))
   const candidate = candidates[0]
 
   if (candidates.length !== 1 || !candidate) {
@@ -71,7 +74,7 @@ function smokeTestCommand(workflow: string): string {
 
 function smokeTestFiles(workflow: string): string[] {
   const command = smokeTestCommand(workflow)
-  const match = command.match(/\bbun\s+test(?:\s+(.*))?$/)
+  const match = command.match(bunTestCommandWithArguments)
   if (!match) throw new Error("Rails desktop smoke bun test command is malformed")
 
   const argumentsAfterTest = (match[1] ?? "").trim().split(/\s+/).filter(Boolean)
@@ -110,6 +113,15 @@ test("Rails desktop smoke wiring rejects missing isolation and incomplete file l
   expect(() =>
     expectSmokeFiles(workflow.replace(`                  ${file} \\\n`, ""), files),
   ).toThrow()
+})
+
+test("Rails desktop smoke wiring requires Bun to be the executed command", async () => {
+  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
+  const command = "EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test --isolate"
+
+  expectSmokeFiles(workflow, files)
+  expect(() => expectSmokeFiles(workflow.replace(command, `echo ${command}`), files)).toThrow()
+  expect(() => expectSmokeFiles(workflow.replace(command, `printf ${command}`), files)).toThrow()
 })
 
 test("Rails desktop smoke wiring ignores file paths outside the Bun command", async () => {
