@@ -90,16 +90,27 @@ request decides.
 | `turbo_frame_tag` | admits the exact Frame output, and normalizes a model class to the same id on every supported `turbo-rails` version | `turbo-rails` |
 | `turbo_stream` | the Expo Turbo Stream builder | `turbo-rails` |
 | `turbo_stream_from` | the same signed source with the fixed `:expo` stream-name suffix | `turbo-rails` |
-| `dom_id` | the shared target roles below, and a persisted record | Rails |
+| `dom_id` | Rails | Rails |
 | `cache` | folds the Frame and module identity into the fragment key | Rails |
 
-`dom_id(record, role)` supports the shared `record`, `document`, `frame`,
-`list`, `form`, `error`, and `loading` roles. For a persisted `Account` with ID
-`7` those are `account_7`, `document_account_7`, `frame_account_7`,
-`list_account_7`, `form_account_7`, `error_account_7`, and `loading_account_7`.
-Only `:list` accepts a model class, producing `list_account`. Every record role
-requires `persisted?` plus a complete `to_key`, so an unsaved record fails
-instead of collapsing into a shared `new_*` target.
+`dom_id` is the normal Rails ActionView helper in every format. Saved records,
+unsaved records, model classes, and all prefixes follow Rails. For an `Account`
+with ID `7`, `dom_id(account)` is `account_7`, `dom_id(account, :frame)` is
+`frame_account_7`, and `dom_id(account, :record)` is `record_account_7`. An
+unsaved account and the `Account` class both use `new_account` without a prefix;
+`dom_id(Account, :list)` is `list_account`.
+
+**Migration from 0.3:** Expo Turbo renders previously treated the prefix
+`:record` as no prefix, so `dom_id(account, :record)` returned `account_7`.
+Change that call to `dom_id(account)` before upgrading if the old special case
+was intentional. Expire cached markup or reload retained Frame/Stream targets
+only for this changed ID. Other `dom_id` calls keep their Rails IDs and need no
+cache or reload action.
+
+`ExpoTurbo::Rails::DomIds.id_for` remains as a deprecated direct-call wrapper
+for the 0.4 minor release. It delegates to Rails and warns on every call. Replace
+it with `ActionView::RecordIdentifier.dom_id` or the standard view helper; the
+wrapper will be removed in 0.5.0.
 
 ## Templates and admission
 
@@ -284,6 +295,9 @@ component, or the server will admit a name the device cannot render.
 Aliases are not required for this: no HTML element name is reserved, so a host
 may name a component `a`, `form`, or `input` outright.
 
+Rails `dom_id` is safe in a shared template. The same saved, unsaved, class, and
+prefixed call returns the same ID for the browser and native client.
+
 ### What a shared template cannot use
 
 - **Void-element helpers.** `tag.br` writes `<br>`, which is not well-formed
@@ -293,9 +307,6 @@ may name a component `a`, `form`, or `input` outright.
   attributes are `action`, `enctype`, `method`, `novalidate`, and `target`,
   five of HTML's nine, and both the server and the client decoder admit exactly
   those five. A shared form writes its own element.
-- **`dom_id` for a value both audiences must agree on.** It is format-aware by
-  design, so the same expression produces a different id per audience. Use a
-  literal id, or accept the divergence deliberately.
 
 ## The paired template lint
 
@@ -347,9 +358,9 @@ host's own test. What it cannot detect is listed in full at the top of
 `lib/expo_turbo/rails/paired_templates.rb`. Most entries follow from not
 rendering: a value a helper produces, a value that differs at run time from
 identical source, anything a partial or layout contributes, a branch only one
-audience takes, and semantics behind equal source. `dom_id` is the sharpest of
-those: the same expression on both sides still produces two ids. Four follow
-from pairing rather than from rendering:
+audience takes, and semantics behind equal source. Rails `dom_id` itself is
+format-neutral, but the lint still cannot evaluate it or another helper. Four
+limits follow from pairing rather than from rendering:
 
 - **Nesting.** Start tags are scanned and never built into a tree, so an element
   that moved to a different parent while keeping its place in the start-tag

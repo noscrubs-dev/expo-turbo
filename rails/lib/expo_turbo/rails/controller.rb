@@ -33,7 +33,6 @@ module ExpoTurbo
         helper ::Turbo::Engine.helpers if defined?(::Turbo::Engine)
         helper ExpoTurbo::Rails::Attributes::Helper
         helper ExpoTurbo::Rails::Frames::Helper
-        helper ExpoTurbo::Rails::DomIds::Helper
         helper ExpoTurbo::Rails::Streams::Helper
         helper ExpoTurbo::Rails::Caching::Helper
         # Vary is applied before any other filter runs, because an after_action

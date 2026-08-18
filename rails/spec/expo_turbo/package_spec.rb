@@ -37,7 +37,13 @@ RSpec.describe "expo_turbo-rails package" do
       entries = packaged_entries(artifact)
       files = entries.map(&:first)
 
-      expect(files).to include("LICENSE.txt", "README.md", "lib/expo_turbo/rails.rb")
+      expect(files).to include(
+        "LICENSE.txt",
+        "README.md",
+        "lib/expo_turbo/rails.rb",
+        "lib/expo_turbo/rails/dom_ids.rb"
+      )
+      expect(files).not_to include("lib/expo_turbo/rails/dom_ids/helper.rb")
       expect(entries).to all(satisfy { |_file, regular_file| regular_file })
       expect(files).to all(
         satisfy do |file|

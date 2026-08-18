@@ -209,7 +209,7 @@ behavior.
 - [x] Distinct `application/vnd.expo-turbo+xml` document/Frame MIME type
 - [x] Confined host-owned XML view roots and structural template validation
 - [x] Component/style capability admission and duplicate-ID rejection
-- [x] Frame, `dom_id`, cache-variation, and structural test helpers
+- [x] Frame, Rails `dom_id` parity, cache-variation, and structural test helpers
 - [x] All built-in Stream tags, sibling responses, immediate/queued broadcasts, and refresh debounce
 - [x] Public and protected Action Cable source/channel/broadcast APIs
 - [x] Rails/Action Cable 7.2–8.1 and `turbo-rails` 2.0.10–2.x dependency bounds

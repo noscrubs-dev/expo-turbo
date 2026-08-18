@@ -9,4 +9,4 @@
      void-element helpers write `<br>`, which no XML parser will read, and
      form_with writes accept-charset, which the protocol does not admit on a
      form owner. Neither belongs in a shared template. %>
-<%= turbo_frame_tag "demo-shared-greeting" do %><p id="demo-shared-greeting-text"><%= @greeting %></p><% end %>
+<%= turbo_frame_tag dom_id(@greeting, :frame) do %><p id="<%= dom_id(@greeting) %>">One template, two audiences</p><% end %>

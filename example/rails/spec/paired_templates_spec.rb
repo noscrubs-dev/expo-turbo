@@ -35,7 +35,7 @@ RSpec.describe "paired demo templates" do
   # a copy of it agrees with itself, and a copy whose id drifted is reported.
   it "reports drift in a copy of the shared greeting template" do
     shared = Rails.root.join("app/views/api/expo_turbo/demo/shared_greetings/show.html.erb").read
-    drifted = shared.sub("demo-shared-greeting-text", "renamed-by-mistake")
+    drifted = shared.sub("<%= dom_id(@greeting) %>", "renamed-by-mistake")
     expect(drifted).not_to eq(shared)
 
     Dir.mktmpdir do |directory|
@@ -48,7 +48,7 @@ RSpec.describe "paired demo templates" do
 
       expect(findings.map(&:aspect)).to contain_exactly(:id)
       expect(findings.first.path).to end_with("drifts.html.erb")
-      expect(findings.first.value).to eq("demo-shared-greeting-text")
+      expect(findings.first.value).to eq("«dom_id(@greeting)»")
       expect(findings.first.counterpart_value).to eq("renamed-by-mistake")
     end
   end

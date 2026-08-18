@@ -48,9 +48,9 @@ module ExpoTurbo
     # - A value a helper produces. `<%= form_with %>`, `<%= link_to %>`, and
     #   `<%= turbo_frame_tag %>` are opaque; their action, href, ids, and
     #   control names are invisible here.
-    # - A value that differs at run time from identical source. `dom_id` is
-    #   itself format-aware, so the same `<%= dom_id(post, :frame) %>` on both
-    #   sides can still produce two different ids.
+    # - A value that differs at run time from identical source. Rails `dom_id`
+    #   is format-neutral, but another helper or host value can still return
+    #   different values to the two renders.
     # - Anything a partial, a layout, or a helper module contributes. Only the
     #   two paired files are read, and a partial pair is linted as its own
     #   pair, against its own counterpart.

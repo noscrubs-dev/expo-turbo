@@ -10,7 +10,7 @@ RSpec.describe "the shared greeting template" do
   let(:template) do
     Rails.root.join("app/views/api/expo_turbo/demo/shared_greetings/show.html.erb")
   end
-  let(:body) { %(<turbo-frame id="demo-shared-greeting"><p id="demo-shared-greeting-text">One template, two audiences</p></turbo-frame>) }
+  let(:body) { %(<turbo-frame id="frame_demo_shared_greeting_7"><p id="demo_shared_greeting_7">One template, two audiences</p></turbo-frame>) }
 
   it "is the only template for the screen" do
     siblings = Dir.glob(File.join(File.dirname(template), "*"))
@@ -49,7 +49,7 @@ RSpec.describe "the shared greeting template" do
     get "/api/expo_turbo/demo/shared_greeting", headers: {"Accept" => ExpoTurbo::Rails::MIME_TYPE}
 
     document = ExpoTurbo::Rails::Testing.parse_document(response.body)
-    text = document.at_xpath("//p[@id='demo-shared-greeting-text']")
+    text = document.at_xpath("//p[@id='demo_shared_greeting_7']")
 
     expect(document.root.name).to eq("turbo-frame")
     expect(text&.text).to eq("One template, two audiences")

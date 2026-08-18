@@ -4,6 +4,19 @@ require "action_controller/api"
 require "spec_helper"
 require "support/rendering"
 
+class ExpoTurboSharedTemplateRecord
+  ModelName = Struct.new(:param_key)
+
+  def self.model_name
+    @model_name ||= ModelName.new("shared_record")
+  end
+
+  def to_key = [7]
+  def to_model = self
+  def persisted? = true
+  def model_name = self.class.model_name
+end
+
 # One template can serve both audiences. Rails finds it through ordinary
 # lookup: the Expo Turbo format is tried first and `.html.erb` answers when no
 # Expo Turbo template exists. The format Rails selected, not the extension of
@@ -19,6 +32,7 @@ RSpec.describe "Expo Turbo template fallback" do
       expo_turbo_template_capabilities(components: {"Screen" => {children: "nodes"}, "Text" => {children: "text"}})
 
       def show
+        @record = ExpoTurboSharedTemplateRecord.new
         render "specs/show"
       end
     end
@@ -30,6 +44,22 @@ RSpec.describe "Expo Turbo template fallback" do
 
       expect(status).to eq(200)
       expect(body).to eq(%(<Screen id="a"><Text id="b">shared</Text></Screen>))
+    end
+  end
+
+  it "uses the same Rails DOM IDs when one template answers HTML and Expo Turbo requests" do
+    template = <<~ERB
+      <%= turbo_frame_tag dom_id(@record, :record) do %><Text id="<%= dom_id(@record, :edit) %>">shared</Text><% end %>
+    ERB
+
+    with_templates(controller_class, "specs/show.html.erb" => template) do
+      _status, _headers, expo_body = dispatch(controller_class)
+      _status, _headers, html_body = dispatch(controller_class, headers: {"HTTP_ACCEPT" => "text/html"})
+
+      expect(expo_body).to eq(html_body)
+      expect(expo_body.strip).to eq(
+        '<turbo-frame id="record_shared_record_7"><Text id="edit_shared_record_7">shared</Text></turbo-frame>'
+      )
     end
   end
 

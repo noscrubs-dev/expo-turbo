@@ -39,12 +39,12 @@ RSpec.describe "Expo Turbo format selection" do
     expect(context.turbo_stream).not_to be_a(ExpoTurbo::Rails::Streams::TagBuilder)
   end
 
-  it "uses Expo Turbo helper behavior when Rails selected the Expo Turbo format" do
+  it "keeps Rails DOM IDs while Expo Turbo helpers use the selected Expo Turbo format" do
     context = negotiated_view_context(ExpoTurbo::Rails::MIME_TYPE)
     record = ExpoTurboFormatSpecRecord.new(7)
 
     expect(context.dom_id(record, :frame)).to eq("frame_demo_record_7")
-    expect { context.dom_id(record, :edit) }.to raise_error(ArgumentError, /role/)
+    expect(context.dom_id(record, :edit)).to eq("edit_demo_record_7")
     expect(stream_name(context.turbo_stream_from("room"))).to eq("room:expo")
     expect(context.turbo_stream).to be_a(ExpoTurbo::Rails::Streams::TagBuilder)
   end

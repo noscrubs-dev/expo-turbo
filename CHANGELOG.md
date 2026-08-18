@@ -4,6 +4,18 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- **Breaking:** Use the normal Rails ActionView `dom_id` helper for HTML and
+  Expo Turbo renders. The removed format-specific helper no longer restricts
+  prefixes, unsaved records, or model classes. In particular,
+  `dom_id(record, :record)` now follows Rails and returns
+  `record_record_id` for a `Record`; it previously returned `record_id` in an
+  Expo Turbo render. A host that relied on that special case must change the call to
+  `dom_id(record)` before upgrading, and expire cached markup or reload retained
+  Frame/Stream targets only for IDs that used that call. Other IDs do not need
+  cache or reload work. `ExpoTurbo::Rails::DomIds.id_for` remains for the 0.4
+  minor release as a deprecated direct wrapper around Rails and will be removed
+  in 0.5.0.
+
 - Stop the renderer emitting a bare string into a React Native `View`. Text
   that survives an unwrapped unknown component has no host of its own, so it
   became a direct child of whatever the nearest decoded ancestor rendered —
@@ -448,7 +460,8 @@ All notable public package, gem, and protocol changes will be recorded here.
   `turbo_stream_from` still appends the hidden `:expo` stream-name suffix.
   `turbo_frame_tag` now accepts every id shape `turbo-rails` accepts, including
   a Symbol, and still normalizes a model class to the same id on `turbo-rails`
-  2.0.10 and 2.0.23. `dom_id` keeps the shared target roles as its prefix.
+  2.0.10 and 2.0.23. This release originally made `dom_id` format-specific;
+  the Unreleased entry above removes that override and restores Rails behavior.
   `expo_turbo_stream` remains as the explicit builder for a broadcast, which has
   no request and therefore no format.
 - **Breaking:** Compare the `Turbo-Frame` request header against the Frame the
