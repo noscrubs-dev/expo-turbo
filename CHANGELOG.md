@@ -55,8 +55,10 @@ All notable public package, gem, and protocol changes will be recorded here.
   canonical `documentUrl`, and its optional `requestId`; repeated disposal does
   not report twice. URL fragments now share one fetch obligation, while query
   strings stay distinct. A deferred handoff throw uses the same error with
-  `reason: "handoff-failed"`. Error handling is selected per obligation, so an
-  older deferred failure cannot reject a direct request that starts the drain.
+  `reason: "handoff-failed"`. Each queued entry has a unique ownership token,
+  so a same-document replacement keeps its queue place without inheriting the
+  direct caller's error route. An older, replaced, deferred, or reentrant
+  failure cannot reject another direct request.
   The reconciler does not retry: the downstream requester owns transport and
   retry policy. Cable reconnect recovery remains dormant because the runtime
   still does not supply `reconnectRefresh`; pull request 418 remains the

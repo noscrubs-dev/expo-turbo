@@ -556,6 +556,149 @@ describe("document refresh controller", () => {
     expect(errors).toEqual([])
   })
 
+  test("keeps a caller-first same-URL replacement successful and continues with later work", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    let reconciler: DocumentReconnectReconciler
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c", requestId: "direct-c" })
+      }
+    })
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.requestId ?? "missing")
+          if (request.requestId === "deferred-a") {
+            reconciler.request({ baseUrl: "https://example.test/c", requestId: "replacement-c" })
+            reconciler.request({ baseUrl: "https://example.test/d", requestId: "later-d" })
+          }
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "deferred-a" })
+
+    expect(() => visits.setStatus("completed")).not.toThrow()
+    expect(requests).toEqual(["deferred-a", "replacement-c", "later-d"])
+    expect(errors).toEqual([])
+  })
+
+  test("reports a caller-first fragment-alias replacement failure and continues D", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    let reconciler: DocumentReconnectReconciler
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c#direct", requestId: "direct-c" })
+      }
+    })
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.requestId ?? "missing")
+          if (request.requestId === "deferred-a") {
+            reconciler.request({
+              baseUrl: "https://example.test/c#new",
+              requestId: "replacement-c",
+            })
+            reconciler.request({ baseUrl: "https://example.test/d", requestId: "later-d" })
+          }
+          if (request.requestId === "replacement-c") throw new Error("replacement C failure")
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "deferred-a" })
+
+    expect(() => visits.setStatus("completed")).not.toThrow()
+    expect(requests).toEqual(["deferred-a", "replacement-c", "later-d"])
+    expect(errors).toEqual([
+      new DocumentReconnectReconciliationError(
+        "https://example.test/c",
+        "handoff-failed",
+        "replacement-c",
+      ),
+    ])
+  })
+
+  test("keeps a reconciler-first same-URL direct replacement successful before D", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    let reconciler: DocumentReconnectReconciler
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.requestId ?? "missing")
+          if (request.requestId === "deferred-a") {
+            reconciler.request({ baseUrl: "https://example.test/c", requestId: "replacement-c" })
+            reconciler.request({ baseUrl: "https://example.test/d", requestId: "later-d" })
+          }
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "deferred-a" })
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c", requestId: "direct-c" })
+      }
+    })
+
+    expect(() => visits.setStatus("completed")).not.toThrow()
+    expect(requests).toEqual(["deferred-a", "direct-c", "later-d"])
+    expect(errors).toEqual([])
+  })
+
+  test("throws a reconciler-first fragment-alias direct failure and still runs D", () => {
+    const visits = new ReconnectVisitStub()
+    const requests: string[] = []
+    const errors: Error[] = []
+    const directFailure = new Error("direct C failure")
+    let reconciler: DocumentReconnectReconciler
+    reconciler = new DocumentReconnectReconciler(
+      {
+        request: (request) => {
+          requests.push(request.requestId ?? "missing")
+          if (request.requestId === "deferred-a") {
+            reconciler.request({
+              baseUrl: "https://example.test/c#new",
+              requestId: "replacement-c",
+            })
+            reconciler.request({ baseUrl: "https://example.test/d", requestId: "later-d" })
+          }
+          if (request.requestId === "direct-c") throw directFailure
+        },
+      },
+      visits,
+      { onError: (error) => errors.push(error) },
+    )
+
+    visits.setStatus("started")
+    reconciler.request({ baseUrl: "https://example.test/a", requestId: "deferred-a" })
+    visits.subscribe(() => {
+      if (visits.state.status === "completed") {
+        reconciler.request({ baseUrl: "https://example.test/c#direct", requestId: "direct-c" })
+      }
+    })
+
+    expect(() => visits.setStatus("completed")).toThrow(directFailure)
+    expect(requests).toEqual(["deferred-a", "direct-c", "later-d"])
+    expect(errors).toEqual([])
+  })
+
   test("keeps a request added during a drain for the next ordered drain", async () => {
     const visits = new ReconnectVisitStub()
     const requests: string[] = []

@@ -133,7 +133,7 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
   private disposed = false
   private draining = false
   private drainScheduled = false
-  private readonly pending = new Map<string, DocumentRefreshRequest>()
+  private readonly pending = new Map<string, PendingDocumentReconnectRequest>()
   private subscribing = false
   private unsubscribe: (() => void) | undefined
   private readonly onError: ((error: Error) => void) | undefined
@@ -149,13 +149,14 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
   request(request: DocumentRefreshRequest): void {
     if (this.disposed) throw new StateError("Document reconnect reconciler is disposed")
     const admitted = admitDocumentRefreshRequest(request)
-    const directRequestKey = canonicalDocumentRefreshUrl(admitted.baseUrl)
-    this.pending.set(directRequestKey, admitted)
+    const documentUrl = canonicalDocumentRefreshUrl(admitted.baseUrl)
+    const pending = Object.freeze({ request: admitted, token: Symbol() })
+    this.pending.set(documentUrl, pending)
     if (this.draining) {
       this.scheduleDrain()
       return
     }
-    this.reconcile(directRequestKey)
+    this.reconcile(pending.token)
   }
 
   dispose(): void {
@@ -166,12 +167,12 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
     unsubscribe?.()
     const pending = [...this.pending.entries()]
     this.pending.clear()
-    for (const [documentUrl, request] of pending) {
-      this.report(request, "disposed", documentUrl)
+    for (const [documentUrl, entry] of pending) {
+      this.report(entry.request, "disposed", documentUrl)
     }
   }
 
-  private reconcile(directRequestKey?: string): void {
+  private reconcile(directRequestToken?: symbol): void {
     if (this.disposed || this.draining || this.pending.size === 0) return
     if (this.visitStarted()) {
       this.observeCurrentVisit()
@@ -192,16 +193,16 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
       const keys = [...this.pending.keys()]
       for (const key of keys) {
         if (this.disposed || this.visitStarted()) break
-        const request = this.pending.get(key)
-        if (!request) continue
+        const pending = this.pending.get(key)
+        if (!pending) continue
         this.pending.delete(key)
         try {
-          this.refresh.request(request)
+          this.refresh.request(pending.request)
         } catch (error) {
-          if (key === directRequestKey) {
+          if (pending.token === directRequestToken) {
             directFailed = true
             directError = error
-          } else this.report(request, "handoff-failed", key)
+          } else this.report(pending.request, "handoff-failed", key)
         }
       }
     } finally {
@@ -271,6 +272,11 @@ export class DocumentReconnectReconciler implements DocumentRefreshRequester {
       throw reported
     })
   }
+}
+
+interface PendingDocumentReconnectRequest {
+  readonly request: DocumentRefreshRequest
+  readonly token: symbol
 }
 
 function canonicalDocumentRefreshUrl(baseUrl: string): string {
