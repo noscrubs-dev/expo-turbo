@@ -1591,9 +1591,9 @@ export class FormControlRegistry {
   }
 
   private classifyFormOwner(): boolean {
-    const definition = this.resolveVocabulary(this.form)
-    if (definition === undefined) return false
-    if (definition.formOwner !== true) {
+    const formOwner = this.resolveVocabulary(this.form)
+    if (formOwner === undefined) return false
+    if (!formOwner) {
       throw new RegistryError("Expo Turbo form association target is not a declared form owner", {
         target: this.form.key,
       })
@@ -1605,16 +1605,15 @@ export class FormControlRegistry {
     return this.resolveVocabulary(element) !== undefined
   }
 
-  private resolveVocabulary(
-    element: ProtocolElement,
-  ): Readonly<{ readonly formOwner?: boolean }> | undefined {
+  private resolveVocabulary(element: ProtocolElement): boolean | undefined {
     const resolve = this.formSemantics?.resolve
     if (!resolve) return undefined
     try {
-      // Untyped hosts return null where the declared contract stops at
-      // undefined. Both mean the vocabulary is unresolved, so neither may
-      // reach a property read.
-      return resolve.call(this.formSemantics, element.tagName) ?? undefined
+      const definition: unknown = resolve.call(this.formSemantics, element.tagName)
+      if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+        return undefined
+      }
+      return (definition as Readonly<{ readonly formOwner?: unknown }>).formOwner === true
     } catch {
       throw new RegistryError("Expo Turbo form vocabulary could not be resolved", {
         target: element.key,

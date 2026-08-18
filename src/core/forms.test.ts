@@ -473,6 +473,145 @@ describe("native form control registry", () => {
     ])
   })
 
+  test("treats non-object form-owner definitions as unresolved with one query", async () => {
+    const unavailableDefinitions: readonly unknown[] = [
+      null,
+      undefined,
+      false,
+      true,
+      0,
+      1,
+      "",
+      "definition",
+      Number.NaN,
+      1n,
+      Symbol("definition"),
+      Object.assign(() => undefined, { formOwner: true }),
+      Object.assign([], { formOwner: true }),
+    ]
+    const refusalMessages = [
+      "Expo Turbo form request planning requires a known form owner",
+      "Expo Turbo form submission proposal requires a known form owner",
+      "Expo Turbo form submission requires a known form owner",
+      "Expo Turbo form retry requires a known form owner",
+    ]
+
+    for (const definition of unavailableDefinitions) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument(
+          '<Gallery><DemoForm id="form" action="/danger" method="post" /></Gallery>',
+          { url: "https://example.test/current" },
+        ),
+      )
+      const requests: string[] = []
+      let vocabularyQueries = 0
+      const registry = new DocumentFormControls(session, {
+        formSemantics: {
+          formContainerRole: FORM_SEMANTICS.formContainerRole,
+          resolve() {
+            vocabularyQueries += 1
+            return definition as never
+          },
+        },
+        submissionController: new FormSubmissionController(session, {
+          async fetch(request) {
+            requests.push(request.url)
+            throw new Error("unresolved form vocabulary reached transport")
+          },
+        }),
+      }).controlsFor("id:form")
+      const initialRevision = session.revision
+      const initialTreeGeneration = session.treeGeneration
+      const failures: unknown[] = []
+
+      expect(vocabularyQueries).toBe(1)
+      expect(registry.shouldInterceptSubmission()).toBe(false)
+      for (const attempt of [
+        () => registry.requestPlan({ protocol: { requestId: "unresolved-plan" } }),
+        () => registry.submissionProposal({ protocol: { requestId: "unresolved-proposal" } }),
+        () => registry.submit({ protocol: { requestId: "unresolved-submit" } }),
+        () => registry.retryFailure({ protocol: { requestId: "unresolved-retry" } }),
+      ]) {
+        try {
+          await attempt()
+          failures.push(undefined)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+
+      expect(vocabularyQueries).toBe(1)
+      expect(requests).toEqual([])
+      expect(session.revision).toBe(initialRevision)
+      expect(session.treeGeneration).toBe(initialTreeGeneration)
+      expect(failures).toHaveLength(4)
+      for (const failure of failures) expect(failure).toBeInstanceOf(RegistryError)
+      expect(failures.map((failure) => (failure as Error).message)).toEqual(refusalMessages)
+    }
+
+    const session = new DocumentSession(
+      parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>'),
+    )
+    let vocabularyQueries = 0
+    const known = new DocumentFormControls(session, {
+      formSemantics: {
+        formContainerRole: FORM_SEMANTICS.formContainerRole,
+        resolve() {
+          vocabularyQueries += 1
+          return Object.freeze({ formOwner: true })
+        },
+      },
+    }).controlsFor("id:form")
+
+    expect(vocabularyQueries).toBe(1)
+    expect(known.shouldInterceptSubmission()).toBe(true)
+    expect(vocabularyQueries).toBe(1)
+  })
+
+  test("wraps hostile form-owner property access with one resolver query", () => {
+    let propertyReads = 0
+    const throwingGetter = Object.defineProperty({}, "formOwner", {
+      get() {
+        propertyReads += 1
+        throw new Error("private getter failure")
+      },
+    })
+    const revocable = Proxy.revocable({ formOwner: true }, {})
+    revocable.revoke()
+
+    for (const fixture of [
+      { definition: throwingGetter, expectedPropertyReads: 1 },
+      { definition: revocable.proxy, expectedPropertyReads: 0 },
+    ]) {
+      const session = new DocumentSession(
+        parseExpoTurboDocument('<Gallery><DemoForm id="form" /></Gallery>'),
+      )
+      const initialPropertyReads = propertyReads
+      let vocabularyQueries = 0
+      let failure: unknown
+      try {
+        new DocumentFormControls(session, {
+          formSemantics: {
+            formContainerRole: FORM_SEMANTICS.formContainerRole,
+            resolve() {
+              vocabularyQueries += 1
+              return fixture.definition
+            },
+          },
+        }).controlsFor("id:form")
+      } catch (error) {
+        failure = error
+      }
+
+      expect(vocabularyQueries).toBe(1)
+      expect(propertyReads - initialPropertyReads).toBe(fixture.expectedPropertyReads)
+      expect(failure).toBeInstanceOf(RegistryError)
+      expect((failure as Error).message).toBe("Expo Turbo form vocabulary could not be resolved")
+      expect(session.revision).toBe(0)
+      expect(session.treeGeneration).toBe(0)
+    }
+  })
+
   test("does not read request overrides from an unknown registered submitter", async () => {
     const session = new DocumentSession(
       parseExpoTurboDocument(
