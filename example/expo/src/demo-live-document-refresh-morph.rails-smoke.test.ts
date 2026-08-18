@@ -84,6 +84,10 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
       status: "applied",
     });
 
+    await waitFor(
+      () => requests.filter((request) => request.url === endpoints.documentUrl).length === 2,
+      "The Rails Refresh Stream did not trigger its canonical document GET",
+    );
     let finalAssertionsReached = false;
     const waitForRefreshCommit = waitFor(
       () =>
@@ -93,21 +97,19 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
     ).then(() => {
       finalAssertionsReached = true;
     });
-
-    await waitFor(
-      () => requests.filter((request) => request.url === endpoints.documentUrl).length === 2,
-      "The Rails Refresh Stream did not trigger its canonical document GET",
-    );
     await Promise.resolve();
     expect(finalAssertionsReached).toBe(false);
     expect(proof.session.treeGeneration).toBe(treeGenerationBefore);
     releaseSecondDocumentResponse?.();
     await waitForRefreshCommit;
 
-    const streamRequest = requests.find((request) => request.url === endpoints.streamUrl);
-    const refreshedDocumentRequest = requests.filter(
+    const finalDocumentRequests = requests.filter(
       (request) => request.url === endpoints.documentUrl,
-    )[1];
+    );
+    expect(finalDocumentRequests).toHaveLength(2);
+    expect(proof.session.treeGeneration).toBe(treeGenerationBefore + 1);
+    const streamRequest = requests.find((request) => request.url === endpoints.streamUrl);
+    const refreshedDocumentRequest = finalDocumentRequests[1];
     expect(streamRequest).toMatchObject({
       request: {
         headers: {

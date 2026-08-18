@@ -251,6 +251,101 @@ describe("Android lane cleanup", () => {
     expect(result.status).toBe(70)
   })
 
+  test("reaps an exited worker after forwarding gets EPERM and preserves status 37", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const epermAfterExit = supervisor.replace(
+      "      Process.kill(signal, -worker_pid)",
+      `      File.write(File.join(ENV.fetch("FIXTURE"), "forward-attempt"), "")
+      loop do
+        worker_state = IO.popen(["ps", "-o", "stat=", "-p", worker_pid.to_s], &:read).strip
+        break if worker_state.start_with?("Z")
+
+        Thread.pass
+      end
+      raise Errno::EPERM`,
+    )
+    const missesEperm = epermAfterExit.replace(
+      "rescue Errno::ESRCH, Errno::EPERM => error",
+      "rescue Errno::ESRCH => error",
+    )
+    expect(epermAfterExit).not.toBe(supervisor)
+    expect(missesEperm).not.toBe(epermAfterExit)
+
+    const worker = `printf '%s\\n' "$$" >"$FIXTURE/worker-pid"
+printf 'ready\\n' >"$FIXTURE/worker-ready"
+while [ ! -e "$FIXTURE/forward-attempt" ]; do :; done
+exit 37
+`
+    const fixture = await createFixture()
+    const result = await runEntryWorker(
+      fixture,
+      worker,
+      undefined,
+      epermAfterExit,
+      "SIGTERM",
+      "worker-ready",
+    )
+    const workerPid = Number((await readFile(join(fixture, "worker-pid"), "utf8")).trim())
+
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.status, result.stderr).toBe(37)
+    expect(result.stderr).toBe("")
+    expect(isRunning(workerPid)).toBe(false)
+
+    const mutationFixture = await createFixture()
+    const mutation = await runEntryWorker(
+      mutationFixture,
+      worker,
+      undefined,
+      missesEperm,
+      "SIGTERM",
+      "worker-ready",
+    )
+    const mutationWorkerPid = Number(
+      (await readFile(join(mutationFixture, "worker-pid"), "utf8")).trim(),
+    )
+    expect(
+      !mutation.timedOut &&
+        mutation.status === 37 &&
+        mutation.stderr === "" &&
+        !isRunning(mutationWorkerPid),
+    ).toBe(false)
+  })
+
+  test("fails visibly and cleans the proved group when forwarding gets EPERM while live", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const liveEperm = supervisor.replace(
+      "      Process.kill(signal, -worker_pid)",
+      "      raise Errno::EPERM",
+    )
+    expect(liveEperm).not.toBe(supervisor)
+
+    const fixture = await createFixture()
+    const result = await runEntryWorker(
+      fixture,
+      `printf '%s\\n' "$$" >"$FIXTURE/worker-pid"
+sleep 30 &
+printf '%s\\n' "$!" >"$FIXTURE/descendant-pid"
+printf 'ready\\n' >"$FIXTURE/worker-ready"
+wait
+`,
+      undefined,
+      liveEperm,
+      "SIGTERM",
+      "worker-ready",
+    )
+    const workerPid = Number((await readFile(join(fixture, "worker-pid"), "utf8")).trim())
+    const descendantPid = Number((await readFile(join(fixture, "descendant-pid"), "utf8")).trim())
+
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.status, result.stderr).toBe(70)
+    expect(result.stderr).toBe(
+      "Android entry could not forward TERM to its owned worker process group (EPERM).\n",
+    )
+    expect(isRunning(workerPid)).toBe(false)
+    expect(isRunning(descendantPid)).toBe(false)
+  })
+
   test("the entry wrapper fails closed when process-group validation is removed", async () => {
     const entry = await readFile(entryScript, "utf8")
     const supervisor = await readFile(entrySupervisor, "utf8")
@@ -261,7 +356,7 @@ describe("Android lane cleanup", () => {
       "worker_pgid == worker_pid",
       "group_proven = true",
     ]) {
-      const mutation = supervisor.replace(guard, "nil # removed process-group guard")
+      const mutation = supervisor.replaceAll(guard, "nil # removed process-group guard")
       expect(mutation).not.toBe(supervisor)
       expect(() => assertEntrySignalContract(entry, mutation)).toThrow("process-group")
     }
@@ -959,6 +1054,7 @@ async function runEntryWorker(
   entrySource?: string,
   supervisorSource?: string,
   signalAfterWorkerExit?: "SIGINT" | "SIGTERM",
+  signalMarker = "worker-exited",
 ): Promise<{ status: number; stderr: string; timedOut: boolean }> {
   const fixtureScripts = join(fixture, "scripts/ci")
   await mkdir(fixtureScripts, { recursive: true })
@@ -979,10 +1075,10 @@ async function runEntryWorker(
   })
   if (signalAfterWorkerExit) {
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (await Bun.file(join(fixture, "worker-exited")).exists()) break
+      if (await Bun.file(join(fixture, signalMarker)).exists()) break
       await Bun.sleep(10)
     }
-    expect(await Bun.file(join(fixture, "worker-exited")).exists()).toBe(true)
+    expect(await Bun.file(join(fixture, signalMarker)).exists()).toBe(true)
     await Bun.sleep(50)
     process.kill(child.pid, signalAfterWorkerExit)
   }
