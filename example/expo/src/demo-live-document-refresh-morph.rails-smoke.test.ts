@@ -44,10 +44,21 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
 
   const endpoints = resolveDemoLiveDocumentRefreshMorphEndpoints(origin);
   const requests: RecordedRequest[] = [];
+  let releaseSecondDocumentResponse: (() => void) | undefined;
+  const heldSecondDocumentResponse = new Promise<void>((resolve) => {
+    releaseSecondDocumentResponse = resolve;
+  });
   const proof = await createDemoLiveDocumentRefreshMorphRuntime({
     fetch: async (url, request) => {
       requests.push({ request, url });
-      return nativeDemoLiveFetch(url, request);
+      const response = nativeDemoLiveFetch(url, request);
+      if (
+        url === endpoints.documentUrl &&
+        requests.filter((recorded) => recorded.url === endpoints.documentUrl).length === 2
+      ) {
+        await heldSecondDocumentResponse;
+      }
+      return response;
     },
     origin,
   });
@@ -60,6 +71,7 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
       throw new Error("The standalone Rails refresh-morph document is incomplete");
     }
     const initialResponseText = nodeTextContent(initialResponse);
+    const treeGenerationBefore = proof.session.treeGeneration;
 
     await expect(
       proof.formLinks.submit(
@@ -72,10 +84,25 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
       status: "applied",
     });
 
+    let finalAssertionsReached = false;
+    const waitForRefreshCommit = waitFor(
+      () =>
+        requests.filter((request) => request.url === endpoints.documentUrl).length === 2 &&
+        proof.session.treeGeneration === treeGenerationBefore + 1,
+      "The Rails Refresh Stream did not commit its canonical document GET",
+    ).then(() => {
+      finalAssertionsReached = true;
+    });
+
     await waitFor(
       () => requests.filter((request) => request.url === endpoints.documentUrl).length === 2,
       "The Rails Refresh Stream did not trigger its canonical document GET",
     );
+    await Promise.resolve();
+    expect(finalAssertionsReached).toBe(false);
+    expect(proof.session.treeGeneration).toBe(treeGenerationBefore);
+    releaseSecondDocumentResponse?.();
+    await waitForRefreshCommit;
 
     const streamRequest = requests.find((request) => request.url === endpoints.streamUrl);
     const refreshedDocumentRequest = requests.filter(
@@ -108,6 +135,7 @@ liveTest("applies the Rails current-document Refresh Stream morph through one ca
     expect(refreshedResponse ? nodeTextContent(refreshedResponse) : undefined)
       .not.toBe(initialResponseText);
   } finally {
+    releaseSecondDocumentResponse?.();
     proof.dispose();
   }
 });
