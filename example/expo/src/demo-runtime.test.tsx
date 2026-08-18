@@ -882,10 +882,12 @@ describe("demo app runtime ownership", () => {
     });
   });
 
-  test("scrolls the gallery root to the focused measured document field", async () => {
+  test("registers the complete form-field wrapper as the autofocus measure target", async () => {
     const runtime = createDemoRuntime();
     const navigation = new TestNavigation();
     const scrolls: Readonly<{ animated: boolean; y: number }>[] = [];
+    let inputMeasureCalls = 0;
+    let wrapperMeasureCalls = 0;
     const unregisterContainer = runtime.autofocusScroll.registerContainer({
       getScrollY: () => 0,
       isAvailable: () => true,
@@ -912,24 +914,26 @@ describe("demo app runtime ownership", () => {
         {
           createNodeMock(element) {
             if (element.type === "text-input") {
-              const props = element.props as Readonly<Record<string, unknown>>;
-              const target = props.accessibilityLabel === "Root autofocus scroll target";
               return {
                 blur() {},
                 focus() {},
                 measureInWindow(
                   listener: (x: number, y: number, width: number, height: number) => void,
                 ) {
-                  listener(0, target ? 1_200 : 200, 320, 44);
+                  inputMeasureCalls += 1;
+                  listener(0, 200, 320, 44);
                 },
               };
             }
             if (element.type === "view") {
+              const props = element.props as Readonly<Record<string, unknown>>;
+              const target = props.testID === "demo-form-field-id-root-autofocus-scroll-target";
               return {
                 measureInWindow(
                   listener: (x: number, y: number, width: number, height: number) => void,
                 ) {
-                  listener(0, 0, 320, 40);
+                  if (target) wrapperMeasureCalls += 1;
+                  listener(0, target ? 1_200 : 0, 320, target ? 100 : 40);
                 },
               };
             }
@@ -962,13 +966,70 @@ describe("demo app runtime ownership", () => {
     expect(runtime.session.tree.document.url).toBe(AUTOFOCUS_SCROLL_URL);
     expect(runtime.session.tree.getElementById("root-autofocus-scroll-target")).toBeDefined();
     expect(runtime.focus.getFocusedId()).toBe("id:root-autofocus-scroll-target");
-    expect(scrolls).toEqual([{ animated: false, y: 400 }]);
+    expect(wrapperMeasureCalls).toBeGreaterThan(0);
+    expect(inputMeasureCalls).toBe(0);
+    expect(scrolls).toEqual([{ animated: false, y: 456 }]);
 
     await act(async () => {
       renderer?.unmount();
       await Promise.resolve();
     });
     unregisterContainer();
+  });
+
+  test("caches a programmatic root scroll before a delayed onScroll event", async () => {
+    nativeScrollCalls.length = 0;
+    nativeRootScrollContainerIds.length = 0;
+    nextNativeScrollContainerId = 0;
+    const runtime = createDemoRuntime();
+    let renderer: ReactTestRenderer | undefined;
+    let targetY = 900;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(DemoCompatibilityGallery),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+    });
+    if (!renderer) throw new Error("gallery root scroll fixture did not render");
+    nativeScrollCalls.length = 0;
+    const unregisterTarget = runtime.autofocusScroll.register("id:cached-offset", (listener) => {
+      listener(0, targetY, 320, targetY === 900 ? 44 : 100);
+    });
+
+    runtime.autofocusScroll.scrollTo("id:cached-offset");
+    targetY = 800;
+    runtime.autofocusScroll.remeasure("id:cached-offset");
+
+    expect(nativeScrollCalls.map((call) => call.options)).toEqual([
+      { animated: false, x: 0, y: 100 },
+      { animated: false, x: 0, y: 156 },
+    ]);
+
+    unregisterTarget();
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
   });
 
   test("activates the gallery's registered same-document anchor without fetching or writing history", async () => {

@@ -88,9 +88,10 @@ export function DemoCompatibilityGallery() {
             );
           });
         },
-        reveal: (nativeHandle) =>
-          node.scrollResponderScrollNativeHandleToKeyboard(nativeHandle, 24, true),
-        scrollTo: (options) => node.scrollTo(options),
+        scrollTo: (options) => {
+          scrollY.current = options.y;
+          node.scrollTo(options);
+        },
       });
     },
     [runtime.autofocusScroll],

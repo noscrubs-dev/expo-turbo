@@ -31,7 +31,10 @@ function harness(options: Readonly<{ available?: boolean; target?: DemoVisibilit
     getScrollY: () => scrollY,
     isAvailable: () => available,
     measure: viewport.measure,
-    scrollTo: (options) => scrolls.push(options),
+    scrollTo: (options) => {
+      scrollY = options.y
+      scrolls.push(options)
+    },
   })
   const unregisterTarget = registry.register("id:field", target.measure)
   viewport.emit({ height: 300, width: 320, x: 0, y: 100 })
@@ -104,18 +107,41 @@ describe("demo autofocus scrolling", () => {
     expect(scrolls).toEqual([{ animated: false, y: 119 }])
   })
 
-  test("corrects the active target when the usable viewport shrinks until blur", () => {
-    const current = harness({ target: { height: 44, width: 320, x: 0, y: 350 } })
+  test("remeasures and reveals the entire active target after the keyboard shrinks the viewport", () => {
+    const current = harness({ target: { height: 120, width: 320, x: 0, y: 350 } })
+    current.viewport.emit({ height: 400, width: 320, x: 0, y: 100 })
 
     current.registry.scrollTo("id:field")
     expect(current.scrolls).toEqual([])
 
+    current.registry.remeasure()
+    current.target.emit({ height: 120, width: 320, x: 0, y: 350 })
     current.viewport.emit({ height: 180, width: 320, x: 0, y: 100 })
-    expect(current.scrolls).toEqual([{ animated: false, y: 139 }])
+    expect(current.scrolls).toEqual([{ animated: false, y: 215 }])
+
+    current.registry.remeasure("id:field")
+    current.target.emit({ height: 140, width: 320, x: 0, y: 160 })
+    expect(current.scrolls).toEqual([
+      { animated: false, y: 215 },
+      { animated: false, y: 235 },
+    ])
 
     current.registry.cancel("id:field")
     current.viewport.emit({ height: 120, width: 320, x: 0, y: 100 })
-    expect(current.scrolls).toEqual([{ animated: false, y: 139 }])
+    expect(current.scrolls).toEqual([
+      { animated: false, y: 215 },
+      { animated: false, y: 235 },
+    ])
+  })
+
+  test("keeps an active target safe when its container has no native reveal callback", () => {
+    const current = harness()
+
+    current.registry.setNativeHandle("id:field", 42)
+
+    expect(() => current.registry.scrollTo("id:field")).not.toThrow()
+    expect(() => current.registry.revealActive()).not.toThrow()
+    expect(current.scrolls).toEqual([{ animated: false, y: 119 }])
   })
 
   test("keeps stale target measurements and unregisters identity-safe", () => {

@@ -29,6 +29,16 @@ revision 2N+1`, and `invalid; attempt N`. The invalid result does not cause
 focus. It records the result of the same submit attempt after the synchronous
 focus work.
 
+The example app has one reveal authority for a focused form field. After
+`keyboardDidShow`, it records the Android keyboard viewport, remeasures the
+root scroll container and active field, and flushes the active reveal. The
+container does not call React Native's pre-IME native keyboard reveal helper.
+Each form field registers its complete wrapper as the measure target. The
+measured rectangle includes the label, input, focus probe, and validation
+error. A programmatic scroll also updates the cached root offset before it
+calls the native scroll method. A delayed `onScroll` event is therefore not
+required before a later active-field measurement computes its absolute target.
+
 Android also checks Maestro's native `focused:false` and `focused:true`
 selectors. These selectors are additional evidence, not the shared oracle.
 iOS uses the same React Native event probe because retained iOS artifacts show

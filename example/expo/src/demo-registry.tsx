@@ -464,6 +464,7 @@ export const DEMO_REGISTRY = defineRegistry({
         const deviceTest = useDemoDeviceTestScenario();
         const direction = useExpoTurboDirection();
         const [current, setCurrent] = useState(value);
+        const fieldRef = useRef<ReactNative.View>(null);
         const inputRef = useRef<TextInput>(null);
         const validation = required
           ? z.string().trim().min(1, `${label} is required`).safeParse(current)
@@ -485,14 +486,20 @@ export const DEMO_REGISTRY = defineRegistry({
         const focusHandlers = useDemoFocusHandle(control.nodeKey, inputRef);
         const autofocusScroll = useDemoAutofocusScrollTarget(
           control.nodeKey,
-          inputRef,
+          fieldRef,
         );
         const focusProbe = useDemoDeviceTestFocusProbe(
           deviceTest,
           `demo-form-focus-probe-${control.nodeKey.replaceAll(":", "-")}`,
         );
         return (
-          <View style={{ direction: nativeLayoutDirection(direction), gap: 6 }}>
+          <View
+            collapsable={false}
+            onLayout={autofocusScroll.onLayout}
+            ref={fieldRef}
+            style={{ direction: nativeLayoutDirection(direction), gap: 6 }}
+            testID={`demo-form-field-${control.nodeKey.replaceAll(":", "-")}`}
+          >
             <Text
               style={{
                 color: "#435160",
@@ -518,7 +525,6 @@ export const DEMO_REGISTRY = defineRegistry({
                 autofocusScroll.onFocus();
                 focusProbe.onActualFocus();
               }}
-              onLayout={autofocusScroll.onLayout}
               ref={inputRef}
               style={{
                 backgroundColor: control.disabled ? "#f6f8fa" : "white",
