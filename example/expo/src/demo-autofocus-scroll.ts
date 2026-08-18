@@ -9,22 +9,20 @@ import {
   useLayoutEffect,
   useMemo,
 } from "react"
-import type { LayoutChangeEvent } from "react-native"
 
 import type { DemoMeasureInWindow, DemoVisibilityRect } from "./demo-visibility"
 
 interface DemoAutofocusScrollRecord {
   readonly measure: DemoMeasureInWindow
   measureEpoch: number
-  nativeHandle: number | null
   rect: DemoVisibilityRect | undefined
+  rectScrollY: number | undefined
 }
 
 export interface DemoAutofocusScrollContainer {
   readonly getScrollY: () => number
   readonly isAvailable: () => boolean
   readonly measure: DemoMeasureInWindow
-  readonly reveal?: (nativeHandle: number) => void
   readonly scrollTo: (options: Readonly<{ animated: boolean; y: number }>) => void
 }
 
@@ -80,8 +78,8 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
     const record: DemoAutofocusScrollRecord = {
       measure,
       measureEpoch: 0,
-      nativeHandle: null,
       rect: undefined,
+      rectScrollY: undefined,
     }
     this.targets.set(id, record)
     this.measureTarget(id, record)
@@ -95,11 +93,6 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
 
   cancel(id: string): void {
     if (this.activeId === id) this.activeId = undefined
-  }
-
-  setNativeHandle(id: string, nativeHandle: number | null): void {
-    const target = this.targets.get(id)
-    if (target) target.nativeHandle = nativeHandle
   }
 
   registerContainer(container: DemoAutofocusScrollContainer): () => void {
@@ -145,15 +138,6 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
     if (!this.targets.has(id) || !this.container?.container.isAvailable()) return
     this.activeId = id
     this.flushActive()
-    this.revealActive()
-  }
-
-  revealActive(): void {
-    const target = this.activeId ? this.targets.get(this.activeId) : undefined
-    const nativeHandle = target?.nativeHandle
-    if (nativeHandle !== null && nativeHandle !== undefined) {
-      this.container?.container.reveal?.(nativeHandle)
-    }
   }
 
   dispose(): void {
@@ -173,13 +157,16 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
       this.activeId = undefined
       return
     }
-    if (!target.rect || !container.rect) return
+    if (!target.rect || target.rectScrollY === undefined || !container.rect) return
     const currentY = container.container.getScrollY()
     if (!Number.isFinite(currentY)) {
       this.activeId = undefined
       return
     }
-    const nextY = Math.max(0, currentY + nearestScrollDelta(target.rect, container.rect))
+    const nextY = Math.max(
+      0,
+      target.rectScrollY + nearestScrollDelta(target.rect, container.rect),
+    )
     if (Math.abs(nextY - currentY) < 0.5) return
     container.container.scrollTo({ animated: false, y: nextY })
   }
@@ -201,10 +188,18 @@ export class DemoAutofocusScrollRegistry implements AutofocusScrollAdapter {
 
   private measureTarget(id: string, record: DemoAutofocusScrollRecord): void {
     const measureEpoch = ++record.measureEpoch
+    const currentY = this.container?.container.getScrollY()
+    const rectScrollY = Number.isFinite(currentY) ? currentY : undefined
     record.measure((x, y, width, height) => {
       if (this.targets.get(id) !== record || record.measureEpoch !== measureEpoch) return
       const rect = { height, width, x, y }
-      record.rect = finiteRect(rect) ? Object.freeze(rect) : undefined
+      if (finiteRect(rect) && rectScrollY !== undefined) {
+        record.rect = Object.freeze(rect)
+        record.rectScrollY = rectScrollY
+      } else {
+        record.rect = undefined
+        record.rectScrollY = undefined
+      }
       this.flushActive()
     })
   }
@@ -222,7 +217,7 @@ export function DemoAutofocusScrollProvider({
 export function useDemoAutofocusScrollTarget(
   nodeKey: string,
   ref: RefObject<DemoAutofocusScrollMeasureTarget | null>,
-): Readonly<{ onBlur(): void; onFocus(): void; onLayout(event: LayoutChangeEvent): void }> {
+): Readonly<{ onBlur(): void; onFocus(): void; onLayout(): void }> {
   const autofocusScroll = useContext(DemoAutofocusScrollContext)
   useLayoutEffect(
     () => {
@@ -238,16 +233,6 @@ export function useDemoAutofocusScrollTarget(
     () => autofocusScroll?.scrollTo(nodeKey),
     [autofocusScroll, nodeKey],
   )
-  const onLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      autofocusScroll?.setNativeHandle(
-        nodeKey,
-        (event.nativeEvent as typeof event.nativeEvent & { readonly target?: number }).target ??
-          null,
-      )
-      autofocusScroll?.remeasure(nodeKey)
-    },
-    [autofocusScroll, nodeKey],
-  )
+  const onLayout = useCallback(() => autofocusScroll?.remeasure(nodeKey), [autofocusScroll, nodeKey])
   return useMemo(() => Object.freeze({ onBlur, onFocus, onLayout }), [onBlur, onFocus, onLayout])
 }

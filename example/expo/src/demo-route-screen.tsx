@@ -167,7 +167,6 @@ export function DemoCompatibilityGallery() {
         screenY: event.endCoordinates.screenY,
       };
       runtime.autofocusScroll.remeasure();
-      runtime.autofocusScroll.revealActive();
     });
     const hide = Keyboard.addListener("keyboardDidHide", () => {
       keyboardGeometry.current = undefined;

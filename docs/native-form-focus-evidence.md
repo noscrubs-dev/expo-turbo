@@ -31,13 +31,18 @@ focus work.
 
 The example app has one reveal authority for a focused form field. After
 `keyboardDidShow`, it records the Android keyboard viewport, remeasures the
-root scroll container and active field, and flushes the active reveal. The
-container does not call React Native's pre-IME native keyboard reveal helper.
+root scroll container and all registered fields. `remeasure()` without a field
+ID measures every field. The measurement callbacks call `flushActive`, which
+performs the reveal. The container does not call React Native's pre-IME native
+keyboard reveal helper.
 Each form field registers its complete wrapper as the measure target. The
 measured rectangle includes the label, input, focus probe, and validation
-error. A programmatic scroll also updates the cached root offset before it
-calls the native scroll method. A delayed `onScroll` event is therefore not
-required before a later active-field measurement computes its absolute target.
+error. Each field rectangle is paired with the root offset from when its
+measurement started. A programmatic scroll also updates the cached root offset
+before it calls the native scroll method. Thus, callbacks from one remeasurement
+cannot add the same correction two times while `onScroll` is delayed. Native
+scroll completion and later user scrolls still use `onScroll` to report their
+actual offsets.
 
 Android also checks Maestro's native `focused:false` and `focused:true`
 selectors. These selectors are additional evidence, not the shared oracle.

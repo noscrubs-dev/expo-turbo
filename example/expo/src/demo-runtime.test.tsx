@@ -1032,6 +1032,49 @@ describe("demo app runtime ownership", () => {
     });
   });
 
+  test("registers the gallery autofocus container without a native reveal callback", async () => {
+    const runtime = createDemoRuntime();
+    const registerContainer = mock(
+      runtime.autofocusScroll.registerContainer.bind(runtime.autofocusScroll),
+    );
+    runtime.autofocusScroll.registerContainer = registerContainer;
+    let renderer: ReactTestRenderer | undefined;
+
+    await act(async () => {
+      renderer = create(
+        createElement(
+          DemoRuntimeProvider,
+          { runtime },
+          createElement(DemoCompatibilityGallery),
+        ),
+        {
+          createNodeMock(element) {
+            if (element.type === "text-input") return { blur() {}, focus() {} };
+            if (element.type === "view") {
+              return {
+                measureInWindow(
+                  listener: (x: number, y: number, width: number, height: number) => void,
+                ) {
+                  listener(0, 0, 320, 40);
+                },
+              };
+            }
+            return {};
+          },
+        },
+      );
+      await nextTurn();
+    });
+
+    expect(registerContainer).toHaveBeenCalledTimes(1);
+    expect(registerContainer.mock.calls[0]?.[0]).not.toHaveProperty("reveal");
+
+    await act(async () => {
+      renderer?.unmount();
+      await Promise.resolve();
+    });
+  });
+
   test("activates the gallery's registered same-document anchor without fetching or writing history", async () => {
     const fixtureFetch = createDemoFixtureFetchAdapter();
     const requests: TurboRequest[] = [];

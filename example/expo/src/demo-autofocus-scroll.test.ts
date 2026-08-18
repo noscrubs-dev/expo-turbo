@@ -20,6 +20,21 @@ function measurement() {
   }
 }
 
+function queuedMeasurement() {
+  const listeners: ((x: number, y: number, width: number, height: number) => void)[] = []
+  return {
+    emit(index: number, rect: DemoVisibilityRect): void {
+      listeners[index]?.(rect.x, rect.y, rect.width, rect.height)
+    },
+    get calls(): number {
+      return listeners.length
+    },
+    measure: ((listener) => {
+      listeners.push(listener)
+    }) satisfies DemoMeasureInWindow,
+  }
+}
+
 function harness(options: Readonly<{ available?: boolean; target?: DemoVisibilityRect }> = {}) {
   const registry = new DemoAutofocusScrollRegistry()
   const target = measurement()
@@ -134,14 +149,51 @@ describe("demo autofocus scrolling", () => {
     ])
   })
 
-  test("keeps an active target safe when its container has no native reveal callback", () => {
-    const current = harness()
+  test("pairs delayed field rectangles with their measurement-time scroll offset", () => {
+    const registry = new DemoAutofocusScrollRegistry()
+    const viewport = queuedMeasurement()
+    const lowerField = queuedMeasurement()
+    const upperField = queuedMeasurement()
+    const requested: number[] = []
+    let cachedScrollY = 0
+    let realScrollY = 0
+    registry.registerContainer({
+      getScrollY: () => cachedScrollY,
+      isAvailable: () => true,
+      measure: viewport.measure,
+      scrollTo: ({ y }) => {
+        cachedScrollY = y
+        realScrollY = Math.min(300, Math.max(0, y))
+        requested.push(y)
+      },
+    })
+    registry.register("id:lower", lowerField.measure)
+    viewport.emit(0, { height: 800, width: 320, x: 0, y: 0 })
+    lowerField.emit(0, { height: 100, width: 320, x: 0, y: 700 })
+    registry.scrollTo("id:lower")
+    expect(requested).toEqual([])
 
-    current.registry.setNativeHandle("id:field", 42)
+    registry.remeasure()
+    viewport.emit(1, { height: 500, width: 320, x: 0, y: 0 })
+    lowerField.emit(1, { height: 100, width: 320, x: 0, y: 700 })
 
-    expect(() => current.registry.scrollTo("id:field")).not.toThrow()
-    expect(() => current.registry.revealActive()).not.toThrow()
-    expect(current.scrolls).toEqual([{ animated: false, y: 119 }])
+    expect(requested).toEqual([300])
+    expect({ cachedScrollY, realScrollY }).toEqual({ cachedScrollY: 300, realScrollY: 300 })
+
+    registry.remeasure()
+    registry.remeasure()
+    viewport.emit(2, { height: 500, width: 320, x: 0, y: 0 })
+    lowerField.emit(2, { height: 100, width: 320, x: 0, y: 400 })
+    lowerField.emit(3, { height: 100, width: 320, x: 0, y: 400 })
+    viewport.emit(3, { height: 500, width: 320, x: 0, y: 0 })
+    expect(requested).toEqual([300])
+
+    registry.register("id:upper", upperField.measure)
+    upperField.emit(0, { height: 100, width: 320, x: 0, y: -200 })
+    registry.scrollTo("id:upper")
+
+    expect(requested).toEqual([300, 100])
+    expect({ cachedScrollY, realScrollY }).toEqual({ cachedScrollY: 100, realScrollY: 100 })
   })
 
   test("keeps stale target measurements and unregisters identity-safe", () => {
