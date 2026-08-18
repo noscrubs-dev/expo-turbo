@@ -1,138 +1,95 @@
 import { expect, test } from "bun:test"
-import { readdir, readFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
-const liveSmokeDirectory = join(repositoryRoot, "example/expo/src")
 const workflowPath = join(repositoryRoot, ".github/workflows/ci.yml")
-const bunTestCommand = /^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()<>$`\\]*\s+)*bun\s+test(?:\s|$)/
-const bunTestCommandWithArguments =
-  /^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()<>$`\\]*\s+)*bun\s+test(?:\s+(.*))?$/
+const canonicalCommand = "scripts/ci/run-rails-desktop-smoke.sh"
 
-async function liveSmokeFiles(directory = liveSmokeDirectory): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true })
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(directory, entry.name)
-      if (entry.isDirectory()) return liveSmokeFiles(path)
-      return /^demo-live-.*\.(?:rails|redis)-smoke\.test\.[tj]sx?$/.test(entry.name) ? [path] : []
-    }),
-  )
-
-  return files.flat().sort()
+interface WorkflowStep {
+  name?: string
+  run?: string
 }
 
-function desktopSmokeJob(workflow: string): string {
-  const start = workflow.indexOf("  rails-action-cable-smoke:")
-  if (start === -1) throw new Error("Rails desktop smoke job is missing")
-
-  const nextJob = workflow.slice(start + 1).search(/^ {2}[a-z0-9_-]+:/m)
-  return nextJob === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + nextJob)
+interface Workflow {
+  jobs?: Record<string, { steps?: WorkflowStep[] }>
 }
 
-function runScripts(job: string): string[] {
-  return Array.from(
-    job.matchAll(/^ {8}run: \|\n((?:(?:^ {10,}.*|^)\n)*)/gm),
-    ([, script]) => script ?? "",
-  )
-}
+function normalizedSmokeRun(workflowSource: string): string {
+  const workflow = Bun.YAML.parse(workflowSource) as Workflow
+  const steps = workflow.jobs?.["rails-action-cable-smoke"]?.steps
+  if (!Array.isArray(steps)) throw new Error("Rails desktop smoke job is missing")
 
-function shellCommands(script: string): string[] {
-  const commands: string[] = []
-  let command = ""
-
-  for (const line of script.split("\n")) {
-    const trimmed = line.trim()
-    if (!command && (!trimmed || trimmed.startsWith("#"))) continue
-
-    const continues = /\\$/.test(trimmed)
-    command += `${trimmed.replace(/\\$/, "")} `
-    if (!continues) {
-      commands.push(command.trim())
-      command = ""
-    }
-  }
-
-  if (command) throw new Error("Rails desktop smoke command has an unfinished continuation")
-  return commands
-}
-
-function smokeTestCommand(workflow: string): string {
-  const commands = runScripts(desktopSmokeJob(workflow)).flatMap(shellCommands)
-  const candidates = commands.filter((command) => bunTestCommand.test(command))
-  const candidate = candidates[0]
-
-  if (candidates.length !== 1 || !candidate) {
+  const smokeSteps = steps.filter((step) => step.name === "Smoke Rails desktop integration")
+  if (smokeSteps.length !== 1) {
     throw new Error(
-      `Rails desktop smoke must have exactly one bun test command, found ${candidates.length}`,
+      `Rails desktop smoke must have exactly one smoke step, found ${smokeSteps.length}`,
     )
   }
 
-  return candidate
+  const run = smokeSteps[0]?.run
+  if (typeof run !== "string") throw new Error("Rails desktop smoke run value is missing")
+  return run.replaceAll("\r\n", "\n").trim()
 }
 
-function smokeTestFiles(workflow: string): string[] {
-  const command = smokeTestCommand(workflow)
-  const match = command.match(bunTestCommandWithArguments)
-  if (!match) throw new Error("Rails desktop smoke bun test command is malformed")
-
-  const argumentsAfterTest = (match[1] ?? "").trim().split(/\s+/).filter(Boolean)
-  if (argumentsAfterTest[0] !== "--isolate") {
-    throw new Error("Rails desktop smoke must put --isolate directly after bun test")
-  }
-
-  return argumentsAfterTest.slice(1)
+function expectCanonicalSmokeRun(workflowSource: string): void {
+  expect(normalizedSmokeRun(workflowSource)).toBe(canonicalCommand)
 }
 
-function expectSmokeFiles(workflow: string, files: string[]): void {
-  const expected = files.map((file) => `src/${file.slice(liveSmokeDirectory.length + 1)}`).sort()
-  expect(smokeTestFiles(workflow).sort()).toEqual(expected)
-}
-
-function firstSmokeFile(files: string[]): string {
-  const file = files[0]
-  if (!file) throw new Error("Rails desktop smoke file list is empty")
-  return `src/${file.slice(liveSmokeDirectory.length + 1)}`
-}
-
-test("Rails desktop smoke runs every live smoke file in isolated Bun workers", async () => {
-  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
-
-  expect(files).not.toEqual([])
-  expectSmokeFiles(workflow, files)
-})
-
-test("Rails desktop smoke wiring rejects missing isolation and incomplete file lists", async () => {
-  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
-  const file = firstSmokeFile(files)
-
-  expect(() =>
-    expectSmokeFiles(workflow.replace("bun test --isolate", "bun test"), files),
-  ).toThrow()
-  expect(() =>
-    expectSmokeFiles(workflow.replace(`                  ${file} \\\n`, ""), files),
-  ).toThrow()
-})
-
-test("Rails desktop smoke wiring requires Bun to be the executed command", async () => {
-  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
-  const command = "EXPO_TURBO_DEMO_ORIGIN=http://127.0.0.1:3001 bun test --isolate"
-
-  expectSmokeFiles(workflow, files)
-  expect(() => expectSmokeFiles(workflow.replace(command, `echo ${command}`), files)).toThrow()
-  expect(() => expectSmokeFiles(workflow.replace(command, `printf ${command}`), files)).toThrow()
-})
-
-test("Rails desktop smoke wiring ignores file paths outside the Bun command", async () => {
-  const [workflow, files] = await Promise.all([readFile(workflowPath, "utf8"), liveSmokeFiles()])
-  const file = firstSmokeFile(files)
-  const pathInStepName = workflow.replace(
-    "name: Smoke Rails desktop integration",
-    `name: Smoke ${file}`,
+function replaceRun(workflowSource: string, run: string): string {
+  const indentedRun = run
+    .split("\n")
+    .map((line) => `          ${line}`)
+    .join("\n")
+  return workflowSource.replace(
+    `        run: ${canonicalCommand}`,
+    `        run: |\n${indentedRun}`,
   )
-  const missingCommandFile = pathInStepName.replace(`                  ${file} \\\n`, "")
+}
 
-  expect(missingCommandFile).toContain(file)
-  expect(() => expectSmokeFiles(missingCommandFile, files)).toThrow()
+test("Rails desktop smoke workflow uses only the exact repository runner", async () => {
+  expectCanonicalSmokeRun(await readFile(workflowPath, "utf8"))
+})
+
+test("Rails desktop smoke wiring rejects prefixes and wrappers", async () => {
+  const workflow = await readFile(workflowPath, "utf8")
+  for (const run of [
+    `exit 0\n${canonicalCommand}`,
+    `true\n${canonicalCommand}`,
+    `echo ready\n${canonicalCommand}`,
+    `printf ready\n${canonicalCommand}`,
+    `true && ${canonicalCommand}`,
+    `env CI=1 ${canonicalCommand}`,
+    `bash -c '${canonicalCommand}'`,
+  ]) {
+    expect(() => expectCanonicalSmokeRun(replaceRun(workflow, run))).toThrow()
+  }
+})
+
+test("Rails desktop smoke wiring rejects suffixes and conditional bypasses", async () => {
+  const workflow = await readFile(workflowPath, "utf8")
+  for (const run of [
+    `${canonicalCommand}\nexit 0`,
+    `${canonicalCommand}\ntrue`,
+    `${canonicalCommand}; true`,
+    `${canonicalCommand} || true`,
+    `${canonicalCommand} && echo done`,
+    `${canonicalCommand} &`,
+  ]) {
+    expect(() => expectCanonicalSmokeRun(replaceRun(workflow, run))).toThrow()
+  }
+})
+
+test("Rails desktop smoke wiring rejects missing and duplicate smoke steps", async () => {
+  const workflow = await readFile(workflowPath, "utf8")
+  const missing = workflow.replace("name: Smoke Rails desktop integration", "name: Hidden smoke")
+  const duplicate = workflow.replace(
+    `      - name: Smoke Rails desktop integration\n        run: ${canonicalCommand}`,
+    `      - name: Smoke Rails desktop integration\n        run: ${canonicalCommand}\n` +
+      `      - name: Smoke Rails desktop integration\n        run: ${canonicalCommand}`,
+  )
+
+  expect(() => expectCanonicalSmokeRun(missing)).toThrow()
+  expect(() => expectCanonicalSmokeRun(duplicate)).toThrow()
 })
