@@ -47,6 +47,7 @@ async function assertArtifactContract(
     "rails-attempt-$attempt.log",
     "maestro-bootstrap-attempt-$attempt.log",
     "maestro-bootstrap-attempt-$attempt-retry.log",
+    "maestro-transport-trigger-attempt-$attempt.txt",
     "maestro-tests-bootstrap-attempt-$attempt",
     "maestro-debug-bootstrap-attempt-$attempt",
     "maestro-tests-bootstrap-attempt-$attempt-retry",

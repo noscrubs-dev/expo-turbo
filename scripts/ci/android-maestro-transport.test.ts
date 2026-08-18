@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const laneScript = join(scriptDirectory, "run-android-maestro.sh")
+const stopProcessScript = join(scriptDirectory, "stop-process.sh")
 const fixtures: string[] = []
 
 afterEach(async () => {
@@ -42,7 +43,13 @@ async function runFunction(
 ): Promise<{ status: number; stdout: string; stderr: string }> {
   const body = names.map((name) => extractFunction(source, name)).join("\n")
   const child = Bun.spawn(
-    ["bash", "-c", `set -euo pipefail\n${body}\n${invocation}`, "test", ...args],
+    [
+      "bash",
+      "-c",
+      `set -euo pipefail\nadb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"\n${body}\n${invocation}`,
+      "test",
+      ...args,
+    ],
     {
       stdout: "pipe",
       stderr: "pipe",
@@ -54,6 +61,50 @@ async function runFunction(
     new Response(child.stderr).text(),
   ])
   return { status, stdout, stderr }
+}
+
+async function runTransportMonitor(
+  source: string,
+  log: string,
+  trigger: string,
+  duration: string,
+): Promise<{ elapsed: number; status: number; stderr: string }> {
+  const stopProcess = await readFile(stopProcessScript, "utf8")
+  const functions = ["is_adb_transport_failure", "monitor_maestro_transport"]
+    .map((name) => extractFunction(source, name))
+    .join("\n")
+  const stderrPath = `${trigger}.stderr`
+  const script = `#!/usr/bin/env bash
+set -uo pipefail
+exec 2>"$4"
+adb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"
+${stopProcess}
+${functions}
+date() { printf '2026-08-18T00:00:00+00:00\\n'; }
+ps() {
+  if [[ " $* " == *" -o ppid= "* ]]; then
+    printf '%s\\n' "$$"
+    return 0
+  fi
+  command ps "$@"
+}
+sleep "$3" &
+target_pid=$!
+monitor_maestro_transport 1 "$target_pid" "$$" "$1" "$2" &
+monitor_pid=$!
+wait "$target_pid"
+target_status=$?
+wait "$monitor_pid"
+exit "$target_status"
+`
+  const started = performance.now()
+  const child = Bun.spawn(["bash", "-c", script, "test", log, trigger, duration, stderrPath], {
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  const status = await child.exited
+  const stderr = await readFile(stderrPath, "utf8")
+  return { elapsed: performance.now() - started, status, stderr }
 }
 
 describe("Android Maestro transport recovery", () => {
@@ -127,6 +178,34 @@ describe("Android Maestro transport recovery", () => {
     expect(result.status).not.toBe(0)
     expect(source.match(/start_and_prepare_emulator 2/g)).toHaveLength(1)
     expect(source).toContain('exit "$second_status"')
+  })
+
+  test("stops a live attempt early only after proven transport loss", async () => {
+    const source = await readFile(laneScript, "utf8")
+    const transportLog = await fixtureFile(
+      "live-offline.log",
+      "[Failed] first flow (5s)\nDeviceServerDiedException: device offline\n",
+    )
+    const transportTrigger = `${transportLog}.trigger`
+    const transport = await runTransportMonitor(source, transportLog, transportTrigger, "3")
+
+    expect(transport.status, transport.stderr).not.toBe(0)
+    expect(transport.elapsed).toBeLessThan(1_500)
+    expect(transport.stderr).toContain("stopping this attempt early")
+    expect(await readFile(transportTrigger, "utf8")).toContain("DeviceServerDiedException")
+
+    const assertionLog = await fixtureFile(
+      "live-assertion.log",
+      "Assertion failed: expected Welcome to be visible\n",
+    )
+    const assertionTrigger = `${assertionLog}.trigger`
+    const assertion = await runTransportMonitor(source, assertionLog, assertionTrigger, "0.3")
+
+    expect(assertion.status, assertion.stderr).toBe(0)
+    expect(await Bun.file(assertionTrigger).exists()).toBe(false)
+    expect(source).toContain(
+      'monitor_maestro_transport "$attempt" "$maestro_pid" "$$" "$run_log" "$trigger_log" &',
+    )
   })
 
   test("keeps device readiness waits condition-based and bounded", async () => {

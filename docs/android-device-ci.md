@@ -93,6 +93,14 @@ flow does not need a zero-second duration. Assertion failures, selector
 timeouts, app crashes, and a failed second attempt remain failures. Chrome
 bootstrap also retries only after the same explicit transport evidence.
 
+During each full-suite attempt, a live monitor checks the attempt log every
+0.2 seconds. When it sees an exact transport signature, it first proves that
+the active Maestro process is still a direct child of the lane. It then records
+the matched line and stops only that Maestro process with the bounded stop
+helper. This prevents later Rails flows from spending minutes on a reverse
+mapping that the device lost. The normal retry decision still reads the saved
+attempt log after the process exits.
+
 The first bootstrap, its one transport retry, suite attempt 1, the second clean
 bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
 logs, `--test-output-dir`, and `--debug-output` paths. Each suite attempt also
@@ -275,6 +283,13 @@ cause broader deletion.
   Rails access before the new suite, and keeps each attempt's command and
   runtime evidence. Assertions, selector timeouts, app crashes, and a failed
   second attempt still fail.
+- Changed: The lane now stops an active suite attempt when its live log proves
+  ADB or device-server loss.
+- Why: Run `32143590467`, attempt 2, spent 15 minutes in failed flows after the
+  first transport loss. The final-log classifier could not stop that work.
+- Impact: Detection occurs during the failed attempt. A separate trigger file
+  records the matched line. Normal product failures still run to their normal
+  Maestro result.
 - Changed: The guarded retention tool remains for legacy or default-tree
   residue, but the Android lane no longer calls it.
 - Why: Every lane command supplies explicit test and debug output directories,

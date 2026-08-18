@@ -57,6 +57,7 @@ readonly reverse_binding_log="$artifacts/reverse-probe-binding.txt"
 readonly reverse_attempt_log="$artifacts/reverse-probe-attempt.txt"
 readonly ss_missing_marker="(ss is not installed here - listener state unknown)"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
+readonly adb_transport_pattern="DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found"
 
 is_adb_transport_failure() {
   local log="$1"
@@ -64,9 +65,7 @@ is_adb_transport_failure() {
   # These messages come from ADB or Maestro's device server. Do not include
   # selector timeouts, assertions, application crashes, or generic exceptions:
   # those are product/test failures and must remain failures.
-  grep -Eiq \
-    "DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found" \
-    "$log"
+  grep -Eiq "$adb_transport_pattern" "$log"
 }
 
 should_retry_transport_failure() {
@@ -317,6 +316,9 @@ mkdir -p "$artifacts"
 rails_pid=""
 emulator_pid=""
 sampler_pid=""
+maestro_pid=""
+maestro_log_stream_pid=""
+maestro_transport_monitor_pid=""
 
 cleanup() {
   local status=$?
@@ -605,13 +607,47 @@ stop_emulator_for_retry() {
   adb kill-server >/dev/null 2>&1 || true
 }
 
+monitor_maestro_transport() {
+  local attempt="$1"
+  local pid="$2"
+  local expected_ppid="$3"
+  local run_log="$4"
+  local trigger_log="$5"
+  local actual_ppid=""
+  local matched_line=""
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if is_adb_transport_failure "$run_log"; then
+      actual_ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+      if [ "$actual_ppid" != "$expected_ppid" ]; then
+        return 0
+      fi
+      matched_line="$(grep -Eim 1 "$adb_transport_pattern" "$run_log" 2>/dev/null || true)"
+      {
+        echo "attempt=$attempt"
+        echo "detected_at=$(date --iso-8601=seconds)"
+        echo "matched_line=$matched_line"
+        echo "action=stop active Maestro process and preserve attempt evidence"
+      } >"$trigger_log"
+      echo "Proven ADB transport loss detected during Maestro attempt $attempt; stopping this attempt early." >&2
+      stop_process "$pid" "Maestro attempt $attempt" 50 50 0.1
+      return 0
+    fi
+    sleep 0.2
+  done
+}
+
 run_maestro_suite() {
   local attempt="$1"
   local junit="$artifacts/maestro-junit-attempt-$attempt.xml"
   local run_log="$artifacts/maestro-attempt-$attempt.log"
   local test_output="$artifacts/maestro-tests-attempt-$attempt"
   local debug_output="$artifacts/maestro-debug-attempt-$attempt"
+  local trigger_log="$artifacts/maestro-transport-trigger-attempt-$attempt.txt"
   local status
+
+  : >"$run_log"
+  rm -f "$trigger_log"
 
   set +e
   maestro --device "$adb_serial" test \
@@ -620,9 +656,22 @@ run_maestro_suite() {
     --test-output-dir "$test_output" \
     --debug-output "$debug_output" \
     --flatten-debug-output \
-    "$maestro_flow_path" 2>&1 | tee "$run_log"
-  status="${PIPESTATUS[0]}"
+    "$maestro_flow_path" >"$run_log" 2>&1 &
+  maestro_pid=$!
+  tail --pid="$maestro_pid" --sleep-interval=0.1 -n +1 -f "$run_log" &
+  maestro_log_stream_pid=$!
+  monitor_maestro_transport "$attempt" "$maestro_pid" "$$" "$run_log" "$trigger_log" &
+  maestro_transport_monitor_pid=$!
+
+  wait "$maestro_pid"
+  status=$?
   set -e
+
+  stop_process "$maestro_transport_monitor_pid" "Maestro transport monitor" 50 50 0.1
+  maestro_transport_monitor_pid=""
+  stop_process "$maestro_log_stream_pid" "Maestro log stream" 50 50 0.1
+  maestro_log_stream_pid=""
+  maestro_pid=""
 
   if [ "$status" -eq 0 ]; then
     cp "$junit" "$artifacts/maestro-junit.xml"
