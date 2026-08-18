@@ -657,10 +657,13 @@ Both commands use `expo-turbo.lock.json.capabilities.lock`. The lock is held
 before the artifact files are read and until publish, rollback, and cleanup are
 complete. A second command fails without an artifact change. The lock file
 contains a PID, a transaction token, the artifact paths, and the current
-phase. The command does not remove an existing lock. If a process stops, first
-prove that its PID is not live. Then use the token to inspect the matching
-`.staged` and `.backup` files. Remove the exact lock only after both artifacts
-are consistent. Check mode also fails while this recovery is incomplete.
+phase. The command does not remove an existing lock. If a process stops and the
+lock evidence is readable, first prove that its PID is not live. Then use its
+token to inspect the matching `.staged` and `.backup` files. If the evidence is
+empty or unreadable, it has no usable PID or token. Identify whether the lock
+owner is live, then inspect and list every `*.staged` and `*.backup` file beside
+both artifact paths. Remove the exact lock only after both artifacts are
+consistent. Check mode also fails while this recovery is incomplete.
 
 POSIX cannot replace the manifest and lock with one atomic rename because they
 have two independent file names. The process lock stops cooperating writers,

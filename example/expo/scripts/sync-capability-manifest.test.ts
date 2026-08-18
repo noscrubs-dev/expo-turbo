@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rm,
@@ -19,6 +20,7 @@ import {
   loadDemoRegistryManifestJSON,
   publishCapabilityArtifacts,
   syncCapabilityManifest,
+  writeProcessLockEvidence,
 } from "./sync-capability-manifest"
 
 const temporaryRoots: string[] = []
@@ -65,6 +67,37 @@ describe("Expo capability artifact synchronization", () => {
     await expect(syncCapabilityManifest({ ...fixture, mode: "check" })).rejects.toThrow(
       /bun run capabilities:write/,
     )
+  })
+
+  test("check mode reports an absent manifest as stale with the repair command", async () => {
+    const fixture = await makeFixture({ manifestExists: false })
+    const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
+
+    await expect(syncCapabilityManifest({ ...fixture, mode: "check" })).rejects.toThrow(
+      new RegExp(
+        `Stale Expo capability artifact:\\n- ${escapeRegExp(fixture.manifestPath)}[\\s\\S]*Repair: cd example/expo && bun run capabilities:write`,
+      ),
+    )
+    expect(await pathExists(fixture.manifestPath)).toBe(false)
+    expect(await pathExists(processLockPath)).toBe(false)
+    expect((await readdir(fixture.repositoryRoot)).filter(isTransactionFile)).toEqual([])
+  })
+
+  test("write mode rebuilds an absent manifest with the process umask and cleans its files", async () => {
+    const fixture = await makeFixture({ manifestExists: false })
+    const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
+    const previousUmask = process.umask(0o022)
+    try {
+      await syncCapabilityManifest({ ...fixture, mode: "write" })
+    } finally {
+      process.umask(previousUmask)
+    }
+
+    expect(await readFile(fixture.manifestPath, "utf8")).toBe(fixture.manifestJSON)
+    expect((await stat(fixture.manifestPath)).mode & 0o777).toBe(0o644)
+    expect(await pathExists(processLockPath)).toBe(false)
+    expect((await readdir(fixture.repositoryRoot)).filter(isTransactionFile)).toEqual([])
+    await syncCapabilityManifest({ ...fixture, mode: "check" })
   })
 
   for (const mode of ["check", "write"] as const) {
@@ -609,6 +642,38 @@ describe("Expo capability artifact publication", () => {
 })
 
 describe("Expo capability process locking", () => {
+  test("does not empty existing evidence when a replacement write fails", async () => {
+    const directory = await makeTemporaryDirectory()
+    const processLockPath = join(directory, "process.lock")
+    const previousEvidence = "previous readable evidence\n"
+    await writeFile(processLockPath, previousEvidence)
+    const handle = await open(processLockPath, "r+")
+    const failingHandle = {
+      sync: handle.sync.bind(handle),
+      truncate: handle.truncate.bind(handle),
+      write: async () => {
+        throw new Error("simulated evidence write failure")
+      },
+    } as unknown as Parameters<typeof writeProcessLockEvidence>[0]
+
+    try {
+      await expect(
+        writeProcessLockEvidence(failingHandle, {
+          artifacts: ["manifest.json", "expo-turbo.lock.json"],
+          phase: "publishing:1",
+          pid: process.pid,
+          startedAt: new Date(0).toISOString(),
+          token: "evidence-failure",
+          version: 1,
+        }),
+      ).rejects.toThrow("simulated evidence write failure")
+    } finally {
+      await handle.close()
+    }
+
+    expect(await readFile(processLockPath, "utf8")).toBe(previousEvidence)
+  })
+
   test("writes 0600 PID, token, artifact, and phase evidence and removes its own lock", async () => {
     const fixture = await makeFixture()
     const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
@@ -635,6 +700,34 @@ describe("Expo capability process locking", () => {
     })
     expect(await pathExists(processLockPath)).toBe(false)
   })
+
+  for (const [name, contents] of [
+    ["unreadable", "not JSON\n"],
+    ["empty", ""],
+  ] as const) {
+    test(`${name} process-lock evidence fails closed without claiming a token`, async () => {
+      const fixture = await makeFixture()
+      const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
+      await writeFile(processLockPath, contents)
+      const before = await snapshot(fixture)
+
+      let message = ""
+      try {
+        await syncCapabilityManifest({ ...fixture, mode: "write" })
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+
+      expect(message).toContain("evidence is unreadable")
+      expect(message).toContain("no usable PID or token")
+      expect(message).toContain("inspect and list every *.staged and *.backup file")
+      expect(message).toContain(fixture.manifestPath)
+      expect(message).toContain(fixture.lockfilePath)
+      expect(message).not.toMatch(/token-named|prove that the PID is dead/)
+      expect(await readFile(processLockPath, "utf8")).toBe(contents)
+      expect(await snapshot(fixture)).toEqual(before)
+    })
+  }
 
   test("lets one subprocess finish and makes an overlapping subprocess fail closed", async () => {
     const fixture = await makeFixture()
@@ -732,6 +825,7 @@ interface FixtureOptions {
   duplicateCurrent?: boolean
   lockDigest?: string
   manifestJSON?: string
+  manifestExists?: boolean
   manifestDirectory?: string
   mutateLock?: (lock: LockFixture) => void
   omitPublished?: boolean
@@ -776,10 +870,11 @@ async function makeFixture(options: FixtureOptions = {}) {
     ],
   }
   options.mutateLock?.(lock)
-  await Promise.all([
-    writeFile(manifestPath, options.committedManifestJSON ?? manifestJSON),
-    writeFile(lockfilePath, `${JSON.stringify(lock, null, 2)}\n`),
-  ])
+  const writes = [writeFile(lockfilePath, `${JSON.stringify(lock, null, 2)}\n`)]
+  if (options.manifestExists !== false) {
+    writes.push(writeFile(manifestPath, options.committedManifestJSON ?? manifestJSON))
+  }
+  await Promise.all(writes)
   return { lockfilePath, manifestJSON, manifestPath, repositoryRoot }
 }
 
@@ -815,6 +910,14 @@ async function directoryState(directory: string): Promise<[string, string][]> {
     }),
   )
   return names.map((name, index) => [name, contents[index]])
+}
+
+function isTransactionFile(name: string): boolean {
+  return /\.(?:staged|backup)$/.test(name)
+}
+
+function escapeRegExp(source: string): string {
+  return source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 async function snapshot(fixture: { lockfilePath: string; manifestPath: string }) {

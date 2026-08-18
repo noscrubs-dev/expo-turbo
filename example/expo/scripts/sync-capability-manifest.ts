@@ -122,12 +122,14 @@ async function syncCapabilityManifestUnderLock({
 
   const [lockfileSnapshot, manifestSnapshot] = await Promise.all([
     captureRegularFile(lockfilePath),
-    captureRegularFile(manifestPath),
+    captureArtifactSource(manifestPath),
   ])
-  assertManifestStoredHashMatchesContent(
-    manifestSnapshot.contents.toString("utf8"),
-    `committed capability manifest ${manifestPath}`,
-  )
+  if (manifestSnapshot.exists) {
+    assertManifestStoredHashMatchesContent(
+      manifestSnapshot.contents.toString("utf8"),
+      `committed capability manifest ${manifestPath}`,
+    )
+  }
   const lockfileSource = lockfileSnapshot.contents.toString("utf8")
   const lock = parseObject(
     lockfileSource,
@@ -198,7 +200,9 @@ async function syncCapabilityManifestUnderLock({
 
   if (mode === "check") {
     const stale: string[] = []
-    const committedManifest = manifestSnapshot.contents.toString("utf8")
+    const committedManifest = manifestSnapshot.exists
+      ? manifestSnapshot.contents.toString("utf8")
+      : undefined
     if (committedManifest !== manifestJSON) stale.push(manifestPath)
     if (lockfileSource !== expectedLockSource) stale.push(lockfilePath)
     if (stale.length > 0) {
@@ -631,7 +635,7 @@ async function writeExclusiveFileDurably(
     ) {
       await handle.chown(Number(sourceMetadata.uid), Number(sourceMetadata.gid))
     }
-    await handle.chmod(mode)
+    if (sourceMetadata) await handle.chmod(mode)
     await handle.sync()
   } catch (error) {
     await handle.close().catch(() => undefined)
@@ -697,8 +701,11 @@ async function acquireProcessLock(
   } catch (error) {
     if (!hasCode(error, "EEXIST")) throw error
     const evidence = await readExistingLockEvidence(path)
+    const recovery = evidence
+      ? `For manual recovery, first prove that PID ${evidence.pid} is dead, then inspect the ${evidence.token}-named .staged and .backup files.`
+      : `The lock evidence has no usable PID or token. For manual recovery, first identify whether the lock owner is live, then inspect and list every *.staged and *.backup file beside both artifact paths:\n${artifacts.map((artifact) => `- ${artifact}`).join("\n")}`
     throw new Error(
-      `Another Expo capability sync owns ${path}${evidence ? ` (PID ${evidence.pid}, token ${evidence.token}, phase ${evidence.phase})` : " (evidence is unreadable)"}. No file was changed. Do not delete a live process lock. For manual recovery, first prove that the PID is dead, then inspect the token-named .staged and .backup files and remove this exact lock only after both artifacts are consistent.`,
+      `Another Expo capability sync owns ${path}${evidence ? ` (PID ${evidence.pid}, token ${evidence.token}, phase ${evidence.phase})` : " (evidence is unreadable)"}. No file was changed. Do not delete a live process lock. ${recovery} Remove this exact lock only after both artifacts are consistent.`,
     )
   }
   const evidence: ProcessLockEvidence = {
@@ -727,13 +734,23 @@ async function updateProcessLockPhase(lock: ProcessLock, phase: string): Promise
   await writeProcessLockEvidence(lock.handle, lock.evidence)
 }
 
-async function writeProcessLockEvidence(
-  handle: FileHandle,
+export async function writeProcessLockEvidence(
+  handle: Pick<FileHandle, "sync" | "truncate" | "write">,
   evidence: ProcessLockEvidence,
 ): Promise<void> {
-  const source = `${JSON.stringify(evidence, null, 2)}\n`
-  await handle.truncate(0)
-  await handle.write(source, 0, "utf8")
+  const source = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`)
+  let offset = 0
+  while (offset < source.byteLength) {
+    const { bytesWritten } = await handle.write(
+      source,
+      offset,
+      source.byteLength - offset,
+      offset,
+    )
+    if (bytesWritten === 0) throw new Error("Cannot write Expo capability process lock evidence")
+    offset += bytesWritten
+  }
+  await handle.truncate(source.byteLength)
   await handle.sync()
 }
 
