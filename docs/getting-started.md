@@ -648,7 +648,26 @@ The repository example produces both artifacts with
 `DEMO_REGISTRY.capabilityManifestJSON()`, writes the manifest, and changes only
 the digest of the one current unpublished lock record. It refuses missing or
 duplicate current records and published records. It does not create or rewrite
-release history. `bun run capabilities:check` is the read-only CI gate.
+release history. `bun run capabilities:check` is the artifact-preserving CI
+gate. It creates and removes the process lock but does not change either
+artifact.
+
+Both commands use `expo-turbo.lock.json.capabilities.lock`. The lock is held
+before the artifact files are read and until publish, rollback, and cleanup are
+complete. A second command fails without an artifact change. The lock file
+contains a PID, a transaction token, the artifact paths, and the current
+phase. The command does not remove an existing lock. If a process stops, first
+prove that its PID is not live. Then use the token to inspect the matching
+`.staged` and `.backup` files. Remove the exact lock only after both artifacts
+are consistent. Check mode also fails while this recovery is incomplete.
+
+POSIX cannot replace the manifest and lock with one atomic rename because they
+have two independent file names. The process lock stops cooperating writers,
+and a handled error restores both original files durably. A process crash can
+still occur between the two renames. In that crash window, the lock and its
+phase evidence stay in place so the next command fails closed for manual
+recovery. This contract does not claim that the two-file update has no crash
+window.
 
 Without `lockfile:`, the gem warns when a native descriptor arrives and all
 gates fail closed. Deploy the 0.3 gem before the 0.3 client. The new gem reads

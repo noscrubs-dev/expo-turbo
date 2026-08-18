@@ -1,6 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
@@ -17,7 +29,9 @@ const spareDigest = seededDigest("spare")
 const runsAsSuperuser = process.getuid?.() === 0
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  await Promise.all(
+    temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+  )
 })
 
 describe("Expo capability artifact synchronization", () => {
@@ -40,7 +54,10 @@ describe("Expo capability artifact synchronization", () => {
 
   test("check mode rejects a stale committed manifest", async () => {
     const fixture = await makeFixture()
-    await writeFile(fixture.manifestPath, "{}\n")
+    const stale = JSON.parse(fixture.manifestJSON)
+    stale.components[0].aliases.push("older-valid-alias")
+    stale.hash = manifestDigest(stale)
+    await writeFile(fixture.manifestPath, `${JSON.stringify(stale, null, 2)}\n`)
 
     await expect(syncCapabilityManifest({ ...fixture, mode: "check" })).rejects.toThrow(
       /Stale Expo capability artifact/,
@@ -48,6 +65,72 @@ describe("Expo capability artifact synchronization", () => {
     await expect(syncCapabilityManifest({ ...fixture, mode: "check" })).rejects.toThrow(
       /bun run capabilities:write/,
     )
+  })
+
+  for (const mode of ["check", "write"] as const) {
+    for (const [field, mutate] of [
+      [
+        "component",
+        (manifest: ManifestFixture) => {
+          manifest.components[0].tag = "StaleTag"
+        },
+      ],
+      [
+        "module",
+        (manifest: ManifestFixture) => {
+          manifest.modules[0].name = "stale-module"
+        },
+      ],
+      [
+        "protocol",
+        (manifest: ManifestFixture) => {
+          manifest.protocolVersion = "stale-protocol"
+        },
+      ],
+    ] as const) {
+      test(`${mode} mode recomputes the generated ${field} hash from canonical content`, async () => {
+        const generated = JSON.parse(await loadDemoRegistryManifestJSON()) as ManifestFixture
+        mutate(generated)
+        const fixture = await makeFixture({
+          manifestJSON: `${JSON.stringify(generated, null, 2)}\n`,
+        })
+        const before = await snapshot(fixture)
+
+        await expect(syncCapabilityManifest({ ...fixture, mode })).rejects.toThrow(
+          /does not match its canonical content digest/,
+        )
+        expect(await snapshot(fixture)).toEqual(before)
+      })
+    }
+
+    test(`${mode} mode rejects a committed manifest with a valid-format stale hash`, async () => {
+      const generated = JSON.parse(await loadDemoRegistryManifestJSON()) as ManifestFixture
+      generated.components[0].tag = "TamperedTag"
+      const fixture = await makeFixture({
+        committedManifestJSON: `${JSON.stringify(generated, null, 2)}\n`,
+      })
+      const before = await snapshot(fixture)
+
+      await expect(syncCapabilityManifest({ ...fixture, mode })).rejects.toThrow(
+        /committed capability manifest .* hash .* does not match its canonical content digest/,
+      )
+      expect(await snapshot(fixture)).toEqual(before)
+    })
+  }
+
+  test("uses the Rails top-level canonical key order instead of manifest source order", async () => {
+    const generated = JSON.parse(await loadDemoRegistryManifestJSON()) as ManifestFixture
+    const reordered = {
+      protocolVersion: generated.protocolVersion,
+      modules: generated.modules,
+      components: generated.components,
+      manifestVersion: generated.manifestVersion,
+      hash: generated.hash,
+    }
+    const manifestJSON = `${JSON.stringify(reordered, null, 2)}\n`
+    const fixture = await makeFixture({ committedManifestJSON: manifestJSON, manifestJSON })
+
+    await syncCapabilityManifest({ ...fixture, mode: "check" })
   })
 
   test("rejects a coordinated manifest and lock edit that disagrees with DEMO_REGISTRY", async () => {
@@ -229,18 +312,178 @@ describe("Expo capability cross-runtime lock invariants", () => {
     const before = await snapshot(fixture)
 
     await expect(syncCapabilityManifest({ ...fixture, mode: "write" })).rejects.toThrow(
-      /^Updated compatibility lock history\[1\]\.digest must be sha256-128:/,
+      /^Generated capability manifest hash .* does not match its canonical content digest/,
     )
     expect(await snapshot(fixture)).toEqual(before)
   })
 })
 
 describe("Expo capability artifact publication", () => {
+  test("preserves 0600 and 0640 modes and the source owners", async () => {
+    const fixture = await makeFixture()
+    await chmod(fixture.manifestPath, 0o600)
+    await chmod(fixture.lockfilePath, 0o640)
+    const beforeManifest = await stat(fixture.manifestPath)
+    const beforeLock = await stat(fixture.lockfilePath)
+
+    await syncCapabilityManifest({ ...fixture, mode: "write" })
+
+    const afterManifest = await stat(fixture.manifestPath)
+    const afterLock = await stat(fixture.lockfilePath)
+    expect(afterManifest.mode & 0o777).toBe(0o600)
+    expect(afterLock.mode & 0o777).toBe(0o640)
+    expect([afterManifest.uid, afterManifest.gid]).toEqual([beforeManifest.uid, beforeManifest.gid])
+    expect([afterLock.uid, afterLock.gid]).toEqual([beforeLock.uid, beforeLock.gid])
+    expect((await readdir(fixture.repositoryRoot)).sort()).toEqual([
+      "expo-turbo.lock.json",
+      "manifest.json",
+    ])
+  })
+
+  test("stops on changed source bytes and restores an artifact it already published", async () => {
+    const directory = await makeTemporaryDirectory()
+    const first = join(directory, "first.json")
+    const second = join(directory, "second.json")
+    await Promise.all([
+      writeFile(first, "first original\n"),
+      writeFile(second, "second original\n"),
+    ])
+
+    await expect(
+      publishCapabilityArtifacts(
+        [
+          { contents: "first next\n", path: first },
+          { contents: "second next\n", path: second },
+        ],
+        {
+          beforePublish: async (path) => {
+            if (path === second) await writeFile(second, "external change\n")
+          },
+          transactionToken: "changed-source",
+        },
+      ),
+    ).rejects.toThrow(/source changed after the transaction started/)
+
+    expect(await directoryState(directory)).toEqual([
+      ["first.json", "first original\n"],
+      ["second.json", "external change\n"],
+    ])
+  })
+
+  test("stops on changed source metadata before a publish rename", async () => {
+    const directory = await makeTemporaryDirectory()
+    const target = join(directory, "target.json")
+    await writeFile(target, "original\n", { mode: 0o640 })
+
+    await expect(
+      publishCapabilityArtifacts([{ contents: "next\n", path: target }], {
+        beforePublish: async () => chmod(target, 0o600),
+        transactionToken: "changed-metadata",
+      }),
+    ).rejects.toThrow(/source changed after the transaction started/)
+
+    expect(await readFile(target, "utf8")).toBe("original\n")
+    expect((await stat(target)).mode & 0o777).toBe(0o600)
+    expect(await directoryState(directory)).toEqual([["target.json", "original\n"]])
+  })
+
+  for (const suffix of ["staged", "backup"] as const) {
+    test(`refuses a symlinked ${suffix} path without changing a target`, async () => {
+      const directory = await makeTemporaryDirectory()
+      const target = join(directory, "target.json")
+      const unrelated = join(directory, "unrelated.txt")
+      const collision = `${target}.symlink-${suffix}.${suffix}`
+      await Promise.all([writeFile(target, "original\n"), writeFile(unrelated, "unrelated\n")])
+      await symlink(unrelated, collision)
+
+      await expect(
+        publishCapabilityArtifacts([{ contents: "next\n", path: target }], {
+          transactionToken: `symlink-${suffix}`,
+        }),
+      ).rejects.toThrow(/must not be a symlink/)
+
+      expect(await readFile(target, "utf8")).toBe("original\n")
+      expect(await readFile(unrelated, "utf8")).toBe("unrelated\n")
+      expect((await lstat(collision)).isSymbolicLink()).toBe(true)
+    })
+  }
+
+  test("an existing temp name cannot be overwritten or removed", async () => {
+    const directory = await makeTemporaryDirectory()
+    const target = join(directory, "target.json")
+    const collision = `${target}.collision.staged`
+    await Promise.all([writeFile(target, "original\n"), writeFile(collision, "unrelated\n")])
+
+    await expect(
+      publishCapabilityArtifacts([{ contents: "next\n", path: target }], {
+        transactionToken: "collision",
+      }),
+    ).rejects.toThrow(/Refusing to replace an existing.*temp or backup/)
+
+    expect(await readFile(target, "utf8")).toBe("original\n")
+    expect(await readFile(collision, "utf8")).toBe("unrelated\n")
+  })
+
+  for (const sourceName of ["manifest", "lock"] as const) {
+    test(`rejects a symlinked ${sourceName} source and removes its own process lock`, async () => {
+      const fixture = await makeFixture()
+      const sourcePath = sourceName === "manifest" ? fixture.manifestPath : fixture.lockfilePath
+      const unrelated = join(fixture.repositoryRoot, `${sourceName}-unrelated.json`)
+      const original = await readFile(sourcePath)
+      await writeFile(unrelated, original)
+      await rm(sourcePath)
+      await symlink(unrelated, sourcePath)
+
+      await expect(syncCapabilityManifest({ ...fixture, mode: "write" })).rejects.toThrow(
+        /source path must not be a symlink/,
+      )
+
+      expect((await lstat(sourcePath)).isSymbolicLink()).toBe(true)
+      expect(await readFile(unrelated)).toEqual(original)
+      expect(await pathExists(`${fixture.lockfilePath}.capabilities.lock`)).toBe(false)
+    })
+  }
+
+  test("rejects a symlinked process lock before an artifact write", async () => {
+    const fixture = await makeFixture()
+    const processLockPath = join(fixture.repositoryRoot, "custom.lock")
+    const unrelated = join(fixture.repositoryRoot, "unrelated.lock")
+    await writeFile(unrelated, "unrelated\n")
+    await symlink(unrelated, processLockPath)
+    const before = await snapshot(fixture)
+
+    await expect(
+      syncCapabilityManifest({ ...fixture, mode: "write", processLockPath }),
+    ).rejects.toThrow(/process lock path must not be a symlink/)
+
+    expect(await snapshot(fixture)).toEqual(before)
+    expect(await readFile(unrelated, "utf8")).toBe("unrelated\n")
+    expect((await lstat(processLockPath)).isSymbolicLink()).toBe(true)
+  })
+
+  test("does not auto-delete a stale lock with PID and token evidence", async () => {
+    const fixture = await makeFixture()
+    const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
+    const evidence = `${JSON.stringify({ version: 1, pid: 999999, token: "manual-token", phase: "publishing:1" })}\n`
+    await writeFile(processLockPath, evidence)
+    const before = await snapshot(fixture)
+
+    await expect(syncCapabilityManifest({ ...fixture, mode: "write" })).rejects.toThrow(
+      /PID 999999, token manual-token, phase publishing:1.*manual recovery/,
+    )
+
+    expect(await snapshot(fixture)).toEqual(before)
+    expect(await readFile(processLockPath, "utf8")).toBe(evidence)
+  })
+
   test("replaces every target and leaves no temporary or backup file", async () => {
     const directory = await makeTemporaryDirectory()
     const first = join(directory, "first.json")
     const second = join(directory, "second.json")
-    await Promise.all([writeFile(first, "first original\n"), writeFile(second, "second original\n")])
+    await Promise.all([
+      writeFile(first, "first original\n"),
+      writeFile(second, "second original\n"),
+    ])
 
     await publishCapabilityArtifacts([
       { contents: "first next\n", path: first },
@@ -315,10 +558,7 @@ describe("Expo capability artifact publication", () => {
       writeFile(writable, "writable original\n"),
       writeFile(locked, "locked original\n"),
     ])
-    const before = await Promise.all([
-      directoryState(directory),
-      directoryState(readOnlyDirectory),
-    ])
+    const before = await Promise.all([directoryState(directory), directoryState(readOnlyDirectory)])
 
     await chmod(readOnlyDirectory, 0o500)
     try {
@@ -332,9 +572,9 @@ describe("Expo capability artifact publication", () => {
       await chmod(readOnlyDirectory, 0o700)
     }
 
-    expect(await Promise.all([directoryState(directory), directoryState(readOnlyDirectory)])).toEqual(
-      before,
-    )
+    expect(
+      await Promise.all([directoryState(directory), directoryState(readOnlyDirectory)]),
+    ).toEqual(before)
   })
 
   // The two artifacts sit in different directories, so exactly one target is unwritable in each
@@ -367,6 +607,108 @@ describe("Expo capability artifact publication", () => {
     )
   }
 })
+
+describe("Expo capability process locking", () => {
+  test("writes 0600 PID, token, artifact, and phase evidence and removes its own lock", async () => {
+    const fixture = await makeFixture()
+    const processLockPath = `${fixture.lockfilePath}.capabilities.lock`
+    let evidence: Record<string, unknown> | undefined
+    let lockMode: number | undefined
+
+    await syncCapabilityManifest({
+      ...fixture,
+      afterLockAcquired: async () => {
+        evidence = JSON.parse(await readFile(processLockPath, "utf8"))
+        lockMode = (await stat(processLockPath)).mode & 0o777
+      },
+      mode: "check",
+      publishOptions: { transactionToken: "evidence-token" },
+    })
+
+    expect(lockMode).toBe(0o600)
+    expect(evidence).toMatchObject({
+      artifacts: [fixture.manifestPath, fixture.lockfilePath],
+      phase: "locked-before-source-read",
+      pid: process.pid,
+      token: "evidence-token",
+      version: 1,
+    })
+    expect(await pathExists(processLockPath)).toBe(false)
+  })
+
+  test("lets one subprocess finish and makes an overlapping subprocess fail closed", async () => {
+    const fixture = await makeFixture()
+    const directory = fixture.repositoryRoot
+    const workerPath = join(directory, "sync-worker.ts")
+    const firstConfigPath = join(directory, "first-config.json")
+    const secondConfigPath = join(directory, "second-config.json")
+    const markerPath = join(directory, "first-holds-lock")
+    const releasePath = join(directory, "release-first")
+    const firstResultPath = join(directory, "first-result")
+    const secondResultPath = join(directory, "second-result")
+    const importURL = new URL("./sync-capability-manifest.ts", import.meta.url).href
+    await writeFile(
+      workerPath,
+      `import { access, readFile, writeFile } from "node:fs/promises"\nimport { syncCapabilityManifest } from ${JSON.stringify(importURL)}\nconst config = JSON.parse(await readFile(process.argv[2], "utf8"))\ntry {\n  await syncCapabilityManifest({\n    ...config.fixture,\n    mode: "write",\n    afterLockAcquired: config.markerPath ? async () => {\n      await writeFile(config.markerPath, "held\\n")\n      for (;;) {\n        try { await access(config.releasePath); break } catch { await Bun.sleep(5) }\n      }\n    } : undefined,\n  })\n  await writeFile(config.resultPath, "success\\n")\n} catch (error) {\n  await writeFile(config.resultPath, (error instanceof Error ? error.message : String(error)) + "\\n")\n  process.exitCode = 1\n}\n`,
+    )
+    const serializedFixture = {
+      lockfilePath: fixture.lockfilePath,
+      manifestJSON: fixture.manifestJSON,
+      manifestPath: fixture.manifestPath,
+      repositoryRoot: fixture.repositoryRoot,
+    }
+    await Promise.all([
+      writeFile(
+        firstConfigPath,
+        JSON.stringify({
+          fixture: serializedFixture,
+          markerPath,
+          releasePath,
+          resultPath: firstResultPath,
+        }),
+      ),
+      writeFile(
+        secondConfigPath,
+        JSON.stringify({ fixture: serializedFixture, resultPath: secondResultPath }),
+      ),
+    ])
+    const before = await snapshot(fixture)
+
+    const first = Bun.spawn({
+      cmd: [process.execPath, workerPath, firstConfigPath],
+      stderr: "pipe",
+      stdout: "pipe",
+    })
+    await waitForPath(markerPath)
+    const second = Bun.spawn({
+      cmd: [process.execPath, workerPath, secondConfigPath],
+      stderr: "pipe",
+      stdout: "pipe",
+    })
+    expect(await second.exited).toBe(1)
+    expect(await readFile(secondResultPath, "utf8")).toMatch(
+      /Another Expo capability sync owns.*No file was changed/,
+    )
+    expect(await snapshot(fixture)).toEqual(before)
+
+    await writeFile(releasePath, "release\n")
+    expect(await first.exited).toBe(0)
+    expect(await readFile(firstResultPath, "utf8")).toBe("success\n")
+    await syncCapabilityManifest({ ...fixture, mode: "check" })
+    expect(await pathExists(`${fixture.lockfilePath}.capabilities.lock`)).toBe(false)
+    expect((await readdir(directory)).filter((name) => /\.(?:staged|backup)$/.test(name))).toEqual(
+      [],
+    )
+  })
+})
+
+interface ManifestFixture {
+  components: Array<{ aliases: string[]; tag: string }>
+  hash: string
+  manifestVersion: number
+  modules: Array<{ name: string }>
+  protocolVersion: string
+}
 
 interface LockFixtureRecord {
   digest?: string
@@ -445,6 +787,23 @@ async function makeTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "expo-capability-artifacts-"))
   temporaryRoots.push(directory)
   return directory
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (!(await pathExists(path))) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for subprocess marker ${path}`)
+    await Bun.sleep(5)
+  }
 }
 
 async function directoryState(directory: string): Promise<[string, string][]> {
