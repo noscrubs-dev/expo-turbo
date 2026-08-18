@@ -154,6 +154,47 @@ describe("Android lane cleanup", () => {
     expect(environment).toContain("evidence_complete=true")
   })
 
+  test("runs cleanup only from EXIT and maps INT and TERM to conventional statuses", async () => {
+    const lane = await readFile(laneScript, "utf8")
+
+    assertSignalTrapContract(lane)
+    expect(() =>
+      assertSignalTrapContract(lane.replace("trap cleanup EXIT", "trap cleanup EXIT INT TERM")),
+    ).toThrow("cleanup must run only from EXIT")
+  })
+
+  for (const [signal, expectedStatus] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    test(`records ${signal} after a successful command as cancellation, not success`, async () => {
+      const fixture = await createFixture()
+      const lane = await readFile(laneScript, "utf8")
+      const result = await runSignalCleanup(fixture, lane, signal, "after-success")
+      const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+
+      expect(result.timedOut).toBe(false)
+      expect(result.status).toBe(expectedStatus)
+      expect(environment).toContain(`exit_status=${expectedStatus}`)
+      expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+    })
+
+    test(`stops an active child and records ${signal} as cancellation`, async () => {
+      const fixture = await createFixture()
+      const lane = await readFile(laneScript, "utf8")
+      const result = await runSignalCleanup(fixture, lane, signal, "child-active")
+      const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+      const childPid = Number((await readFile(join(fixture, "child-pid"), "utf8")).trim())
+
+      expect(result.timedOut).toBe(false)
+      expect(result.status).toBe(expectedStatus)
+      expect(environment).toContain(`exit_status=${expectedStatus}`)
+      expect(Number.isInteger(childPid)).toBe(true)
+      expect(isRunning(childPid)).toBe(false)
+      expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+    })
+  }
+
   test("fails if the cleanup evidence strict-mode guard is deleted", async () => {
     const fixture = await createFixture()
     const lane = await readFile(laneScript, "utf8")
@@ -476,6 +517,92 @@ exit 37
   })
   await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
   return { status: await child.exited }
+}
+
+async function runSignalCleanup(
+  fixture: string,
+  lane: string,
+  signal: "SIGINT" | "SIGTERM",
+  mode: "after-success" | "child-active",
+): Promise<{ status: number; timedOut: boolean }> {
+  await mkdir(join(fixture, "artifacts"), { recursive: true })
+  await mkdir(join(fixture, "android/emulator"), { recursive: true })
+  await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
+  const cleanup = extractFunction(lane, "cleanup")
+  const interrupt = extractFunction(lane, "handle_interrupt")
+  const terminate = extractFunction(lane, "handle_terminate")
+  const stopProcess = await readFile(stopProcessScript, "utf8")
+  const activeChild = mode === "child-active"
+    ? [
+        "sleep 30 &",
+        "rails_pid=$!",
+        "printf '%s\n' \"$rails_pid\" >\"$FIXTURE/child-pid\"",
+      ].join("\n")
+    : "true"
+  const harness = `
+set -euo pipefail
+artifacts="$FIXTURE/artifacts"
+ANDROID_HOME="$FIXTURE/android"
+adb_serial="emulator-5580"
+rails_pid=""
+sampler_pid=""
+emulator_pid=""
+maestro_version="2.7.0"
+timeout() { return 0; }
+${stopProcess}
+${cleanup}
+${interrupt}
+${terminate}
+trap cleanup EXIT
+trap handle_interrupt INT
+trap handle_terminate TERM
+${activeChild}
+printf 'ready\n' >"$FIXTURE/ready"
+while true; do sleep 0.1; done
+`
+  const child = Bun.spawn(["bash", "-c", harness], {
+    env: { ...process.env, FIXTURE: fixture },
+    stdout: "ignore",
+    stderr: "ignore",
+  })
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await Bun.file(join(fixture, "ready")).exists()) break
+    await Bun.sleep(10)
+  }
+  expect(await Bun.file(join(fixture, "ready")).exists()).toBe(true)
+  process.kill(child.pid, signal)
+
+  const timedOut = await Promise.race([
+    child.exited.then(() => false),
+    Bun.sleep(3_000).then(() => true),
+  ])
+  if (timedOut && child.exitCode === null) child.kill(9)
+  return { status: await child.exited, timedOut }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function assertSignalTrapContract(lane: string): void {
+  if (!/^trap cleanup EXIT$/m.test(lane) || /^trap cleanup EXIT INT TERM$/m.test(lane)) {
+    throw new Error("cleanup must run only from EXIT")
+  }
+  if (!/handle_interrupt\(\) \{\n  trap - INT TERM\n  exit 130\n\}/.test(lane)) {
+    throw new Error("INT must exit 130")
+  }
+  if (!/handle_terminate\(\) \{\n  trap - INT TERM\n  exit 143\n\}/.test(lane)) {
+    throw new Error("TERM must exit 143")
+  }
+  if (!/^trap handle_interrupt INT$/m.test(lane) || !/^trap handle_terminate TERM$/m.test(lane)) {
+    throw new Error("signal handlers must be installed")
+  }
 }
 
 function extractFunction(lane: string, name: string): string {

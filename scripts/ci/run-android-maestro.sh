@@ -283,7 +283,7 @@ sampler_pid=""
 
 cleanup() {
   local status=$?
-  trap - EXIT INT TERM
+  trap - EXIT
 
   timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat.txt" 2>&1 || true
   stop_process "$rails_pid" "Rails" 50 50 0.1
@@ -326,7 +326,23 @@ cleanup() {
 
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+
+handle_interrupt() {
+  trap - INT TERM
+  exit 130
+}
+
+handle_terminate() {
+  trap - INT TERM
+  exit 143
+}
+
+# Signals must choose their own conventional status before EXIT runs cleanup.
+# Reading $? in a multi-signal trap can see the last successful command, which
+# would record a cancellation as a successful Android conformance run.
+trap cleanup EXIT
+trap handle_interrupt INT
+trap handle_terminate TERM
 
 sample_top_processes() {
   local ps_status
