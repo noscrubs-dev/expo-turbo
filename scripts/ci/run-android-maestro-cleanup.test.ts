@@ -7,6 +7,11 @@ import { fileURLToPath } from "node:url"
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const stopProcessScript = join(scriptDirectory, "stop-process.sh")
 const laneScript = join(scriptDirectory, "run-android-maestro.sh")
+const entryScript = join(scriptDirectory, "run-android-maestro-entry.sh")
+const androidWorkflow = join(scriptDirectory, "../../.github/workflows/android-device.yml")
+const canonicalEntryCommand = "exec scripts/ci/run-android-maestro-entry.sh"
+const canonicalEntryLauncher =
+  'ruby -e \'Process.setsid; Signal.trap("INT", "DEFAULT"); Signal.trap("QUIT", "DEFAULT"); exec(*ARGV)\' "$worker" &'
 const fixtures: string[] = []
 const survivingPids: number[] = []
 
@@ -35,7 +40,7 @@ describe("Android lane cleanup", () => {
     const result = await runStopProcess(fixture, source)
 
     expect(performance.now() - started).toBeLessThan(2_000)
-    expect(result.timedOut).toBe(false)
+    expect(result.timedOut, result.stderr).toBe(false)
     expect(result.status).toBe(0)
     expect(result.stdout).toContain("survivor=false")
     expect(result.stdout).toContain("reaped=true")
@@ -156,11 +161,135 @@ describe("Android lane cleanup", () => {
 
   test("runs cleanup only from EXIT and maps INT and TERM to conventional statuses", async () => {
     const lane = await readFile(laneScript, "utf8")
+    const entry = await readFile(entryScript, "utf8")
 
     assertSignalTrapContract(lane)
+    assertEntrySignalContract(entry)
     expect(() =>
       assertSignalTrapContract(lane.replace("trap cleanup EXIT", "trap cleanup EXIT INT TERM")),
     ).toThrow("cleanup must run only from EXIT")
+    expect(() =>
+      assertEntrySignalContract(
+        entry.replace("trap 'forward_signal INT 130' INT", ": INT trap removed"),
+      ),
+    ).toThrow("entry signal handlers")
+    expect(() =>
+      assertEntrySignalContract(
+        entry.replace('kill -s "$signal" -- "-$worker_pgid"', 'kill -s "$signal" "$worker_pid"'),
+      ),
+    ).toThrow("entire worker group")
+    for (const reset of ['Signal.trap("INT", "DEFAULT")', 'Signal.trap("QUIT", "DEFAULT")']) {
+      const mutation = entry.replace(reset, ": disposition reset removed")
+      expect(mutation).not.toBe(entry)
+      expect(() => assertEntrySignalContract(mutation)).toThrow("process-group launcher")
+    }
+  })
+
+  test("the Android workflow invokes only the exact checked-in entry wrapper", async () => {
+    const workflowSource = await readFile(androidWorkflow, "utf8")
+    expectAndroidWorkflowEntry(workflowSource)
+
+    for (const run of [
+      "scripts/ci/run-android-maestro.sh",
+      "scripts/ci/run-android-maestro-entry.sh",
+      "bash scripts/ci/run-android-maestro-entry.sh",
+      `${canonicalEntryCommand} || true`,
+      `echo ready\n${canonicalEntryCommand}`,
+    ]) {
+      const mutation = workflowSource.replace(`run: ${canonicalEntryCommand}`, `run: ${run}`)
+      expect(mutation).not.toBe(workflowSource)
+      expect(() => expectAndroidWorkflowEntry(mutation)).toThrow()
+    }
+    for (const field of ["continue-on-error: true", "if: always()"] as const) {
+      const mutation = workflowSource.replace(
+        "      - name: Run the shared suite on Android\n",
+        `      - name: Run the shared suite on Android\n        ${field}\n`,
+      )
+      expect(() => expectAndroidWorkflowEntry(mutation)).toThrow("must not set")
+    }
+  })
+
+  test("the real entry wrapper preserves normal worker success and failure", async () => {
+    for (const status of [0, 37]) {
+      const fixture = await createFixture()
+      const result = await runEntryWorker(fixture, `exit ${status}\n`)
+      expect(result.timedOut).toBe(false)
+      expect(result.status).toBe(status)
+    }
+  })
+
+  test("the entry wrapper fails closed when process-group validation is removed", async () => {
+    const entry = await readFile(entryScript, "utf8")
+    assertEntrySignalContract(entry)
+    for (const guard of [
+      '[ "$worker_pid" -le 1 ]',
+      '[ "$current_pgid" -le 1 ]',
+      '[ "$current_pgid" != "$worker_pid" ]',
+      '[ "$current_pgid" != "$worker_pgid" ]',
+      '[ "$current_pgid" = "$entry_pgid" ]',
+      "for job_pid in $(jobs -pr); do",
+      "owned_worker_is_running || return 1",
+      canonicalEntryLauncher,
+    ]) {
+      const mutation = entry.replace(guard, ": removed process-group guard")
+      expect(mutation).not.toBe(entry)
+      expect(() => assertEntrySignalContract(mutation)).toThrow("process-group")
+    }
+  })
+
+  for (const [signal, expectedStatus] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    test(`the GitHub-shaped runner forwards ${signal} from only its temporary Bash PID`, async () => {
+      const workflow = await readFile(androidWorkflow, "utf8")
+      const entry = await readFile(entryScript, "utf8")
+      for (let repetition = 0; repetition < 3; repetition += 1) {
+        const result = await runRunnerShapedSignal(workflow, entry, signal)
+        expectRunnerSignalProof(result, expectedStatus)
+      }
+    })
+
+    test(`the GitHub-shaped ${signal} proof rejects the previous bare wrapper command`, async () => {
+      const workflow = await readFile(androidWorkflow, "utf8")
+      const entry = await readFile(entryScript, "utf8")
+      const mutation = workflow.replace(
+        `run: ${canonicalEntryCommand}`,
+        "run: scripts/ci/run-android-maestro-entry.sh",
+      )
+      expect(mutation).not.toBe(workflow)
+
+      const result = await runRunnerShapedSignal(mutation, entry, signal)
+      expect(runnerSignalProofPasses(result, expectedStatus)).toBe(false)
+    })
+  }
+
+  test("the GitHub-shaped INT proof rejects inherited ignored signal dispositions", async () => {
+    const workflow = await readFile(androidWorkflow, "utf8")
+    const entry = await readFile(entryScript, "utf8")
+    const mutation = entry.replace(
+      canonicalEntryLauncher,
+      'ruby -e \'Process.setsid; Signal.trap("INT", "IGNORE"); Signal.trap("QUIT", "IGNORE"); exec(*ARGV)\' "$worker" &',
+    )
+    expect(mutation).not.toBe(entry)
+
+    const result = await runRunnerShapedSignal(workflow, mutation, "SIGINT")
+    expect(runnerSignalProofPasses(result, 130)).toBe(false)
+  })
+
+  test("an already-exited worker keeps its genuine failure during a signal race", async () => {
+    const fixture = await createFixture()
+    const entry = await readFile(entryScript, "utf8")
+    const marker = "worker_status=0\nwhile true; do"
+    const mutation = entry.replace(
+      marker,
+      "while owned_worker_is_running; do sleep 0.01; done\nforward_signal TERM 143\nworker_status=0\nwhile true; do",
+    )
+    expect(mutation).not.toBe(entry)
+
+    const result = await runEntryWorker(fixture, "exit 37\n", mutation)
+    expect(result.timedOut).toBe(false)
+    expect(result.status).toBe(37)
   })
 
   for (const [signal, expectedStatus] of [
@@ -168,30 +297,34 @@ describe("Android lane cleanup", () => {
     ["SIGTERM", 143],
   ] as const) {
     test(`records ${signal} after a successful command as cancellation, not success`, async () => {
-      const fixture = await createFixture()
-      const lane = await readFile(laneScript, "utf8")
-      const result = await runSignalCleanup(fixture, lane, signal, "after-success")
-      const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+      for (let repetition = 0; repetition < 3; repetition += 1) {
+        const fixture = await createFixture()
+        const lane = await readFile(laneScript, "utf8")
+        const result = await runSignalCleanup(fixture, lane, signal, "after-success")
+        const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
 
-      expect(result.timedOut).toBe(false)
-      expect(result.status).toBe(expectedStatus)
-      expect(environment).toContain(`exit_status=${expectedStatus}`)
-      expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+        expect(result.timedOut).toBe(false)
+        expect(result.status, result.stderr).toBe(expectedStatus)
+        expect(environment).toContain(`exit_status=${expectedStatus}`)
+        expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+      }
     })
 
     test(`stops an active child and records ${signal} as cancellation`, async () => {
-      const fixture = await createFixture()
-      const lane = await readFile(laneScript, "utf8")
-      const result = await runSignalCleanup(fixture, lane, signal, "child-active")
-      const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
-      const childPid = Number((await readFile(join(fixture, "child-pid"), "utf8")).trim())
+      for (let repetition = 0; repetition < 3; repetition += 1) {
+        const fixture = await createFixture()
+        const lane = await readFile(laneScript, "utf8")
+        const result = await runSignalCleanup(fixture, lane, signal, "child-active")
+        const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+        const childPid = Number((await readFile(join(fixture, "child-pid"), "utf8")).trim())
 
-      expect(result.timedOut).toBe(false)
-      expect(result.status).toBe(expectedStatus)
-      expect(environment).toContain(`exit_status=${expectedStatus}`)
-      expect(Number.isInteger(childPid)).toBe(true)
-      expect(isRunning(childPid)).toBe(false)
-      expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+        expect(result.timedOut).toBe(false)
+        expect(result.status, result.stderr).toBe(expectedStatus)
+        expect(environment).toContain(`exit_status=${expectedStatus}`)
+        expect(Number.isInteger(childPid)).toBe(true)
+        expect(isRunning(childPid)).toBe(false)
+        expect(await Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists()).toBe(false)
+      }
     })
   }
 
@@ -524,8 +657,10 @@ async function runSignalCleanup(
   lane: string,
   signal: "SIGINT" | "SIGTERM",
   mode: "after-success" | "child-active",
-): Promise<{ status: number; timedOut: boolean }> {
+): Promise<{ status: number; stderr: string; timedOut: boolean }> {
+  const fixtureScripts = join(fixture, "scripts/ci")
   await mkdir(join(fixture, "artifacts"), { recursive: true })
+  await mkdir(fixtureScripts, { recursive: true })
   await mkdir(join(fixture, "android/emulator"), { recursive: true })
   await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
   const cleanup = extractFunction(lane, "cleanup")
@@ -538,7 +673,7 @@ async function runSignalCleanup(
           "\n",
         )
       : "true"
-  const harness = `
+  const harness = `#!/usr/bin/env bash
 set -euo pipefail
 artifacts="$FIXTURE/artifacts"
 ANDROID_HOME="$FIXTURE/android"
@@ -559,10 +694,18 @@ ${activeChild}
 printf 'ready\n' >"$FIXTURE/ready"
 while true; do sleep 0.1; done
 `
-  const child = Bun.spawn(["bash", "-c", harness], {
+  const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureLane = join(fixtureScripts, "run-android-maestro.sh")
+  await writeFile(fixtureEntry, await readFile(entryScript, "utf8"))
+  await writeFile(fixtureLane, harness)
+  await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
+
+  const stderrPath = join(fixture, "signal-entry.stderr")
+  const child = Bun.spawn([fixtureEntry], {
+    cwd: fixture,
     env: { ...process.env, FIXTURE: fixture },
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: Bun.file(stderrPath),
   })
 
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -577,7 +720,245 @@ while true; do sleep 0.1; done
     Bun.sleep(3_000).then(() => true),
   ])
   if (timedOut && child.exitCode === null) child.kill(9)
-  return { status: await child.exited, timedOut }
+  return { status: await child.exited, stderr: await readFile(stderrPath, "utf8"), timedOut }
+}
+
+interface RunnerSignalResult {
+  status: number
+  stderr: string
+  timedOut: boolean
+  environment: string
+  junitExists: boolean
+  childStopped: boolean
+  workerStopped: boolean
+}
+
+async function runRunnerShapedSignal(
+  workflowSource: string,
+  entrySource: string,
+  signal: "SIGINT" | "SIGTERM",
+): Promise<RunnerSignalResult> {
+  const fixture = await createFixture()
+  const fixtureScripts = join(fixture, "scripts/ci")
+  await mkdir(join(fixture, "artifacts"), { recursive: true })
+  await mkdir(fixtureScripts, { recursive: true })
+  await mkdir(join(fixture, "android/emulator"), { recursive: true })
+  await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
+
+  const cleanup = extractFunction(await readFile(laneScript, "utf8"), "cleanup")
+  const interrupt = extractFunction(await readFile(laneScript, "utf8"), "handle_interrupt")
+  const terminate = extractFunction(await readFile(laneScript, "utf8"), "handle_terminate")
+  const stopProcess = await readFile(stopProcessScript, "utf8")
+  const lane = `#!/usr/bin/env bash
+set -euo pipefail
+artifacts="$FIXTURE/artifacts"
+ANDROID_HOME="$FIXTURE/android"
+adb_serial="emulator-5580"
+rails_pid=""
+sampler_pid=""
+emulator_pid=""
+maestro_version="2.7.0"
+timeout() { return 0; }
+${stopProcess}
+${cleanup}
+${interrupt}
+${terminate}
+trap cleanup EXIT
+trap handle_interrupt INT
+trap handle_terminate TERM
+printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+sleep 30 &
+rails_pid=$!
+printf '%s\\n' "$rails_pid" >"$FIXTURE/child-pid"
+printf 'ready\\n' >"$FIXTURE/ready"
+while true; do sleep 0.1; done
+`
+  const run = workflowRunValue(workflowSource)
+  const stepScript = join(fixture, "github-step.sh")
+  const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureLane = join(fixtureScripts, "run-android-maestro.sh")
+  await Promise.all([
+    writeFile(stepScript, `${run}\n`),
+    writeFile(fixtureEntry, entrySource),
+    writeFile(fixtureLane, lane),
+  ])
+  await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureLane, 0o755)])
+
+  const stderrPath = join(fixture, "runner-signal.stderr")
+  const child = Bun.spawn(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", stepScript], {
+    cwd: fixture,
+    env: { ...process.env, FIXTURE: fixture },
+    stdout: "ignore",
+    stderr: Bun.file(stderrPath),
+  })
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await Bun.file(join(fixture, "ready")).exists()) break
+    if (child.exitCode !== null) break
+    await Bun.sleep(10)
+  }
+  expect(await Bun.file(join(fixture, "ready")).exists()).toBe(true)
+  process.kill(child.pid, signal)
+
+  const timedOut = await Promise.race([
+    child.exited.then(() => false),
+    Bun.sleep(3_000).then(() => true),
+  ])
+  if (timedOut) await killRecordedWorkerGroup(fixture)
+  if (timedOut && child.exitCode === null) child.kill(9)
+  const status = await child.exited
+  await killRecordedWorkerGroup(fixture)
+
+  const environmentPath = join(fixture, "artifacts/environment.txt")
+  const environment = (await Bun.file(environmentPath).exists())
+    ? await readFile(environmentPath, "utf8")
+    : ""
+  const childPid = Number((await readFile(join(fixture, "child-pid"), "utf8")).trim())
+  const [stderr, junitExists] = await Promise.all([
+    readFile(stderrPath, "utf8"),
+    Bun.file(join(fixture, "artifacts/maestro-junit.xml")).exists(),
+  ])
+  return {
+    status,
+    stderr,
+    timedOut,
+    environment,
+    junitExists,
+    childStopped: Number.isInteger(childPid) && !isRunning(childPid),
+    workerStopped: !(await recordedWorkerIsRunning(fixture)),
+  }
+}
+
+function expectRunnerSignalProof(result: RunnerSignalResult, expectedStatus: number): void {
+  expect(result.timedOut, result.stderr).toBe(false)
+  expect(result.status, result.stderr).toBe(expectedStatus)
+  expect(result.environment).toContain(`exit_status=${expectedStatus}`)
+  expect(result.environment).toContain("evidence_complete=true")
+  expect(result.childStopped).toBe(true)
+  expect(result.workerStopped).toBe(true)
+  expect(result.junitExists).toBe(false)
+}
+
+function runnerSignalProofPasses(result: RunnerSignalResult, expectedStatus: number): boolean {
+  return (
+    !result.timedOut &&
+    result.status === expectedStatus &&
+    result.environment.includes(`exit_status=${expectedStatus}`) &&
+    result.environment.includes("evidence_complete=true") &&
+    result.childStopped &&
+    result.workerStopped &&
+    !result.junitExists
+  )
+}
+
+function workflowRunValue(workflowSource: string): string {
+  const workflow = Bun.YAML.parse(workflowSource) as {
+    jobs?: { maestro?: { steps?: Array<Record<string, unknown>> } }
+  }
+  const steps = workflow.jobs?.maestro?.steps
+  const matches = steps?.filter((step) => step.name === "Run the shared suite on Android") ?? []
+  const run = matches[0]?.run
+  if (matches.length !== 1 || typeof run !== "string") {
+    throw new Error("Android workflow run value is missing")
+  }
+  return run
+}
+
+async function recordedWorkerIsRunning(fixture: string): Promise<boolean> {
+  const ownership = await readOwnedWorker(fixture)
+  if (!ownership) return false
+  return isRunning(ownership.pid)
+}
+
+async function killRecordedWorkerGroup(fixture: string): Promise<void> {
+  const ownership = await readOwnedWorker(fixture)
+  if (!ownership || !isRunning(ownership.pid)) return
+  const currentPgid = await processGroup(fixture, "current-worker-pgid", ownership.pid)
+  const selfPgid = await processGroup(fixture, "test-runner-pgid", process.pid)
+  if (
+    currentPgid !== ownership.pgid ||
+    ownership.pid !== ownership.pgid ||
+    ownership.pgid <= 1 ||
+    ownership.pgid === selfPgid ||
+    ownership.pid === process.pid
+  ) {
+    throw new Error(
+      `refused to kill an invalid or unrelated recorded worker group: pid=${ownership.pid} recorded_pgid=${ownership.pgid} current_pgid=${currentPgid} self_pgid=${selfPgid}`,
+    )
+  }
+  process.kill(-ownership.pgid, "SIGKILL")
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!isRunning(ownership.pid)) return
+    await Bun.sleep(10)
+  }
+  throw new Error("recorded worker group survived SIGKILL")
+}
+
+async function processGroup(fixture: string, name: string, pid: number): Promise<number> {
+  const output = join(fixture, name)
+  const child = Bun.spawn(
+    [
+      "ruby",
+      "-e",
+      "File.write(ARGV.fetch(1), Process.getpgid(Integer(ARGV.fetch(0))).to_s)",
+      `${pid}`,
+      output,
+    ],
+    { stdout: "ignore", stderr: "pipe" },
+  )
+  const [status, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  const pgid = (await Bun.file(output).exists()) ? Number(await readFile(output, "utf8")) : 0
+  if (status !== 0 || !Number.isInteger(pgid)) {
+    throw new Error(`could not validate process group for PID ${pid}: ${stderr.trim()}`)
+  }
+  return pgid
+}
+
+async function readOwnedWorker(
+  fixture: string,
+): Promise<{ pid: number; pgid: number } | undefined> {
+  const path = join(fixture, "owned-worker")
+  if (!(await Bun.file(path).exists())) return undefined
+  const fields = (await readFile(path, "utf8")).trim().split(/\s+/)
+  if (fields.length !== 2) throw new Error("owned worker record must contain PID and PGID")
+  const pid = Number(fields[0])
+  const pgid = Number(fields[1])
+  if (!Number.isInteger(pid) || !Number.isInteger(pgid) || pid <= 1 || pgid <= 1) {
+    throw new Error("owned worker record contains an invalid PID or PGID")
+  }
+  return { pid, pgid }
+}
+
+async function runEntryWorker(
+  fixture: string,
+  workerBody: string,
+  entrySource?: string,
+): Promise<{ status: number; stderr: string; timedOut: boolean }> {
+  const fixtureScripts = join(fixture, "scripts/ci")
+  await mkdir(fixtureScripts, { recursive: true })
+  const fixtureEntry = join(fixtureScripts, "run-android-maestro-entry.sh")
+  const fixtureWorker = join(fixtureScripts, "run-android-maestro.sh")
+  await writeFile(fixtureEntry, entrySource ?? (await readFile(entryScript, "utf8")))
+  await writeFile(fixtureWorker, `#!/usr/bin/env bash\nset -euo pipefail\n${workerBody}`)
+  await Promise.all([chmod(fixtureEntry, 0o755), chmod(fixtureWorker, 0o755)])
+
+  const stderrPath = join(fixture, "entry.stderr")
+  const child = Bun.spawn([fixtureEntry], {
+    cwd: fixture,
+    stdout: "ignore",
+    stderr: Bun.file(stderrPath),
+  })
+  const timedOut = await Promise.race([
+    child.exited.then(() => false),
+    Bun.sleep(7_000).then(() => true),
+  ])
+  if (timedOut && child.exitCode === null) child.kill(9)
+  return {
+    status: await child.exited,
+    stderr: await readFile(stderrPath, "utf8"),
+    timedOut,
+  }
 }
 
 function isRunning(pid: number): boolean {
@@ -602,6 +983,49 @@ function assertSignalTrapContract(lane: string): void {
   if (!/^trap handle_interrupt INT$/m.test(lane) || !/^trap handle_terminate TERM$/m.test(lane)) {
     throw new Error("signal handlers must be installed")
   }
+}
+
+function assertEntrySignalContract(entry: string): void {
+  if (
+    !entry.includes("trap 'forward_signal INT 130' INT") ||
+    !entry.includes("trap 'forward_signal TERM 143' TERM")
+  ) {
+    throw new Error("entry signal handlers must map INT and TERM")
+  }
+  if (!entry.includes('kill -s "$signal" -- "-$worker_pgid"')) {
+    throw new Error("entry must signal the entire worker group")
+  }
+  if (!entry.includes(canonicalEntryLauncher)) {
+    throw new Error("entry process-group launcher is missing")
+  }
+  for (const guard of [
+    '[ "$worker_pid" -le 1 ]',
+    '[ "$current_pgid" -le 1 ]',
+    '[ "$current_pgid" != "$worker_pid" ]',
+    '[ "$current_pgid" != "$worker_pgid" ]',
+    '[ "$current_pgid" = "$entry_pgid" ]',
+    "for job_pid in $(jobs -pr); do",
+    "owned_worker_is_running || return 1",
+  ]) {
+    if (!entry.includes(guard)) throw new Error(`entry process-group guard is missing: ${guard}`)
+  }
+}
+
+function expectAndroidWorkflowEntry(workflowSource: string): void {
+  const workflow = Bun.YAML.parse(workflowSource) as {
+    jobs?: { maestro?: { steps?: Array<Record<string, unknown>> } }
+  }
+  const steps = workflow.jobs?.maestro?.steps
+  if (!Array.isArray(steps)) throw new Error("Android Maestro steps are missing")
+  const runSteps = steps.filter((step) => step.name === "Run the shared suite on Android")
+  if (runSteps.length !== 1) throw new Error("Android workflow needs exactly one run step")
+  const step = runSteps[0]
+  if (!step) throw new Error("Android run step is missing")
+  for (const field of ["continue-on-error", "if"]) {
+    if (Object.hasOwn(step, field)) throw new Error(`Android run step must not set ${field}`)
+  }
+  expect(step.shell).toBe("bash")
+  expect(step.run).toBe(canonicalEntryCommand)
 }
 
 function extractFunction(lane: string, name: string): string {

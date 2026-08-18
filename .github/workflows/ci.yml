@@ -110,5 +110,16 @@ jobs:
       - run: bun run build
       - run: bun install --frozen-lockfile
         working-directory: example/expo
+      - name: Install Redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes redis-server redis-tools
+          sudo systemctl stop redis-server.service
+          sudo systemctl disable redis-server.service
+          ! sudo systemctl is-active --quiet redis-server.service
+          if (echo > /dev/tcp/127.0.0.1/6379) 2>/dev/null; then
+            echo "Redis port 6379 is already in use after installation." >&2
+            exit 1
+          fi
       - name: Smoke Rails desktop integration
         run: scripts/ci/run-rails-desktop-smoke.sh
