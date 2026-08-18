@@ -11,6 +11,7 @@ import {
 import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react"
 import { type ReactNode, useEffect, useMemo, useState } from "react"
 import { Pressable, Text, View } from "react-native"
+import { DemoTextBoundary } from "./demo-boundaries"
 import {
   createDemoLiveFetchAdapter,
   type DemoLiveFetch,
@@ -198,6 +199,7 @@ export function DemoLiveMorphRuntimeProvider({
       )}
       session={proof.session}
       styles={DEMO_STYLE_ADAPTER}
+      textComponent={DemoTextBoundary}
     >
       {children}
     </ExpoTurboProvider>

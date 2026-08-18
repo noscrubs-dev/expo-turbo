@@ -28,6 +28,7 @@ import {
 import * as ReactNative from "react-native";
 import { Text, View } from "react-native";
 
+import { DemoTextBoundary } from "./demo-boundaries";
 import { DemoFocusProvider, DemoFocusRegistry } from "./demo-focus";
 import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
@@ -205,6 +206,7 @@ export function DemoLiveFormRuntimeProvider({
         session={proof.session}
         state={proof.state}
         styles={DEMO_STYLE_ADAPTER}
+        textComponent={DemoTextBoundary}
       >
         {children}
       </ExpoTurboProvider>

@@ -17,6 +17,7 @@ import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { type ReactNode, useEffect, useState } from "react";
 import { Text, View } from "react-native";
 
+import { DemoTextBoundary } from "./demo-boundaries";
 import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import {
@@ -205,6 +206,7 @@ export function DemoLiveDocumentRefreshMorphRuntimeProvider({
       )}
       session={proof.session}
       styles={DEMO_STYLE_ADAPTER}
+      textComponent={DemoTextBoundary}
     >
       {children}
     </ExpoTurboProvider>

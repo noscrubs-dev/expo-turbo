@@ -35,6 +35,7 @@ import { ExpoTurboProvider, ExpoTurboRoot } from "expo-turbo/react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
 
+import { DemoTextBoundary } from "./demo-boundaries";
 import { DEMO_MODULE_VERSIONS, DEMO_REGISTRY } from "./demo-registry";
 import { DEMO_STYLE_ADAPTER } from "./demo-style-runtime";
 import {
@@ -629,6 +630,7 @@ export function DemoLiveCableRuntimeProvider({
       session={proof.session}
       streamSources={proof.streamSources}
       styles={DEMO_STYLE_ADAPTER}
+      textComponent={DemoTextBoundary}
     >
       {children}
     </ExpoTurboProvider>

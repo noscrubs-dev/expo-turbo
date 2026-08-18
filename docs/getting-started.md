@@ -498,11 +498,12 @@ They stay available through `protocol.data` and never report as unknown.
 
 ### Text a component does not own
 
-Unwrapping a text-bearing unknown component leaves its text with no host of its
-own, so its React parent becomes whatever component the nearest decoded
-ancestor rendered. That ancestor declared `children: "nodes"`, which says
-nothing about text, and on React Native a component accepting elements is
-usually a `View`. A bare string there breaks the text-in-view rule.
+Every text run the renderer places below a component that declares
+`children: "nodes"` has no host of its own. This includes text that survives an
+unwrapped unknown component, but is not limited to it. Its React parent becomes
+whatever component the nearest decoded ancestor rendered. On React Native a
+component accepting elements is usually a `View`. A bare string there breaks
+the text-in-view rule.
 
 So the renderer never emits one. Text a component owns — the decoded run a
 `children: "text"` definition receives as its React children — is that

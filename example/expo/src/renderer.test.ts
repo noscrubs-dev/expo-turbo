@@ -16808,7 +16808,7 @@ describe("React protocol renderer", () => {
     ])
   })
 
-  test("warns once per dropped run in development and stays silent in production", async () => {
+  test("warns once per dropped run and tree generation in development, including StrictMode", async () => {
     const development = globalThis as typeof globalThis & { __DEV__?: boolean }
     const hadDevelopmentFlag = Object.hasOwn(development, "__DEV__")
     const previousDevelopmentFlag = development.__DEV__
@@ -16822,20 +16822,34 @@ describe("React protocol renderer", () => {
 
     try {
       development.__DEV__ = true
-      const developmentRenderer = render(
-        new DocumentSession(
-          parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
-            url: "https://example.test/skew",
-          }),
-        ),
-        registryWithCounters(),
+      const developmentSession = new DocumentSession(
+        parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
+          url: "https://example.test/skew",
+        }),
       )
-      // Dropping content is never silent: a build that can show a warning does.
+      const developmentRenderer = render(
+        developmentSession,
+        registryWithCounters(),
+        { strict: true },
+      )
+      // StrictMode replays the effect. Removing the same-node, same-generation
+      // claim above makes this assertion receive two warnings.
       expect(dropWarnings()).toHaveLength(1)
       expect(dropWarnings()[0]?.[1]).toEqual({
         documentUrl: "https://example.test/skew",
         nodeKey: "path.0.0.0",
       })
+
+      act(() => {
+        developmentSession.replaceTree(
+          parseExpoTurboDocument('<Gallery><FutureText id="future">hello</FutureText></Gallery>', {
+            url: "https://example.test/skew",
+          }),
+        )
+      })
+      // A whole-document replacement is a new generation, so its new text run
+      // warns once too. The guard only deduplicates the same node generation.
+      expect(dropWarnings()).toHaveLength(2)
       act(() => developmentRenderer.unmount())
 
       development.__DEV__ = false
@@ -16845,7 +16859,7 @@ describe("React protocol renderer", () => {
         ),
         registryWithCounters(),
       )
-      expect(dropWarnings()).toHaveLength(1)
+      expect(dropWarnings()).toHaveLength(2)
       act(() => productionRenderer.unmount())
     } finally {
       console.warn = originalWarn
