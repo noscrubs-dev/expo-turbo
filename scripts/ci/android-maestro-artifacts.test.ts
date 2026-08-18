@@ -39,6 +39,14 @@ async function assertArtifactContract(
   version: string,
 ): Promise<void> {
   const requiredRunnerPaths = [
+    "adb-fixture-push-attempt-$attempt.log",
+    "adb-media-scan-attempt-$attempt.log",
+    "emulator-attempt-$attempt.log",
+    "environment-attempt-$attempt.txt",
+    "logcat-attempt-$attempt.txt",
+    "rails-attempt-$attempt.log",
+    "maestro-bootstrap-attempt-$attempt.log",
+    "maestro-bootstrap-attempt-$attempt-retry.log",
     "maestro-tests-bootstrap-attempt-$attempt",
     "maestro-debug-bootstrap-attempt-$attempt",
     "maestro-tests-bootstrap-attempt-$attempt-retry",
@@ -66,6 +74,13 @@ async function assertArtifactContract(
     !runner.includes("start_and_prepare_emulator 2")
   ) {
     throw new Error("the emulator bootstrap artifact paths must use the suite attempt number")
+  }
+  if (
+    !runner.includes('capture_attempt_evidence 1 "$first_status"') ||
+    !runner.includes('capture_attempt_evidence 2 "$second_status"') ||
+    !runner.includes(': >"$rails_log"')
+  ) {
+    throw new Error("suite retries must preserve and separate both attempts")
   }
   if (!version.includes('readonly expected_version="2.7.0"')) {
     throw new Error("the flat-output contract must stay pinned to Maestro 2.7.0")
@@ -124,5 +139,12 @@ describe("Android Maestro artifacts", () => {
     await expect(
       assertArtifactContract(runner, workflow.replace("if: always()", "if: success()"), version),
     ).rejects.toThrow(/pinned upload action/)
+    await expect(
+      assertArtifactContract(
+        runner.replace('capture_attempt_evidence 2 "$second_status"', "true"),
+        workflow,
+        version,
+      ),
+    ).rejects.toThrow(/preserve and separate/)
   })
 })

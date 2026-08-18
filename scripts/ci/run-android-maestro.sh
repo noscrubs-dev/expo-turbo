@@ -58,19 +58,56 @@ readonly reverse_attempt_log="$artifacts/reverse-probe-attempt.txt"
 readonly ss_missing_marker="(ss is not installed here - listener state unknown)"
 readonly maestro_flow_path="${MAESTRO_FLOW_PATH:-.maestro}"
 
+is_adb_transport_failure() {
+  local log="$1"
+
+  # These messages come from ADB or Maestro's device server. Do not include
+  # selector timeouts, assertions, application crashes, or generic exceptions:
+  # those are product/test failures and must remain failures.
+  grep -Eiq \
+    "DeviceServerDiedException|device offline|host:transport:[^)]*offline|device '[^']+' not found" \
+    "$log"
+}
+
+should_retry_transport_failure() {
+  local attempt="$1"
+  local log="$2"
+
+  [ "$attempt" -eq 1 ] && is_adb_transport_failure "$log"
+}
+
+run_named_adb_command() {
+  local output="$1"
+  local timeout_seconds="$2"
+  shift 2
+  local status=0
+
+  timeout "$timeout_seconds" "$@" >"$output" 2>&1 || status=$?
+
+  if [ "$status" -eq 0 ]; then
+    return 0
+  fi
+
+  printf 'Pre-suite ADB command failed (exit %s):' "$status" >&2
+  printf ' %q' "$@" >&2
+  printf '\nSaved command output: %s\n' "$output" >&2
+  cat "$output" >&2
+  return "$status"
+}
+
 wait_for_stable_device() {
   local consecutive_checks=0
 
   for _ in $(seq 1 60); do
-    if [ "$(adb -s "$adb_serial" get-state 2>/dev/null)" = "device" ] &&
-      adb -s "$adb_serial" shell true >/dev/null 2>&1; then
+    if [ "$(timeout 5 adb -s "$adb_serial" get-state 2>/dev/null)" = "device" ] &&
+      timeout 5 adb -s "$adb_serial" shell true >/dev/null 2>&1; then
       consecutive_checks=$((consecutive_checks + 1))
       if [ "$consecutive_checks" -eq 3 ]; then
         return
       fi
     else
       consecutive_checks=0
-      adb reconnect offline >/dev/null 2>&1 || true
+      timeout 10 adb reconnect offline >/dev/null 2>&1 || true
     fi
     sleep 2
   done
@@ -111,7 +148,7 @@ capture_reverse_evidence() {
     echo "$ss_missing_marker" >"$reverse_listeners_log"
   fi
 
-  adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
+  timeout 15 adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
 }
 
 describe_empty_probe() {
@@ -223,15 +260,15 @@ prepare_rails_reverse() {
       continue
     fi
 
-    adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
-    if ! adb -s "$adb_serial" reverse tcp:3001 tcp:3001 >/dev/null 2>&1; then
+    timeout 15 adb -s "$adb_serial" reverse --remove tcp:3001 >/dev/null 2>&1 || true
+    if ! timeout 15 adb -s "$adb_serial" reverse tcp:3001 tcp:3001 >/dev/null 2>&1; then
       reason="REVERSE BINDING ABSENT - 'adb reverse tcp:3001 tcp:3001' did not bind."
       capture_reverse_evidence
       sleep 2
       continue
     fi
 
-    adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
+    timeout 15 adb -s "$adb_serial" reverse --list >"$reverse_binding_log" 2>&1 || true
     if ! grep -q 'tcp:3001 tcp:3001' "$reverse_binding_log"; then
       reason="REVERSE BINDING ABSENT - the bind call succeeded but 'adb reverse --list' does not show tcp:3001."
       capture_reverse_evidence
@@ -434,12 +471,16 @@ test -f "$picker_fixture"
 
 start_and_prepare_emulator() {
   local attempt="$1"
+  local attempt_emulator_log="$artifacts/emulator-attempt-$attempt.log"
   local bootstrap_output="$artifacts/maestro-tests-bootstrap-attempt-$attempt"
   local bootstrap_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt"
+  local bootstrap_log="$artifacts/maestro-bootstrap-attempt-$attempt.log"
   local bootstrap_retry_output="$artifacts/maestro-tests-bootstrap-attempt-$attempt-retry"
   local bootstrap_retry_debug="$artifacts/maestro-debug-bootstrap-attempt-$attempt-retry"
+  local bootstrap_retry_log="$artifacts/maestro-bootstrap-attempt-$attempt-retry.log"
+  local bootstrap_status=0
 
-  echo "=== Starting clean Android emulator ===" >>"$emulator_log"
+  echo "=== Starting clean Android emulator ===" >"$attempt_emulator_log"
   "$ANDROID_HOME/emulator/emulator" \
     -avd "$avd_name" \
     -port 5580 \
@@ -450,43 +491,111 @@ start_and_prepare_emulator() {
     -no-snapshot \
     -wipe-data \
     -gpu swiftshader_indirect \
-    -accel on >>"$emulator_log" 2>&1 &
+    -accel on >>"$attempt_emulator_log" 2>&1 &
   emulator_pid=$!
 
   timeout 180 adb -s "$adb_serial" wait-for-device
   for _ in $(seq 1 120); do
-    if [ "$(adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+    if [ "$(timeout 5 adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
       break
     fi
     sleep 2
   done
-  test "$(adb -s "$adb_serial" shell getprop sys.boot_completed | tr -d '\r')" = "1"
+  if [ "$(timeout 5 adb -s "$adb_serial" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then
+    echo "Android emulator did not complete boot within the bounded readiness window." >&2
+    return 1
+  fi
 
-  adb -s "$adb_serial" logcat -c
-  adb -s "$adb_serial" install -r "$apk"
-  adb -s "$adb_serial" push "$picker_fixture" /sdcard/Download/expo-turbo-android-picked.txt
-  adb -s "$adb_serial" shell am broadcast \
+  run_named_adb_command "$artifacts/adb-logcat-clear-attempt-$attempt.log" 30 \
+    adb -s "$adb_serial" logcat -c
+  run_named_adb_command "$artifacts/adb-install-attempt-$attempt.log" 120 \
+    adb -s "$adb_serial" install -r "$apk"
+  run_named_adb_command "$artifacts/adb-fixture-push-attempt-$attempt.log" 30 \
+    adb -s "$adb_serial" push \
+    "$picker_fixture" /sdcard/Download/expo-turbo-android-picked.txt
+  run_named_adb_command "$artifacts/adb-media-scan-attempt-$attempt.log" 30 \
+    adb -s "$adb_serial" shell am broadcast \
     -a android.intent.action.MEDIA_SCANNER_SCAN_FILE \
-    -d file:///sdcard/Download/expo-turbo-android-picked.txt >/dev/null
+    -d file:///sdcard/Download/expo-turbo-android-picked.txt
 
   wait_for_stable_device
-  if ! maestro --device "$adb_serial" test \
+  set +e
+  maestro --device "$adb_serial" test \
     --test-output-dir "$bootstrap_output" \
     --debug-output "$bootstrap_debug" \
     --flatten-debug-output \
-    scripts/ci/bootstrap-android-browser.yaml; then
-    echo "Chrome bootstrap lost its first device session; reconnecting once." >&2
-    adb reconnect offline >/dev/null 2>&1 || true
+    scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_log"
+  bootstrap_status="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "$bootstrap_status" -ne 0 ]; then
+    if ! is_adb_transport_failure "$bootstrap_log"; then
+      return "$bootstrap_status"
+    fi
+
+    echo "Chrome bootstrap lost proven ADB transport; reconnecting once." >&2
+    timeout 10 adb reconnect offline >/dev/null 2>&1 || true
     wait_for_stable_device
+    set +e
     maestro --device "$adb_serial" test \
       --test-output-dir "$bootstrap_retry_output" \
       --debug-output "$bootstrap_retry_debug" \
       --flatten-debug-output \
-      scripts/ci/bootstrap-android-browser.yaml
+      scripts/ci/bootstrap-android-browser.yaml 2>&1 | tee "$bootstrap_retry_log"
+    bootstrap_status="${PIPESTATUS[0]}"
+    set -e
+    if [ "$bootstrap_status" -ne 0 ]; then
+      return "$bootstrap_status"
+    fi
   fi
 
   wait_for_stable_device
-  prepare_rails_reverse
+  if ! prepare_rails_reverse; then
+    snapshot_reverse_evidence "$attempt"
+    return 1
+  fi
+  snapshot_reverse_evidence "$attempt"
+}
+
+snapshot_reverse_evidence() {
+  local attempt="$1"
+  local path
+
+  for path in \
+    "$reverse_response_log" \
+    "$reverse_probe_err_log" \
+    "$reverse_listeners_log" \
+    "$reverse_binding_log" \
+    "$reverse_attempt_log"; do
+    if [ -e "$path" ]; then
+      cp "$path" "${path%.*}-attempt-$attempt.${path##*.}"
+    fi
+  done
+}
+
+capture_attempt_evidence() {
+  local attempt="$1"
+  local status="$2"
+  local path
+
+  timeout 15 adb -s "$adb_serial" logcat -d \
+    >"$artifacts/logcat-attempt-$attempt.txt" 2>&1 || true
+  cp "$rails_log" "$artifacts/rails-attempt-$attempt.log" 2>/dev/null || true
+  {
+    echo "attempt=$attempt"
+    echo "suite_exit_status=$status"
+    echo "commit=$(git rev-parse HEAD)"
+    echo "adb_state=$(timeout 5 adb -s "$adb_serial" get-state 2>&1 || true)"
+    echo "adb_reverse_begin"
+    timeout 15 adb -s "$adb_serial" reverse --list 2>&1 || true
+    echo "adb_reverse_end"
+  } >"$artifacts/environment-attempt-$attempt.txt"
+
+  : >"$emulator_log"
+  for path in "$artifacts"/emulator-attempt-*.log; do
+    [ -e "$path" ] || continue
+    cat "$path" >>"$emulator_log"
+  done
 }
 
 stop_emulator_for_retry() {
@@ -524,24 +633,28 @@ run_maestro_suite() {
 start_and_prepare_emulator 1
 
 if run_maestro_suite 1; then
+  capture_attempt_evidence 1 0
   exit 0
 else
   first_status=$?
 fi
 
-if ! grep -Eiq "device offline|host:transport:[^)]*offline|device '[^']+' not found" "$artifacts/maestro-attempt-1.log" ||
-  ! grep -Eq '\[Failed\].*\(0s\)' "$artifacts/maestro-attempt-1.log"; then
+capture_attempt_evidence 1 "$first_status"
+
+if ! should_retry_transport_failure 1 "$artifacts/maestro-attempt-1.log"; then
   exit "$first_status"
 fi
 
-echo "Maestro lost ADB transport and cascaded into zero-second failures; restarting the emulator and retrying the full suite once." >&2
-timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat-attempt-1.txt" 2>&1 || true
+echo "Maestro lost proven ADB transport; restarting the emulator and retrying the full suite once." >&2
 stop_emulator_for_retry
+: >"$rails_log"
 start_and_prepare_emulator 2
 
 if run_maestro_suite 2; then
+  capture_attempt_evidence 2 0
   exit 0
 else
   second_status=$?
+  capture_attempt_evidence 2 "$second_status"
   exit "$second_status"
 fi

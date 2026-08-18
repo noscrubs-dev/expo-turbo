@@ -85,17 +85,20 @@ starting Maestro. This changes only disposable emulator state.
 
 ## Recovery
 
-The lane builds dependencies and the release APK once. If Maestro then reports
-an explicit offline or missing ADB device together with zero-second cascade
-failures, the runner preserves the first attempt's logs and JUnit, restarts and
-reprovisions a clean emulator, and reruns the complete suite once against the
-same APK. Assertion-only failures, app crashes, and a failed second attempt
-remain failures.
+The lane builds dependencies and the release APK once. If the first suite
+attempt reports an explicit ADB or Maestro device-server loss, the runner
+preserves the first attempt's logs and JUnit, restarts and reprovisions a clean
+emulator, and reruns the complete suite once against the same APK. The failed
+flow does not need a zero-second duration. Assertion failures, selector
+timeouts, app crashes, and a failed second attempt remain failures. Chrome
+bootstrap also retries only after the same explicit transport evidence.
 
 The first bootstrap, its one transport retry, suite attempt 1, the second clean
 bootstrap, its one transport retry, and suite attempt 2 have unique Maestro
-`--test-output-dir` and `--debug-output` paths. A retry cannot overwrite the
-screenshots, hierarchy, commands, or logs from the event that caused it.
+logs, `--test-output-dir`, and `--debug-output` paths. Each suite attempt also
+has separate emulator, logcat, Rails, environment, fixture-upload, and
+media-scan logs. A retry cannot overwrite evidence from the event that caused
+it.
 `--flatten-debug-output` puts each `maestro.log` directly in its already
 unique debug directory.
 
@@ -240,9 +243,10 @@ accepting the change.
 
 If the runner is unavailable, public PR checks remain unaffected. A device-lane
 failure is classified as recoverable infrastructure only when the retained
-Maestro output contains an explicit offline or missing ADB device and the
-remaining flows collapse into zero-second failures. Assertion failures and app
-crashes are product failures and are never hidden by an automatic retry.
+Maestro output contains an explicit offline, missing-device, or
+device-server-loss message. Flow duration does not affect this classification.
+Assertion failures, selector timeouts, and app crashes are product failures and
+are never hidden by an automatic retry.
 
 To inspect legacy or default-tree Maestro cleanup without changing files, run:
 
@@ -261,6 +265,16 @@ cause broader deletion.
 
 **2026-08-18**:
 
+- Changed: A first-attempt device-server loss now starts one clean-emulator
+  retry without a zero-second flow requirement. Chrome uses the same strict
+  transport classifier.
+- Why: Run `32143590467`, attempt 2, lost the device server after five seconds.
+  ADB recovered without its Rails reverse mapping, and eight later flows failed
+  as product-shaped connection errors.
+- Impact: The lane retries the proven transport fault once, proves device-side
+  Rails access before the new suite, and keeps each attempt's command and
+  runtime evidence. Assertions, selector timeouts, app crashes, and a failed
+  second attempt still fail.
 - Changed: The guarded retention tool remains for legacy or default-tree
   residue, but the Android lane no longer calls it.
 - Why: Every lane command supplies explicit test and debug output directories,
