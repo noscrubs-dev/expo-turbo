@@ -68,7 +68,7 @@ describe("Android lane cleanup", () => {
     const source = await readFile(stopProcessScript, "utf8")
     const finalLiveGuard = `  if kill -0 "$pid" 2>/dev/null; then
     echo "$name still exists after KILL; cleanup will not wait for it." >&2
-    return
+    return 0
   fi
   wait "$pid" 2>/dev/null || true`
     const mutation = source
@@ -131,6 +131,33 @@ describe("Android lane cleanup", () => {
         ),
       ),
     ).toThrow("bare wait")
+  })
+
+  test("returns an explicit status from the stop helper so the EXIT trap keeps running", async () => {
+    // Bash 5.2 unwinds the whole trap when a function reached from that trap
+    // runs an argument-less return, so a bare return here silently truncates
+    // cleanup on the Linux runners while Bash 3.2 and 5.3 keep going.
+    const source = await readFile(stopProcessScript, "utf8")
+
+    assertNoBareReturn(source)
+    expect(() => assertNoBareReturn(source.replace("    return 0", "    return"))).toThrow(
+      "bare return",
+    )
+  })
+
+  test("finishes cleanup and its evidence with the real stop helper on every child", async () => {
+    const fixture = await createFixture()
+    const lane = await readFile(laneScript, "utf8")
+    const result = await runRealCleanupWithLiveChildren(fixture, extractFunction(lane, "cleanup"))
+    const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+    const events = await readFile(join(fixture, "events.txt"), "utf8")
+
+    expect(result.status, result.stderr).toBe(37)
+    expect(environment).toContain("exit_status=37")
+    expect(environment).toContain("evidence_complete=true")
+    expect(events).toContain("emulator:kill")
+    expect(result.childPids).toHaveLength(3)
+    expect(result.childPids.filter(isRunning)).toEqual([])
   })
 
   test("runs cleanup as the EXIT trap, preserves status 37, and finishes evidence without free", async () => {
@@ -830,27 +857,7 @@ async function runBoundedBash(
   return { status, stdout, stderr, timedOut }
 }
 
-async function runRealCleanup(
-  fixture: string,
-  cleanup: string,
-  evidenceMode: "free-absent" | "git-fails",
-): Promise<{ status: number }> {
-  await mkdir(join(fixture, "artifacts"), { recursive: true })
-  await mkdir(join(fixture, "android/emulator"), { recursive: true })
-  await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
-  const harness = `
-set -euo pipefail
-artifacts="$FIXTURE/artifacts"
-ANDROID_HOME="$FIXTURE/android"
-adb_serial="emulator-5580"
-rails_pid="101"
-sampler_pid=""
-emulator_pid="202"
-maestro_version="2.7.0"
-stop_process() {
-  printf 'stop:%s\\n' "$2" >>"$FIXTURE/events.txt"
-}
-timeout() {
+const evidenceToolStubs = `timeout() {
   case "$*" in
     *" emu kill"*) printf 'emulator:kill\\n' >>"$FIXTURE/events.txt" ;;
   esac
@@ -872,7 +879,29 @@ command() {
     return 1
   fi
   builtin command "$@"
+}`
+
+async function runRealCleanup(
+  fixture: string,
+  cleanup: string,
+  evidenceMode: "free-absent" | "git-fails",
+): Promise<{ status: number }> {
+  await mkdir(join(fixture, "artifacts"), { recursive: true })
+  await mkdir(join(fixture, "android/emulator"), { recursive: true })
+  await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
+  const harness = `
+set -euo pipefail
+artifacts="$FIXTURE/artifacts"
+ANDROID_HOME="$FIXTURE/android"
+adb_serial="emulator-5580"
+rails_pid="101"
+sampler_pid=""
+emulator_pid="202"
+maestro_version="2.7.0"
+stop_process() {
+  printf 'stop:%s\\n' "$2" >>"$FIXTURE/events.txt"
 }
+${evidenceToolStubs}
 ${cleanup}
 trap cleanup EXIT INT TERM
 exit 37
@@ -888,6 +917,54 @@ exit 37
   })
   await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
   return { status: await child.exited }
+}
+
+// The real stop helper, driven from the real EXIT trap against three live
+// children. Nothing here stubs stop_process, so a helper path that leaves the
+// trap early is visible as missing evidence rather than as a passing run.
+async function runRealCleanupWithLiveChildren(
+  fixture: string,
+  cleanup: string,
+): Promise<{ status: number; stderr: string; childPids: number[] }> {
+  await mkdir(join(fixture, "artifacts"), { recursive: true })
+  await mkdir(join(fixture, "android/emulator"), { recursive: true })
+  await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
+  const stopProcess = await readFile(stopProcessScript, "utf8")
+  const harness = `
+set -euo pipefail
+artifacts="$FIXTURE/artifacts"
+ANDROID_HOME="$FIXTURE/android"
+adb_serial="emulator-5580"
+maestro_version="2.7.0"
+${evidenceToolStubs}
+${stopProcess}
+${cleanup}
+trap cleanup EXIT
+sleep 30 &
+rails_pid=$!
+sleep 30 &
+sampler_pid=$!
+sleep 30 &
+emulator_pid=$!
+printf '%s %s %s\\n' "$rails_pid" "$sampler_pid" "$emulator_pid" >"$FIXTURE/child-pids"
+exit 37
+`
+  // The children inherit these descriptors, so reading a pipe to EOF would wait
+  // for them instead of reporting that cleanup failed to stop them.
+  const stderrPath = join(fixture, "real-cleanup.stderr")
+  const child = Bun.spawn(["bash", "-c", harness], {
+    env: { ...process.env, EVIDENCE_MODE: "free-absent", FIXTURE: fixture },
+    stdout: "ignore",
+    stderr: Bun.file(stderrPath),
+  })
+  const status = await child.exited
+  const [stderr, record] = await Promise.all([
+    readFile(stderrPath, "utf8"),
+    readFile(join(fixture, "child-pids"), "utf8"),
+  ])
+  const childPids = record.trim().split(/\s+/).map(Number)
+  survivingPids.push(...childPids.filter(isRunning))
+  return { status, stderr, childPids }
 }
 
 async function runSignalCleanup(
@@ -1456,6 +1533,12 @@ function extractPsPipeline(sampler: string): string {
 function assertNoBareWait(body: string): void {
   if (/^\s*wait(?:\s|$)/m.test(body)) {
     throw new Error("real lane functions must not contain a bare wait")
+  }
+}
+
+function assertNoBareReturn(body: string): void {
+  if (/^\s*return\s*$/m.test(body)) {
+    throw new Error("real trap helpers must not contain a bare return")
   }
 }
 
