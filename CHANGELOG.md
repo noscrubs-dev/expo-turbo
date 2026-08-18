@@ -4,6 +4,25 @@ All notable public package, gem, and protocol changes will be recorded here.
 
 ## Unreleased
 
+- Fix `ExpoTurbo` stranding the loading surface when `onError` is added or
+  removed. Adding or removing the handler replaces the runtime, because its
+  presence decides whether each controller keeps its own fallback reporting, but
+  only the effect that builds the runtime restarted; the replacement runtime
+  held nothing but the placeholder document and nothing ever visited it. Both
+  effects now depend on one runtime-input identity, so a changed input restarts
+  both or neither. Changing only a callback's identity still visits once and
+  subscribes once.
+
+- Add `clientDescriptor` to `DocumentPreloaderOptions`, which is the name every
+  other loader and preloader already uses for the `X-Expo-Turbo-Client` value.
+  The deprecated `moduleVersions` transitional option keeps working and stays
+  accepted; `clientDescriptor` wins when both are supplied.
+
+- Document that `renderError` renders in place of any failed node position, not
+  only in place of the whole document, so one failure can call it more than
+  once. Record `cable`, and the presence of `onError`, in the documented list of
+  inputs that replace the `ExpoTurbo` runtime.
+
 - Add `FormControlRegistry#submissionInterception()` and the same method on
   `ExpoTurboFormBinding`. The synchronous, pure, frozen result is
   `{ intercepted: true }` or `{ intercepted: false, reason }`, where `reason`

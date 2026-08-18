@@ -417,6 +417,15 @@ worse than the blank screen it would be replacing. Making the surface the
 host's decision at compile time is what keeps a failed document from being
 either. Pass `renderError={() => null}` to deliberately render nothing.
 
+`renderError` is not called only for the whole document. The renderer holds a
+boundary at every node position, and each one renders this surface in place of
+the node it holds, so a single failure can call the function more than once and
+a document can hold several of these surfaces at the same time: one in place of
+the failed node, and one in place of the document if that failure was fatal to
+it. Write a surface that reads correctly inline as well as full-screen, and do
+not count on one call per failure. The `retry` argument remounts the whole
+runtime whichever position it came from.
+
 `useExpoRouterAdapters` builds the Expo Router history and navigation adapters
 directly. It returns one identity for the life of the mount, so inline option
 callbacks are safe:
@@ -443,10 +452,12 @@ navigation. Managed native traversal metadata, restoration event delivery, and
 app-specific external-link policy remain host work.
 
 These adapters and the optional action registry are the runtime's identity.
-`ExpoTurbo` replaces its whole runtime when `actions`, `fetch`, `history`,
-`navigation`, `focus`, or `registry` changes identity, so build them outside
-render or memoize them; an object rebuilt on every render refetches without
-bound.
+`ExpoTurbo` replaces its whole runtime when `actions`, `cable`, `fetch`,
+`focus`, `history`, `navigation`, or `registry` changes identity, so build them
+outside render or memoize them; an object rebuilt on every render refetches
+without bound. Adding or removing `onError` also replaces the runtime, because
+its presence decides whether each controller keeps its own fallback reporting;
+changing only its identity does not.
 
 `createExpoTurboRuntime` suits a host that controls loading and presentation
 separately. It exposes `documentPreloader` and `framePreloader`, plus `actions`

@@ -30,7 +30,15 @@ import { classifyTopLevelLocation } from "./visitability.js"
 
 export interface DocumentPreloaderOptions {
   readonly capabilityHash?: string
+  /**
+   * The serialized client descriptor sent as `X-Expo-Turbo-Client`, named as
+   * every other loader and preloader names it. Before this, the only way to
+   * reach the header from here was `moduleVersions`, whose own contract is a
+   * deprecated transitional shim.
+   */
+  readonly clientDescriptor?: string
   readonly limits?: Partial<ParseLimits>
+  /** @deprecated Use clientDescriptor. Accepted for source compatibility. */
   readonly moduleVersions?: string
   readonly prefetchCache?: DocumentPrefetchCache
   readonly requestLifecycle?: RequestLifecycle
@@ -103,6 +111,7 @@ const PARSE_LIMIT_KEYS = Object.freeze([
 export class DocumentPreloader {
   private readonly active = new Map<string, ActiveDocumentPreload>()
   private readonly capabilityHash: string | undefined
+  private readonly clientDescriptor: string | undefined
   private readonly limits: Partial<ParseLimits> | undefined
   private readonly moduleVersions: string | undefined
   private readonly prefetchCache: DocumentPrefetchCache | undefined
@@ -127,12 +136,14 @@ export class DocumentPreloader {
     if (optionsAreArray) throw new PropsError("Document preloader options must be an object")
 
     let capabilityHash: unknown
+    let clientDescriptor: unknown
     let configuredLimits: unknown
     let moduleVersions: unknown
     let requestLifecycle: unknown
     let prefetchCache: unknown
     try {
       capabilityHash = options.capabilityHash
+      clientDescriptor = options.clientDescriptor
       configuredLimits = options.limits
       moduleVersions = options.moduleVersions
       prefetchCache = options.prefetchCache
@@ -144,6 +155,10 @@ export class DocumentPreloader {
       throw new PropsError("Document preloader capability hash must be a string")
     }
     this.capabilityHash = capabilityHash
+    if (clientDescriptor !== undefined && typeof clientDescriptor !== "string") {
+      throw new PropsError("Document preloader client descriptor must be a string")
+    }
+    this.clientDescriptor = clientDescriptor
     if (moduleVersions !== undefined && typeof moduleVersions !== "string") {
       throw new PropsError("Document preloader module versions must be a string")
     }
@@ -373,6 +388,9 @@ export class DocumentPreloader {
       headers: Object.freeze({
         ...protocolRequestHeaders({
           ...(this.capabilityHash !== undefined ? { capabilityHash: this.capabilityHash } : {}),
+          ...(this.clientDescriptor !== undefined
+            ? { clientDescriptor: this.clientDescriptor }
+            : {}),
           ...(this.moduleVersions !== undefined ? { moduleVersions: this.moduleVersions } : {}),
           requestId,
         }),

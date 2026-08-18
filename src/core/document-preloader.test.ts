@@ -1110,6 +1110,48 @@ describe("document preloader", () => {
     expect(maxBytesReads).toBe(1)
   })
 
+  test("sends the client descriptor from the canonical option and still from the deprecated one", async () => {
+    const descriptor = "v=1; proto=0.1; rt=0.3.0; vocab=sha256-128:0123456789abcdef0123456789abcdef"
+    const build = (options: Record<string, unknown>) => {
+      const requests: TurboRequest[] = []
+      const preloader = new DocumentPreloader(
+        session(),
+        {
+          fetch: async (request) => {
+            requests.push(request)
+            return response('<Gallery><Loaded id="loaded" /></Gallery>', request.url)
+          },
+        },
+        requestIds(),
+        new DocumentSnapshotCache(),
+        options as never,
+      )
+      return { preloader, requests }
+    }
+
+    // The canonical name, which every other loader and preloader already takes.
+    // Reverting it leaves `clientDescriptor` unread and this header the bare
+    // runtime descriptor with no vocabulary digest.
+    const canonical = build({ clientDescriptor: descriptor })
+    await canonical.preloader.preload("./next")
+    expect(canonical.requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+
+    // The deprecated transitional option keeps working, so a host that already
+    // passes it is not broken by the canonical one arriving.
+    const deprecated = build({ moduleVersions: descriptor })
+    await deprecated.preloader.preload("./next")
+    expect(deprecated.requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+
+    // Both, with the canonical one winning.
+    const both = build({ clientDescriptor: descriptor, moduleVersions: "v=1; proto=0.1; rt=0.0.0" })
+    await both.preloader.preload("./next")
+    expect(both.requests[0]?.headers["X-Expo-Turbo-Client"]).toBe(descriptor)
+
+    expect(() => build({ clientDescriptor: 1 }).preloader).toThrow(
+      "Document preloader client descriptor must be a string",
+    )
+  })
+
   test("rejects revoked configuration and every non-positive-integer parser limit", () => {
     const build = (options: unknown) =>
       new DocumentPreloader(

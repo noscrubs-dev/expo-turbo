@@ -1,8 +1,14 @@
 /// <reference types="bun" />
 
 import { describe, expect, test } from "bun:test"
-import type { NavigationAdapter, TurboResponse, VisitAction } from "expo-turbo/adapters"
-import { EXPO_TURBO_MIME_TYPE, TargetError } from "expo-turbo/core"
+import type {
+  CableAdapter,
+  NavigationAdapter,
+  TurboResponse,
+  VisitAction,
+} from "expo-turbo/adapters"
+import { EXPO_TURBO_MIME_TYPE, EXPO_TURBO_RUNTIME_VERSION, TargetError } from "expo-turbo/core"
+import type { ExpoTurboErrorReport } from "expo-turbo/react"
 import {
   ExpoTurbo,
   useComponentAction,
@@ -574,6 +580,313 @@ describe("ExpoTurbo failure surface", () => {
     // surface owns presentation, and nothing may throw past it.
     expect(CatchingBoundary.caught).toBeUndefined()
     expect(renderer.toJSON()).toMatchObject({ type: "render-error" })
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+})
+
+interface TrackingCable {
+  readonly adapter: CableAdapter
+  readonly live: number
+  readonly subscriptions: string[]
+}
+
+/** Counts subscriptions and how many of them are still open. */
+function trackingCable(): TrackingCable {
+  const subscriptions: string[] = []
+  let live = 0
+  return {
+    adapter: {
+      subscribe(identifier: string) {
+        subscriptions.push(identifier)
+        live += 1
+        let open = true
+        return {
+          unsubscribe() {
+            if (!open) return
+            open = false
+            live -= 1
+          },
+        }
+      },
+    },
+    get live() {
+      return live
+    },
+    subscriptions,
+  }
+}
+
+describe("ExpoTurbo runtime identity", () => {
+  const REFUSING_TRANSPORT = {
+    fetch: async () => {
+      throw new Error("document transport refused")
+    },
+  }
+
+  function surfaces(renderer: ReactTestRenderer, type: string): number {
+    return renderer.root.findAll((node) => String(node.type) === type).length
+  }
+
+  test("visits again when onError appears instead of stranding the loading surface", async () => {
+    // Adding `onError` changes the runtime, because presence — not identity —
+    // decides whether each controller keeps its own fallback reporting. The
+    // effect that creates the runtime therefore restarts, sets the loading
+    // state, and disposes the old runtime. The effect that visits has to
+    // restart with it. Without that dependency the new runtime is never
+    // visited, and `ExpoTurbo` shows `loading` for the life of the mount.
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const element = (onError?: (error: Error, report: ExpoTurboErrorReport) => void) =>
+      createElement(ExpoTurbo, {
+        fetch: REFUSING_TRANSPORT,
+        loading: createElement("loading-surface"),
+        ...(onError ? { onError } : {}),
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      })
+
+    const renderer = await mount(element())
+
+    // The failure surface, not the loading surface: the mount already settled.
+    expect(surfaces(renderer, "render-error")).toBe(1)
+    expect(surfaces(renderer, "loading-surface")).toBe(0)
+    expect(reported).toHaveLength(0)
+
+    await act(async () => {
+      renderer.update(element((error, report) => reported.push([error, report])))
+      await nextTurn()
+    })
+
+    // Reverted, this is 1 loading-surface and 0 render-error: the document is
+    // stuck loading and the host never hears about the failure again.
+    expect(surfaces(renderer, "loading-surface")).toBe(0)
+    expect(surfaces(renderer, "render-error")).toBe(1)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.[1].severity).toBe("document")
+    expect(reported[0]?.[0].name).toBe("RequestError")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("visits again when onError disappears instead of stranding the loading surface", async () => {
+    // The other direction of the same presence change, on a transport that
+    // succeeds: the document has to come back, not stay on `loading`.
+    const transport = documentFetch("<HostDoc />")
+    const element = (onError?: (error: Error, report: ExpoTurboErrorReport) => void) =>
+      createElement(ExpoTurbo, {
+        fetch: transport.fetch,
+        loading: createElement("loading-surface"),
+        ...(onError ? { onError } : {}),
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      })
+
+    const renderer = await mount(element(() => undefined))
+    expect(surfaces(renderer, "doc")).toBe(1)
+
+    await act(async () => {
+      renderer.update(element())
+      await nextTurn()
+    })
+
+    expect(surfaces(renderer, "loading-surface")).toBe(0)
+    expect(surfaces(renderer, "doc")).toBe(1)
+    // The runtime really was replaced, so the assertion above is not a mount
+    // that simply never restarted.
+    expect(transport.calls).toBe(2)
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("does not visit or subscribe again when callback identities change", async () => {
+    // The control for the two tests above. Repairing them by depending on the
+    // callbacks themselves rather than on `onError` presence rebuilds the
+    // runtime on every render: a second document request, and a second Cable
+    // subscription for the same stream source.
+    const cable = trackingCable()
+    const transport = documentFetch(
+      '<HostDoc><turbo-cable-stream-source channel="HostChannel" signed-stream-name="cart" /></HostDoc>',
+    )
+    const element = (attempt: number) =>
+      createElement(ExpoTurbo, {
+        cable: cable.adapter,
+        fetch: transport.fetch,
+        onError: (error: Error) => void error,
+        onUnknownVocabulary: () => void attempt,
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      })
+
+    const renderer = await mount(element(0))
+    expect(transport.calls).toBe(1)
+    expect(cable.subscriptions).toHaveLength(1)
+
+    for (const attempt of [1, 2, 3]) {
+      await act(async () => {
+        renderer.update(element(attempt))
+        await nextTurn()
+      })
+    }
+
+    expect(transport.calls).toBe(1)
+    expect(cable.subscriptions).toHaveLength(1)
+    expect(cable.live).toBe(1)
+    expect(surfaces(renderer, "render-error")).toBe(0)
+
+    await act(async () => {
+      renderer.unmount()
+      await nextTurn()
+    })
+    // Unmount still releases it, so the count above is not a subscription the
+    // runtime simply never lets go of.
+    expect(cable.live).toBe(0)
+  })
+})
+
+describe("ExpoTurbo blank document reporting", () => {
+  // Unknown vocabulary with nothing renderable under it: the blank-root guard
+  // decides this from the tree, before any component lifetime.
+  const BLANK_XML = "<HostFutureRoot><HostFutureThing /></HostFutureRoot>"
+  // The same document plus one node this registry can render.
+  const RENDERABLE_XML = "<HostFutureRoot><HostFutureThing /><HostDoc /></HostFutureRoot>"
+  const BLANK_URL = "https://example.test/blank"
+  const CONTENT_URL = "https://example.test/content"
+  const REBLANK_URL = "https://example.test/blank-again"
+
+  /** Serves the blank document for every URL that asks for one. */
+  function blankingFetch() {
+    return {
+      fetch: {
+        fetch: async (request: Readonly<{ url: string }>) =>
+          xmlResponse(request.url.includes("blank") ? BLANK_XML : RENDERABLE_XML, request.url),
+      },
+    }
+  }
+
+  test("hands the host one document report with the blank interval and the surface", async () => {
+    // Issue #429 at the level a host actually mounts. The provider-level
+    // regression proves the guard; this proves the whole `ExpoTurbo` path
+    // reaches `onError` and `renderError` with it.
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const renderer = await mount(
+      createElement(ExpoTurbo, {
+        fetch: documentFetch(BLANK_XML).fetch,
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      }),
+    )
+
+    // The document really did go blank, which the host surface proves.
+    expect(renderer.toJSON()).toMatchObject({
+      props: { message: "Expo Turbo document root has no renderable fallback" },
+      type: "render-error",
+    })
+    expect(reported).toHaveLength(1)
+    const [error, report] = reported[0] ?? []
+    expect(report?.severity).toBe("document")
+    expect(report?.blank).toMatchObject({
+      attempt: 1,
+      documentUrl: DOCUMENT_URL,
+      runtimeVersion: EXPO_TURBO_RUNTIME_VERSION,
+    })
+    // The interval names the same node as the report that carries it, which is
+    // what lets a host correlate the two.
+    expect(report?.blank?.nodeKey).toBe(report?.nodeKey ?? "")
+    expect(error?.message).toBe("Expo Turbo document root has no renderable fallback")
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("does not report or replace a document that still renders something", async () => {
+    // The negative control: identical fixture with one renderable sibling. A
+    // guard that fired regardless would satisfy the test above on its own.
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const renderer = await mount(
+      createElement(ExpoTurbo, {
+        fetch: documentFetch(RENDERABLE_XML).fetch,
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url: DOCUMENT_URL,
+      }),
+    )
+
+    expect(reported).toEqual([])
+    expect(renderer.root.findAll((node) => String(node.type) === "render-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "doc")).toHaveLength(1)
+
+    await act(async () => {
+      renderer.unmount()
+    })
+  })
+
+  test("raises a fresh report when a recovered document blanks again", async () => {
+    // The #429 sequence a host can drive: blank, restored, blank again. A test
+    // that starts or ends in only one of those states does not prove the
+    // boundary released its stale error state between the two intervals.
+    const reported: [Error, ExpoTurboErrorReport][] = []
+    const transport = blankingFetch()
+    const element = (url: string) =>
+      createElement(ExpoTurbo, {
+        fetch: transport.fetch,
+        onError: (error: Error, report: ExpoTurboErrorReport) => reported.push([error, report]),
+        registry,
+        renderError: (error: Error) => createElement("render-error", { message: error.message }),
+        url,
+      })
+
+    const renderer = await mount(element(BLANK_URL))
+
+    expect(renderer.root.findAll((node) => String(node.type) === "render-error")).toHaveLength(1)
+    expect(reported).toHaveLength(1)
+    expect(reported[0]?.[1].blank).toMatchObject({ attempt: 1, documentUrl: BLANK_URL })
+
+    await act(async () => {
+      renderer.update(element(CONTENT_URL))
+      await nextTurn()
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "render-error")).toHaveLength(0)
+    expect(renderer.root.findAll((node) => String(node.type) === "doc")).toHaveLength(1)
+    expect(reported).toHaveLength(1)
+
+    await act(async () => {
+      renderer.update(element(REBLANK_URL))
+      await nextTurn()
+    })
+
+    expect(renderer.root.findAll((node) => String(node.type) === "render-error")).toHaveLength(1)
+    // A fresh error, and a fresh interval stamped with the document that is
+    // blank now: the second blank is not the first one's error held over.
+    // The count is deliberately not pinned. A document-severity report moves
+    // `ExpoTurbo` to its own failure surface, and the visit that is still
+    // settling moves it back, so the guard observes this document more than
+    // once; blank reports are per waking revision and are not deduplicated
+    // (issue 433). What every one of them must agree on is asserted instead.
+    const reblank = reported.slice(1)
+    expect(reblank.length).toBeGreaterThan(0)
+    expect(new Set(reblank.map(([, report]) => report.severity))).toEqual(new Set(["document"]))
+    expect(new Set(reblank.map(([, report]) => report.blank?.documentUrl))).toEqual(
+      new Set([REBLANK_URL]),
+    )
+    expect(reblank.every(([error]) => error !== reported[0]?.[0])).toBe(true)
+    expect(reblank[0]?.[1].blank?.attempt).toBe(1)
+    expect(reblank[0]?.[1].blank?.since).toBeGreaterThanOrEqual(
+      reported[0]?.[1].blank?.since ?? Number.POSITIVE_INFINITY,
+    )
 
     await act(async () => {
       renderer.unmount()

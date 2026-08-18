@@ -239,7 +239,7 @@ export function createExpoTurboRuntime(options: CreateExpoTurboRuntimeOptions): 
     visitLifecycle,
   })
   const documentPreloader = new DocumentPreloader(session, options.fetch, requestIds, snapshots, {
-    moduleVersions: clientDescriptor,
+    clientDescriptor,
     prefetchCache: documentPrefetchCache,
   })
   const onBackgroundError = options.onBackgroundError

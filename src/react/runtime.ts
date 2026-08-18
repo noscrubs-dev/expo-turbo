@@ -4,6 +4,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -127,6 +128,15 @@ export interface ExpoTurboProps extends CreateExpoTurboRuntimeOptions {
    * host's decision at compile time is what keeps a failed document from
    * being either a blank screen or a crash.
    *
+   * It is not called only for the whole document. The renderer holds a boundary
+   * at every node position, and each one renders this surface in place for the
+   * node it holds, so one failure can call it more than once and a document can
+   * hold several of these surfaces at the same time — one in place of a failed
+   * node, and one in place of the document if that failure was fatal to it.
+   * Return a surface that reads correctly inline as well as full-screen, and do
+   * not assume one call per failure. `retry` remounts the whole runtime
+   * whichever position it came from.
+   *
    * `ExpoTurboApp` from `expo-turbo/expo` supplies one for you. Pass
    * `() => null` to deliberately render nothing.
    */
@@ -195,6 +205,39 @@ export function ExpoTurbo({
     [],
   )
   const hasOnError = onError !== undefined
+  // Every input that defines the runtime, in one identity that both effects
+  // below depend on. Two dependency lists is what let `hasOnError` reach only
+  // the effect that creates the runtime: a host that started passing `onError`
+  // built a fresh runtime that the visit effect never visited, so `ExpoTurbo`
+  // stayed on `loading` for the life of the mount. One identity cannot drift
+  // that way — an input added here restarts both effects or neither.
+  const runtimeInputs = useMemo<Omit<CreateExpoTurboRuntimeOptions, "url">>(
+    () => ({
+      ...(actions ? { actions } : {}),
+      ...(cable ? { cable } : {}),
+      fetch,
+      ...(focus ? { focus } : {}),
+      ...(history ? { history } : {}),
+      ...(navigation ? { navigation } : {}),
+      // Presence, not identity: an always-present wrapper would be a callback
+      // that does nothing when the host supplied no `onError`, which suppresses
+      // each controller's own fallback reporting just as effectively as a
+      // no-op. Absent has to mean absent all the way down.
+      ...(hasOnError ? { onBackgroundError: forwardBackgroundError } : {}),
+      registry,
+    }),
+    [
+      actions,
+      cable,
+      fetch,
+      focus,
+      forwardBackgroundError,
+      hasOnError,
+      history,
+      navigation,
+      registry,
+    ],
+  )
   const [status, setStatus] = useState<
     | Readonly<{ state: "loading" }>
     | Readonly<{ error: Error; state: "error" }>
@@ -222,42 +265,19 @@ export function ExpoTurbo({
   // the runtime itself and replace it when their identities change.
   // biome-ignore lint/correctness/useExhaustiveDependencies: url is handled by the visit effect
   useEffect(() => {
-    const runtime = createExpoTurboRuntime({
-      ...(actions ? { actions } : {}),
-      ...(cable ? { cable } : {}),
-      fetch,
-      ...(focus ? { focus } : {}),
-      ...(history ? { history } : {}),
-      ...(navigation ? { navigation } : {}),
-      // Presence, not identity: an always-present wrapper would be a callback
-      // that does nothing when the host supplied no `onError`, which suppresses
-      // each controller's own fallback reporting just as effectively as a
-      // no-op. Absent has to mean absent all the way down.
-      ...(hasOnError ? { onBackgroundError: forwardBackgroundError } : {}),
-      registry,
-      url,
-    })
+    const runtime = createExpoTurboRuntime({ ...runtimeInputs, url })
     currentRuntimeRef.current = runtime
     setStatus({ state: "loading" })
     return () => {
       if (currentRuntimeRef.current === runtime) currentRuntimeRef.current = undefined
       runtime.dispose()
     }
-  }, [
-    attempt,
-    actions,
-    cable,
-    fetch,
-    focus,
-    forwardBackgroundError,
-    hasOnError,
-    history,
-    navigation,
-    registry,
-  ])
+  }, [attempt, runtimeInputs])
 
-  // The preceding effect replaces this ref whenever a runtime-defining input
-  // changes, so those inputs intentionally restart the visit effect too.
+  // The preceding effect replaces this ref whenever `runtimeInputs` changes and
+  // leaves the loading state behind it, so the same identity has to restart
+  // this effect: the replacement runtime holds only the placeholder document,
+  // and nothing else ever visits it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runtime identity is held in currentRuntimeRef
   useEffect(() => {
     const runtime = currentRuntimeRef.current
@@ -272,7 +292,7 @@ export function ExpoTurbo({
       runtime.session.treeGeneration === 0 && runtime.session.tree.document.url === requestedUrl
     const visit = initial
       ? runtime.load()
-      : history
+      : runtimeInputs.history
         ? runtime.controller.visit(url, { action: "replace" })
         : runtime.controller.visit(url)
     void visit.then(
@@ -298,7 +318,7 @@ export function ExpoTurbo({
     return () => {
       active = false
     }
-  }, [actions, attempt, cable, fail, fetch, focus, history, navigation, registry, url])
+  }, [attempt, fail, runtimeInputs, url])
 
   if (status.state === "loading") return loading
   if (status.state === "error") {
