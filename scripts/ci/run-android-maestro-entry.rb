@@ -5,6 +5,18 @@ worker = File.expand_path("run-android-maestro.sh", __dir__)
 class AndroidMaestroSupervisor
   READY_TIMEOUT = 1.0
   CANCEL_TIMEOUT = 1.0
+  # The worker can use two 15-second adb calls and three 10-second
+  # stop_process calls during EXIT. One more 15-second command window is for
+  # the local environment evidence that follows those bounded operations.
+  ADB_CLEANUP_COMMANDS = 2
+  ADB_CLEANUP_TIMEOUT = 15.0
+  PROCESS_CLEANUP_COMMANDS = 3
+  PROCESS_CLEANUP_TIMEOUT = 10.0
+  EVIDENCE_WRITE_BUDGET = 15.0
+  WORKER_CLEANUP_TIMEOUT =
+    (ADB_CLEANUP_COMMANDS * ADB_CLEANUP_TIMEOUT) +
+    (PROCESS_CLEANUP_COMMANDS * PROCESS_CLEANUP_TIMEOUT) +
+    EVIDENCE_WRITE_BUDGET
   TERM_GRACE = 0.25
   REAP_TIMEOUT = 1.0
   POLL_INTERVAL = 0.01
@@ -23,6 +35,10 @@ class AndroidMaestroSupervisor
     @anchor_pid = nil
     @anchor_pgid = nil
     @anchor_reader = nil
+    @cleanup_reader = nil
+    @cleanup_writer = nil
+    @cleanup_channel_eof = false
+    @worker_cleanup_started = false
     @worker_pid = nil
     @worker_proven = false
     @worker_status = nil
@@ -52,6 +68,8 @@ class AndroidMaestroSupervisor
     @signal_reader&.close unless @signal_reader&.closed?
     @signal_writer&.close unless @signal_writer&.closed?
     @anchor_reader&.close unless @anchor_reader&.closed?
+    @cleanup_reader&.close unless @cleanup_reader&.closed?
+    @cleanup_writer&.close unless @cleanup_writer&.closed?
   end
 
   private
@@ -149,7 +167,17 @@ class AndroidMaestroSupervisor
 
   def spawn_worker
     # The argv array prevents paths with spaces from becoming shell input.
-    @worker_pid = Process.spawn([@worker, @worker], pgroup: @anchor_pgid)
+    @cleanup_reader, @cleanup_writer = IO.pipe
+    @cleanup_reader.close_on_exec = true
+    cleanup_fd = @cleanup_writer.fileno
+    @worker_pid = Process.spawn(
+      {"ANDROID_MAESTRO_CLEANUP_FD" => cleanup_fd.to_s},
+      [@worker, @worker],
+      cleanup_fd => @cleanup_writer,
+      pgroup: @anchor_pgid,
+    )
+  ensure
+    @cleanup_writer&.close unless @cleanup_writer&.closed?
   end
 
   def prove_worker_or_capture_fast_exit
@@ -171,9 +199,11 @@ class AndroidMaestroSupervisor
 
   def run_worker
     cancellation_deadline = nil
+    cleanup_deadline = nil
 
     loop do
       drain_signals(forward: true)
+      drain_cleanup_state
       raise "signal trap queue overflowed" if @trap_failed
       cancellation_deadline ||= monotonic + CANCEL_TIMEOUT if cancelled?
 
@@ -185,12 +215,45 @@ class AndroidMaestroSupervisor
       break if @worker_status
 
       if cancellation_deadline && monotonic >= cancellation_deadline
-        warn "Android entry worker did not stop before the cancellation deadline."
+        if @worker_cleanup_started
+          cleanup_deadline ||= monotonic + WORKER_CLEANUP_TIMEOUT
+          cancellation_deadline = nil
+        else
+          warn "Android entry worker did not stop before the cancellation deadline."
+          break
+        end
+      end
+
+      if cleanup_deadline && monotonic >= cleanup_deadline
+        warn "Android entry worker cleanup did not stop before its derived deadline."
         break
       end
 
-      timeout = cancellation_deadline ? [cancellation_deadline - monotonic, POLL_INTERVAL].min : POLL_INTERVAL
-      IO.select([@signal_reader, @anchor_reader], nil, nil, [timeout, 0].max)
+      deadline = cleanup_deadline || cancellation_deadline
+      timeout = deadline ? [deadline - monotonic, POLL_INTERVAL].min : POLL_INTERVAL
+      readers = [@signal_reader, @anchor_reader]
+      readers << @cleanup_reader if @cleanup_reader && !@cleanup_channel_eof
+      IO.select(readers, nil, nil, [timeout, 0].max)
+    end
+  end
+
+  def drain_cleanup_state
+    return unless @cleanup_reader && !@cleanup_channel_eof
+
+    loop do
+      bytes = @cleanup_reader.read_nonblock(4096, exception: false)
+      break if bytes == :wait_readable
+      if bytes.nil?
+        @cleanup_channel_eof = true
+        break
+      end
+
+      bytes.each_char do |code|
+        raise "worker cleanup channel contained an invalid event" unless code == "C"
+        raise "worker cleanup channel contained a duplicate start" if @worker_cleanup_started
+
+        @worker_cleanup_started = true
+      end
     end
   end
 

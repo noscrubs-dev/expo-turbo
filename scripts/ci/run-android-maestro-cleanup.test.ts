@@ -248,10 +248,7 @@ describe("Android lane cleanup", () => {
 
   test("the real entry wrapper runs from a checkout path that contains spaces", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
-    const shellSpawn = supervisor.replace(
-      "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
-      "Process.spawn(@worker, pgroup: @anchor_pgid)",
-    )
+    const shellSpawn = supervisor.replace("      [@worker, @worker],", "      @worker,")
     expect(shellSpawn).not.toBe(supervisor)
 
     const fixture = await createFixture("expo turbo cleanup ")
@@ -360,6 +357,187 @@ while true; do sleep 0.05; done
         !isRunning(await readPid(mutationFixture, "descendant-pid")),
     ).toBe(false)
   }, 20_000)
+
+  test("does not interrupt synchronized worker cleanup at the cancellation deadline", async () => {
+    const supervisor = await readFile(entrySupervisor, "utf8")
+    const markedDeadline = supervisor.replace(
+      `      if cancellation_deadline && monotonic >= cancellation_deadline
+        if @worker_cleanup_started`,
+      `      if cancellation_deadline && monotonic >= cancellation_deadline
+        File.write(File.join(ENV.fetch("FIXTURE"), "cancel-deadline"), "")
+        if @worker_cleanup_started`,
+    )
+    expect(markedDeadline).not.toBe(supervisor)
+    const synchronizedSupervisor = markedDeadline
+      .replace(
+        `        else
+          warn "Android entry worker did not stop before the cancellation deadline."
+          break
+        end`,
+        `        else
+          sleep POLL_INTERVAL until File.exist?(File.join(ENV.fetch("FIXTURE"), "cleanup-held"))
+          warn "Android entry worker did not stop before the cancellation deadline."
+          break
+        end`,
+      )
+      .replace(
+        '    signal_group("TERM")',
+        `    signal_group("TERM")
+    File.write(File.join(ENV.fetch("FIXTURE"), "second-term-sent"), "")`,
+      )
+    expect(synchronizedSupervisor).not.toBe(markedDeadline)
+
+    const lane = await readFile(laneScript, "utf8")
+    const realCleanup = extractFunction(lane, "cleanup")
+    const heldCleanup = realCleanup.replace(
+      '    echo "ruby=$(ruby --version)"',
+      `    echo "ruby=$(ruby --version)"
+    printf 'started\n' >"$FIXTURE/evidence-started"
+    while [ ! -e "$FIXTURE/cancel-deadline" ]; do sleep 0.01; done
+    printf 'held\n' >"$FIXTURE/cleanup-held"
+    while [ ! -e "$FIXTURE/release-cleanup" ]; do sleep 0.01; done
+    printf 'finished\n' >"$FIXTURE/cleanup-finished"`,
+    )
+    expect(heldCleanup).not.toBe(realCleanup)
+    const cleanupHandshake = `  if [[ "\${ANDROID_MAESTRO_CLEANUP_FD:-}" =~ ^[0-9]+$ ]]; then
+    printf "C" 2>/dev/null >&"$ANDROID_MAESTRO_CLEANUP_FD" || true
+  fi`
+    expect(heldCleanup).toContain(cleanupHandshake)
+    const withoutHandshake = heldCleanup.replace(cleanupHandshake, "  : cleanup handshake removed")
+    expect(withoutHandshake).not.toBe(heldCleanup)
+
+    const runProof = async (cleanup: string, waitForSecondTerm: boolean) => {
+      const fixture = await createFixture()
+      await mkdir(join(fixture, "artifacts"), { recursive: true })
+      await mkdir(join(fixture, "android/emulator"), { recursive: true })
+      await writeFile(join(fixture, "android/emulator/source.properties"), "Pkg.Revision=1\n")
+      const stopProcess = await readFile(stopProcessScript, "utf8")
+      const interrupt = extractFunction(lane, "handle_interrupt")
+      const terminate = extractFunction(lane, "handle_terminate")
+      const result = await runEntryScenario(
+        fixture,
+        `artifacts="$FIXTURE/artifacts"
+ANDROID_HOME="$FIXTURE/android"
+adb_serial="emulator-5580"
+rails_pid=""
+sampler_pid=""
+emulator_pid=""
+maestro_version="2.7.0"
+timeout() { return 0; }
+${stopProcess}
+${cleanup}
+${interrupt}
+${terminate}
+trap cleanup EXIT
+trap handle_interrupt INT
+trap handle_terminate TERM
+printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+sleep 30 &
+rails_pid=$!
+printf '%s\n' "$rails_pid" >"$FIXTURE/descendant-pid"
+printf 'ready\n' >"$FIXTURE/worker-ready"
+while true; do sleep 0.01; done
+`,
+        async (pid) => {
+          await waitForFile(join(fixture, "worker-ready"))
+          process.kill(pid, "SIGINT")
+          await waitForFile(join(fixture, "evidence-started"))
+          await waitForFile(join(fixture, "cleanup-held"))
+          if (waitForSecondTerm) await waitForFile(join(fixture, "second-term-sent"))
+          await writeFile(join(fixture, "release-cleanup"), "")
+        },
+        synchronizedSupervisor,
+      )
+      const environment = await readFile(join(fixture, "artifacts/environment.txt"), "utf8")
+      return {
+        ...result,
+        environment,
+        cleanupFinished: await Bun.file(join(fixture, "cleanup-finished")).exists(),
+        descendantStopped: !isRunning(await readPid(fixture, "descendant-pid")),
+      }
+    }
+
+    const result = await runProof(heldCleanup, false)
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.status, result.stderr).toBe(130)
+    expect(result.environment).toContain("exit_status=130")
+    expect(result.environment).toContain("evidence_complete=true")
+    expect(result.cleanupFinished, result.stderr).toBe(true)
+    expect(result.descendantStopped).toBe(true)
+
+    const mutation = await runProof(withoutHandshake, true)
+    expect(mutation.timedOut).toBe(false)
+    expect(mutation.status).toBe(130)
+    expect(mutation.environment).toContain("exit_status=130")
+    expect(mutation.environment).toContain("ruby=")
+    expect(mutation.environment).not.toContain("evidence_complete=true")
+    expect(mutation.cleanupFinished).toBe(false)
+    expect(mutation.descendantStopped).toBe(true)
+    expect(mutation.stderr).toContain(
+      "Android entry worker did not stop before the cancellation deadline.",
+    )
+  }, 10_000)
+
+  test("derives and enforces the worker cleanup deadline from the real cleanup bounds", async () => {
+    const lane = await readFile(laneScript, "utf8")
+    const cleanup = extractFunction(lane, "cleanup")
+    const supervisor = await readFile(entrySupervisor, "utf8")
+
+    expect(assertWorkerCleanupBudget(cleanup, supervisor)).toBe(75)
+    expect(() =>
+      assertWorkerCleanupBudget(
+        cleanup,
+        supervisor.replace("PROCESS_CLEANUP_COMMANDS = 3", "PROCESS_CLEANUP_COMMANDS = 2"),
+      ),
+    ).toThrow("process cleanup count")
+    expect(() =>
+      assertWorkerCleanupBudget(
+        cleanup.replace(
+          '  stop_process "$sampler_pid" "resource sampler" 50 50 0.1',
+          "  : stop removed",
+        ),
+        supervisor,
+      ),
+    ).toThrow("process cleanup count")
+
+    const shortBudget = supervisor
+      .replace("ADB_CLEANUP_TIMEOUT = 15.0", "ADB_CLEANUP_TIMEOUT = 0.01")
+      .replace("PROCESS_CLEANUP_TIMEOUT = 10.0", "PROCESS_CLEANUP_TIMEOUT = 0.01")
+      .replace("EVIDENCE_WRITE_BUDGET = 15.0", "EVIDENCE_WRITE_BUDGET = 0.03")
+    expect(shortBudget).not.toBe(supervisor)
+    const fixture = await createFixture()
+    const result = await runEntrySignalSequence(
+      fixture,
+      `begin_cleanup() {
+  trap '' INT TERM
+  printf 'C' 2>/dev/null >&"$ANDROID_MAESTRO_CLEANUP_FD" || true
+  printf 'started\n' >"$FIXTURE/cleanup-started"
+  while true; do sleep 0.01 || true; done
+}
+trap begin_cleanup INT
+trap '' TERM
+printf '%s ' "$$" >"$FIXTURE/owned-worker"
+ruby -e 'puts Process.getpgid(Integer(ARGV.fetch(0)))' "$$" >>"$FIXTURE/owned-worker"
+sleep 30 &
+printf '%s\n' "$!" >"$FIXTURE/descendant-pid"
+printf 'ready\n' >"$FIXTURE/worker-ready"
+while true; do sleep 0.01 || true; done
+`,
+      ["SIGINT"],
+      shortBudget,
+    )
+
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.status, result.stderr).toBe(130)
+    expect(result.elapsed).toBeLessThan(4_000)
+    expect(result.stderr).toContain(
+      "Android entry worker cleanup did not stop before its derived deadline.",
+    )
+    expect(await Bun.file(join(fixture, "cleanup-started")).exists()).toBe(true)
+    expect(await recordedWorkerIsRunning(fixture)).toBe(false)
+    expect(isRunning(await readPid(fixture, "descendant-pid"))).toBe(false)
+  }, 10_000)
 
   for (const workerStatus of [0, 37] as const) {
     test(`TERM recorded immediately before worker status ${workerStatus} always wins`, async () => {
@@ -473,8 +651,8 @@ while true; do sleep 0.01; done
   test("a pgroup-disabled worker fails closed without touching an unrelated sentinel", async () => {
     const supervisor = await readFile(entrySupervisor, "utf8")
     const mutation = supervisor.replace(
-      "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
-      "Process.spawn([@worker, @worker])",
+      "      pgroup: @anchor_pgid,\n",
+      "      # pgroup disabled\n",
     )
     const sentinel = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" })
     const fixture = await createFixture()
@@ -1449,7 +1627,8 @@ function assertEntrySignalContract(entry: string, supervisor: string): void {
     throw new Error("entry supervisor launcher is missing")
   }
   for (const guard of [
-    "Process.spawn([@worker, @worker], pgroup: @anchor_pgid)",
+    "[@worker, @worker]",
+    "pgroup: @anchor_pgid",
     "@anchor_pid > 1",
     "@anchor_pgid == @anchor_pid",
     "worker_pgid == @anchor_pgid",
@@ -1540,6 +1719,52 @@ function assertNoBareReturn(body: string): void {
   if (/^\s*return\s*$/m.test(body)) {
     throw new Error("real trap helpers must not contain a bare return")
   }
+}
+
+function assertWorkerCleanupBudget(cleanup: string, supervisor: string): number {
+  const constant = (name: string): number => {
+    const match = supervisor.match(new RegExp(`^  ${name} = ([0-9.]+)$`, "m"))
+    const value = Number(match?.[1])
+    if (!Number.isFinite(value)) throw new Error(`missing cleanup budget constant: ${name}`)
+    return value
+  }
+  const adbTimeouts = [...cleanup.matchAll(/^\s*timeout\s+([0-9.]+)\s+adb\b/gm)].map((match) =>
+    Number(match[1]),
+  )
+  const processTimeouts = [
+    ...cleanup.matchAll(/^\s*stop_process\s+"[^"]*"\s+"[^"]*"\s+(\d+)\s+(\d+)\s+([0-9.]+)$/gm),
+  ].map((match) => (Number(match[1]) + Number(match[2])) * Number(match[3]))
+  const adbCount = constant("ADB_CLEANUP_COMMANDS")
+  const adbTimeout = constant("ADB_CLEANUP_TIMEOUT")
+  const processCount = constant("PROCESS_CLEANUP_COMMANDS")
+  const processTimeout = constant("PROCESS_CLEANUP_TIMEOUT")
+  const evidenceBudget = constant("EVIDENCE_WRITE_BUDGET")
+
+  if (adbTimeouts.length !== adbCount || adbTimeouts.some((value) => value !== adbTimeout)) {
+    throw new Error("supervisor adb cleanup count or timeout does not match the worker")
+  }
+  if (
+    processTimeouts.length !== processCount ||
+    processTimeouts.some((value) => value !== processTimeout)
+  ) {
+    throw new Error("supervisor process cleanup count or timeout does not match the worker")
+  }
+  if (evidenceBudget !== adbTimeout) {
+    throw new Error("environment evidence must have one full command timeout window")
+  }
+  if (
+    !supervisor.includes(`  WORKER_CLEANUP_TIMEOUT =
+    (ADB_CLEANUP_COMMANDS * ADB_CLEANUP_TIMEOUT) +
+    (PROCESS_CLEANUP_COMMANDS * PROCESS_CLEANUP_TIMEOUT) +
+    EVIDENCE_WRITE_BUDGET`)
+  ) {
+    throw new Error("worker cleanup deadline must use the checked budget formula")
+  }
+  return (
+    adbTimeouts.reduce((sum, value) => sum + value, 0) +
+    processTimeouts.reduce((sum, value) => sum + value, 0) +
+    evidenceBudget
+  )
 }
 
 function assertRailsStopsBeforeEmulator(cleanup: string): void {

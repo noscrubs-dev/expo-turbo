@@ -285,6 +285,13 @@ cleanup() {
   local status=$?
   trap - EXIT
 
+  # Tell the supervisor that its first cancellation signal reached the EXIT
+  # cleanup. The private inherited pipe lets the supervisor use the derived
+  # cleanup budget instead of sending a second TERM after one second.
+  if [[ "${ANDROID_MAESTRO_CLEANUP_FD:-}" =~ ^[0-9]+$ ]]; then
+    printf "C" 2>/dev/null >&"$ANDROID_MAESTRO_CLEANUP_FD" || true
+  fi
+
   timeout 15 adb -s "$adb_serial" logcat -d >"$artifacts/logcat.txt" 2>&1 || true
   stop_process "$rails_pid" "Rails" 50 50 0.1
   rails_pid=""
